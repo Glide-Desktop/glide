@@ -8,6 +8,13 @@ pub const WATCHER_INTERFACE: &str = "org.kde.StatusNotifierWatcher";
 pub const ITEM_INTERFACE: &str = "org.kde.StatusNotifierItem";
 pub const HOST_PREFIX: &str = "org.kde.StatusNotifierHost";
 pub const DEFAULT_ITEM_PATH: &str = "/StatusNotifierItem";
+pub const NO_DBUSMENU: &str = "/NO_DBUSMENU";
+pub const MAX_PIXMAP_SIDE: i32 = 512;
+pub const MAX_PIXMAP_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_PROPERTY_REPLY: usize = MAX_PIXMAP_BYTES + 64 * 1024;
+pub const MAX_ALL_REPLY: usize = 3 * MAX_PIXMAP_BYTES + 256 * 1024;
+
+pub type WirePixmaps = Vec<(i32, i32, Vec<u8>)>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Address {
@@ -86,6 +93,26 @@ impl Pixmap {
     fn side(&self) -> i32 {
         self.width.max(self.height)
     }
+
+    fn within_limits(&self) -> bool {
+        self.is_valid() && self.side() <= MAX_PIXMAP_SIDE
+    }
+}
+
+#[must_use]
+pub fn admit_pixmaps(raw: WirePixmaps) -> Vec<Pixmap> {
+    let mut total = 0usize;
+    let mut admitted = Vec::new();
+    for (width, height, argb) in raw {
+        let pixmap = Pixmap { width, height, argb };
+        let next = total.saturating_add(pixmap.argb.len());
+        if !pixmap.within_limits() || next > MAX_PIXMAP_BYTES {
+            continue;
+        }
+        total = next;
+        admitted.push(pixmap);
+    }
+    admitted
 }
 
 #[must_use]
@@ -258,7 +285,7 @@ fn pixmaps(value: &Value<'_>) -> Vec<Pixmap> {
     let Value::Array(array) = unwrap_variant(value) else {
         return Vec::new();
     };
-    array
+    let raw = array
         .iter()
         .filter_map(|entry| {
             let Value::Structure(structure) = entry else {
@@ -270,6 +297,9 @@ fn pixmaps(value: &Value<'_>) -> Vec<Pixmap> {
             else {
                 return None;
             };
+            if data.len() > MAX_PIXMAP_BYTES {
+                return None;
+            }
             let argb = data
                 .iter()
                 .map(|byte| match byte {
@@ -277,9 +307,10 @@ fn pixmaps(value: &Value<'_>) -> Vec<Pixmap> {
                     _ => None,
                 })
                 .collect::<Option<Vec<u8>>>()?;
-            Some(Pixmap { width: *width, height: *height, argb })
+            Some((*width, *height, argb))
         })
-        .collect()
+        .collect();
+    admit_pixmaps(raw)
 }
 
 fn tooltip(value: &Value<'_>) -> (String, String) {
@@ -292,22 +323,29 @@ fn tooltip(value: &Value<'_>) -> (String, String) {
 
 #[must_use]
 pub fn parse_props<S: std::hash::BuildHasher>(map: &HashMap<String, OwnedValue, S>) -> ItemProps {
+    let pixmaps = |key: &str| map.get(key).map(|value| pixmaps(value)).unwrap_or_default();
+    let tooltip = map.get("ToolTip").map(|v| tooltip(v)).unwrap_or_default();
+    assemble(map, pixmaps("IconPixmap"), pixmaps("AttentionIconPixmap"), tooltip)
+}
+
+pub(crate) fn assemble<S: std::hash::BuildHasher>(
+    map: &HashMap<String, OwnedValue, S>, icon_pixmaps: Vec<Pixmap>, attention_pixmaps: Vec<Pixmap>,
+    (tooltip_title, tooltip_body): (String, String),
+) -> ItemProps {
     let text = |key: &str| map.get(key).and_then(|value| text(value));
     let string = |key: &str| text(key).unwrap_or_default();
-    let pixmaps = |key: &str| map.get(key).map(|value| pixmaps(value)).unwrap_or_default();
-    let (tooltip_title, tooltip_body) = map.get("ToolTip").map(|v| tooltip(v)).unwrap_or_default();
     ItemProps {
         id: string("Id"),
         title: string("Title"),
         status: Status::parse(&string("Status")),
         icon_name: string("IconName"),
-        icon_pixmaps: pixmaps("IconPixmap"),
+        icon_pixmaps,
         attention_icon_name: string("AttentionIconName"),
-        attention_pixmaps: pixmaps("AttentionIconPixmap"),
+        attention_pixmaps,
         icon_theme_path: string("IconThemePath"),
         tooltip_title,
         tooltip_body,
-        menu: text("Menu").filter(|path| path.starts_with('/') && path != "/"),
+        menu: text("Menu").filter(|path| path.starts_with('/') && path != "/" && path != NO_DBUSMENU),
         item_is_menu: map.get("ItemIsMenu").is_some_and(|value| matches!(&**value, Value::Bool(true))),
     }
 }
@@ -339,6 +377,10 @@ impl Registry {
         }
         self.hosts.push(name.to_string());
         true
+    }
+
+    pub(crate) fn has_hosts(&self) -> bool {
+        !self.hosts.is_empty()
     }
 
     pub fn vanish(&mut self, name: &str) -> Vec<Address> {
@@ -569,17 +611,85 @@ mod tests {
     }
 
     #[test]
+    fn the_qt_no_menu_sentinel_means_no_menu() {
+        let menu = |path: &str| {
+            let mut map: HashMap<String, OwnedValue> = HashMap::new();
+            let value = Value::from(zbus::zvariant::ObjectPath::try_from(path).expect("path"));
+            map.insert("Menu".into(), value.try_to_owned().expect("owned"));
+            parse_props(&map).menu
+        };
+        assert_eq!(menu(NO_DBUSMENU), None);
+        assert_eq!(menu("/NO_DBUSMENU_AT_ALL").as_deref(), Some("/NO_DBUSMENU_AT_ALL"));
+        assert_eq!(menu("/MenuBar").as_deref(), Some("/MenuBar"));
+    }
+
+    #[test]
+    fn pixmaps_wider_than_the_side_limit_are_dropped_even_when_their_data_matches() {
+        let wide = (MAX_PIXMAP_SIDE + 1, 1, vec![0u8; usize::try_from(MAX_PIXMAP_SIDE + 1).expect("positive") * 4]);
+        let tall = (1, MAX_PIXMAP_SIDE + 1, vec![0u8; usize::try_from(MAX_PIXMAP_SIDE + 1).expect("positive") * 4]);
+        let fine = (MAX_PIXMAP_SIDE, 1, vec![0u8; usize::try_from(MAX_PIXMAP_SIDE).expect("positive") * 4]);
+        let kept = admit_pixmaps(vec![wide, tall, fine]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].width, MAX_PIXMAP_SIDE);
+    }
+
+    #[test]
+    fn pixmaps_whose_length_is_not_width_times_height_times_four_are_dropped() {
+        let kept = admit_pixmaps(vec![
+            (2, 2, vec![0; 15]),
+            (2, 2, vec![0; 17]),
+            (0, 4, Vec::new()),
+            (-2, 2, vec![0; 16]),
+            (i32::MAX, i32::MAX, vec![0; 16]),
+            (2, 2, vec![0; 16]),
+        ]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!((kept[0].width, kept[0].height), (2, 2));
+    }
+
+    #[test]
+    fn one_property_cannot_carry_more_than_the_byte_budget_of_pixmaps() {
+        let side = MAX_PIXMAP_SIDE;
+        let one_mib = || (side, side, vec![0u8; usize::try_from(side * side).expect("positive") * 4]);
+        let kept = admit_pixmaps((0..6).map(|_| one_mib()).collect());
+        assert_eq!(kept.len(), MAX_PIXMAP_BYTES / (one_mib().2.len()));
+        assert!(kept.iter().map(|pixmap| pixmap.argb.len()).sum::<usize>() <= MAX_PIXMAP_BYTES);
+    }
+
+    #[test]
+    fn the_reply_caps_leave_room_for_the_largest_admitted_properties() {
+        const {
+            assert!(MAX_PROPERTY_REPLY > MAX_PIXMAP_BYTES);
+            assert!(MAX_ALL_REPLY >= 3 * MAX_PIXMAP_BYTES, "icon, attention icon and tooltip icon at their limits fit");
+        }
+    }
+
+    #[test]
+    fn decoded_variant_pixmaps_above_the_limits_never_reach_the_props() {
+        let mut map: HashMap<String, OwnedValue> = HashMap::new();
+        let side = MAX_PIXMAP_SIDE + 1;
+        let data = vec![0u8; usize::try_from(side).expect("positive") * 4];
+        let value = Value::from(vec![(side, 1i32, data), (1i32, 1i32, vec![9u8; 4])]);
+        map.insert("IconPixmap".into(), value.try_to_owned().expect("owned"));
+        let props = parse_props(&map);
+        assert_eq!(props.icon_pixmaps.len(), 1);
+        assert_eq!(props.icon_pixmaps[0].width, 1);
+    }
+
+    #[test]
     fn the_registry_drops_every_item_of_a_vanished_owner() {
         let mut registry = Registry::default();
         assert!(registry.add_item(address(":1.5", "/a")));
         assert!(!registry.add_item(address(":1.5", "/a")), "no duplicates");
         assert!(registry.add_item(address(":1.5", "/b")));
         assert!(registry.add_item(address("org.example.Tray", "/c")));
+        assert!(!registry.has_hosts());
         assert!(registry.add_host(":1.5"));
+        assert!(registry.has_hosts());
         let gone = registry.vanish(":1.5");
         assert_eq!(gone, vec![address(":1.5", "/a"), address(":1.5", "/b")]);
         assert_eq!(registry.keys(), vec![String::from("org.example.Tray/c")]);
-        assert!(registry.hosts.is_empty());
+        assert!(!registry.has_hosts());
         assert!(registry.vanish(":1.99").is_empty());
         assert!(registry.remove_item(&address("org.example.Tray", "/c")));
         assert!(registry.items().is_empty());

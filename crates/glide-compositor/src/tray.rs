@@ -1,12 +1,12 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
 };
 
 use glide_appmenu::{Activation, MENU_WAIT, MenuItem, Source};
-use smithay::reexports::calloop::channel;
+use smithay::reexports::calloop::{RegistrationToken, channel};
 
 use crate::{
     config::Color,
@@ -30,10 +30,35 @@ pub enum TrayUpdate {
 pub struct TrayService {
     handle: Option<glide_tray::TrayHandle>,
     started: bool,
+    source: Option<RegistrationToken>,
+    known: BTreeSet<String>,
     icon_theme: Arc<Mutex<Option<String>>>,
     menus: HashMap<String, Source>,
     pending: Option<(u16, Source, Instant)>,
     open: Option<Source>,
+}
+
+impl TrayService {
+    fn note(&mut self, update: &TrayUpdate) {
+        match update {
+            TrayUpdate::Icon(icon) => {
+                self.known.insert(icon.key.clone());
+            }
+            TrayUpdate::Removed(key) => {
+                self.known.remove(key);
+            }
+        }
+    }
+
+    fn end(&mut self) -> Vec<String> {
+        if let Some(handle) = self.handle.take() {
+            handle.shutdown();
+        }
+        self.started = false;
+        self.pending = None;
+        self.open = None;
+        std::mem::take(&mut self.known).into_iter().collect()
+    }
 }
 
 fn find_in_theme_dir(dir: &Path, name: &str, depth: usize) -> Vec<PathBuf> {
@@ -152,8 +177,19 @@ impl GlideState {
         };
         if topbar.tray && !self.tray.started {
             self.start_tray();
+        } else if !topbar.tray && self.tray.started {
+            self.stop_tray();
         } else if theme_changed && let Some(handle) = &self.tray.handle {
             handle.refresh();
+        }
+    }
+
+    fn stop_tray(&mut self) {
+        if let Some(token) = self.tray.source.take() {
+            self.loop_handle.remove(token);
+        }
+        for key in self.tray.end() {
+            self.handle_tray_update(TrayUpdate::Removed(key));
         }
     }
 
@@ -200,12 +236,14 @@ impl GlideState {
                 state.handle_tray_update(update);
             }
         });
-        if let Err(err) = inserted {
-            tracing::error!("failed to watch the tray channel: {err}");
+        match inserted {
+            Ok(token) => self.tray.source = Some(token),
+            Err(err) => tracing::error!("failed to watch the tray channel: {err}"),
         }
     }
 
     pub fn handle_tray_update(&mut self, update: TrayUpdate) {
+        self.tray.note(&update);
         let dirty = match update {
             TrayUpdate::Icon(icon) => self.topbar.upsert_tray_item(*icon),
             TrayUpdate::Removed(key) => {
@@ -339,6 +377,22 @@ mod tests {
         assert!(!wants_menu(&icon(false), TrayButton::Primary));
         assert!(wants_menu(&icon(true), TrayButton::Primary));
         assert!(!wants_menu(&icon(true), TrayButton::Secondary));
+    }
+
+    #[test]
+    fn stopping_the_tray_reports_every_icon_still_shown_once_and_allows_a_restart() {
+        let mut service = TrayService { started: true, ..TrayService::default() };
+        let mut second = icon(false);
+        second.key = ":1.3/StatusNotifierItem".into();
+        service.note(&TrayUpdate::Icon(Box::new(icon(false))));
+        service.note(&TrayUpdate::Icon(Box::new(second)));
+        service.note(&TrayUpdate::Removed(":1.3/StatusNotifierItem".into()));
+        service.pending = Some((1, Source::DbusMenu { bus: ":1.2".into(), path: "/Menu".into() }, Instant::now()));
+        service.open = Some(Source::DbusMenu { bus: ":1.2".into(), path: "/Menu".into() });
+        assert_eq!(service.end(), vec![String::from(":1.2/StatusNotifierItem")]);
+        assert!(!service.started, "the guard in configure_tray lets the next enable start a fresh worker");
+        assert!(service.pending.is_none() && service.open.is_none());
+        assert!(service.end().is_empty(), "stopping twice has nothing left to report");
     }
 
     #[test]

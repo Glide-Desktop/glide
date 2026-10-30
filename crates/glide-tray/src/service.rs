@@ -1,21 +1,23 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     sync::{Arc, Mutex, mpsc},
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
 use zbus::{
     fdo::{RequestNameFlags, RequestNameReply},
     names::BusName,
-    zvariant::OwnedValue,
+    zvariant::{OwnedValue, Type, as_value},
 };
 
 use crate::{
     model::{
-        Address, HOST_PREFIX, ITEM_INTERFACE, ItemProps, Registry, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH,
-        parse_props,
+        Address, HOST_PREFIX, ITEM_INTERFACE, ItemProps, MAX_ALL_REPLY, MAX_PROPERTY_REPLY, Registry,
+        WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH, WirePixmaps,
     },
     watcher::{Watcher, lock},
+    wire::{ATTENTION_PIXMAP, ICON_PIXMAP, TOOLTIP, ToolTip, Wire},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +52,7 @@ pub(crate) enum Request {
     Changed { sender: String },
     Call { key: String, method: Method },
     Refresh,
+    Shutdown,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +90,10 @@ impl TrayHandle {
     pub fn refresh(&self) {
         self.send(Request::Refresh);
     }
+
+    pub fn shutdown(&self) {
+        self.send(Request::Shutdown);
+    }
 }
 
 const SIGNAL_RULES: [&str; 3] = [
@@ -98,6 +105,8 @@ const SIGNAL_RULES: [&str; 3] = [
 const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
 const FIRST_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_mins(2);
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+const MAX_RETRIES: u32 = 10;
 const MAX_PENDING: usize = 64;
 const COALESCE: Duration = Duration::from_millis(40);
 const MAX_BATCH: Duration = Duration::from_millis(200);
@@ -117,11 +126,21 @@ const PROPERTY_NAMES: [&str; 11] = [
 ];
 
 pub fn start(sink: Sink) -> anyhow::Result<TrayHandle> {
+    launch(None, sink)
+}
+
+pub fn start_on(address: &str, sink: Sink) -> anyhow::Result<TrayHandle> {
+    launch(Some(address.to_string()), sink)
+}
+
+fn launch(address: Option<String>, sink: Sink) -> anyhow::Result<TrayHandle> {
     let (tx, rx) = mpsc::channel();
     let worker_tx = tx.clone();
-    std::thread::Builder::new().name("glide-tray".into()).spawn(move || match Worker::connect(sink, worker_tx) {
-        Ok(worker) => worker.run(&rx),
-        Err(err) => tracing::warn!("the system tray is unavailable: {err}"),
+    std::thread::Builder::new().name("glide-tray".into()).spawn(move || {
+        match Worker::connect(address.as_deref(), sink, worker_tx) {
+            Ok(worker) => worker.run(&rx),
+            Err(err) => tracing::warn!("the system tray is unavailable: {err}"),
+        }
     })?;
     Ok(TrayHandle { tx })
 }
@@ -144,6 +163,9 @@ fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>, u
     let mut watcher = watcher_owner(connection);
     for message in zbus::blocking::MessageIterator::from(connection) {
         let Ok(message) = message else {
+            if connection.is_closed() {
+                return;
+            }
             continue;
         };
         let header = message.header();
@@ -221,6 +243,19 @@ fn next_backoff(previous: Option<Duration>) -> Duration {
     previous.map_or(FIRST_BACKOFF, |previous| previous.saturating_mul(2).clamp(FIRST_BACKOFF, MAX_BACKOFF))
 }
 
+fn gone(err: &zbus::Error) -> bool {
+    match err {
+        zbus::Error::MethodError(name, _, _) => matches!(
+            name.as_str(),
+            "org.freedesktop.DBus.Error.ServiceUnknown" | "org.freedesktop.DBus.Error.NameHasNoOwner"
+        ),
+        zbus::Error::FDO(fdo) => {
+            matches!(**fdo, zbus::fdo::Error::ServiceUnknown(_) | zbus::fdo::Error::NameHasNoOwner(_))
+        }
+        _ => false,
+    }
+}
+
 fn stalls(err: &zbus::Error) -> bool {
     match err {
         zbus::Error::InputOutput(io) => io.kind() == std::io::ErrorKind::TimedOut,
@@ -261,10 +296,59 @@ impl Stall {
     }
 }
 
+fn soft_delay(attempt: u32) -> Duration {
+    let factor = 1u32.checked_shl(attempt).unwrap_or(u32::MAX);
+    RETRY_FIRST.saturating_mul(factor).min(MAX_BACKOFF)
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Owed {
+    at: Option<Instant>,
+    attempts: u32,
+}
+
+impl Owed {
+    fn fail(&mut self, stall: &Stall, now: Instant) {
+        self.attempts = self.attempts.saturating_add(1);
+        self.at = (self.attempts <= MAX_RETRIES)
+            .then(|| stall.until.filter(|until| *until > now).unwrap_or_else(|| now + soft_delay(self.attempts - 1)));
+    }
+
+    fn defer(&mut self, until: Instant) {
+        self.at.get_or_insert(until);
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Plan {
+    due: Vec<usize>,
+    next: Option<Instant>,
+}
+
+fn plan(now: Instant, deadlines: impl IntoIterator<Item = Option<Instant>>) -> Plan {
+    let mut plan = Plan::default();
+    for (index, deadline) in deadlines.into_iter().enumerate() {
+        let Some(deadline) = deadline else {
+            continue;
+        };
+        if deadline <= now {
+            plan.due.push(index);
+        } else {
+            plan.next = Some(plan.next.map_or(deadline, |next| next.min(deadline)));
+        }
+    }
+    plan
+}
+
 struct Pending {
     address: Address,
     owner: String,
     stall: Stall,
+    owed: Owed,
 }
 
 fn remember(pending: &mut Vec<Pending>, entry: Pending) {
@@ -280,6 +364,7 @@ struct Tracked {
     owner: String,
     props: ItemProps,
     stall: Stall,
+    owed: Owed,
 }
 
 impl Tracked {
@@ -301,11 +386,16 @@ struct Worker {
     watcher: bool,
     items: Vec<Tracked>,
     pending: Vec<Pending>,
+    signals: Option<JoinHandle<()>>,
 }
 
 impl Worker {
-    fn connect(sink: Sink, tx: mpsc::Sender<Request>) -> anyhow::Result<Self> {
-        let connection = zbus::blocking::connection::Builder::session()?.method_timeout(METHOD_TIMEOUT).build()?;
+    fn connect(address: Option<&str>, sink: Sink, tx: mpsc::Sender<Request>) -> anyhow::Result<Self> {
+        let builder = match address {
+            Some(address) => zbus::blocking::connection::Builder::address(address)?,
+            None => zbus::blocking::connection::Builder::session()?,
+        };
+        let connection = builder.method_timeout(METHOD_TIMEOUT).build()?;
         let bus = zbus::blocking::fdo::DBusProxy::new(&connection)?;
         for rule in SIGNAL_RULES {
             if let Ok(rule) = zbus::MatchRule::try_from(rule)
@@ -315,22 +405,32 @@ impl Worker {
             }
         }
         let unique = connection.unique_name().map(ToString::to_string).unwrap_or_default();
-        {
+        let signals = {
             let connection = connection.clone();
             let tx = tx.clone();
             let unique = unique.clone();
             std::thread::Builder::new()
                 .name("glide-tray-signals".into())
-                .spawn(move || listen(&connection, &tx, &unique))?;
-        }
+                .spawn(move || listen(&connection, &tx, &unique))?
+        };
         let registry = Arc::new(Mutex::new(Registry::default()));
         connection.object_server().at(WATCHER_PATH, Watcher { registry: registry.clone(), tx })?;
         let host = format!("{HOST_PREFIX}-{}", std::process::id());
+        lock(&registry).add_host(&host);
         if let Err(err) = connection.request_name(host.as_str()) {
             tracing::debug!("could not own {host}: {err}");
         }
-        let mut worker =
-            Self { connection, sink, registry, host, unique, watcher: false, items: Vec::new(), pending: Vec::new() };
+        let mut worker = Self {
+            connection,
+            sink,
+            registry,
+            host,
+            unique,
+            watcher: false,
+            items: Vec::new(),
+            pending: Vec::new(),
+            signals: Some(signals),
+        };
         if !worker.claim() {
             worker.join();
         }
@@ -338,14 +438,107 @@ impl Worker {
     }
 
     fn run(mut self, rx: &mpsc::Receiver<Request>) {
-        while let Ok(first) = rx.recv() {
+        loop {
+            self.retry_due();
+            let first = match self.next_wake(Instant::now()) {
+                Some(wait) => match rx.recv_timeout(wait) {
+                    Ok(request) => request,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                },
+                None => match rx.recv() {
+                    Ok(request) => request,
+                    Err(_) => break,
+                },
+            };
             let (changed, pending) = collect_batch(first, rx, COALESCE, MAX_BATCH);
             for sender in changed {
                 self.refresh_owner(&sender);
             }
+            let mut stop = false;
             for request in pending {
+                if matches!(request, Request::Shutdown) {
+                    stop = true;
+                    break;
+                }
                 self.handle(request);
             }
+            if stop {
+                break;
+            }
+        }
+        self.shutdown();
+    }
+
+    fn next_wake(&self, now: Instant) -> Option<Duration> {
+        let pending = plan(now, self.pending.iter().map(|p| p.owed.at)).next;
+        let items = plan(now, self.items.iter().map(|t| t.owed.at)).next;
+        let next = [pending, items].into_iter().flatten().min()?;
+        Some(next.saturating_duration_since(now))
+    }
+
+    fn retry_due(&mut self) {
+        let now = Instant::now();
+        let waiting: Vec<Address> = plan(now, self.pending.iter().map(|p| p.owed.at))
+            .due
+            .into_iter()
+            .map(|index| self.pending[index].address.clone())
+            .collect();
+        for address in waiting {
+            self.register(address, None);
+        }
+        let owed: Vec<Address> = plan(now, self.items.iter().map(|t| t.owed.at))
+            .due
+            .into_iter()
+            .map(|index| self.items[index].address.clone())
+            .collect();
+        for address in owed {
+            if let Some(index) = self.items.iter().position(|t| t.address == address) {
+                self.refresh_now(index);
+            }
+        }
+        let floor = Instant::now() + RETRY_FIRST;
+        for owed in self.pending.iter_mut().map(|p| &mut p.owed).chain(self.items.iter_mut().map(|t| &mut t.owed)) {
+            if owed.at.is_some_and(|at| at <= now) {
+                owed.at = Some(floor);
+            }
+        }
+    }
+
+    fn shutdown(mut self) {
+        self.forget(|_| true);
+        self.pending.clear();
+        lock(&self.registry).vanish(&self.host);
+        if self.watcher {
+            self.watcher = false;
+            if let Err(err) = self.connection.emit_signal(
+                None::<BusName<'_>>,
+                WATCHER_PATH,
+                WATCHER_INTERFACE,
+                "StatusNotifierHostUnregistered",
+                &(),
+            ) {
+                tracing::debug!("tray signal StatusNotifierHostUnregistered failed: {err}");
+            }
+            if let Err(err) = self.connection.release_name(WATCHER_NAME) {
+                tracing::debug!("could not release {WATCHER_NAME}: {err}");
+            }
+        }
+        if let Err(err) = self.connection.object_server().remove::<Watcher, _>(WATCHER_PATH) {
+            tracing::debug!("could not unserve the watcher: {err}");
+        }
+        if let Err(err) = self.connection.release_name(self.host.as_str()) {
+            tracing::debug!("could not release {}: {err}", self.host);
+        }
+        tracing::info!("the system tray stopped");
+        let Self { connection, signals, .. } = self;
+        if let Err(err) = connection.close() {
+            tracing::debug!("closing the tray connection failed: {err}");
+        }
+        if let Some(signals) = signals
+            && signals.join().is_err()
+        {
+            tracing::debug!("the tray signal listener panicked");
         }
     }
 
@@ -393,6 +586,7 @@ impl Worker {
                     (self.sink)(tracked.event());
                 }
             }
+            Request::Shutdown => {}
         }
     }
 
@@ -486,26 +680,38 @@ impl Worker {
             return;
         }
         let now = Instant::now();
-        let (owner, mut stall) = match self.pending.iter().position(|p| p.address == address) {
+        let (owner, mut stall, mut owed) = match self.pending.iter().position(|p| p.address == address) {
             Some(index) if self.pending[index].stall.active(now) => return,
             Some(index) => {
                 let waiting = self.pending.remove(index);
-                (waiting.owner, waiting.stall)
+                (waiting.owner, waiting.stall, waiting.owed)
             }
-            None => (self.owner_of(&address.bus, sender), Stall::default()),
+            None => (self.owner_of(&address.bus, sender), Stall::default(), Owed::default()),
         };
         match self.fetch(&address) {
             Ok(props) => {
                 tracing::info!(key = %address.key(), id = %props.id, "tray item registered");
-                let tracked = Tracked { address, owner, props, stall: Stall::default() };
+                let tracked = Tracked { address, owner, props, stall: Stall::default(), owed: Owed::default() };
                 (self.sink)(tracked.event());
                 self.items.push(tracked);
             }
+            Err(err) if gone(&err) => {
+                tracing::debug!(key = %address.key(), "tray item registered a bus name nobody owns: {err}");
+                self.unlist(&address);
+            }
             Err(err) => {
                 tracing::debug!(key = %address.key(), "tray item has no readable properties yet: {err}");
-                stall.record(&err, Instant::now());
-                remember(&mut self.pending, Pending { address, owner, stall });
+                let now = Instant::now();
+                stall.record(&err, now);
+                owed.fail(&stall, now);
+                remember(&mut self.pending, Pending { address, owner, stall, owed });
             }
+        }
+    }
+
+    fn unlist(&mut self, address: &Address) {
+        if self.watcher && lock(&self.registry).remove_item(address) {
+            self.emit("StatusNotifierItemUnregistered", &address.key());
         }
     }
 
@@ -541,21 +747,37 @@ impl Worker {
     }
 
     fn refresh(&mut self, index: usize) {
-        if self.items[index].stall.active(Instant::now()) {
+        let tracked = &mut self.items[index];
+        if tracked.stall.active(Instant::now()) {
+            if let Some(until) = tracked.stall.until {
+                tracked.owed.defer(until);
+            }
             return;
         }
+        self.refresh_now(index);
+    }
+
+    fn refresh_now(&mut self, index: usize) {
         let fetched = self.fetch(&self.items[index].address);
         let tracked = &mut self.items[index];
         match fetched {
             Ok(props) => {
                 tracked.stall.clear();
+                tracked.owed.clear();
                 if props != tracked.props {
                     tracked.props = props;
                     (self.sink)(tracked.event());
                 }
             }
+            Err(err) if gone(&err) => {
+                let address = tracked.address.clone();
+                tracing::debug!(key = %address.key(), "tray item lost its owner: {err}");
+                self.forget(|tracked| tracked.address == address);
+            }
             Err(err) => {
-                tracked.stall.record(&err, Instant::now());
+                let now = Instant::now();
+                tracked.stall.record(&err, now);
+                tracked.owed.fail(&tracked.stall, now);
                 let key = tracked.address.key();
                 tracing::debug!(%key, "tray item refresh failed: {err}");
             }
@@ -578,25 +800,38 @@ impl Worker {
                 "GetAll",
                 &(ITEM_INTERFACE,),
             )
-            .and_then(|reply| reply.body().deserialize::<HashMap<String, OwnedValue>>());
-        match all {
-            Ok(map) => Ok(parse_props(&map)),
-            Err(err) if !get_all_unsupported(&err) => Err(err),
-            Err(err) => {
-                let map = self.fetch_each(address);
-                if map.is_empty() { Err(err) } else { Ok(parse_props(&map)) }
+            .and_then(|reply| read_all(&reply.body(), MAX_ALL_REPLY));
+        let fallback = match all {
+            Ok(Ok(wire)) => return Ok(wire.into_props()),
+            Ok(Err(size)) => {
+                tracing::debug!(key = %address.key(), size, "tray item sent an oversized property reply");
+                zbus::Error::Failure(format!("the property reply is {size} bytes"))
             }
-        }
+            Err(err) if get_all_unsupported(&err) => err,
+            Err(err) => return Err(err),
+        };
+        let wire = self.fetch_each(address);
+        if wire.is_empty() { Err(fallback) } else { Ok(wire.into_props()) }
     }
 
-    fn fetch_each(&self, address: &Address) -> HashMap<String, OwnedValue> {
-        PROPERTY_NAMES
-            .into_iter()
-            .filter_map(|name| {
-                let value = self.get(&address.bus, &address.path, ITEM_INTERFACE, name).ok()?;
-                Some((name.to_string(), value))
-            })
-            .collect()
+    fn fetch_each(&self, address: &Address) -> Wire {
+        let mut wire = Wire::default();
+        for name in PROPERTY_NAMES {
+            let reply = self.connection.call_method(
+                Some(address.bus.as_str()),
+                address.path.as_str(),
+                Some(PROPERTIES_INTERFACE),
+                "Get",
+                &(ITEM_INTERFACE, name),
+            );
+            let Ok(reply) = reply else {
+                continue;
+            };
+            if let Err(size) = read_property(&mut wire, name, &reply.body(), MAX_PROPERTY_REPLY) {
+                tracing::debug!(key = %address.key(), name, size, "tray item sent an oversized property");
+            }
+        }
+        wire
     }
 
     fn call(&self, key: &str, method: Method) {
@@ -629,6 +864,39 @@ impl Worker {
             tracing::debug!(key, ?method, "tray call failed: {err}");
         }
     }
+}
+
+fn read_all(body: &zbus::message::Body, cap: usize) -> zbus::Result<Result<Wire, usize>> {
+    let size = body.data().len();
+    if size > cap {
+        return Ok(Err(size));
+    }
+    body.deserialize::<Wire>().map(Ok)
+}
+
+fn read_property(wire: &mut Wire, name: &str, body: &zbus::message::Body, cap: usize) -> Result<(), usize> {
+    let size = body.data().len();
+    if size > cap {
+        return Err(size);
+    }
+    match name {
+        ICON_PIXMAP => wire.icon = typed_variant::<WirePixmaps>(body).unwrap_or_default(),
+        ATTENTION_PIXMAP => wire.attention = typed_variant::<WirePixmaps>(body).unwrap_or_default(),
+        TOOLTIP => wire.tooltip = typed_variant::<ToolTip>(body),
+        _ => {
+            if let Ok(value) = body.deserialize::<OwnedValue>() {
+                wire.light.insert(name.to_string(), value);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn typed_variant<T>(body: &zbus::message::Body) -> Option<T>
+where
+    T: Type + serde::de::DeserializeOwned,
+{
+    body.deserialize::<as_value::Deserialize<'_, T>>().ok().map(|variant| variant.0)
 }
 
 fn get_all_unsupported(err: &zbus::Error) -> bool {
@@ -713,12 +981,125 @@ mod tests {
         assert_eq!(stall.backoff, Some(Duration::from_secs(5)));
     }
 
+    fn message_with<B: serde::Serialize + zbus::zvariant::DynamicType>(body: &B) -> zbus::Message {
+        zbus::Message::signal("/item", "org.example.Item", "Props").expect("names").build(body).expect("builds")
+    }
+
+    #[test]
+    fn a_get_all_reply_over_its_cap_is_not_decoded_and_reports_its_size() {
+        let dict: std::collections::HashMap<String, zbus::zvariant::Value<'_>> =
+            [("Id".to_string(), zbus::zvariant::Value::from("app"))].into();
+        let message = message_with(&dict);
+        let body = message.body();
+        let size = body.data().len();
+        assert!(matches!(read_all(&body, size - 1), Ok(Err(reported)) if reported == size));
+        let Ok(Ok(wire)) = read_all(&body, size) else {
+            panic!("a reply exactly at the cap is decoded");
+        };
+        assert!(wire.light.contains_key("Id"));
+    }
+
+    #[test]
+    fn an_oversized_single_property_is_skipped_and_the_others_are_kept() {
+        let pixmaps = zbus::zvariant::Value::from(vec![(1i32, 1i32, vec![0u8; 4])]);
+        let message = message_with(&pixmaps);
+        let body = message.body();
+        let size = body.data().len();
+        let mut wire = Wire::default();
+        assert_eq!(read_property(&mut wire, ICON_PIXMAP, &body, size - 1), Err(size));
+        assert!(wire.icon.is_empty(), "an oversized pixmap is never decoded");
+        assert_eq!(read_property(&mut wire, ICON_PIXMAP, &body, size), Ok(()));
+        assert_eq!(wire.icon, vec![(1, 1, vec![0; 4])]);
+        let title = message_with(&zbus::zvariant::Value::from("Title text"));
+        let title_body = title.body();
+        assert_eq!(read_property(&mut wire, "Title", &title_body, size), Ok(()));
+        assert!(wire.light.contains_key("Title"), "text properties stay loose values");
+    }
+
+    #[test]
+    fn only_a_missing_owner_means_the_item_is_gone() {
+        assert!(gone(&zbus::Error::from(zbus::fdo::Error::ServiceUnknown("x".into()))));
+        assert!(gone(&zbus::Error::from(zbus::fdo::Error::NameHasNoOwner("x".into()))));
+        assert!(!gone(&zbus::Error::from(zbus::fdo::Error::UnknownObject("not exported yet".into()))));
+        assert!(!gone(&zbus::Error::from(zbus::fdo::Error::UnknownMethod("GetAll".into()))));
+        assert!(!gone(&zbus::Error::from(zbus::fdo::Error::NoReply("hung".into()))));
+        assert!(!gone(&zbus::Error::from(std::io::Error::from(std::io::ErrorKind::TimedOut))));
+    }
+
+    #[test]
+    fn soft_retries_start_at_one_second_double_and_cap_at_two_minutes() {
+        assert_eq!(soft_delay(0), Duration::from_secs(1));
+        assert_eq!(soft_delay(1), Duration::from_secs(2));
+        assert_eq!(soft_delay(6), Duration::from_secs(64));
+        assert_eq!(soft_delay(7), Duration::from_mins(2));
+        assert_eq!(soft_delay(40), Duration::from_mins(2));
+        assert_eq!(soft_delay(u32::MAX), Duration::from_mins(2));
+    }
+
+    #[test]
+    fn a_failed_retry_is_never_due_again_right_away() {
+        let now = Instant::now();
+        let mut owed = Owed::default();
+        let mut stall = Stall::default();
+        for _ in 0..MAX_RETRIES {
+            owed.fail(&stall, now);
+            let at = owed.at.expect("still retrying");
+            assert!(at > now, "a failure always pushes the next attempt into the future");
+            assert_eq!(plan(now, [owed.at]), Plan { due: Vec::new(), next: Some(at) });
+        }
+        stall.record(&zbus::Error::from(zbus::fdo::Error::NoReply("hung".into())), now);
+        let mut hung = Owed::default();
+        hung.fail(&stall, now);
+        assert_eq!(hung.at, stall.until, "a hung item waits out its stall");
+        owed.fail(&Stall::default(), now);
+        assert_eq!(owed.at, None, "after the last retry only a signal wakes the item again");
+        assert_eq!(plan(now, [owed.at]), Plan::default());
+    }
+
+    #[test]
+    fn soft_failures_after_an_expired_stall_do_not_retry_in_the_past() {
+        let now = Instant::now();
+        let mut stall = Stall::default();
+        stall.record(&zbus::Error::from(zbus::fdo::Error::NoReply("hung".into())), now);
+        let later = now + Duration::from_mins(1);
+        let mut owed = Owed::default();
+        owed.fail(&stall, later);
+        assert_eq!(owed.at, Some(later + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn a_skipped_refresh_is_owed_when_the_stall_ends_and_keeps_an_earlier_promise() {
+        let now = Instant::now();
+        let mut owed = Owed::default();
+        owed.defer(now + Duration::from_secs(5));
+        assert_eq!(owed.at, Some(now + Duration::from_secs(5)));
+        owed.defer(now + Duration::from_secs(9));
+        assert_eq!(owed.at, Some(now + Duration::from_secs(5)));
+        owed.clear();
+        assert_eq!(owed, Owed::default());
+    }
+
+    #[test]
+    fn the_plan_lists_what_is_due_and_wakes_for_the_nearest_future_deadline() {
+        let origin = Instant::now();
+        let now = origin + Duration::from_secs(10);
+        let at = |secs: u64| Some(origin + Duration::from_secs(secs));
+        assert_eq!(plan(now, std::iter::empty()), Plan::default());
+        assert_eq!(plan(now, [None, None]), Plan::default());
+        let mixed = plan(now, [at(40), Some(now), None, at(14), at(8)]);
+        assert_eq!(mixed.due, vec![1, 4]);
+        assert_eq!(mixed.next, at(14));
+        let all_past = plan(now, [Some(now), at(9)]);
+        assert_eq!(all_past, Plan { due: vec![0, 1], next: None });
+    }
+
     #[test]
     fn pending_registrations_are_deduplicated_and_capped() {
         let entry = |n: usize| Pending {
             address: Address::parse(&format!("org.kde.StatusNotifierItem-{n}-1"), None).expect("valid address"),
             owner: format!(":1.{n}"),
             stall: Stall::default(),
+            owed: Owed::default(),
         };
         let mut pending = Vec::new();
         remember(&mut pending, entry(1));
