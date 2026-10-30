@@ -705,6 +705,14 @@ impl From<pb::GetFeaturesResponse> for Features {
     }
 }
 
+#[must_use]
+pub fn web_uri(uri: &str) -> Option<&str> {
+    let uri = uri.trim();
+    let scheme = uri.split_once("://").map(|(scheme, _)| scheme.to_ascii_lowercase());
+    let web = matches!(scheme.as_deref(), Some("https" | "http"));
+    (web && !uri.chars().any(char::is_control)).then_some(uri)
+}
+
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct LoginStart {
     pub needs_sso: bool,
@@ -869,6 +877,20 @@ impl From<pb::ForwardingRule> for ForwardingRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_web_addresses_from_the_management_server_reach_the_browser() {
+        assert_eq!(
+            web_uri(" https://login.example.com/device?code=AB "),
+            Some("https://login.example.com/device?code=AB")
+        );
+        assert_eq!(web_uri("HTTP://idp.local/"), Some("HTTP://idp.local/"));
+        assert_eq!(web_uri("--renderer-cmd-prefix=sh"), None);
+        assert_eq!(web_uri("file:///etc/passwd"), None);
+        assert_eq!(web_uri("evil-handler://run"), None);
+        assert_eq!(web_uri("https://a\nb"), None);
+        assert_eq!(web_uri(""), None);
+    }
 
     #[test]
     fn daemon_status_strings_map_to_states_and_unknown_ones_read_as_idle() {

@@ -12,6 +12,10 @@ pub use glide_topbar::netbird::{
 };
 
 pub fn open_url(uri: &str) {
+    let Some(uri) = nb::web_uri(uri) else {
+        tracing::warn!("refusing to open a NetBird sign-in address that is not a web address");
+        return;
+    };
     let mut command = match std::env::var("BROWSER").ok().filter(|browser| !browser.trim().is_empty()) {
         Some(browser) => Command::new(browser),
         None => Command::new("xdg-open"),

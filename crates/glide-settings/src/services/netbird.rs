@@ -98,8 +98,10 @@ pub fn down() -> Result<(), Failure> {
 pub fn sign_in() -> Result<(), Failure> {
     let daemon = daemon()?;
     let start = daemon.login()?;
-    if start.needs_sso {
-        open_uri(&start.uri);
+    if start.needs_sso
+        && let Some(uri) = nb::web_uri(&start.uri)
+    {
+        open_uri(uri);
     }
     Ok(daemon.finish_login(&start)?)
 }
@@ -107,8 +109,8 @@ pub fn sign_in() -> Result<(), Failure> {
 pub fn extend() -> Result<(), Failure> {
     let daemon = daemon()?;
     let start = daemon.request_extend()?;
-    if !start.uri.is_empty() {
-        open_uri(&start.uri);
+    if let Some(uri) = nb::web_uri(&start.uri) {
+        open_uri(uri);
     }
     daemon.wait_extend(&start)?;
     Ok(())

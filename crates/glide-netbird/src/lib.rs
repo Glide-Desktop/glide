@@ -17,7 +17,7 @@ pub use model::{
     ActiveProfile, Anonymize, BundleOptions, BundleResult, Category, Config, ConfigPatch, DnsGroup, Event, ExitNode,
     ExtendStart, Extended, Features, ForwardingRule, Ice, Link, LocalPeer, LogLevel, LoginStart, Network, Peer,
     PeerStatus, Ports, Profile, Relay, Severity, SshServer, SshSession, State, Status, UpdateResult, exit_nodes,
-    is_default_route, resources,
+    is_default_route, resources, web_uri,
 };
 pub use time::{Remaining, parse_rfc3339, refresh_interval, remaining, remaining_until};
 pub use tonic::Code;
