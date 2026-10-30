@@ -441,8 +441,14 @@ pub fn parse_wpctl_volume(text: &str) -> Option<(u8, bool)> {
         .split_whitespace()
         .next()
         .and_then(|v| v.parse::<f32>().ok())
-        .map_or(50, |val| (val * 100.0).round().clamp(0.0, 100.0) as u8);
+        .map_or(50, |val| (val * 100.0).round().clamp(0.0, f32::from(u8::MAX)) as u8);
     Some((pct, level.contains("[MUTED]")))
+}
+
+#[must_use]
+pub fn parse_pactl_volume(text: &str) -> Option<u8> {
+    let percent = text.split('/').nth(1)?.trim().strip_suffix('%')?.trim().parse::<u32>().ok()?;
+    Some(u8::try_from(percent).unwrap_or(u8::MAX))
 }
 
 fn read_level(endpoint: AudioEndpoint) -> Option<(u8, bool)> {
@@ -453,12 +459,7 @@ fn read_level(endpoint: AudioEndpoint) -> Option<(u8, bool)> {
     }
 
     if let Some(text) = poll_stdout("pactl", &[endpoint.pactl_volume, endpoint.pactl_target]) {
-        let pct = text
-            .split('/')
-            .nth(1)
-            .and_then(|p| p.trim().strip_suffix('%'))
-            .and_then(|p| p.trim().parse::<u8>().ok())
-            .unwrap_or(50);
+        let pct = parse_pactl_volume(&text).unwrap_or(50);
         let muted = poll_stdout("pactl", &[endpoint.pactl_mute, endpoint.pactl_target])
             .is_some_and(|out| parse_pactl_mute(&out));
         return Some((pct, muted));
@@ -537,14 +538,17 @@ pub fn read_keyboard_backlight(leds: &Path) -> Option<u8> {
     })
 }
 
-fn read_bluetooth() -> bool {
-    if fs::read_dir("/sys/class/bluetooth").map_or(true, |mut adapters| adapters.next().is_none()) {
-        return false;
-    }
-    if poll_stdout("bluetoothctl", &["show"]).is_some_and(|text| text.contains("Powered: yes")) {
-        return true;
-    }
+#[must_use]
+pub fn parse_bluetooth_powered(text: &str) -> Option<bool> {
+    text.lines().find_map(|line| line.trim().strip_prefix("Powered:")).map(|value| value.trim() == "yes")
+}
 
+#[must_use]
+pub fn bluetooth_on(controller: Option<&str>, rfkill_unblocked: impl FnOnce() -> bool) -> bool {
+    controller.and_then(parse_bluetooth_powered).unwrap_or_else(rfkill_unblocked)
+}
+
+fn rfkill_bluetooth_unblocked() -> bool {
     let rfkill_path = Path::new("/sys/class/rfkill");
     let Ok(entries) = fs::read_dir(rfkill_path) else {
         return false;
@@ -565,6 +569,13 @@ fn read_bluetooth() -> bool {
     }
 
     found_bt
+}
+
+fn read_bluetooth() -> bool {
+    if fs::read_dir("/sys/class/bluetooth").map_or(true, |mut adapters| adapters.next().is_none()) {
+        return false;
+    }
+    bluetooth_on(poll_stdout("bluetoothctl", &["show"]).as_deref(), rfkill_bluetooth_unblocked)
 }
 
 pub const FAST_INTERVAL: Duration = Duration::from_secs(1);
@@ -1296,9 +1307,41 @@ mod tests {
     fn a_wpctl_level_needs_its_volume_line() {
         assert_eq!(parse_wpctl_volume("Volume: 0.65\n"), Some((65, false)));
         assert_eq!(parse_wpctl_volume("Volume: 0.40 [MUTED]\n"), Some((40, true)));
-        assert_eq!(parse_wpctl_volume("Volume: 1.30\n"), Some((100, false)));
+        assert_eq!(parse_wpctl_volume("Volume: 1.30\n"), Some((130, false)));
+        assert_eq!(parse_wpctl_volume("Volume: 1.50 [MUTED]\n"), Some((150, true)));
+        assert_eq!(parse_wpctl_volume("Volume: 9.00\n"), Some((255, false)), "capped at what a u8 holds");
         assert_eq!(parse_wpctl_volume("Node '99999' not found\n"), None, "wpctl exits 0 for a missing node");
         assert_eq!(parse_wpctl_volume(""), None);
+    }
+
+    #[test]
+    fn a_pactl_level_above_the_u8_range_saturates_instead_of_reporting_fifty() {
+        let line = |pct: u32| {
+            format!("Volume: front-left: 65536 / {pct}% / 0.00 dB,   front-right: 65536 / {pct}% / 0.00 dB\n")
+        };
+        assert_eq!(parse_pactl_volume(&line(65)), Some(65));
+        assert_eq!(parse_pactl_volume(&line(130)), Some(130));
+        assert_eq!(parse_pactl_volume(&line(255)), Some(255));
+        assert_eq!(parse_pactl_volume(&line(300)), Some(255));
+        assert_eq!(parse_pactl_volume("Volume: mono: 0 / 0% / -inf dB\n"), Some(0));
+        assert_eq!(parse_pactl_volume("Volume: unreadable\n"), None);
+        assert_eq!(parse_pactl_volume(""), None);
+    }
+
+    #[test]
+    fn bluez_decides_when_it_answers_and_rfkill_only_when_it_does_not() {
+        let off = "Controller AA:BB:CC:DD:EE:FF (public)\n\tName: laptop\n\tPowered: no\n\tPowerState: off\n";
+        let on = "Controller AA:BB:CC:DD:EE:FF (public)\n\tName: laptop\n\tPowered: yes\n\tPowerState: on\n";
+        assert!(!bluetooth_on(Some(off), || true), "an explicit Powered: no is not overridden by an unblocked switch");
+        assert!(bluetooth_on(Some(on), || false), "BlueZ saying yes wins over a stale rfkill scan");
+        assert!(bluetooth_on(None, || true), "bluetoothctl gave no answer: the rfkill state decides");
+        assert!(!bluetooth_on(None, || false));
+        assert!(bluetooth_on(Some("No default controller available\n"), || true));
+        assert!(!bluetooth_on(Some("PowerState: on\n"), || false), "PowerState is not the Powered line");
+        assert!(!bluetooth_on(Some(off), || panic!("rfkill must not be read when BlueZ answered")));
+        assert_eq!(parse_bluetooth_powered(on), Some(true));
+        assert_eq!(parse_bluetooth_powered(off), Some(false));
+        assert_eq!(parse_bluetooth_powered(""), None);
     }
 
     #[test]
