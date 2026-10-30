@@ -987,4 +987,128 @@ mod tests {
             assert_eq!(geometry(&layout, w), rect(560, 40, 800, 648), "fullscreen {fullscreen}");
         }
     }
+
+    fn stacked_outputs() -> (OutputInfo, OutputInfo) {
+        (output(OutputId::next(), rect(0, 0, 1920, 1080)), output(OutputId::next(), rect(0, -1080, 1920, 1080)))
+    }
+
+    #[test]
+    fn unplugging_the_output_a_titlebar_was_on_pulls_a_window_that_still_overlaps_another_into_reach() {
+        let (lower, upper) = stacked_outputs();
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[lower.clone(), upper]);
+        let w = WindowId::next();
+        layout.add_window(w, SIZE);
+        layout.set_window_insets(w, titlebar_insets());
+        layout.set_window_geometry(w, rect(100, -900, 800, 1000));
+        layout.outputs_changed(std::slice::from_ref(&lower));
+        assert_eq!(geometry(&layout, w), rect(100, 0, 800, 1000), "the titlebar must not stay above the screen");
+    }
+
+    #[test]
+    fn unplugging_an_output_also_pulls_the_saved_frame_of_a_maximized_window_into_reach() {
+        let (lower, upper) = stacked_outputs();
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[lower.clone(), upper]);
+        let w = WindowId::next();
+        layout.add_window(w, SIZE);
+        layout.set_window_geometry(w, rect(100, -900, 800, 1000));
+        assert!(layout.set_maximized(w, true));
+        assert_eq!(state(&layout, w).saved_geometry, Some(rect(100, -900, 800, 1000)));
+        layout.outputs_changed(std::slice::from_ref(&lower));
+        assert_eq!(state(&layout, w).saved_geometry, Some(rect(100, 0, 800, 1000)));
+        assert_eq!(geometry(&layout, w), lower.work_area, "the maximized frame itself follows the remaining output");
+    }
+
+    #[test]
+    fn a_window_hanging_off_the_bottom_with_its_titlebar_in_reach_is_left_alone_when_another_output_goes() {
+        let (lower, upper) = stacked_outputs();
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[lower.clone(), upper]);
+        let w = WindowId::next();
+        layout.add_window(w, SIZE);
+        layout.set_window_insets(w, titlebar_insets());
+        layout.set_window_geometry(w, rect(100, 900, 800, 600));
+        layout.outputs_changed(std::slice::from_ref(&lower));
+        assert_eq!(geometry(&layout, w), rect(100, 900, 800, 600));
+    }
+
+    #[test]
+    fn a_window_that_overlaps_no_remaining_output_is_still_centred_on_the_primary_one() {
+        let (lower, upper) = stacked_outputs();
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[lower, upper.clone()]);
+        let w = WindowId::next();
+        layout.add_window(w, SIZE);
+        layout.set_window_geometry(w, rect(100, 300, 800, 600));
+        layout.outputs_changed(&[upper]);
+        assert_eq!(geometry(&layout, w), rect(560, -840, 800, 600));
+    }
+
+    #[test]
+    fn windows_follow_their_output_when_its_origin_moves() {
+        let [a, b] = two_outputs();
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[a.clone(), b.clone()]);
+        let floating = WindowId::next();
+        layout.add_window(floating, SIZE);
+        layout.set_window_geometry(floating, rect(2000, 100, 800, 600));
+        let maximized = WindowId::next();
+        layout.add_window(maximized, SIZE);
+        layout.set_window_geometry(maximized, rect(2200, 200, 800, 600));
+        assert!(layout.set_maximized(maximized, true));
+        let staying = WindowId::next();
+        layout.add_window(staying, SIZE);
+        layout.set_window_geometry(staying, rect(300, 300, 800, 600));
+
+        let wider = OutputInfo { geometry: rect(0, 0, 3840, 1080), work_area: rect(0, 0, 3840, 1080), ..a };
+        let moved = OutputInfo { geometry: rect(3840, 0, 2560, 1440), work_area: rect(3840, 0, 2560, 1440), ..b };
+        layout.outputs_changed(&[wider, moved.clone()]);
+
+        assert_eq!(geometry(&layout, floating), rect(3920, 100, 800, 600));
+        assert_eq!(geometry(&layout, maximized), moved.work_area, "a maximized window stays on its own output");
+        assert_eq!(state(&layout, maximized).saved_geometry, Some(rect(4120, 200, 800, 600)));
+        assert_eq!(geometry(&layout, staying), rect(300, 300, 800, 600));
+    }
+
+    #[test]
+    fn a_new_output_mapped_on_top_of_another_does_not_drag_that_outputs_windows_along() {
+        let first = output(OutputId::next(), rect(0, 0, 1920, 1080));
+        let newcomer = output(OutputId::next(), rect(0, 0, 1920, 1080));
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[first.clone(), newcomer.clone()]);
+        let w = WindowId::next();
+        layout.add_window(w, SIZE);
+        layout.set_window_geometry(w, rect(300, 300, 800, 600));
+        let placed =
+            OutputInfo { geometry: rect(1920, 0, 1920, 1080), work_area: rect(1920, 0, 1920, 1080), ..newcomer };
+        layout.outputs_changed(&[first, placed]);
+        assert_eq!(geometry(&layout, w), rect(300, 300, 800, 600));
+    }
+
+    #[test]
+    fn a_decoration_height_change_keeps_a_tiled_frame_and_only_resizes_its_content() {
+        for tile in [rect(0, 40, 960, 1040), rect(960, 40, 960, 1040)] {
+            let mut layout = with_panel();
+            let w = WindowId::next();
+            layout.add_window(w, SIZE);
+            layout.set_window_insets(w, Insets { top: 48, ..Insets::NONE });
+            layout.set_window_geometry(w, tile);
+            for top in [38, 48, 38] {
+                layout.set_window_insets(w, Insets { top, ..Insets::NONE });
+                assert_eq!(geometry(&layout, w), tile, "top inset {top}");
+                assert_eq!(state(&layout, w).content_geometry().size.height, 1040 - top);
+            }
+        }
+    }
+
+    #[test]
+    fn a_frame_filling_the_whole_work_area_is_not_a_tile_and_still_grows_with_its_titlebar() {
+        let mut layout = with_panel();
+        let w = WindowId::next();
+        layout.add_window(w, SIZE);
+        layout.set_window_geometry(w, rect(0, 40, 1920, 1040));
+        layout.set_window_insets(w, Insets { top: 48, ..Insets::NONE });
+        assert_eq!(geometry(&layout, w), rect(0, 40, 1920, 1088));
+    }
 }
