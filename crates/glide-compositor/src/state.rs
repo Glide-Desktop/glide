@@ -3626,7 +3626,9 @@ impl GlideState {
             }
             GreetdReply::Error { auth, message } => {
                 tracing::warn!(auth, %message, "greetd error");
-                if auth {
+                if auth && !greeter.take_answered() {
+                    greeter.refused_before_answer(message);
+                } else if auth {
                     greeter.set_auth_denied(None, crate::i18n::t(crate::i18n::Key::GreeterWrongPassword));
                     let user = greeter.active_user().map(|u| u.username.clone());
                     if let Some(user) = user {
@@ -3644,8 +3646,12 @@ impl GlideState {
         self.queue_redraw();
     }
 
+    fn lock_engaged(&self) -> bool {
+        self.session_lock.is_some() || self.greeter.as_ref().is_some_and(|greeter| !greeter.unlocking())
+    }
+
     pub fn lock_screen_gently(&mut self) {
-        if self.screen_locked() {
+        if self.lock_engaged() {
             return;
         }
         self.lock_screen();
@@ -3655,7 +3661,7 @@ impl GlideState {
     }
 
     pub fn lock_screen(&mut self) {
-        if self.screen_locked() {
+        if self.lock_engaged() {
             return;
         }
         tracing::info!("locking the screen");

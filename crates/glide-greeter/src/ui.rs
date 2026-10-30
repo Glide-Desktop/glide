@@ -512,6 +512,7 @@ pub struct GreeterUi {
     prompt: Option<Prompt>,
     queued: Option<String>,
     needs_session: bool,
+    answered: bool,
     message: Option<(String, Tone)>,
     error_at: Option<Instant>,
     error_held: bool,
@@ -633,6 +634,7 @@ impl GreeterUi {
             prompt: None,
             queued: None,
             needs_session: false,
+            answered: false,
             message: None,
             error_at: None,
             error_held: false,
@@ -984,6 +986,7 @@ impl GreeterUi {
         self.spinner_epoch = Instant::now();
         self.dirty = true;
         if self.prompt.take().is_some() {
+            self.answered = true;
             return Submit::Send(password);
         }
         self.queued = Some(password);
@@ -993,6 +996,15 @@ impl GreeterUi {
             return Submit::CreateSession(user.username.clone());
         }
         Submit::Queued
+    }
+
+    pub fn take_answered(&mut self) -> bool {
+        std::mem::take(&mut self.answered)
+    }
+
+    pub fn refused_before_answer(&mut self, message: String) {
+        let notice = self.message.take().map(|(text, _)| text).filter(|text| !text.trim().is_empty());
+        self.set_auth_error(notice.unwrap_or(message), true);
     }
 
     pub fn take_queued(&mut self) -> Option<String> {
@@ -1005,6 +1017,7 @@ impl GreeterUi {
             self.dirty = true;
         }
         if let Some(password) = self.queued.take() {
+            self.answered = true;
             return Some(password);
         }
         if self.auth == AuthState::Authenticating {
@@ -1086,6 +1099,11 @@ impl GreeterUi {
             self.close_menus();
             self.dirty = true;
         }
+    }
+
+    #[must_use]
+    pub const fn unlocking(&self) -> bool {
+        self.is_lock() && self.leaving.is_some()
     }
 
     #[must_use]
@@ -2123,6 +2141,33 @@ mod tests {
 
     fn centre(rect: Rect) -> Point<f64, Logical> {
         Point::from((f64::from(rect.x) + f64::from(rect.w) / 2.0, f64::from(rect.y) + f64::from(rect.h) / 2.0))
+    }
+
+    #[test]
+    fn a_refusal_before_any_answer_waits_for_the_user_and_costs_no_attempt() {
+        let mut ui = ui();
+        ui.on_notice("System is going down".into(), true);
+        assert!(!ui.take_answered());
+        ui.refused_before_answer("authentication error".into());
+        assert_eq!(ui.auth, AuthState::Error);
+        assert_eq!(ui.failures, 0, "nobody typed a wrong password");
+        assert_eq!(ui.message.as_ref().map(|(text, _)| text.as_str()), Some("System is going down"));
+        assert!(ui.type_char('x'));
+        assert_eq!(ui.submit(), Submit::CreateSession("artem".into()), "the session is created again on submit");
+        assert_eq!(ui.on_question(true, "Password:".into()).as_deref(), Some("x"));
+        assert!(ui.take_answered());
+        assert!(!ui.take_answered());
+    }
+
+    #[test]
+    fn only_a_lock_screen_that_is_fading_out_counts_as_unlocking() {
+        let mut lock = GreeterUi::lock(users().remove(0), Accent::Blue);
+        assert!(!lock.unlocking());
+        lock.leave();
+        assert!(lock.unlocking(), "a new lock request must replace a lock screen that is already letting go");
+        let mut greeter = ui();
+        greeter.leave();
+        assert!(!greeter.unlocking(), "the login greeter leaving is a session start, not an unlock");
     }
 
     #[test]
