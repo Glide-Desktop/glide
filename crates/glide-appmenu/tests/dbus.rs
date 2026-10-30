@@ -79,14 +79,18 @@ fn node(id: i32, props: HashMap<String, OwnedValue>, children: Vec<OwnedValue>) 
     )
 }
 
+fn file_menu_layout() -> (u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>)) {
+    let open = node(7, entry(&[("label", owned("_Open"))]), Vec::new());
+    let file = node(3, entry(&[("label", owned("_File")), ("children-display", owned("submenu"))]), vec![open]);
+    (1, (0, HashMap::new(), vec![file]))
+}
+
 #[zbus::interface(name = "com.canonical.dbusmenu")]
 impl FakeDbusMenu {
     fn get_layout(
         &self, _parent: i32, _depth: i32, _props: Vec<String>,
     ) -> (u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>)) {
-        let open = node(7, entry(&[("label", owned("_Open"))]), Vec::new());
-        let file = node(3, entry(&[("label", owned("_File")), ("children-display", owned("submenu"))]), vec![open]);
-        (1, (0, HashMap::new(), vec![file]))
+        file_menu_layout()
     }
 
     fn about_to_show(&self, id: i32) -> bool {
@@ -96,6 +100,28 @@ impl FakeDbusMenu {
 
     fn event(&self, id: i32, event: String, _data: OwnedValue, _timestamp: u32) {
         self.log.lock().expect("log").push(format!("{id}:{event}"));
+    }
+}
+
+struct HungDbusMenu {
+    log: Log,
+}
+
+#[zbus::interface(name = "com.canonical.dbusmenu")]
+impl HungDbusMenu {
+    fn get_layout(
+        &self, _parent: i32, _depth: i32, _props: Vec<String>,
+    ) -> (u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>)) {
+        file_menu_layout()
+    }
+
+    fn about_to_show(&self, _id: i32) -> bool {
+        false
+    }
+
+    async fn event(&self, id: i32, event: String, _data: OwnedValue, _timestamp: u32) {
+        self.log.lock().expect("log").push(format!("{id}:{event}"));
+        std::future::pending::<()>().await;
     }
 }
 
@@ -240,4 +266,48 @@ fn a_menu_whose_client_leaves_the_bus_is_gone() {
             _ => {}
         }
     }
+}
+
+fn menu_of(rx: &mpsc::Receiver<AppMenuEvent>, wanted: &Source) -> Vec<MenuItem> {
+    loop {
+        match rx.recv_timeout(Duration::from_secs(5)).expect("a menu arrives") {
+            AppMenuEvent::Menu { source, items } if source == *wanted => return items,
+            AppMenuEvent::Gone { source } if source == *wanted => panic!("{source:?} was reported gone"),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn a_click_on_a_client_that_never_answers_does_not_hold_up_the_next_menu() {
+    let Some(hung_server) = session() else { return };
+    let Some(healthy_server) = session() else { return };
+    let log = Log::default();
+    hung_server.object_server().at("/test/dbusmenu", HungDbusMenu { log: log.clone() }).expect("hung dbusmenu");
+    healthy_server.object_server().at("/test/dbusmenu", FakeDbusMenu { log: Log::default() }).expect("dbusmenu");
+    let hung = Source::DbusMenu {
+        bus: hung_server.unique_name().expect("unique name").to_string(),
+        path: "/test/dbusmenu".into(),
+    };
+    let healthy = Source::DbusMenu {
+        bus: healthy_server.unique_name().expect("unique name").to_string(),
+        path: "/test/dbusmenu".into(),
+    };
+
+    let Some((handle, rx)) = client() else { return };
+    handle.watch(hung.clone());
+    menu_of(&rx, &hung);
+
+    handle.opened(hung.clone(), Activation::DbusMenu(3));
+    handle.activate(hung, Activation::DbusMenu(7));
+    let started = Instant::now();
+    handle.watch(healthy.clone());
+    menu_of(&rx, &healthy);
+    assert!(
+        started.elapsed() < glide_appmenu::METHOD_TIMEOUT / 2,
+        "the worker waited {:?} on replies nobody needs",
+        started.elapsed()
+    );
+    wait_for(&log, "3:opened");
+    wait_for(&log, "7:clicked");
 }

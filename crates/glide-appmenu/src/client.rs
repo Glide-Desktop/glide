@@ -70,7 +70,8 @@ const SIGNAL_RULES: [&str; 5] = [
 
 const DBUS_INTERFACE: &str = "org.freedesktop.DBus";
 
-const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
+pub const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
+pub const MENU_WAIT: Duration = Duration::from_secs(10);
 const COALESCE: Duration = Duration::from_millis(40);
 const MAX_BATCH: Duration = Duration::from_millis(150);
 
@@ -303,8 +304,11 @@ impl Worker {
         if groups.is_empty() {
             return;
         }
-        if let Ok(proxy) = self.proxy(bus, menubar, GTK_MENUS_INTERFACE) {
-            let _: zbus::Result<()> = proxy.call("End", &(groups.to_vec(),));
+        let sent = self
+            .proxy(bus, menubar, GTK_MENUS_INTERFACE)
+            .and_then(|proxy| proxy.call_noreply("End", &(groups.to_vec(),)));
+        if let Err(err) = sent {
+            tracing::debug!("could not end the app menu subscription: {err}");
         }
     }
 
@@ -378,7 +382,9 @@ impl Worker {
         let Ok(proxy) = self.proxy(bus, path, DBUSMENU_INTERFACE) else {
             return false;
         };
-        let _: zbus::Result<()> = proxy.call("Event", &(id, "opened", Value::from(0i32), 0u32));
+        if let Err(err) = proxy.call_noreply("Event", &(id, "opened", Value::from(0i32), 0u32)) {
+            tracing::debug!("could not tell the menu it opened: {err}");
+        }
         proxy.call::<_, _, bool>("AboutToShow", &(id,)).unwrap_or(false)
     }
 
@@ -394,14 +400,14 @@ impl Worker {
                     Some(path) => self.proxy(bus, path, GTK_ACTIONS_INTERFACE).and_then(|proxy| {
                         let parameter: Vec<OwnedValue> = target.iter().cloned().collect();
                         let platform: HashMap<String, OwnedValue> = HashMap::new();
-                        proxy.call::<_, _, ()>("Activate", &(name, parameter, platform))
+                        proxy.call_noreply("Activate", &(name, parameter, platform))
                     }),
                     None => Ok(()),
                 }
             }
             (Source::DbusMenu { bus, path }, Activation::DbusMenu(id)) => self
                 .proxy(bus, path, DBUSMENU_INTERFACE)
-                .and_then(|proxy| proxy.call::<_, _, ()>("Event", &(*id, "clicked", Value::from(0i32), 0u32))),
+                .and_then(|proxy| proxy.call_noreply("Event", &(*id, "clicked", Value::from(0i32), 0u32))),
             _ => Ok(()),
         };
         if let Err(err) = result {
@@ -433,6 +439,11 @@ mod tests {
         assert!(pending.is_empty());
         drop(rx);
         let _ = feeder.join();
+    }
+
+    #[test]
+    fn a_menu_wait_outlasts_a_hung_tray_clicks_layout_and_about_to_show_plus_its_own_fetch() {
+        assert!(MENU_WAIT > METHOD_TIMEOUT * 3);
     }
 
     #[test]

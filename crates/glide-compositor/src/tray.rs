@@ -2,10 +2,10 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
-use glide_appmenu::{Activation, MenuItem, Source};
+use glide_appmenu::{Activation, MENU_WAIT, MenuItem, Source};
 use smithay::reexports::calloop::channel;
 
 use crate::{
@@ -16,7 +16,6 @@ use crate::{
     topbar::{IconArt, TRAY_ICON, TRAY_MAX_SCALE, TrayButton, TrayClick, TrayIcon},
 };
 
-const MENU_WAIT: Duration = Duration::from_secs(2);
 const THEME_DIR_DEPTH: usize = 5;
 const WHEEL_STEP: f64 = 120.0;
 const PIXELS_PER_STEP: f64 = 15.0;
