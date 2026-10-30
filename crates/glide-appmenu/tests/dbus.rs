@@ -5,11 +5,19 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, mpsc},
+    io::{BufRead, BufReader},
+    process::{Child, Command, Stdio},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
-use glide_appmenu::{Activation, AppMenuEvent, MenuItem, Source, Toggle};
+use glide_appmenu::{
+    Activation, AppMenuEvent, MenuItem, PARKED_MENU_LIMIT, REGISTRAR_NAME, REGISTRAR_PATH, Source, Toggle,
+};
 use zbus::zvariant::{OwnedValue, Signature, StructureBuilder, Value};
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -310,4 +318,264 @@ fn a_click_on_a_client_that_never_answers_does_not_hold_up_the_next_menu() {
     );
     wait_for(&log, "3:opened");
     wait_for(&log, "7:clicked");
+}
+
+struct PrivateBus {
+    child: Child,
+    address: String,
+}
+
+impl Drop for PrivateBus {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl PrivateBus {
+    fn connect(&self) -> zbus::blocking::Connection {
+        zbus::blocking::connection::Builder::address(self.address.as_str())
+            .expect("a private bus address")
+            .method_timeout(glide_appmenu::METHOD_TIMEOUT)
+            .build()
+            .expect("a client on the private bus")
+    }
+}
+
+fn private_bus() -> PrivateBus {
+    let mut child = Command::new("dbus-daemon")
+        .args(["--session", "--nofork", "--print-address=1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("dbus-daemon is installed");
+    let mut address = String::new();
+    BufReader::new(child.stdout.take().expect("piped stdout")).read_line(&mut address).expect("the bus address");
+    PrivateBus { child, address: address.trim().to_string() }
+}
+
+fn private_client(
+    bus: &PrivateBus, own_registrar: bool,
+) -> (glide_appmenu::AppMenuHandle, mpsc::Receiver<AppMenuEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let sink: glide_appmenu::Sink = Arc::new(move |event| {
+        let _ = tx.lock().expect("sink").send(event);
+    });
+    let handle = glide_appmenu::start_on(bus.connect(), sink, own_registrar).expect("the app menu client starts");
+    (handle, rx)
+}
+
+fn dbusmenu_source(server: &zbus::blocking::Connection, path: &str) -> Source {
+    Source::DbusMenu { bus: server.unique_name().expect("unique name").to_string(), path: path.into() }
+}
+
+fn gone_of(rx: &mpsc::Receiver<AppMenuEvent>, wanted: &Source) {
+    loop {
+        match rx.recv_timeout(Duration::from_secs(5)).expect("the menu is reported gone") {
+            AppMenuEvent::Gone { source } if source == *wanted => return,
+            AppMenuEvent::Menu { source, .. } if source == *wanted => panic!("{source:?} produced a menu"),
+            _ => {}
+        }
+    }
+}
+
+struct FlakyDbusMenu {
+    failures: AtomicUsize,
+    log: Log,
+}
+
+#[zbus::interface(name = "com.canonical.dbusmenu")]
+impl FlakyDbusMenu {
+    fn get_layout(
+        &self, _parent: i32, _depth: i32, _props: Vec<String>,
+    ) -> zbus::fdo::Result<(u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>))> {
+        if self.failures.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1)).is_ok() {
+            return Err(zbus::fdo::Error::Failed("the application is busy".into()));
+        }
+        Ok(file_menu_layout())
+    }
+
+    fn about_to_show(&self, id: i32) -> bool {
+        self.log.lock().expect("log").push(format!("{id}:about-to-show"));
+        false
+    }
+
+    fn event(&self, id: i32, event: String, _data: OwnedValue, _timestamp: u32) {
+        self.log.lock().expect("log").push(format!("{id}:{event}"));
+    }
+}
+
+#[test]
+fn a_menu_that_failed_to_load_is_fetched_again_when_it_is_watched_again() {
+    let bus = private_bus();
+    let server = bus.connect();
+    let log = Log::default();
+    server
+        .object_server()
+        .at("/test/dbusmenu", FlakyDbusMenu { failures: AtomicUsize::new(1), log: log.clone() })
+        .expect("dbusmenu");
+    let source = dbusmenu_source(&server, "/test/dbusmenu");
+    let (handle, rx) = private_client(&bus, false);
+
+    handle.watch(source.clone());
+    gone_of(&rx, &source);
+    handle.watch(source.clone());
+    let bar = menu_of(&rx, &source);
+
+    assert_eq!(bar[0].label, "File");
+    assert_eq!(about_to_show_calls(&log), 1, "the retry primes lazily filled menus like a first fetch does");
+}
+
+#[test]
+fn opening_a_menu_that_never_loaded_fetches_it_even_though_about_to_show_says_nothing_changed() {
+    let bus = private_bus();
+    let server = bus.connect();
+    let log = Log::default();
+    server
+        .object_server()
+        .at("/test/dbusmenu", FlakyDbusMenu { failures: AtomicUsize::new(1), log: log.clone() })
+        .expect("dbusmenu");
+    let source = dbusmenu_source(&server, "/test/dbusmenu");
+    let (handle, rx) = private_client(&bus, false);
+
+    handle.watch(source.clone());
+    gone_of(&rx, &source);
+    handle.opened(source.clone(), Activation::DbusMenu(3));
+
+    assert_eq!(menu_of(&rx, &source)[0].label, "File");
+    wait_for(&log, "3:opened");
+}
+
+#[test]
+fn an_unwatched_menu_is_forgotten_once_its_client_leaves_the_bus() {
+    let bus = private_bus();
+    let server = bus.connect();
+    server.object_server().at("/test/dbusmenu", FakeDbusMenu { log: Log::default() }).expect("dbusmenu");
+    let source = dbusmenu_source(&server, "/test/dbusmenu");
+    let (handle, rx) = private_client(&bus, false);
+
+    handle.watch(source.clone());
+    menu_of(&rx, &source);
+    handle.unwatch(source.clone());
+    server.close().expect("close");
+
+    gone_of(&rx, &source);
+}
+
+#[test]
+fn watching_an_unwatched_menu_again_refreshes_it() {
+    let bus = private_bus();
+    let server = bus.connect();
+    server.object_server().at("/test/dbusmenu", FakeDbusMenu { log: Log::default() }).expect("dbusmenu");
+    let source = dbusmenu_source(&server, "/test/dbusmenu");
+    let (handle, rx) = private_client(&bus, false);
+
+    handle.watch(source.clone());
+    menu_of(&rx, &source);
+    handle.unwatch(source.clone());
+    handle.watch(source.clone());
+
+    assert_eq!(menu_of(&rx, &source)[0].label, "File");
+}
+
+#[test]
+fn only_a_bounded_number_of_unwatched_menus_are_remembered() {
+    let bus = private_bus();
+    let server = bus.connect();
+    let total = PARKED_MENU_LIMIT + 2;
+    let sources: Vec<Source> = (0..total)
+        .map(|index| {
+            let path = format!("/test/menu/{index}");
+            server.object_server().at(path.as_str(), FakeDbusMenu { log: Log::default() }).expect("dbusmenu");
+            dbusmenu_source(&server, &path)
+        })
+        .collect();
+    let (handle, rx) = private_client(&bus, false);
+
+    for source in &sources {
+        handle.watch(source.clone());
+        menu_of(&rx, source);
+    }
+    for source in &sources {
+        handle.unwatch(source.clone());
+    }
+
+    gone_of(&rx, &sources[0]);
+    gone_of(&rx, &sources[1]);
+    while let Ok(event) = rx.recv_timeout(Duration::from_millis(300)) {
+        assert!(!matches!(event, AppMenuEvent::Gone { .. }), "only the two oldest are dropped: {event:?}");
+    }
+}
+
+fn registrations_after(events: &[AppMenuEvent]) -> HashMap<u32, Source> {
+    let mut known = HashMap::new();
+    for event in events {
+        match event {
+            AppMenuEvent::Registered { window_id, source, .. } => {
+                known.insert(*window_id, source.clone());
+            }
+            AppMenuEvent::Unregistered { window_id } => {
+                known.remove(window_id);
+            }
+            AppMenuEvent::Menu { .. } | AppMenuEvent::Gone { .. } => {}
+        }
+    }
+    known
+}
+
+fn registrar(caller: &zbus::blocking::Connection) -> zbus::blocking::Proxy<'_> {
+    zbus::blocking::Proxy::new(caller, REGISTRAR_NAME, REGISTRAR_PATH, "com.canonical.AppMenu.Registrar")
+        .expect("the registrar proxy")
+}
+
+#[test]
+fn a_window_registered_and_unregistered_back_to_back_leaves_nothing_in_the_compositors_view() {
+    const WINDOWS: u32 = 20;
+    let bus = private_bus();
+    let (_handle, rx) = private_client(&bus, true);
+    let caller = bus.connect();
+    let registrar = registrar(&caller);
+    let menu = zbus::zvariant::ObjectPath::try_from("/menu").expect("an object path");
+
+    for window in 1..=WINDOWS {
+        registrar.call_noreply("RegisterWindow", &(window, &menu)).expect("register");
+        registrar.call_noreply("UnregisterWindow", &(window,)).expect("unregister");
+    }
+
+    let mut events = Vec::new();
+    let mut unregistered = 0;
+    while unregistered < WINDOWS {
+        let event = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_else(|_| {
+            panic!("only {unregistered} of {WINDOWS} windows were unregistered; saw {events:?}");
+        });
+        unregistered += u32::from(matches!(event, AppMenuEvent::Unregistered { .. }));
+        events.push(event);
+    }
+    while let Ok(event) = rx.recv_timeout(Duration::from_millis(400)) {
+        events.push(event);
+    }
+
+    let left = registrations_after(&events);
+    assert!(left.is_empty(), "windows nothing will ever unregister: {left:?}");
+}
+
+#[test]
+fn a_client_that_leaves_the_bus_takes_its_registered_windows_with_it() {
+    let bus = private_bus();
+    let (_handle, rx) = private_client(&bus, true);
+    let caller = bus.connect();
+    let menu = zbus::zvariant::ObjectPath::try_from("/menu").expect("an object path");
+    registrar(&caller).call::<_, _, ()>("RegisterWindow", &(5u32, &menu)).expect("register");
+
+    let mut events = Vec::new();
+    while !events.iter().any(|event| matches!(event, AppMenuEvent::Registered { window_id: 5, .. })) {
+        events.push(rx.recv_timeout(Duration::from_secs(5)).expect("the registration is announced"));
+    }
+    assert_eq!(registrations_after(&events).len(), 1);
+
+    caller.close().expect("close");
+    while registrations_after(&events).contains_key(&5) {
+        events.push(rx.recv_timeout(Duration::from_secs(5)).expect("the window is unregistered"));
+    }
 }

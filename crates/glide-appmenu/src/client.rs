@@ -72,6 +72,7 @@ const DBUS_INTERFACE: &str = "org.freedesktop.DBus";
 
 pub const METHOD_TIMEOUT: Duration = Duration::from_secs(3);
 pub const MENU_WAIT: Duration = Duration::from_secs(10);
+pub const PARKED_MENU_LIMIT: usize = 32;
 const COALESCE: Duration = Duration::from_millis(40);
 const MAX_BATCH: Duration = Duration::from_millis(150);
 
@@ -105,6 +106,12 @@ type GtkMenuReply = (u32, u32, Vec<HashMap<String, OwnedValue>>);
 
 pub fn start(sink: Sink, own_registrar: bool) -> anyhow::Result<AppMenuHandle> {
     let connection = zbus::blocking::connection::Builder::session()?.method_timeout(METHOD_TIMEOUT).build()?;
+    start_on(connection, sink, own_registrar)
+}
+
+pub fn start_on(
+    connection: zbus::blocking::Connection, sink: Sink, own_registrar: bool,
+) -> anyhow::Result<AppMenuHandle> {
     let (tx, rx) = mpsc::channel();
 
     let bus = zbus::blocking::fdo::DBusProxy::new(&connection)?;
@@ -166,6 +173,12 @@ struct Watched {
     owner: String,
     groups: Vec<u32>,
     primed: bool,
+    delivered: bool,
+    parked: bool,
+}
+
+const fn needs_refresh(delivered: bool, stale: bool) -> bool {
+    stale || !delivered
 }
 
 struct Worker {
@@ -187,7 +200,7 @@ impl Worker {
             }
             for sender in changed {
                 for index in 0..self.watched.len() {
-                    if self.watched[index].owner == sender {
+                    if self.watched[index].owner == sender && !self.watched[index].parked {
                         self.refresh(index);
                     }
                 }
@@ -197,31 +210,68 @@ impl Worker {
 
     fn handle(&mut self, request: Request) {
         match request {
-            Request::Watch(source) => {
-                if self.watched.iter().any(|w| w.source == source) {
-                    return;
-                }
-                let owner = self.owner_of(source.bus());
-                self.watched.push(Watched { source, owner, groups: Vec::new(), primed: false });
-                self.refresh(self.watched.len() - 1);
-            }
-            Request::Unwatch(source) => {
-                if let Some(index) = self.watched.iter().position(|w| w.source == source) {
-                    let watched = self.watched.remove(index);
-                    self.release(&watched);
-                }
-            }
+            Request::Watch(source) => self.watch(source),
+            Request::Unwatch(source) => self.unwatch(&source),
             Request::Activate(source, activation) => self.activate(&source, &activation),
-            Request::Opened(source, activation) => {
-                if let Activation::DbusMenu(id) = activation
-                    && self.about_to_show(&source, id)
-                    && let Some(index) = self.watched.iter().position(|w| w.source == source)
-                {
-                    self.refresh(index);
-                }
-            }
+            Request::Opened(source, activation) => self.opened(&source, &activation),
             Request::OwnerChanged { name, new_owner } => self.owner_changed(&name, &new_owner),
             Request::Changed { .. } => {}
+        }
+    }
+
+    fn live(&self, source: &Source) -> Option<usize> {
+        self.watched.iter().position(|w| w.source == *source && !w.parked)
+    }
+
+    fn watch(&mut self, source: Source) {
+        if let Some(index) = self.watched.iter().position(|w| w.source == source) {
+            let entry = &mut self.watched[index];
+            let revived = entry.parked;
+            entry.parked = false;
+            if needs_refresh(entry.delivered, revived) {
+                self.refresh(index);
+            }
+            return;
+        }
+        let owner = self.owner_of(source.bus());
+        self.watched.push(Watched {
+            source,
+            owner,
+            groups: Vec::new(),
+            primed: false,
+            delivered: false,
+            parked: false,
+        });
+        self.refresh(self.watched.len() - 1);
+    }
+
+    fn unwatch(&mut self, source: &Source) {
+        let Some(index) = self.live(source) else {
+            return;
+        };
+        let mut watched = self.watched.remove(index);
+        self.release(&watched.source, &watched.groups);
+        if !watched.delivered {
+            return;
+        }
+        watched.groups.clear();
+        watched.parked = true;
+        self.watched.push(watched);
+        while self.watched.iter().filter(|w| w.parked).count() > PARKED_MENU_LIMIT {
+            let Some(oldest) = self.watched.iter().position(|w| w.parked) else {
+                break;
+            };
+            let evicted = self.watched.remove(oldest);
+            (self.sink)(AppMenuEvent::Gone { source: evicted.source });
+        }
+    }
+
+    fn opened(&mut self, source: &Source, activation: &Activation) {
+        let stale = if let Activation::DbusMenu(id) = activation { self.about_to_show(source, *id) } else { false };
+        if let Some(index) = self.live(source)
+            && needs_refresh(self.watched[index].delivered, stale)
+        {
+            self.refresh(index);
         }
     }
 
@@ -235,7 +285,7 @@ impl Worker {
             if !affected {
                 continue;
             }
-            if new_owner.is_empty() {
+            if new_owner.is_empty() || (watched.parked && watched.owner != new_owner) {
                 let watched = self.watched.remove(index);
                 (self.sink)(AppMenuEvent::Gone { source: watched.source });
                 continue;
@@ -277,10 +327,14 @@ impl Worker {
             }
             Source::DbusMenu { bus, path } => {
                 let prime = !self.watched[index].primed;
-                self.watched[index].primed = true;
-                self.fetch_dbusmenu(bus, path, prime)
+                let fetched = self.fetch_dbusmenu(bus, path, prime);
+                if fetched.is_ok() {
+                    self.watched[index].primed = true;
+                }
+                fetched
             }
         };
+        self.watched[index].delivered = result.is_ok();
         match result {
             Ok(items) => (self.sink)(AppMenuEvent::Menu { source, items }),
             Err(err) => {
@@ -290,9 +344,9 @@ impl Worker {
         }
     }
 
-    fn release(&self, watched: &Watched) {
-        if let Source::Gtk { bus, menubar, .. } = &watched.source {
-            self.end_groups(bus, menubar, &watched.groups);
+    fn release(&self, source: &Source, groups: &[u32]) {
+        if let Source::Gtk { bus, menubar, .. } = source {
+            self.end_groups(bus, menubar, groups);
         }
     }
 
