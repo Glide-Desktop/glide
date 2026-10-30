@@ -7,6 +7,7 @@ use super::compose::Sprite;
 pub type Pos = Point<f64, Logical>;
 pub type Area = Rectangle<f64, Logical>;
 
+pub const BTN_LEFT: u32 = 0x110;
 pub const MIN_SIDE: f64 = 4.0;
 pub const HANDLE_REACH: f64 = 9.0;
 const MIN_MARK: f64 = 3.0;
@@ -309,7 +310,7 @@ impl Shot {
         }
         self.mode = mode;
         self.gesture = None;
-        self.hovered = self.window_at(self.pointer);
+        self.hovered = if self.over_bar(self.pointer) { None } else { self.window_at(self.pointer) };
         true
     }
 
@@ -406,7 +407,7 @@ impl Shot {
                 true
             }
             Some(Gesture::Resize { handle, from }) => {
-                self.selection = Some(resized(from, handle, pos));
+                self.selection = Some(resized(from, handle, pos, self.bounds));
                 true
             }
             Some(Gesture::Draw) => {
@@ -415,11 +416,12 @@ impl Shot {
                 true
             }
             None => {
-                let hovered = if self.mode == Mode::Window && !self.editing() && control.is_none() {
-                    self.window_at(pos)
-                } else {
-                    self.hovered
-                };
+                let hovered =
+                    if self.mode == Mode::Window && !self.editing() && control.is_none() && !self.over_bar(pos) {
+                        self.window_at(pos)
+                    } else {
+                        self.hovered
+                    };
                 let window_changed = hovered != self.hovered;
                 self.hovered = hovered;
                 hover_changed || window_changed
@@ -529,6 +531,13 @@ impl Shot {
         self.bar_visible() && self.bar().rect.contains(pos)
     }
 
+    pub fn release_button(&mut self, pos: Pos, button: u32) -> Outcome {
+        if button != BTN_LEFT {
+            return Outcome::Nothing;
+        }
+        self.release(pos)
+    }
+
     pub fn release(&mut self, pos: Pos) -> Outcome {
         let pos = self.clamp(pos);
         let Some(gesture) = self.gesture.take() else {
@@ -594,7 +603,7 @@ impl Shot {
 
     pub fn finish(&mut self, outcome: Outcome) -> Outcome {
         if !self.editing() {
-            return if self.capture() == Outcome::Nothing { Outcome::Nothing } else { Outcome::Redraw };
+            return self.capture();
         }
         self.commit_text();
         self.gesture = None;
@@ -692,14 +701,13 @@ impl Shot {
             return false;
         };
         let moved = if grow {
-            let w = (area.size.w + dx).clamp(MIN_SIDE, self.bounds.w - area.loc.x);
-            let h = (area.size.h + dy).clamp(MIN_SIDE, self.bounds.h - area.loc.y);
+            let w = (area.size.w + dx).clamp(MIN_SIDE, (self.bounds.w - area.loc.x).max(MIN_SIDE));
+            let h = (area.size.h + dy).clamp(MIN_SIDE, (self.bounds.h - area.loc.y).max(MIN_SIDE));
             Rectangle::new(area.loc, Size::from((w, h)))
         } else {
-            let x = (area.loc.x + dx).clamp(0.0, self.bounds.w - area.size.w);
-            let y = (area.loc.y + dy).clamp(0.0, self.bounds.h - area.size.h);
-            Rectangle::new(Point::from((x, y)), area.size)
+            Rectangle::new(Point::from((area.loc.x + dx, area.loc.y + dy)), area.size)
         };
+        let moved = contained(moved, self.bounds);
         let changed = moved != area;
         self.selection = Some(moved);
         changed
@@ -722,8 +730,16 @@ fn fits(area: Area, bounds: Size<f64, Logical>) -> bool {
         && area.loc.y + area.size.h <= bounds.h
 }
 
+fn contained(area: Area, bounds: Size<f64, Logical>) -> Area {
+    let w = area.size.w.clamp(MIN_SIDE.min(bounds.w), bounds.w);
+    let h = area.size.h.clamp(MIN_SIDE.min(bounds.h), bounds.h);
+    let x = area.loc.x.clamp(0.0, bounds.w - w);
+    let y = area.loc.y.clamp(0.0, bounds.h - h);
+    Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+}
+
 #[must_use]
-pub fn resized(from: Area, handle: Handle, pos: Pos) -> Area {
+pub fn resized(from: Area, handle: Handle, pos: Pos, bounds: Size<f64, Logical>) -> Area {
     let (mx, my) = handle.moves();
     let (mut x0, mut y0) = (from.loc.x, from.loc.y);
     let (mut x1, mut y1) = (x0 + from.size.w, y0 + from.size.h);
@@ -737,8 +753,7 @@ pub fn resized(from: Area, handle: Handle, pos: Pos) -> Area {
         1 => y1 = pos.y,
         _ => {}
     }
-    let area = rect_between(Point::from((x0, y0)), Point::from((x1, y1)));
-    Rectangle::new(area.loc, Size::from((area.size.w.max(MIN_SIDE), area.size.h.max(MIN_SIDE))))
+    contained(rect_between(Point::from((x0, y0)), Point::from((x1, y1))), bounds)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1070,8 +1085,173 @@ mod tests {
     #[test]
     fn a_handle_dragged_past_the_far_edge_flips_instead_of_inverting() {
         let from = Rectangle::new(p(100.0, 100.0), Size::from((100.0, 100.0)));
-        let flipped = resized(from, Handle::W, p(300.0, 150.0));
+        let flipped = resized(from, Handle::W, p(300.0, 150.0), Size::from((1920.0, 1080.0)));
         assert_eq!(flipped, Rectangle::new(p(200.0, 100.0), Size::from((100.0, 100.0))));
+    }
+
+    fn inside(area: Area, bounds: Size<f64, Logical>) -> bool {
+        area.size.w >= MIN_SIDE
+            && area.size.h >= MIN_SIDE
+            && area.loc.x >= 0.0
+            && area.loc.y >= 0.0
+            && area.loc.x + area.size.w <= bounds.w
+            && area.loc.y + area.size.h <= bounds.h
+    }
+
+    #[test]
+    fn a_west_handle_dragged_to_the_right_edge_keeps_a_minimum_capture_on_the_screen() {
+        let bounds = Size::from((1920.0, 1080.0));
+        let from = Rectangle::new(p(1000.0, 100.0), Size::from((920.0, 200.0)));
+        let squeezed = resized(from, Handle::W, p(1920.0, 150.0), bounds);
+        assert!(inside(squeezed, bounds), "{squeezed:?} must stay on the screen");
+        assert_eq!(squeezed, Rectangle::new(p(1916.0, 100.0), Size::from((MIN_SIDE, 200.0))));
+        let squeezed = resized(from, Handle::S, p(1500.0, 0.0), bounds);
+        assert!(inside(squeezed, bounds));
+    }
+
+    #[test]
+    fn dragging_a_handle_past_the_edge_never_leaves_a_selection_that_cannot_be_saved() {
+        let mut shot = shot();
+        shot.selection = Some(Rectangle::new(p(1000.0, 100.0), Size::from((920.0, 200.0))));
+        shot.capture();
+        assert_eq!(shot.handle_at(p(1000.0, 200.0)), Some(Handle::W));
+        shot.press(p(1000.0, 200.0), None);
+        shot.motion(p(5000.0, 200.0), None);
+        shot.release(p(5000.0, 200.0));
+        let target = shot.target().expect("selection");
+        assert!(inside(target, shot.bounds), "{target:?} must stay on the screen");
+        assert!(shot.can_capture());
+        assert_eq!(shot.finish(Outcome::Save), Outcome::Save);
+    }
+
+    #[test]
+    fn growing_a_selection_that_is_partly_off_screen_neither_panics_nor_stays_off_screen() {
+        let mut shot = shot();
+        shot.selection = Some(Rectangle::new(p(1918.0, 100.0), Size::from((100.0, 100.0))));
+        shot.capture();
+        assert!(shot.nudge(1.0, 1.0, true));
+        let target = shot.target().expect("selection");
+        assert!(inside(target, shot.bounds), "{target:?} must be pulled back onto the screen");
+        shot.selection = Some(Rectangle::new(p(1918.0, 1070.0), Size::from((100.0, 100.0))));
+        shot.nudge(-10.0, -10.0, false);
+        let target = shot.target().expect("selection");
+        assert!(inside(target, shot.bounds), "{target:?} must be pulled back onto the screen");
+    }
+
+    #[test]
+    fn nudging_keeps_the_selection_in_bounds_at_every_edge() {
+        let mut shot = shot();
+        shot.selection = Some(Rectangle::new(p(1800.0, 960.0), Size::from((120.0, 120.0))));
+        shot.capture();
+        assert!(!shot.nudge(10.0, 10.0, false), "already in the corner");
+        assert!(!shot.nudge(10.0, 10.0, true), "cannot grow past the corner");
+        assert!(shot.nudge(-10.0, 0.0, false));
+        assert_eq!(shot.selection.map(|area| area.loc), Some(p(1790.0, 960.0)));
+        assert!(shot.nudge(-200.0, -200.0, true));
+        assert_eq!(shot.selection.map(|area| area.size), Some(Size::from((MIN_SIDE, MIN_SIDE))));
+    }
+
+    #[test]
+    fn the_capture_disc_takes_the_highlighted_window_not_the_one_under_the_bar() {
+        let mut shot = shot();
+        shot.windows.push(Rectangle::new(p(0.0, 900.0), Size::from((1920.0, 180.0))));
+        shot.set_mode(Mode::Window);
+        shot.motion(p(200.0, 200.0), None);
+        assert_eq!(shot.hovered, Some(0));
+        let bar = shot.bar();
+        let padding = bar.rect.loc + Point::from((CHOOSE_PAD / 2.0, bar.rect.size.h / 2.0));
+        assert_eq!(shot.window_at(padding), Some(2), "a window lies under the bar");
+        shot.motion(padding, shot.control_at(padding));
+        assert_eq!(shot.hovered, Some(0), "the bar's padding keeps the highlight");
+        let capture = bar.item(Control::Capture).expect("capture disc");
+        let centre = bar.rect.loc + capture.loc + Point::from((capture.size.w / 2.0, capture.size.h / 2.0));
+        shot.motion(centre, shot.control_at(centre));
+        assert_eq!(shot.activate(Control::Capture), Outcome::Window(0));
+    }
+
+    #[test]
+    fn choosing_the_window_mode_from_the_bar_does_not_pick_the_window_under_it() {
+        let mut shot = shot();
+        shot.windows.push(Rectangle::new(p(0.0, 900.0), Size::from((1920.0, 180.0))));
+        shot.set_mode(Mode::Window);
+        shot.motion(p(700.0, 500.0), None);
+        assert_eq!(shot.hovered, Some(1));
+        shot.set_mode(Mode::Area);
+        let bar = shot.bar();
+        let button = bar.item(Control::Mode(Mode::Window)).expect("window mode button");
+        let over = bar.rect.loc + button.loc + Point::from((button.size.w / 2.0, button.size.h / 2.0));
+        shot.motion(over, shot.control_at(over));
+        shot.press(over, shot.control_at(over));
+        assert_eq!(shot.mode, Mode::Window);
+        assert_eq!(shot.hovered, None, "nothing was highlighted before the pointer reached the bar");
+        assert!(!shot.can_capture());
+        shot.set_mode(Mode::Screen);
+        shot.motion(p(200.0, 200.0), None);
+        shot.set_mode(Mode::Window);
+        assert_eq!(shot.hovered, Some(0), "away from the bar the window under the pointer is picked");
+    }
+
+    #[test]
+    fn copying_before_the_capture_exists_still_hands_the_window_over_for_a_window_alone_render() {
+        let mut shot = shot();
+        shot.set_mode(Mode::Window);
+        shot.motion(p(700.0, 500.0), None);
+        assert_eq!(shot.finish(Outcome::Copy), Outcome::Window(1));
+        assert!(shot.editing());
+        assert_eq!(shot.finish(Outcome::Copy), Outcome::Copy);
+    }
+
+    #[test]
+    fn copying_before_the_capture_exists_only_opens_the_editor_in_area_and_screen_modes() {
+        let mut area = shot();
+        assert_eq!(area.finish(Outcome::Copy), Outcome::Nothing, "nothing selected yet");
+        area.selection = Some(Rectangle::new(p(200.0, 200.0), Size::from((300.0, 200.0))));
+        assert_eq!(area.finish(Outcome::Copy), Outcome::Redraw);
+        assert!(area.editing());
+        assert_eq!(area.finish(Outcome::Copy), Outcome::Copy);
+        let mut screen = shot();
+        screen.set_mode(Mode::Screen);
+        assert_eq!(screen.finish(Outcome::Save), Outcome::Redraw);
+        assert_eq!(screen.finish(Outcome::Save), Outcome::Save);
+    }
+
+    #[test]
+    fn copying_in_the_window_mode_without_a_window_under_the_pointer_does_nothing() {
+        let mut shot = shot();
+        shot.set_mode(Mode::Window);
+        shot.motion(p(5.0, 5.0), None);
+        assert_eq!(shot.finish(Outcome::Copy), Outcome::Nothing);
+        assert!(!shot.editing());
+    }
+
+    #[test]
+    fn releasing_another_button_does_not_end_the_selection_in_progress() {
+        let mut shot = shot();
+        shot.press(p(200.0, 150.0), None);
+        shot.motion(p(500.0, 450.0), None);
+        assert_eq!(shot.release_button(p(500.0, 450.0), 0x111), Outcome::Nothing);
+        assert_eq!(shot.release_button(p(500.0, 450.0), 0x112), Outcome::Nothing);
+        assert!(shot.selecting() && !shot.editing(), "the drag goes on");
+        shot.motion(p(600.0, 400.0), None);
+        assert_eq!(shot.release_button(p(600.0, 400.0), BTN_LEFT), Outcome::Redraw);
+        assert!(shot.editing());
+        assert_eq!(shot.target(), Some(Rectangle::new(p(200.0, 150.0), Size::from((400.0, 250.0)))));
+    }
+
+    #[test]
+    fn releasing_another_button_does_not_commit_a_half_drawn_stroke() {
+        let mut shot = shot();
+        shot.set_mode(Mode::Screen);
+        shot.capture();
+        shot.set_tool(Tool::Arrow);
+        shot.press(p(100.0, 100.0), None);
+        shot.motion(p(200.0, 200.0), None);
+        assert_eq!(shot.release_button(p(200.0, 200.0), 0x111), Outcome::Nothing);
+        assert!(shot.drawing() && shot.marks.is_empty());
+        shot.motion(p(300.0, 300.0), None);
+        shot.release_button(p(300.0, 300.0), BTN_LEFT);
+        assert_eq!(shot.marks.len(), 1);
+        assert_eq!(shot.marks[0].shape, Shape::Arrow(p(100.0, 100.0), p(300.0, 300.0)));
     }
 
     #[test]

@@ -429,11 +429,19 @@ struct Ctx<'a, R: crate::raster::ShellRenderer> {
     painter: &'a Painter,
     palette: &'a Palette,
     scale: f64,
+    frozen_size: (u32, u32),
     openness: f32,
     output_scale: i32,
     base_key: u64,
     full: Area,
     pieces: Vec<Piece<R>>,
+}
+
+fn badge_size(target: Area, scale: f64, frozen_size: (u32, u32)) -> (i64, i64) {
+    crate::crop_region(target, scale, frozen_size).map_or_else(
+        || ((target.size.w * scale).round() as i64, (target.size.h * scale).round() as i64),
+        |(_, _, w, h)| (i64::from(w), i64::from(h)),
+    )
 }
 
 pub fn render<R>(
@@ -448,6 +456,7 @@ where
         painter,
         palette,
         scale: scene.sources.scale,
+        frozen_size: (scene.sources.frozen.width, scene.sources.frozen.height),
         openness: cache.openness() as f32,
         output_scale,
         base_key: palette.revision().u64(theme_revision).u64(crate::paint::painter_generation()).finish(),
@@ -550,11 +559,11 @@ fn render_bar<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &Shot, c
 fn render_selection<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &Shot, ctx: &mut Ctx<'_, R>) {
     let (renderer, pieces) = (&mut *ctx.renderer, &mut ctx.pieces);
     let (painter, palette, scale, openness) = (ctx.painter, ctx.palette, ctx.scale, ctx.openness);
-    let (output_scale, base_key, full) = (ctx.output_scale, ctx.base_key, ctx.full);
+    let (output_scale, base_key, full, frozen_size) = (ctx.output_scale, ctx.base_key, ctx.full, ctx.frozen_size);
     let target = shot.target();
     let show_badge = shot.selecting() || (shot.editing() && shot.mode == Mode::Area);
     if let Some(target) = target.filter(|_| show_badge) {
-        let (w, h) = ((target.size.w * scale).round() as i64, (target.size.h * scale).round() as i64);
+        let (w, h) = badge_size(target, scale, frozen_size);
         let text = format!("{w} × {h}");
         let key = glide_theme::Revision::new().u64(base_key).str(&text).finish();
         let badge = cache.badge.entry(output_scale).or_insert_with(|| Keyed {
@@ -1438,6 +1447,21 @@ mod tests {
 
     fn a(x: f64, y: f64, w: f64, h: f64) -> Area {
         area(x, y, w, h)
+    }
+
+    #[test]
+    fn the_badge_reads_the_size_of_the_saved_crop() {
+        let frozen = (1920, 1080);
+        for (target, scale) in [
+            (a(10.5, 20.0, 100.0, 50.0), 1.0),
+            (a(10.0, 20.0, 100.0, 50.0), 1.25),
+            (a(33.0, 7.0, 101.0, 49.0), 1.5),
+            (a(0.0, 0.0, 1920.0, 1080.0), 1.0),
+        ] {
+            let (_, _, w, h) = crate::crop_region(target, scale, frozen).expect("crop");
+            assert_eq!(badge_size(target, scale, frozen), (i64::from(w), i64::from(h)), "{target:?} at {scale}");
+        }
+        assert_eq!(badge_size(a(10.5, 20.0, 100.0, 50.0), 1.0, frozen), (101, 50));
     }
 
     #[test]

@@ -8,9 +8,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use crate::{state::GlideState, window::GlideWindow};
 use compose::{Frame, Image, Shadow};
-use model::{Area, Mode, Outcome, Shot, Tool};
-
-const LEFT: u32 = 0x110;
+use model::{Area, BTN_LEFT, Mode, Outcome, Shot, Tool};
 
 pub struct Session {
     pub output: Output,
@@ -180,13 +178,14 @@ fn refuse(waiter: &UnixStream, message: &str) {
     crate::ipc::reply(waiter, &glide_ipc::Response::Error { message: message.to_string() });
 }
 
+fn frame_from(
+    location: Point<i32, Logical>, geometry: Rectangle<i32, Logical>, header: i32,
+) -> Rectangle<i32, Logical> {
+    Rectangle::new(location - Point::from((0, header)), Size::from((geometry.size.w, geometry.size.h + header)))
+}
+
 fn frame_of(window: &GlideWindow, location: Point<i32, Logical>) -> Rectangle<i32, Logical> {
-    let geometry = window.geometry();
-    let header = window.header_height();
-    Rectangle::new(
-        location + geometry.loc - Point::from((0, header)),
-        Size::from((geometry.size.w, geometry.size.h + header)),
-    )
+    frame_from(location, window.geometry(), window.header_height())
 }
 
 impl GlideState {
@@ -365,7 +364,7 @@ impl GlideState {
         let Some(shot) = session.shot.as_mut() else {
             return true;
         };
-        if button != LEFT {
+        if button != BTN_LEFT {
             return true;
         }
         let control = shot.control_at(local);
@@ -375,13 +374,13 @@ impl GlideState {
         true
     }
 
-    pub fn shot_release(&mut self, pos: Point<f64, Logical>) -> bool {
+    pub fn shot_release(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
         let Some(session) = self.session.shot.as_mut() else {
             return false;
         };
         let local = session.local(pos);
         if let Some(shot) = session.shot.as_mut() {
-            let outcome = shot.release(local);
+            let outcome = shot.release_button(local, button);
             self.shot_outcome(outcome);
         }
         self.update_shot_cursor(pos);
@@ -710,6 +709,16 @@ mod tests {
             shortcut(&none(), &[Keysym::Cyrillic_ha, Keysym::h], Keysym::Cyrillic_ha, false, true),
             ShotKey::Tool(Tool::Highlight)
         );
+    }
+
+    #[test]
+    fn a_window_frame_starts_at_the_space_location_because_that_is_already_the_geometry_origin() {
+        let geometry = Rectangle::new(Point::from((26, 20)), Size::from((400, 300)));
+        let frame = frame_from(Point::from((100, 200)), geometry, 36);
+        assert_eq!(frame, Rectangle::new(Point::from((100, 164)), Size::from((400, 336))));
+        assert_eq!(frame.loc + Point::from((0, 36)), Point::from((100, 200)), "the content starts a header below");
+        let bare = frame_from(Point::from((100, 200)), geometry, 0);
+        assert_eq!(bare, Rectangle::new(Point::from((100, 200)), Size::from((400, 300))));
     }
 
     #[test]

@@ -2533,7 +2533,7 @@ impl GlideState {
         let button_state = event.state();
 
         if button_state == ButtonState::Released {
-            let shot_released = self.shot_release(pointer.current_location());
+            let shot_released = self.shot_release(pointer.current_location(), button);
             let picker_released = self.picker_release(pointer.current_location());
             if shot_released || picker_released {
                 pointer.frame(self);
