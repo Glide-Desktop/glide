@@ -8,7 +8,9 @@ use glide_sdk::system::{Osd, QuickSettings, Urgency};
 use glide_sdk::theme::{Accent, R2, R3, TextStyle};
 use glide_sdk::widget::{self as ui, Check, Severity, Size, SwitchSize, Validity, mock};
 
-use crate::{Catalog, Fruit, Look, Message, Page, Preset, Timeout};
+use crate::{
+    Catalog, Fruit, Look, Message, Page, Preset, fruit_option, fruit_options, timeout_option, timeout_options,
+};
 
 const WIDTH: f32 = 760.0;
 
@@ -143,28 +145,25 @@ fn buttons<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
         )
     };
     let disabled = wrap(tones.iter().map(|&(tone, label)| ui::button(paint, label, tone, None::<Message>)).collect());
+    let (add, search, sidebar) =
+        (shell.t("Додати", "Add"), shell.t("Пошук", "Search"), shell.t("Бічна панель", "Sidebar"));
     let icons = wrap(vec![
-        ui::icon_button(paint, Icon::Plus, shell.t("Додати", "Add"), Some(Message::Said("Add")), false),
-        ui::icon_button(paint, Icon::Search, shell.t("Пошук", "Search"), Some(Message::Said("Search")), false),
-        ui::icon_button(paint, Icon::Sidebar, shell.t("Бічна панель", "Sidebar"), Some(Message::Said("Sidebar")), true),
+        ui::icon_button(paint, Icon::Plus, add, Some(Message::Said(add)), false),
+        ui::icon_button(paint, Icon::Search, search, Some(Message::Said(search)), false),
+        ui::icon_button(paint, Icon::Sidebar, sidebar, Some(Message::Said(sidebar)), true),
         ui::icon_button(paint, Icon::Refresh, shell.t("Вимкнено", "Disabled"), None, false),
     ]);
+    let (day, week, month) = (shell.t("День", "Day"), shell.t("Тиждень", "Week"), shell.t("Місяць", "Month"));
     let linked = ui::linked(
         paint,
-        &[
-            (shell.t("День", "Day"), Some(Message::Said("Day"))),
-            (shell.t("Тиждень", "Week"), Some(Message::Said("Week"))),
-            (shell.t("Місяць", "Month"), Some(Message::Said("Month"))),
-        ],
+        &[(day, Some(Message::Said(day))), (week, Some(Message::Said(week))), (month, Some(Message::Said(month)))],
     );
+    let actions =
+        [shell.t("Дублювати", "Duplicate"), shell.t("Перейменувати", "Rename"), shell.t("Архівувати", "Archive")];
     let menu = ui::menu_button(
         paint,
         shell.t("Дії", "Actions"),
-        vec![
-            (shell.t("Дублювати", "Duplicate").to_string(), Message::Said("Duplicate")),
-            (shell.t("Перейменувати", "Rename").to_string(), Message::Said("Rename")),
-            (shell.t("Архівувати", "Archive").to_string(), Message::Said("Archive")),
-        ],
+        actions.iter().map(|&label| (label.to_string(), Message::Said(label))).collect(),
         200.0,
     );
     page(
@@ -205,6 +204,7 @@ fn toggle_buttons<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Elemen
 
 fn inputs<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
     let paint = shell.paint();
+    let lang = shell.lang();
     let email_ok = catalog.email.contains('@') && catalog.email.contains('.');
     let validity = if catalog.email.is_empty() {
         Validity::Neutral
@@ -259,10 +259,10 @@ fn inputs<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
                 Some(shell.t("Випадний список із клавіатурою", "Dropdown with keyboard support")),
                 container(ui::dropdown(
                     paint,
-                    vec![Fruit::Apple, Fruit::Pear, Fruit::Plum],
-                    catalog.fruit,
+                    fruit_options(lang),
+                    catalog.fruit.map(|fruit| fruit_option(fruit, lang)),
                     shell.t("Оберіть…", "Choose…"),
-                    Message::Fruit,
+                    |option| Message::Fruit(option.value),
                 ))
                 .width(200),
             ),
@@ -281,16 +281,6 @@ fn inputs<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
             ui::section(paint, shell.t("Значення", "Values"), pickers),
         ],
     )
-}
-
-impl std::fmt::Display for Fruit {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Apple => "🍎 Apple",
-            Self::Pear => "🍐 Pear",
-            Self::Plum => "🟣 Plum",
-        })
-    }
 }
 
 fn selection<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
@@ -489,7 +479,7 @@ fn feedback<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
                 paint,
                 shell.t("Перезавантажити", "Reload"),
                 Tone::Neutral,
-                Some(Message::Said("Reload"))
+                Some(Message::Said(shell.t("Перезавантажити", "Reload")))
             ),]
         ),
         ui::banner(paint, Severity::Ok, shell.t("Резервну копію створено", "Backup complete"), "", vec![]),
@@ -515,7 +505,7 @@ fn feedback<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
         Icon::Folder,
         shell.t("Тут порожньо", "Nothing here yet"),
         shell.t("Перетягніть файли сюди або створіть новий.", "Drop files here or create a new one."),
-        Some(ui::primary(paint, shell.t("Створити", "Create"), Message::Said("Create"))),
+        Some(ui::primary(paint, shell.t("Створити", "Create"), Message::Said(shell.t("Створити", "Create")))),
     );
     page(
         shell,
@@ -561,7 +551,7 @@ fn tasks<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Mes
         detail: format!("12/40 · {:.0}%", catalog.loading * 100.0),
         actions: vec![
             ui::icon_button(paint, if paused { Icon::Refresh } else { Icon::More }, "", Some(Message::Flip), false),
-            ui::icon_button(paint, Icon::Close, "", Some(Message::Said("Stop")), false),
+            ui::icon_button(paint, Icon::Close, "", Some(Message::Said(shell.t("Зупинити", "Stop"))), false),
         ],
         footer: None,
     };
@@ -590,8 +580,9 @@ fn tasks<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Mes
 
 fn info_bars(shell: &Shell<Message>) -> Element<'_, Message> {
     let paint = shell.paint();
-    let empty = ui::compact_button(paint, shell.t("Очистити", "Empty"), Tone::Neutral, Some(Message::Said("Empty")));
-    let keep = ui::compact_button(paint, shell.t("Відкинути", "Keep mine"), Tone::Ghost, Some(Message::Said("Keep")));
+    let (empty_label, keep_label) = (shell.t("Очистити", "Empty"), shell.t("Відкинути", "Keep mine"));
+    let empty = ui::compact_button(paint, empty_label, Tone::Neutral, Some(Message::Said(empty_label)));
+    let keep = ui::compact_button(paint, keep_label, Tone::Ghost, Some(Message::Said(keep_label)));
     column![
         ui::info_bar(
             paint,
@@ -620,8 +611,8 @@ fn bubbles(shell: &Shell<Message>) -> Element<'_, Message> {
             paint,
             shell.t("Переміщено до смітника", "Moved to the Trash"),
             None,
-            Some((shell.t("Скасувати", "Undo"), Message::Said("Undo"))),
-            Some((Message::Said("Close"), shell.t("Закрити", "Close"))),
+            Some((shell.t("Скасувати", "Undo"), Message::Said(shell.t("Скасувати", "Undo")))),
+            Some((Message::Said(shell.t("Закрити", "Close")), shell.t("Закрити", "Close"))),
             420.0,
         ),
     ])
@@ -637,7 +628,7 @@ fn layout<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
                 caption(shell, shell.t("1 248 файлів", "1,248 files"))
             ]
             .spacing(SP1),
-            Message::Said("Photos")
+            Message::Said(shell.t("Фото", "Photos"))
         ),
         ui::action_card(
             paint,
@@ -646,7 +637,7 @@ fn layout<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
                 caption(shell, shell.t("312 файлів", "312 files"))
             ]
             .spacing(SP1),
-            Message::Said("Documents")
+            Message::Said(shell.t("Документи", "Documents"))
         ),
         ui::action_card(
             paint,
@@ -655,7 +646,7 @@ fn layout<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
                 caption(shell, shell.t("86 файлів", "86 files"))
             ]
             .spacing(SP1),
-            Message::Said("Music")
+            Message::Said(shell.t("Музика", "Music"))
         ),
     ]
     .spacing(SP3);
@@ -666,7 +657,7 @@ fn layout<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
                 paint,
                 shell.t("Мережа", "Network"),
                 Some(shell.t("Підключено до «Дім»", "Connected to “Home”")),
-                Message::Said("Network"),
+                Message::Said(shell.t("Мережа", "Network")),
             ),
             ui::action_row(paint, "Bluetooth", Some(shell.t("2 пристрої", "2 devices")), Message::Said("Bluetooth")),
             ui::switch_row(
@@ -731,7 +722,7 @@ fn cards<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Mes
         vec![
             ui::stat_tile(paint, Icon::File, accent, "12", shell.t("потоків", "threads")),
             ui::stat_tile(paint, Icon::Folder, green, "28%", shell.t("пам'яті", "memory")),
-            ui::stat_tile(paint, Icon::Refresh, paint.warn(), "5 h", shell.t("працює", "running")),
+            ui::stat_tile(paint, Icon::Refresh, paint.warn(), shell.t("5 год", "5 h"), shell.t("працює", "running")),
         ],
         3,
         SP3,
@@ -739,24 +730,24 @@ fn cards<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Mes
     let usage = ui::usage_card(
         paint,
         shell.t("Диск", "Disk"),
-        "56 GB free",
+        shell.t("Вільно 56 ГБ", "56 GB free"),
         vec![
-            (0.6, accent, String::from("Apps"), String::from("300 GB")),
-            (0.2, green, String::from("Media"), String::new()),
+            (0.6, accent, shell.t("Програми", "Apps").to_string(), shell.t("300 ГБ", "300 GB").to_string()),
+            (0.2, green, shell.t("Медіа", "Media").to_string(), String::new()),
         ],
     );
     let picks = row![
         ui::preview_card(
             paint,
             ui::icon_tile(Icon::Sidebar, accent, 64.0),
-            "Light",
+            shell.t("Світла", "Light"),
             !catalog.flipped,
             Some(Message::Flip)
         ),
         ui::preview_card(
             paint,
             ui::icon_tile(Icon::Sidebar, paint.fg_2(), 64.0),
-            "Dark",
+            shell.t("Темна", "Dark"),
             catalog.flipped,
             Some(Message::Flip)
         ),
@@ -814,7 +805,7 @@ fn card_group<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a
     ui::Group::new(paint)
         .title(shell.t("Група", "Group"))
         .description(shell.t("Заголовок, опис і рядки", "A heading, a description and rows"))
-        .suffix(ui::link(paint, shell.t("Скинути", "Reset"), Some(Message::Said("Reset"))))
+        .suffix(ui::link(paint, shell.t("Скинути", "Reset"), Some(Message::Said(shell.t("Скинути", "Reset")))))
         .push(
             ui::ListRow::new(paint, shell.t("Режим польоту", "Airplane mode"))
                 .subtitle(shell.t("Рядок з префіксом і перемикачем", "A row with a prefix and a switch"))
@@ -839,25 +830,39 @@ fn card_group<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a
         .push(
             ui::ListRow::new(paint, shell.t("Деталі", "Details"))
                 .suffix(ui::disclosure(paint, Some(String::from("3"))))
-                .on_press(Message::Said("Details")),
+                .on_press(Message::Said(shell.t("Деталі", "Details"))),
         )
         .build()
+}
+
+fn disk_issue<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    ui::Issue::new(paint, shell.t("Мало місця на диску", "Low on disk space"))
+        .summary(shell.t("Вільно 4 % — звільніть місце", "4 % free — make some room"))
+        .details(
+            [String::from("/dev/nvme0n1p2 · ext4"), shell.t("12,4 ГБ / 476 ГБ", "12.4 GB / 476 GB").to_string()],
+            catalog.issue_open,
+        )
+        .toggle(Message::IssueOpen, shell.t("Детальніше", "Details"), shell.t("Сховати", "Hide"))
+        .action(ui::button(
+            paint,
+            shell.t("Відкрити", "Open"),
+            Tone::Neutral,
+            Some(Message::Said(shell.t("Відкрити", "Open"))),
+        ))
+        .into()
 }
 
 fn insight<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
     let paint = shell.paint();
     let ramp = |step: usize| glide_sdk::theme::to_iced(paint.tokens.ramp[step]);
-    let issue = ui::Issue::new(paint, shell.t("Мало місця на диску", "Low on disk space"))
-        .summary(shell.t("Вільно 4 % — звільніть місце", "4 % free — make some room"))
-        .details([String::from("/dev/nvme0n1p2 · ext4"), String::from("12,4 ГБ / 476 ГБ")], catalog.issue_open)
-        .toggle(Message::IssueOpen, shell.t("Детальніше", "Details"), shell.t("Сховати", "Hide"))
-        .action(ui::button(paint, shell.t("Відкрити", "Open"), Tone::Neutral, Some(Message::Said("Open"))));
+    let issue = disk_issue(catalog, shell);
     let glances = row![
         ui::Glance::new(paint, Icon::Folder, ramp(3), shell.t("Сховище", "Storage"))
             .headline(shell.t("212 ГБ вільно", "212 GB free"))
             .meter(0.55, paint.acc_bg())
             .detail(shell.t("з 476 ГБ", "of 476 GB"))
-            .on_press(Message::Said("Storage")),
+            .on_press(Message::Said(shell.t("Сховище", "Storage"))),
         ui::Glance::new(paint, Icon::Bell, ramp(4), "Wi-Fi")
             .headline("Home")
             .aside(ui::signal_bars(paint, 3, 4))
@@ -868,7 +873,7 @@ fn insight<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
         paint,
         vec![
             (shell.t("Процесор", "Processor").into(), "AMD Ryzen 7 7840U".into()),
-            (shell.t("Пам'ять", "Memory").into(), "32 ГБ · 17,6 ГБ вільно".into()),
+            (shell.t("Пам'ять", "Memory").into(), shell.t("32 ГБ · 17,6 ГБ вільно", "32 GB · 17.6 GB free").into()),
             (shell.t("Графіка", "Graphics").into(), "AMD Radeon 780M".into()),
         ],
         2,
@@ -902,7 +907,7 @@ fn insight<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
             paint,
             shell.t("1 змінено", "1 changed"),
             shell.t("Скинути", "Reset"),
-            Some(Message::Said("Reset"))
+            Some(Message::Said(shell.t("Скинути", "Reset")))
         ),
     ]
     .align_y(Alignment::Center);
@@ -948,14 +953,19 @@ fn insight<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
 fn inspector(shell: &Shell<Message>) -> Element<'_, Message> {
     let paint = shell.paint();
     let tags = ui::swatches(paint, &[(0, paint.danger()), (1, paint.ok())], Some(1), |_| Message::Flip);
-    let open = ui::full_button(paint, shell.t("Відкрити", "Open"), Tone::Accent, Some(Message::Said("Open")));
-    let properties = Some(Message::Said("Properties"));
-    let properties = ui::full_button(paint, shell.t("Властивості", "Properties"), Tone::Outline, properties);
+    let open = ui::full_button(
+        paint,
+        shell.t("Відкрити", "Open"),
+        Tone::Accent,
+        Some(Message::Said(shell.t("Відкрити", "Open"))),
+    );
+    let properties_label = shell.t("Властивості", "Properties");
+    let properties = ui::full_button(paint, properties_label, Tone::Outline, Some(Message::Said(properties_label)));
     let panel = ui::Inspector::new(paint, shell.t("Звіт за жовтень.pdf", "October report.pdf"))
         .preview(ui::icon(Icon::File, 96.0, paint.fg_2()))
         .subtitle(shell.t("Документ PDF · 2,4 МБ", "PDF document · 2.4 MB"))
-        .figure(shell.t("Розмір", "Size"), "2,4 МБ")
-        .figure(shell.t("Де", "Where"), "~/Документи")
+        .figure(shell.t("Розмір", "Size"), shell.t("2,4 МБ", "2.4 MB"))
+        .figure(shell.t("Де", "Where"), shell.t("~/Документи", "~/Documents"))
         .section(shell.t("Мітки", "Tags"), tags)
         .action(open)
         .action(properties);
@@ -1003,8 +1013,13 @@ fn small_pieces<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<
     .into()
 }
 
+fn prefix_range(label: &str, chars: usize) -> (usize, usize) {
+    (0, label.char_indices().nth(chars).map_or(label.len(), |(end, _)| end))
+}
+
 fn sidebar_items<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
     let paint = shell.paint();
+    let notifications = shell.t("Сповіщення", "Notifications");
     column![
         ui::sidebar_item(paint, Some(Icon::Folder), shell.t("Домівка", "Home"), !catalog.flipped, Message::Flip),
         ui::sidebar_item(paint, Some(Icon::File), shell.t("Документи", "Documents"), catalog.flipped, Message::Flip),
@@ -1012,33 +1027,39 @@ fn sidebar_items<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element
             ui::SidebarItem::new(paint, shell.t("Смітник", "Trash"))
                 .glyph(Icon::File)
                 .count(3)
-                .on_press(Some(Message::Said("Trash"))),
+                .on_press(Some(Message::Said(shell.t("Смітник", "Trash")))),
         ),
         Element::from(
             ui::SidebarItem::new(paint, "KINGSTON")
                 .glyph(Icon::File)
                 .meter(Some(0.42))
-                .on_press(Some(Message::Said("Drive")))
-                .accessory(ui::icon_button(paint, Icon::Up, "", Some(Message::Said("Eject")), false)),
+                .on_press(Some(Message::Said(shell.t("Накопичувач", "Drive"))))
+                .accessory(ui::icon_button(
+                    paint,
+                    Icon::Up,
+                    "",
+                    Some(Message::Said(shell.t("Витягти", "Eject"))),
+                    false,
+                )),
         ),
         Element::from(
             ui::SidebarItem::new(paint, shell.t("Файлова система", "File System"))
                 .glyph(Icon::Server)
                 .meter(Some(0.91))
-                .on_press(Some(Message::Said("Root"))),
+                .on_press(Some(Message::Said(shell.t("Файлова система", "File System")))),
         ),
         Element::from(
             ui::SidebarItem::new(paint, shell.t("Не змонтовано", "Not mounted"))
                 .glyph(Icon::File)
                 .ink(Some(paint.fg_3()))
-                .on_press(Some(Message::Said("Mount"))),
+                .on_press(Some(Message::Said(shell.t("Змонтувати", "Mount")))),
         ),
         Element::from(
-            ui::SidebarItem::new(paint, "Notifications")
+            ui::SidebarItem::new(paint, notifications)
                 .leading(ui::icon_tile(Icon::Bell, paint.danger(), 24.0))
-                .matched(Some((0, 6)))
+                .matched(Some(prefix_range(notifications, 6)))
                 .accessory(ui::keycap(paint, "↵"))
-                .on_press(Some(Message::Said("Notifications"))),
+                .on_press(Some(Message::Said(notifications))),
         ),
         ui::hinted_search_input(
             paint,
@@ -1065,7 +1086,7 @@ fn tables<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
                 ui::Crumb::new(paint, *label)
                     .glyph(Icon::Folder, if index == 0 { paint.fg_2() } else { paint.acc_bg() })
                     .current(index + 1 == trail.len())
-                    .on_press(Some(Message::Said("Crumb")))
+                    .on_press(Some(Message::Said(shell.t("Крихта", "Crumb"))))
                     .into()
             })
             .collect(),
@@ -1102,7 +1123,7 @@ fn secrets<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
         ui::secret_field(paint, secret)
             .revealed(catalog.revealed)
             .on_reveal(Message::Reveal, shell.t("Показати", "Show"), shell.t("Сховати", "Hide"))
-            .on_copy(Message::Said("copy"), shell.t("Скопіювати", "Copy")),
+            .on_copy(Message::Said(shell.t("Скопійовано", "Copied")), shell.t("Скопіювати", "Copy")),
         ui::password_text(paint, secret, ui::SECRET),
     ]
     .spacing(SP3);
@@ -1158,7 +1179,7 @@ fn secrets<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
         paint,
         "https://send.bitwarden.com/#/8sKq2Lw7RzaxX0Tb/Hq9nV2c",
         shell.t("Скопіювати", "Copy"),
-        Some(Message::Said("copy link")),
+        Some(Message::Said(shell.t("Посилання скопійовано", "Link copied"))),
     );
     let qr = ui::qr_code(paint, "https://send.bitwarden.com/#/8sKq2Lw7RzaxX0Tb/Hq9nV2c", 148.0);
     let mut blocks = vec![
@@ -1251,12 +1272,12 @@ fn overlays(shell: &Shell<Message>) -> Element<'_, Message> {
     let tips = wrap(vec![
         ui::tooltip(
             paint,
-            ui::secondary(paint, shell.t("Наведіть", "Hover me"), Message::Said("Hover")),
+            ui::secondary(paint, shell.t("Наведіть", "Hover me"), Message::Said(shell.t("Наведіть", "Hover me"))),
             shell.t("Підказка з'являється за 550 мс", "A tip appears after 550 ms"),
         ),
         ui::tooltip(
             paint,
-            ui::icon_button(paint, Icon::Bell, "", Some(Message::Said("Bell")), false),
+            ui::icon_button(paint, Icon::Bell, "", Some(Message::Said(shell.t("Сповіщення", "Notifications"))), false),
             shell.t("Сповіщення", "Notifications"),
         ),
     ]);
@@ -1396,8 +1417,31 @@ fn motion<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
     )
 }
 
+fn compose<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let draft = &catalog.draft;
+    column![
+        ui::text_field(paint, shell.t("Заголовок", "Summary"), &draft.summary, Message::Summary),
+        ui::text_field(paint, shell.t("Текст", "Body"), &draft.body, Message::Body),
+        row![
+            ui::primary(paint, shell.t("Надіслати", "Send"), Message::Send),
+            ui::button(
+                paint,
+                shell.t("Замінити останнє", "Replace last"),
+                Tone::Neutral,
+                catalog.last.map(|_| Message::Replace)
+            ),
+            ui::button(paint, shell.t("Відкликати", "Withdraw"), Tone::Danger, catalog.last.map(|_| Message::Withdraw)),
+        ]
+        .spacing(SP2),
+    ]
+    .spacing(SP2)
+    .into()
+}
+
 fn notifications<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
     let paint = shell.paint();
+    let lang = shell.lang();
     let draft = &catalog.draft;
     let urgencies = [
         (Urgency::Low, shell.t("Низька", "Low")),
@@ -1458,24 +1502,15 @@ fn notifications<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element
         paint,
         shell.t("Тривалість", "Timeout"),
         None,
-        container(ui::dropdown(paint, Timeout::ALL.to_vec(), Some(draft.timeout), "", Message::Timeout)).width(180),
+        container(ui::dropdown(
+            paint,
+            timeout_options(lang),
+            Some(timeout_option(draft.timeout, lang)),
+            "",
+            |option| Message::Timeout(option.value),
+        ))
+        .width(180),
     ));
-    let compose = column![
-        ui::text_field(paint, shell.t("Заголовок", "Summary"), &draft.summary, Message::Summary),
-        ui::text_field(paint, shell.t("Текст", "Body"), &draft.body, Message::Body),
-        row![
-            ui::primary(paint, shell.t("Надіслати", "Send"), Message::Send),
-            ui::button(
-                paint,
-                shell.t("Замінити останнє", "Replace last"),
-                Tone::Neutral,
-                catalog.last.map(|_| Message::Replace)
-            ),
-            ui::button(paint, shell.t("Відкликати", "Withdraw"), Tone::Danger, catalog.last.map(|_| Message::Withdraw)),
-        ]
-        .spacing(SP2),
-    ]
-    .spacing(SP2);
     page(
         shell,
         Page::Notifications,
@@ -1485,7 +1520,7 @@ fn notifications<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element
         ),
         vec![
             demo(shell, shell.t("Готові сценарії", "Presets"), presets(catalog, shell)),
-            demo(shell, shell.t("Чернетка", "Draft"), compose),
+            demo(shell, shell.t("Чернетка", "Draft"), compose(catalog, shell)),
             ui::section(paint, shell.t("Параметри", "Options"), ui::list(paint, options)),
             demo(shell, shell.t("Журнал подій", "Event log"), event_log(catalog, shell)),
         ],
@@ -1596,6 +1631,16 @@ mod tests {
         for page in Page::ALL {
             assert!(!page.title(Lang::Uk).is_empty());
             assert_ne!(page.title(Lang::Uk), page.title(Lang::En), "{page:?} is translated");
+        }
+    }
+
+    #[test]
+    fn the_sidebar_search_highlight_covers_whole_characters_in_either_script() {
+        for label in ["Notifications", "Сповіщення", "Ab"] {
+            let (start, end) = prefix_range(label, 6);
+            assert_eq!(start, 0);
+            assert!(label.is_char_boundary(end), "{label}");
+            assert_eq!(label[start..end].chars().count(), label.chars().count().min(6), "{label}");
         }
     }
 }

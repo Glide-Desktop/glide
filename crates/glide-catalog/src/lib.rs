@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use glide_sdk::iced::widget::text_editor;
 use glide_sdk::prelude::*;
-use glide_sdk::system::{self, Dock, Notification, NotificationEvent, Osd, QuickSettings, Urgency};
+use glide_sdk::system::{self, Closed, Dock, Notification, NotificationEvent, Osd, QuickSettings, Urgency};
 use glide_sdk::theme::{Accent, Appearance};
 use glide_sdk::widget::Check;
 
@@ -99,6 +99,19 @@ pub enum Fruit {
     Plum,
 }
 
+impl Fruit {
+    pub const ALL: [Self; 3] = [Self::Apple, Self::Pear, Self::Plum];
+
+    fn label(self, lang: Lang) -> &'static str {
+        let (uk, en) = match self {
+            Self::Apple => ("🍎 Яблуко", "🍎 Apple"),
+            Self::Pear => ("🍐 Груша", "🍐 Pear"),
+            Self::Plum => ("🟣 Слива", "🟣 Plum"),
+        };
+        lang.pick(uk, en)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Timeout {
     Server,
@@ -118,17 +131,80 @@ impl Timeout {
             Self::Never => 0,
         }
     }
+
+    fn label(self, lang: Lang) -> &'static str {
+        let (uk, en) = match self {
+            Self::Server => ("Типово для сервера", "Server default"),
+            Self::Short => ("3 с", "3 s"),
+            Self::Long => ("10 с", "10 s"),
+            Self::Never => ("Ніколи", "Never"),
+        };
+        lang.pick(uk, en)
+    }
 }
 
-impl std::fmt::Display for Timeout {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Server => "Server default",
-            Self::Short => "3 s",
-            Self::Long => "10 s",
-            Self::Never => "Never",
-        })
+#[derive(Debug, Clone, Copy)]
+struct Labelled<T> {
+    value: T,
+    label: &'static str,
+}
+
+impl<T> Labelled<T> {
+    const fn new(value: T, label: &'static str) -> Self {
+        Self { value, label }
     }
+}
+
+impl<T: PartialEq> PartialEq for Labelled<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl<T> std::fmt::Display for Labelled<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.label)
+    }
+}
+
+fn fruit_option(fruit: Fruit, lang: Lang) -> Labelled<Fruit> {
+    Labelled::new(fruit, fruit.label(lang))
+}
+
+fn fruit_options(lang: Lang) -> Vec<Labelled<Fruit>> {
+    Fruit::ALL.iter().map(|fruit| fruit_option(*fruit, lang)).collect()
+}
+
+fn timeout_option(timeout: Timeout, lang: Lang) -> Labelled<Timeout> {
+    Labelled::new(timeout, timeout.label(lang))
+}
+
+fn timeout_options(lang: Lang) -> Vec<Labelled<Timeout>> {
+    Timeout::ALL.iter().map(|timeout| timeout_option(*timeout, lang)).collect()
+}
+
+fn closed_label(reason: Closed, lang: Lang) -> &'static str {
+    let (uk, en) = match reason {
+        Closed::Expired => ("минув час", "expired"),
+        Closed::Dismissed => ("закрито користувачем", "dismissed"),
+        Closed::Withdrawn => ("відкликано", "withdrawn"),
+        Closed::Other => ("інша причина", "other"),
+    };
+    lang.pick(uk, en)
+}
+
+fn event_line(event: &NotificationEvent, lang: Lang) -> String {
+    match event {
+        NotificationEvent::Action { id, key } => format!("#{id} {} «{key}»", lang.pick("дія", "action")),
+        NotificationEvent::Replied { id, text } => format!("#{id} {} «{text}»", lang.pick("відповідь", "reply")),
+        NotificationEvent::Closed { id, reason } => {
+            format!("#{id} {} ({})", lang.pick("закрито", "closed"), closed_label(*reason, lang))
+        }
+    }
+}
+
+fn send_failed(error: &str, lang: Lang) -> String {
+    format!("{}: {error}", lang.pick("Не вдалося надіслати сповіщення", "Could not send the notification"))
 }
 
 #[allow(clippy::struct_excessive_bools)] // One flag per notification hint toggled independently in the form
@@ -312,6 +388,74 @@ pub enum Message {
     Ignored,
 }
 
+const SHORTCUT_PAGES: usize = 10;
+
+fn page_shortcut(index: usize) -> Option<String> {
+    (index < SHORTCUT_PAGES).then(|| format!("Ctrl+{}", (index + 1) % SHORTCUT_PAGES))
+}
+
+struct Outgoing {
+    notification: Notification,
+    download: bool,
+}
+
+const DOWNLOAD_STEP: f32 = 0.07;
+
+fn preset_request(download: &mut Option<(u32, f32)>, preset: &Preset, lang: Lang) -> Option<Outgoing> {
+    let t = |uk: &'static str, en: &'static str| lang.pick(uk, en);
+    let notification = match preset {
+        Preset::Message => Notification::new(APP_ID, t("Андрій", "Andriy"))
+            .body(t("Ти будеш на зустрічі о 15:00?", "Are you coming to the 3 pm meeting?"))
+            .icon("mail-message-new")
+            .reply(t("Надіслати", "Send"), t("Відповідь…", "Reply…"))
+            .sound("message-new-instant"),
+        Preset::Download => {
+            if matches!(*download, Some((0, _))) {
+                return None;
+            }
+            let replaces = download.map_or(0, |(id, _)| id);
+            *download = Some((replaces, 0.0));
+            Notification::new(APP_ID, t("Завантаження glide.iso", "Downloading glide.iso"))
+                .replaces(replaces)
+                .body("0 %")
+                .icon("folder-download")
+                .progress(Some(0))
+                .resident(true)
+                .silent(true)
+        }
+        Preset::Critical => Notification::new(APP_ID, t("Батарея майже розряджена", "Battery almost empty"))
+            .body(t("Залишилось 4 %. Підключіть живлення.", "4 % left. Plug in the charger."))
+            .icon("battery-caution")
+            .urgency(Urgency::Critical),
+        Preset::Reminder => Notification::new(APP_ID, t("Нагадування", "Reminder"))
+            .body(t("Подзвонити мамі", "Call mum"))
+            .icon("alarm")
+            .action("done", t("Готово", "Done"))
+            .action("snooze", t("Відкласти на 10 хв", "Snooze 10 min")),
+    };
+    Some(Outgoing { notification, download: matches!(preset, Preset::Download) })
+}
+
+fn download_tick(download: &mut Option<(u32, f32)>, lang: Lang) -> Option<Outgoing> {
+    let (id, done) = download.filter(|&(id, _)| id != 0)?;
+    let done = (done + DOWNLOAD_STEP).min(1.0);
+    let percent = (done * 100.0).round() as u8;
+    let finished = done >= 1.0;
+    *download = if finished { None } else { Some((id, done)) };
+    let notification = Notification::new(APP_ID, lang.pick("Завантаження glide.iso", "Downloading glide.iso"))
+        .replaces(id)
+        .icon("folder-download")
+        .silent(true);
+    let notification = if finished {
+        notification
+            .body(lang.pick("Готово — 2,1 ГБ", "Done — 2.1 GB"))
+            .action("default", lang.pick("Відкрити", "Open"))
+    } else {
+        notification.body(format!("{percent} %")).progress(Some(percent)).resident(true)
+    };
+    Some(Outgoing { notification, download: true })
+}
+
 impl Catalog {
     fn log(&mut self, line: String) {
         self.log.insert(0, line);
@@ -322,6 +466,39 @@ impl Catalog {
         Task::perform(system::notify(notification), move |result| {
             Message::Sent(download, result.map_err(|err| err.to_string()))
         })
+    }
+
+    fn dispatch(outgoing: Option<Outgoing>) -> Task<Message> {
+        outgoing.map_or_else(Task::none, |outgoing| Self::send(outgoing.notification, outgoing.download))
+    }
+
+    fn on_sent(&mut self, download: bool, result: Result<u32, String>, lang: Lang) -> Option<String> {
+        match result {
+            Ok(id) => {
+                if download {
+                    if let Some((slot, _)) = &mut self.download {
+                        *slot = id;
+                    }
+                } else {
+                    self.last = Some(id);
+                }
+                self.log(format!("{} #{id}", lang.pick("Надіслано", "Sent")));
+                None
+            }
+            Err(err) => {
+                if download {
+                    self.download = None;
+                }
+                self.log(format!("{}: {err}", lang.pick("Помилка", "Error")));
+                Some(send_failed(&err, lang))
+            }
+        }
+    }
+
+    fn on_closed(&mut self, id: u32) {
+        if self.download.is_some_and(|(slot, _)| slot != 0 && slot == id) {
+            self.download = None;
+        }
     }
 
     fn apply_preview(&self, shell: &mut Shell<Message>) {
@@ -339,67 +516,11 @@ impl Catalog {
         };
         shell.preview_look(preview);
     }
-
-    fn preset(&mut self, preset: &Preset, shell: &Shell<Message>) -> Task<Message> {
-        let t = |uk: &'static str, en: &'static str| shell.t(uk, en);
-        let notification = match preset {
-            Preset::Message => Notification::new(APP_ID, t("Андрій", "Andriy"))
-                .body(t("Ти будеш на зустрічі о 15:00?", "Are you coming to the 3 pm meeting?"))
-                .icon("mail-message-new")
-                .reply(t("Надіслати", "Send"), t("Відповідь…", "Reply…"))
-                .sound("message-new-instant"),
-            Preset::Download => {
-                self.download = Some((0, 0.0));
-                Notification::new(APP_ID, t("Завантаження glide.iso", "Downloading glide.iso"))
-                    .body("0 %")
-                    .icon("folder-download")
-                    .progress(Some(0))
-                    .resident(true)
-                    .silent(true)
-            }
-            Preset::Critical => Notification::new(APP_ID, t("Батарея майже розряджена", "Battery almost empty"))
-                .body(t("Залишилось 4 %. Підключіть живлення.", "4 % left. Plug in the charger."))
-                .icon("battery-caution")
-                .urgency(Urgency::Critical),
-            Preset::Reminder => Notification::new(APP_ID, t("Нагадування", "Reminder"))
-                .body(t("Подзвонити мамі", "Call mum"))
-                .icon("alarm")
-                .action("done", t("Готово", "Done"))
-                .action("snooze", t("Відкласти на 10 хв", "Snooze 10 min")),
-        };
-        Self::send(notification, matches!(preset, Preset::Download))
-    }
-
-    fn tick(&mut self, shell: &Shell<Message>) -> Task<Message> {
-        let Some((id, done)) = self.download else { return Task::none() };
-        if id == 0 {
-            return Task::none();
-        }
-        let done = (done + 0.07).min(1.0);
-        let percent = (done * 100.0).round() as u8;
-        let finished = done >= 1.0;
-        self.download = if finished { None } else { Some((id, done)) };
-        let mut notification = Notification::new(APP_ID, shell.t("Завантаження glide.iso", "Downloading glide.iso"))
-            .replaces(id)
-            .icon("folder-download")
-            .silent(true);
-        notification = if finished {
-            notification
-                .body(shell.t("Готово — 2,1 ГБ", "Done — 2.1 GB"))
-                .action("default", shell.t("Відкрити", "Open"))
-        } else {
-            notification.body(format!("{percent} %")).progress(Some(percent)).resident(true)
-        };
-        Self::send(notification, false)
-    }
 }
 
-impl App for Catalog {
-    type Message = Message;
-
-    fn new(shell: &mut Shell<Message>) -> (Self, Task<Message>) {
-        let lang = shell.lang();
-        let catalog = Self {
+impl Catalog {
+    fn initial(lang: Lang) -> Self {
+        Self {
             page: Page::Overview,
             look: Look::System,
             accent: None,
@@ -444,8 +565,15 @@ impl App for Catalog {
             issue_open: false,
             info_open: false,
             plan: Fruit::Pear,
-        };
-        (catalog, Task::none())
+        }
+    }
+}
+
+impl App for Catalog {
+    type Message = Message;
+
+    fn new(shell: &mut Shell<Message>) -> (Self, Task<Message>) {
+        (Self::initial(shell.lang()), Task::none())
     }
 
     fn title(&self, shell: &Shell<Message>) -> String {
@@ -525,7 +653,11 @@ impl App for Catalog {
                 )
                 .choice(shell.t("Видалити", "Delete"), Tone::Danger, Message::Delete)
                 .cancel(shell.t("Скасувати", "Cancel"))
-                .choice(shell.t("Перейменувати", "Rename"), Tone::Accent, Message::Said("Rename")),
+                .choice(
+                    shell.t("Перейменувати", "Rename"),
+                    Tone::Accent,
+                    Message::Said(shell.t("Перейменувати", "Rename")),
+                ),
             ),
             Message::Delete => shell.toast_with(
                 shell.t("Файл видалено", "File deleted"),
@@ -542,13 +674,15 @@ impl App for Catalog {
             }
             Message::Undone => shell.toast(shell.t("Дію скасовано", "Undone")),
             Message::Context => shell.context_menu(vec![
-                Item::action(shell.t("Копіювати", "Copy"), Message::Said("Copy")).shortcut("Ctrl+C"),
-                Item::action(shell.t("Вставити", "Paste"), Message::Said("Paste")).shortcut("Ctrl+V"),
+                Item::action(shell.t("Копіювати", "Copy"), Message::Said(shell.t("Копіювати", "Copy")))
+                    .shortcut("Ctrl+C"),
+                Item::action(shell.t("Вставити", "Paste"), Message::Said(shell.t("Вставити", "Paste")))
+                    .shortcut("Ctrl+V"),
                 Item::separator(),
                 Item::submenu(
                     shell.t("Поділитися", "Share"),
                     vec![
-                        Item::action("Email", Message::Said("Email")),
+                        Item::action(shell.t("Пошта", "Email"), Message::Said(shell.t("Пошта", "Email"))),
                         Item::action("Telegram", Message::Said("Telegram")),
                     ],
                 ),
@@ -575,34 +709,21 @@ impl App for Catalog {
                     return Task::perform(system::withdraw(id), |_| Message::Ignored);
                 }
             }
-            Message::Preset(preset) => return self.preset(&preset, shell),
-            Message::Sent(download, result) => match result {
-                Ok(id) => {
-                    self.last = Some(id);
-                    if download && let Some((slot, _)) = &mut self.download {
-                        *slot = id;
-                    }
-                    self.log(format!("{} #{id}", shell.t("Надіслано", "Sent")));
-                }
-                Err(err) => {
-                    self.download = None;
-                    self.log(format!("{}: {err}", shell.t("Помилка", "Error")));
-                    shell.toast(shell.t("Сервер сповіщень недоступний", "No notification server"));
-                }
-            },
-            Message::Event(event) => {
-                let line = match event {
-                    NotificationEvent::Action { id, key } => format!("#{id} {} «{key}»", shell.t("дія", "action")),
-                    NotificationEvent::Replied { id, text } => {
-                        format!("#{id} {} «{text}»", shell.t("відповідь", "reply"))
-                    }
-                    NotificationEvent::Closed { id, reason } => {
-                        format!("#{id} {} ({reason:?})", shell.t("закрито", "closed"))
-                    }
-                };
-                self.log(line);
+            Message::Preset(preset) => {
+                return Self::dispatch(preset_request(&mut self.download, &preset, shell.lang()));
             }
-            Message::Tick => return self.tick(shell),
+            Message::Sent(download, result) => {
+                if let Some(text) = self.on_sent(download, result, shell.lang()) {
+                    shell.toast(text);
+                }
+            }
+            Message::Event(event) => {
+                if let NotificationEvent::Closed { id, .. } = &event {
+                    self.on_closed(*id);
+                }
+                self.log(event_line(&event, shell.lang()));
+            }
+            Message::Tick => return Self::dispatch(download_tick(&mut self.download, shell.lang())),
             Message::ClearLog => self.log.clear(),
             Message::DockCount(count) => {
                 self.dock_count = count;
@@ -640,16 +761,22 @@ impl App for Catalog {
         pages::view(self, shell)
     }
 
+    fn look_changed(&mut self, shell: &mut Shell<Message>) -> Task<Message> {
+        self.apply_preview(shell);
+        Task::none()
+    }
+
     fn menus(&self, shell: &Shell<Message>) -> Vec<Menu<Message>> {
         let pages = Page::ALL
             .iter()
             .enumerate()
             .map(|(index, page)| {
-                Item::action(page.title(shell.lang()), Message::Page(index))
-                    .shortcut(format!("Ctrl+{}", (index + 1) % 10))
-                    .checked(*page == self.page)
+                let item = Item::action(page.title(shell.lang()), Message::Page(index)).checked(*page == self.page);
+                match page_shortcut(index) {
+                    Some(chord) => item.shortcut(chord),
+                    None => item,
+                }
             })
-            .take(10)
             .collect();
         vec![
             Menu::new(shell.t("Каталог", "Catalogue"), pages),
@@ -692,5 +819,319 @@ impl App for Catalog {
         } else {
             events
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use glide_sdk::Harness;
+    use glide_sdk::app::Event;
+    use glide_sdk::iced::Size;
+
+    use super::*;
+
+    const LANGS: [Lang; 2] = [Lang::Uk, Lang::En];
+
+    fn bench() -> Harness<Catalog> {
+        Harness::new(APP_ID, glide_sdk::Look::default(), Size::new(1120.0, 760.0))
+    }
+
+    fn shell_look(appearance: Appearance, accent: Accent) -> glide_sdk::glide_app::Look {
+        glide_sdk::glide_app::Look {
+            appearance,
+            accent,
+            language: Some("en".into()),
+            animation_scale: 1.0,
+            reduced_motion: false,
+            font_family: None,
+            icon_theme: None,
+            locked: false,
+            active_workspace: 0,
+        }
+    }
+
+    fn opposite(appearance: Appearance) -> Appearance {
+        if appearance == Appearance::Light { Appearance::Dark } else { Appearance::Light }
+    }
+
+    fn slot_id(catalog: &Catalog) -> Option<u32> {
+        catalog.download.map(|(id, _)| id)
+    }
+
+    #[test]
+    fn the_download_tick_replaces_the_tracked_id_and_is_sent_as_the_downloads_own() {
+        let mut download = Some((5, 0.0));
+        let tick = download_tick(&mut download, Lang::En).expect("a running download ticks");
+        assert!(tick.download, "the reply to a tick must reach the download slot, not the draft's last id");
+        assert_eq!(tick.notification.replaces, 5);
+        assert_eq!(tick.notification.progress, Some(7));
+        assert!(tick.notification.resident);
+        assert_eq!(download.map(|(id, _)| id), Some(5));
+    }
+
+    #[test]
+    fn a_download_still_waiting_for_its_first_id_or_not_running_does_not_tick() {
+        let mut pending = Some((0, 0.0));
+        assert!(download_tick(&mut pending, Lang::En).is_none());
+        assert_eq!(pending, Some((0, 0.0)));
+        let mut idle = None;
+        assert!(download_tick(&mut idle, Lang::En).is_none());
+        assert_eq!(idle, None);
+    }
+
+    #[test]
+    fn the_download_finishes_with_a_done_notice_without_a_progress_bar() {
+        let mut download = Some((5, 0.0));
+        let mut sent = Vec::new();
+        while let Some(tick) = download_tick(&mut download, Lang::En) {
+            sent.push(tick);
+            assert!(sent.len() <= 20, "the simulated download ends");
+        }
+        let last = sent.last().expect("at least one tick");
+        assert_eq!(last.notification.progress, None);
+        assert!(!last.notification.resident);
+        assert_eq!(download, None);
+        assert!(sent.iter().all(|tick| tick.download && tick.notification.replaces == 5));
+    }
+
+    #[test]
+    fn pressing_download_again_restarts_the_tracked_notification_instead_of_orphaning_it() {
+        let mut running = Some((5, 0.4));
+        let again = preset_request(&mut running, &Preset::Download, Lang::En).expect("a known id restarts");
+        assert!(again.download);
+        assert_eq!(again.notification.replaces, 5);
+        assert_eq!(running, Some((5, 0.0)));
+
+        let mut pending = Some((0, 0.0));
+        assert!(preset_request(&mut pending, &Preset::Download, Lang::En).is_none(), "no id yet: ignored");
+        assert_eq!(pending, Some((0, 0.0)));
+
+        let mut idle = None;
+        let first = preset_request(&mut idle, &Preset::Download, Lang::En).expect("the first press starts it");
+        assert!(first.download);
+        assert_eq!(first.notification.replaces, 0);
+        assert_eq!(idle, Some((0, 0.0)));
+    }
+
+    #[test]
+    fn the_other_presets_are_not_the_downloads_and_leave_it_running() {
+        let mut download = Some((5, 0.3));
+        for preset in [Preset::Message, Preset::Critical, Preset::Reminder] {
+            let outgoing = preset_request(&mut download, &preset, Lang::En).expect("plain presets always send");
+            assert!(!outgoing.download, "{preset:?}");
+        }
+        assert_eq!(download, Some((5, 0.3)));
+    }
+
+    #[test]
+    fn a_reply_with_a_new_id_moves_the_download_slot_and_leaves_the_drafts_last_alone() {
+        let mut catalog = Catalog::initial(Lang::En);
+        catalog.last = Some(3);
+        catalog.download = Some((5, 0.07));
+        catalog.on_sent(true, Ok(9), Lang::En);
+        assert_eq!(catalog.download, Some((9, 0.07)));
+        assert_eq!(catalog.last, Some(3));
+        catalog.on_sent(false, Ok(4), Lang::En);
+        assert_eq!(catalog.last, Some(4));
+        assert_eq!(slot_id(&catalog), Some(9));
+    }
+
+    #[test]
+    fn the_first_reply_gives_a_pending_download_its_id_and_a_late_one_after_it_ended_is_ignored() {
+        let mut catalog = Catalog::initial(Lang::En);
+        catalog.download = Some((0, 0.0));
+        catalog.on_sent(true, Ok(5), Lang::En);
+        assert_eq!(catalog.download, Some((5, 0.0)));
+        assert_eq!(catalog.last, None);
+
+        catalog.download = None;
+        catalog.on_sent(true, Ok(9), Lang::En);
+        assert_eq!(catalog.download, None);
+        assert_eq!(catalog.last, None, "a download's reply never becomes the draft's last id");
+    }
+
+    #[test]
+    fn a_failed_draft_send_keeps_the_download_and_a_failed_download_send_stops_it() {
+        let reason = "created too many similar notifications in quick succession";
+        let mut catalog = Catalog::initial(Lang::En);
+        catalog.download = Some((5, 0.35));
+        let toast = catalog.on_sent(false, Err(reason.into()), Lang::En).expect("a failed send is announced");
+        assert_eq!(catalog.download, Some((5, 0.35)), "the draft's failure is not the download's");
+        assert!(toast.contains(reason), "the toast carries the server's own words: {toast}");
+        assert!(!toast.contains("No notification server"));
+        assert!(catalog.log[0].contains(reason));
+
+        let toast = catalog.on_sent(true, Err("the bus went away".into()), Lang::En);
+        assert_eq!(catalog.download, None);
+        assert!(toast.is_some_and(|text| text.contains("the bus went away")));
+    }
+
+    #[test]
+    fn a_close_signal_stops_the_download_only_for_its_own_live_id() {
+        let mut catalog = Catalog::initial(Lang::En);
+        catalog.download = Some((0, 0.0));
+        catalog.on_closed(0);
+        assert_eq!(catalog.download, Some((0, 0.0)), "a download without an id is not any notification");
+        catalog.download = Some((9, 0.5));
+        catalog.on_closed(4);
+        assert_eq!(catalog.download, Some((9, 0.5)));
+        catalog.on_closed(9);
+        assert_eq!(catalog.download, None);
+    }
+
+    #[test]
+    fn the_messages_walk_the_download_through_a_server_that_forgets_its_id() {
+        let mut harness = bench();
+        harness.message(Message::Preset(Preset::Download));
+        assert_eq!(harness.app().download, Some((0, 0.0)));
+        harness.message(Message::Tick);
+        assert_eq!(harness.app().download, Some((0, 0.0)), "no tick before the first id");
+        harness.message(Message::Sent(true, Ok(5)));
+        harness.message(Message::Tick);
+        assert_eq!(slot_id(harness.app()), Some(5));
+        harness.message(Message::Sent(true, Ok(9)));
+        assert_eq!(slot_id(harness.app()), Some(9));
+        assert_eq!(harness.app().last, None);
+        harness.message(Message::Sent(false, Ok(3)));
+        assert_eq!(harness.app().last, Some(3));
+        assert_eq!(slot_id(harness.app()), Some(9));
+        harness.message(Message::Withdraw);
+        assert_eq!(harness.app().last, None);
+        assert_eq!(slot_id(harness.app()), Some(9), "withdrawing the draft leaves the download alone");
+        harness.message(Message::Event(NotificationEvent::Closed { id: 9, reason: Closed::Dismissed }));
+        assert_eq!(harness.app().download, None, "dismissing the download ends it");
+        harness.message(Message::Tick);
+        assert_eq!(harness.app().download, None);
+    }
+
+    #[test]
+    fn a_system_look_with_a_chosen_accent_keeps_following_the_shells_appearance() {
+        let mut harness = bench();
+        let initial = harness.shell().paint().tokens.appearance;
+        let other = opposite(initial);
+        harness.message(Message::Accent(Some(Accent::Teal)));
+        assert_eq!(harness.shell().previewing(), Some((initial, Accent::Teal)));
+        harness.send(Event::Look(shell_look(other, Accent::Blue)));
+        assert_eq!(harness.shell().previewing(), Some((other, Accent::Teal)));
+        assert_eq!(harness.shell().paint().tokens.appearance, other);
+    }
+
+    #[test]
+    fn a_chosen_appearance_with_the_system_accent_keeps_following_the_shells_accent() {
+        let mut harness = bench();
+        let accent = harness.shell().look().accent;
+        let moved = if accent == Accent::Teal { Accent::Blue } else { Accent::Teal };
+        harness.message(Message::Look(Look::Dark));
+        assert_eq!(harness.shell().previewing(), Some((Appearance::Dark, accent)));
+        harness.send(Event::Look(shell_look(Appearance::Light, moved)));
+        assert_eq!(harness.shell().previewing(), Some((Appearance::Dark, moved)));
+        assert_eq!(harness.shell().paint().tokens.appearance, Appearance::Dark);
+    }
+
+    #[test]
+    fn without_a_preview_the_window_follows_the_shell_outright() {
+        let mut harness = bench();
+        let other = opposite(harness.shell().paint().tokens.appearance);
+        harness.message(Message::Accent(Some(Accent::Teal)));
+        harness.message(Message::Accent(None));
+        assert_eq!(harness.shell().previewing(), None);
+        harness.send(Event::Look(shell_look(other, Accent::Blue)));
+        assert_eq!(harness.shell().previewing(), None);
+        assert_eq!(harness.shell().paint().tokens.appearance, other);
+    }
+
+    #[test]
+    fn the_catalogue_menu_lists_every_page_and_gives_shortcuts_to_the_first_ten() {
+        let harness = bench();
+        let lang = harness.shell().lang();
+        let items = &harness.menus()[0].items;
+        assert_eq!(items.len(), Page::ALL.len(), "the menu is also the top-bar menu: no page may be missing");
+        for (index, item) in items.iter().enumerate() {
+            let Item::Action { label, shortcut, message, .. } = item else {
+                panic!("page entries are actions: {item:?}");
+            };
+            assert!(matches!(message, Message::Page(page) if *page == index), "{label} opens page {index}");
+            assert_eq!(label, Page::ALL[index].title(lang));
+            assert_eq!(shortcut.is_some(), index < 10, "{label}");
+        }
+        let chords: Vec<&str> = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Action { shortcut, .. } => shortcut.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            chords,
+            ["Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7", "Ctrl+8", "Ctrl+9", "Ctrl+0"]
+        );
+    }
+
+    #[test]
+    fn shortcuts_stop_after_ctrl_zero() {
+        assert_eq!(page_shortcut(0).as_deref(), Some("Ctrl+1"));
+        assert_eq!(page_shortcut(9).as_deref(), Some("Ctrl+0"));
+        assert_eq!(page_shortcut(10), None);
+        assert_eq!(page_shortcut(13), None);
+    }
+
+    #[test]
+    fn dropdown_labels_are_translated_and_distinct_within_a_language() {
+        for lang in LANGS {
+            let timeouts: HashSet<&str> = Timeout::ALL.iter().map(|timeout| timeout.label(lang)).collect();
+            assert_eq!(timeouts.len(), Timeout::ALL.len());
+            let fruits: HashSet<&str> = Fruit::ALL.iter().map(|fruit| fruit.label(lang)).collect();
+            assert_eq!(fruits.len(), Fruit::ALL.len());
+        }
+        for timeout in Timeout::ALL {
+            assert_ne!(timeout.label(Lang::Uk), timeout.label(Lang::En), "{timeout:?} is translated");
+        }
+        for fruit in Fruit::ALL {
+            assert_ne!(fruit.label(Lang::Uk), fruit.label(Lang::En), "{fruit:?} is translated");
+        }
+    }
+
+    #[test]
+    fn dropdown_options_show_the_label_in_the_ui_language_and_match_by_value() {
+        let timeouts: Vec<String> = timeout_options(Lang::Uk).iter().map(ToString::to_string).collect();
+        assert_eq!(timeouts, ["Типово для сервера", "3 с", "10 с", "Ніколи"]);
+        let fruits: Vec<String> = fruit_options(Lang::En).iter().map(ToString::to_string).collect();
+        assert_eq!(fruits, ["🍎 Apple", "🍐 Pear", "🟣 Plum"]);
+        assert_eq!(timeout_option(Timeout::Never, Lang::Uk), timeout_option(Timeout::Never, Lang::En));
+        assert_ne!(timeout_option(Timeout::Short, Lang::En), timeout_option(Timeout::Long, Lang::En));
+    }
+
+    #[test]
+    fn close_reasons_are_words_in_the_ui_language_not_debug_names() {
+        let line = |reason, lang| event_line(&NotificationEvent::Closed { id: 7, reason }, lang);
+        for reason in [Closed::Expired, Closed::Dismissed, Closed::Withdrawn, Closed::Other] {
+            assert_ne!(closed_label(reason, Lang::Uk), closed_label(reason, Lang::En), "{reason:?} is translated");
+            for lang in LANGS {
+                assert!(!line(reason, lang).contains(&format!("{reason:?}")), "{reason:?}");
+            }
+        }
+        assert_eq!(line(Closed::Expired, Lang::Uk), "#7 закрито (минув час)");
+        assert_eq!(line(Closed::Expired, Lang::En), "#7 closed (expired)");
+    }
+
+    #[test]
+    fn the_event_log_speaks_the_ui_language_for_actions_and_replies() {
+        let action = NotificationEvent::Action { id: 2, key: "later".into() };
+        let reply = NotificationEvent::Replied { id: 3, text: "ok".into() };
+        assert_eq!(event_line(&action, Lang::Uk), "#2 дія «later»");
+        assert_eq!(event_line(&action, Lang::En), "#2 action «later»");
+        assert_eq!(event_line(&reply, Lang::Uk), "#3 відповідь «ok»");
+        assert_eq!(event_line(&reply, Lang::En), "#3 reply «ok»");
+    }
+
+    #[test]
+    fn the_failure_toast_is_translated_and_keeps_the_servers_error() {
+        let error = "created too many similar notifications";
+        let uk = send_failed(error, Lang::Uk);
+        let en = send_failed(error, Lang::En);
+        assert_ne!(uk, en);
+        assert!(uk.ends_with(error) && en.ends_with(error));
     }
 }
