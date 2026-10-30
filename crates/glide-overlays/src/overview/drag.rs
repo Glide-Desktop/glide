@@ -19,6 +19,7 @@ pub enum Target {
     Workspace(WorkspaceId),
     New,
     Edge(Side),
+    Page,
 }
 
 #[derive(Debug, Clone)]

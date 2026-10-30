@@ -25,6 +25,7 @@ fn closing_since(ms: u64) -> Phase {
 
 const ONE: WorkspaceId = WorkspaceId(1);
 const TWO: WorkspaceId = WorkspaceId(2);
+const THREE: WorkspaceId = WorkspaceId(3);
 
 fn place() -> Place {
     Place { output: rect(0, 0, 1920, 1080), area: rect(0, 34, 1920, 1046) }
@@ -444,5 +445,298 @@ mod dragging {
         assert!(ui.cancel_drag());
         assert!(!ui.is_pressed());
         assert!(!ui.cancel_drag());
+    }
+
+    #[test]
+    fn a_drag_ended_by_its_window_closing_clears_the_thumbnail_highlight() {
+        let (mut ui, here, there) = two_pages();
+        let at = centre(ui.preview_rect(here).unwrap());
+        ui.press(here, at);
+        ui.drag_motion(thumb_centre(&ui, TWO));
+        assert_eq!(ui.strip.dropping(), Some(Slot::Workspace(TWO)), "the thumbnail under the pointer is the target");
+        ui.relayout(&[entry(there, rect(100, 100, 800, 600), TWO)], place());
+        assert!(!ui.is_pressed(), "the drag ended with its window");
+        assert_eq!(ui.strip.dropping(), None, "no thumbnail keeps the drop highlight");
+    }
+
+    fn carried_across_an_edge_switch() -> (OverviewUi, WindowId) {
+        let (mut ui, here, _) = two_pages();
+        let at = centre(ui.preview_rect(here).unwrap());
+        ui.press(here, at);
+        ui.drag_motion(Point::from((at.x + 40.0, at.y + 40.0)));
+        assert!(ui.is_dragging());
+        ui.set_workspaces(vec![ONE, TWO], TWO, true);
+        (ui, here)
+    }
+
+    #[test]
+    fn after_an_edge_switch_a_drop_on_the_windows_own_thumbnail_sends_it_back() {
+        let (mut ui, _) = carried_across_an_edge_switch();
+        ui.drag_motion(thumb_centre(&ui, ONE));
+        assert_eq!(ui.release(), Some(Release::Settled), "its own workspace is where it already is");
+    }
+
+    #[test]
+    fn after_an_edge_switch_a_drop_outside_the_grid_sends_it_back() {
+        let (mut ui, _) = carried_across_an_edge_switch();
+        ui.drag_motion(Point::from((5.0, f64::from(place().area.loc.y) + 5.0)));
+        assert_eq!(ui.release(), Some(Release::Settled), "the strip band beside the thumbnails is nowhere");
+    }
+
+    #[test]
+    fn after_an_edge_switch_a_drop_inside_the_grid_lands_on_the_page_in_view() {
+        let (mut ui, here) = carried_across_an_edge_switch();
+        let grid = ui.grid_area();
+        ui.drag_motion(Point::from((960.0, f64::from(grid.loc.y) + 200.0)));
+        assert_eq!(ui.release(), Some(Release::Move { id: here, to: MoveTo::Workspace(TWO) }));
+    }
+
+    #[test]
+    fn the_page_in_view_is_a_drop_zone_that_neither_highlights_a_thumbnail_nor_shrinks_the_tile() {
+        let (mut ui, here, _) = two_pages();
+        let at = centre(ui.preview_rect(here).unwrap());
+        ui.press(here, at);
+        ui.drag_motion(Point::from((at.x + 40.0, at.y + 40.0)));
+        assert_eq!(ui.strip.dropping(), None);
+        assert_eq!(ui.drag.as_ref().and_then(drag::Drag::target), Some(Target::Page));
+        ui.drag_motion(Point::from((5.0, f64::from(place().area.loc.y) + 5.0)));
+        assert_eq!(ui.drag.as_ref().and_then(drag::Drag::target), None, "outside the grid there is no target");
+    }
+}
+
+mod page_switch {
+    use super::*;
+
+    fn three_pages_in_the_middle_one_empty() -> (OverviewUi, WindowId) {
+        let (first, third) = (WindowId::next(), WindowId::next());
+        let entries = [entry(first, rect(100, 100, 800, 600), ONE), entry(third, rect(100, 100, 800, 600), THREE)];
+        let ui = OverviewUi::new(&entries, place(), &theme_with_duration(0), None, (vec![ONE, TWO, THREE], TWO, true));
+        (ui, third)
+    }
+
+    #[test]
+    fn leaving_an_empty_page_that_is_removed_still_slides_the_page_arriving() {
+        let (mut ui, third) = three_pages_in_the_middle_one_empty();
+        let before = ui.preview_rect(third).unwrap();
+        ui.set_workspaces(vec![ONE, THREE], THREE, true);
+        assert!((ui.scroll.target() - 1.0).abs() < f64::EPSILON, "the scroll is headed for the new page");
+        if !glide_theme::motion::is_disabled() {
+            assert!(ui.is_animating(), "the tween runs instead of snapping");
+            assert_eq!(ui.preview_rect(third).unwrap(), before, "the arriving page starts where it was drawn");
+        }
+    }
+
+    #[test]
+    fn leaving_an_empty_page_to_the_page_before_it_slides_that_page_in_from_the_left() {
+        let (first, third) = (WindowId::next(), WindowId::next());
+        let entries = [entry(first, rect(100, 100, 800, 600), ONE), entry(third, rect(100, 100, 800, 600), THREE)];
+        let mut ui =
+            OverviewUi::new(&entries, place(), &theme_with_duration(0), None, (vec![ONE, TWO, THREE], TWO, true));
+        let before = ui.preview_rect(first).unwrap();
+        ui.set_workspaces(vec![ONE, THREE], ONE, true);
+        assert!(ui.scroll.target().abs() < f64::EPSILON);
+        if !glide_theme::motion::is_disabled() {
+            assert!(ui.is_animating());
+            assert_eq!(ui.preview_rect(first).unwrap(), before);
+        }
+    }
+}
+
+mod strip_stacking {
+    use smithay::backend::renderer::element::Element;
+
+    use super::*;
+    use crate::overview::probe::Probe;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Part {
+        Ring,
+        Frame,
+        Window,
+        Wallpaper,
+    }
+
+    fn three_pages() -> OverviewUi {
+        let entries = [
+            entry(WindowId::next(), rect(100, 100, 800, 600), ONE),
+            entry(WindowId::next(), rect(100, 100, 800, 600), TWO),
+            entry(WindowId::next(), rect(100, 100, 800, 600), THREE),
+        ];
+        ui_with(&entries, 0, None, &[ONE, TWO, THREE])
+    }
+
+    fn plan(ui: &mut OverviewUi) -> Vec<Layer<Probe>> {
+        let painter = glide_paint::Painter::new(14.0, None);
+        let mut icons = crate::icon::IconLoader::new(None);
+        ui.render(
+            &mut Probe,
+            Frame {
+                scale: Scale::from(1.0),
+                output_scale: 1,
+                painter: &painter,
+                icons: &mut icons,
+                wallpaper: WallpaperFit::default(),
+                lookup: |_: WindowId| None::<TileInfo>,
+            },
+        )
+    }
+
+    fn thumb(ui: &OverviewUi, workspace: WorkspaceId) -> Rectangle<f64, Logical> {
+        ui.strip.thumb_rect(ui.place.area, ui.place.output, workspace, 0.0).unwrap()
+    }
+
+    fn parts(ui: &OverviewUi, plan: &[Layer<Probe>]) -> Vec<(WorkspaceId, Part)> {
+        let place = ui.place();
+        let size = strip::thumb_size(place.area, place.output);
+        let margin = strip::margin();
+        let centres: Vec<(WorkspaceId, f64, f64)> = ui
+            .workspaces
+            .iter()
+            .map(|ws| {
+                let rect = thumb(ui, *ws);
+                (*ws, rect.loc.x + rect.size.w / 2.0, rect.loc.y + rect.size.h / 2.0)
+            })
+            .collect();
+        plan.iter()
+            .filter_map(|layer| match layer {
+                Layer::Window(draw) => ui.workspace_of(draw.id).map(|workspace| (workspace, Part::Window)),
+                Layer::Chrome(element) => {
+                    let bounds = element.geometry(Scale::from(1.0));
+                    let (mx, my) = (
+                        f64::from(bounds.loc.x) + f64::from(bounds.size.w) / 2.0,
+                        f64::from(bounds.loc.y) + f64::from(bounds.size.h) / 2.0,
+                    );
+                    let (workspace, ..) =
+                        centres.iter().find(|(_, cx, cy)| (cx - mx).abs() <= 1.5 && (cy - my).abs() <= 1.5)?;
+                    let (w, h) = (bounds.size.w, bounds.size.h);
+                    let part = if (w, h) == (size.w, size.h) {
+                        Part::Wallpaper
+                    } else if (w, h) == (size.w + 2 * margin, size.h + 2 * margin) {
+                        Part::Frame
+                    } else if w > size.w && h > size.h {
+                        Part::Ring
+                    } else {
+                        return None;
+                    };
+                    Some((*workspace, part))
+                }
+            })
+            .collect()
+    }
+
+    fn stacks(parts: Vec<(WorkspaceId, Part)>) -> Vec<(WorkspaceId, Vec<Part>)> {
+        let mut stacks: Vec<(WorkspaceId, Vec<Part>)> = Vec::new();
+        for (workspace, part) in parts {
+            match stacks.last_mut() {
+                Some((owner, column)) if *owner == workspace => column.push(part),
+                _ => stacks.push((workspace, vec![part])),
+            }
+        }
+        stacks
+    }
+
+    fn carry(ui: &mut OverviewUi, workspace: WorkspaceId, steps: f64) {
+        let grab = thumb(ui, workspace);
+        let at = Point::from((grab.loc.x + grab.size.w / 2.0, grab.loc.y + grab.size.h / 2.0));
+        let step = thumb(ui, THREE).loc.x - thumb(ui, TWO).loc.x;
+        assert!(ui.press_strip(workspace, at));
+        assert!(ui.drag_motion(Point::from((at.x + steps * step, at.y))));
+        assert_eq!(ui.strip.lifted(), Some(workspace));
+    }
+
+    const WHOLE: [Part; 3] = [Part::Frame, Part::Window, Part::Wallpaper];
+    const WITH_RING: [Part; 4] = [Part::Ring, Part::Frame, Part::Window, Part::Wallpaper];
+
+    #[test]
+    fn each_thumbnail_is_one_stack_of_frame_over_windows_over_wallpaper() {
+        let mut ui = three_pages();
+        let layers = plan(&mut ui);
+        assert_eq!(
+            stacks(parts(&ui, &layers)),
+            vec![(ONE, WITH_RING.to_vec()), (TWO, WHOLE.to_vec()), (THREE, WHOLE.to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_carried_thumbnail_stacks_whole_above_the_neighbour_it_overlaps() {
+        let mut ui = three_pages();
+        carry(&mut ui, THREE, -0.4);
+        assert!(thumb(&ui, THREE).loc.x < thumb(&ui, TWO).loc.x + thumb(&ui, TWO).size.w, "they overlap");
+        let layers = plan(&mut ui);
+        assert_eq!(
+            stacks(parts(&ui, &layers)),
+            vec![(THREE, WHOLE.to_vec()), (ONE, WITH_RING.to_vec()), (TWO, WHOLE.to_vec())],
+            "the carried thumbnail's wallpaper sits above the neighbour's windows; the ring stays above the others"
+        );
+    }
+
+    #[test]
+    fn the_ring_of_a_carried_active_thumbnail_stays_above_it() {
+        let mut ui = three_pages();
+        carry(&mut ui, ONE, 0.4);
+        let layers = plan(&mut ui);
+        assert_eq!(
+            stacks(parts(&ui, &layers)),
+            vec![(ONE, WITH_RING.to_vec()), (TWO, WHOLE.to_vec()), (THREE, WHOLE.to_vec())]
+        );
+    }
+}
+
+mod add_tile {
+    use smithay::backend::renderer::element::Element;
+
+    use super::*;
+    use crate::overview::probe::Probe;
+
+    fn raster_and_shown_widths(open: f64) -> (f64, i32) {
+        let entries = [entry(WindowId::next(), rect(100, 100, 800, 600), ONE)];
+        let mut ui = ui_with(&entries, 0, None, &[ONE]);
+        ui.strip.open_add(open);
+        let painter = glide_paint::Painter::new(14.0, None);
+        let mut icons = crate::icon::IconLoader::new(None);
+        let layers = ui.render(
+            &mut Probe,
+            Frame {
+                scale: Scale::from(1.0),
+                output_scale: 1,
+                painter: &painter,
+                icons: &mut icons,
+                wallpaper: WallpaperFit::default(),
+                lookup: |_: WindowId| None::<TileInfo>,
+            },
+        );
+        let place = ui.place();
+        let height = strip::thumb_size(place.area, place.output).h;
+        let slot = ui
+            .strip
+            .slots(place.area, place.output)
+            .into_iter()
+            .find(|(slot, _)| *slot == Slot::Add)
+            .map(|(_, rect)| rect)
+            .expect("a dynamic workspace list ends with the add tile");
+        layers
+            .iter()
+            .find_map(|layer| {
+                let Layer::Chrome(element) = layer else {
+                    return None;
+                };
+                let bounds = element.geometry(Scale::from(1.0));
+                let tile = bounds.size.h == height && (f64::from(bounds.loc.x) - slot.loc.x).abs() <= 1.0;
+                tile.then(|| (element.src().size.w, bounds.size.w))
+            })
+            .expect("the add tile is in the plan")
+    }
+
+    #[test]
+    fn the_add_tile_is_rastered_at_the_width_it_is_shown_at() {
+        for open in [0.0, 0.3, 0.5, 1.0] {
+            let (raster, shown) = raster_and_shown_widths(open);
+            assert!(
+                (raster - f64::from(shown)).abs() <= 4.0,
+                "open {open}: a {raster} px raster stretched over {shown} px turns corners and borders elliptical"
+            );
+        }
+        let (raster, shown) = raster_and_shown_widths(1.0);
+        assert!((raster - f64::from(shown)).abs() < f64::EPSILON, "a fully open tile is rastered exactly");
     }
 }

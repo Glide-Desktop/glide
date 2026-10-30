@@ -16,6 +16,7 @@ const MAX_HEIGHT: i32 = 120;
 const HEIGHT_SHARE: f64 = 0.1;
 const GAP: i32 = 14;
 const ADD_WIDTH: i32 = 56;
+const ADD_STEP: i32 = 4;
 const CAPTION_GAP: i32 = 6;
 const CAPTION_HEIGHT: i32 = 16;
 const BOTTOM_GAP: i32 = glide_theme::spacing::SP5;
@@ -139,7 +140,7 @@ pub(super) fn band(area: Rectangle<i32, Logical>, output: Rectangle<i32, Logical
     TOP_GAP + thumb_size(area, output).h + CAPTION_GAP + CAPTION_HEIGHT + BOTTOM_GAP
 }
 
-fn margin() -> i32 {
+pub(super) fn margin() -> i32 {
     glide_paint::shadow_fade_margin(SHADOW_BLUR.ceil() as i32)
 }
 
@@ -320,6 +321,16 @@ impl Strip {
         self.drop.set_with(slot, hover_anim())
     }
 
+    #[cfg(test)]
+    pub(super) fn dropping(&self) -> Option<Slot> {
+        self.drop.target()
+    }
+
+    #[cfg(test)]
+    pub(super) fn open_add(&mut self, level: f64) {
+        self.add_open.jump(level);
+    }
+
     pub(super) fn is_animating(&self) -> bool {
         self.hover.is_animating(hover_anim())
             || self.drop.is_animating(hover_anim())
@@ -407,10 +418,11 @@ impl Strip {
     pub(super) fn render_chrome<R: ShellRenderer>(
         &mut self, renderer: &mut R, (theme, painter): (&OverviewTheme, &crate::paint::Painter),
         (area, output): (Rectangle<i32, Logical>, Rectangle<i32, Logical>), (alpha, rise): (f32, f64),
-        (scale, output_scale): (Scale<f64>, i32), elements: &mut Vec<OverviewElement<R>>,
-    ) {
+        (scale, output_scale): (Scale<f64>, i32),
+    ) -> Chrome<R> {
+        let mut chrome = Chrome { ring: Vec::new(), slots: Vec::new() };
         if alpha <= 0.0 {
-            return;
+            return chrome;
         }
         let key = RasterKey::new(theme, output_scale);
         let thumb = thumb_size(area, output);
@@ -419,95 +431,118 @@ impl Strip {
         let active_slot = self.active.map(Slot::Workspace);
         let active_rect = slots.iter().find(|(slot, _)| Some(*slot) == active_slot).map(|(_, rect)| *rect);
         if let Some(active) = active_rect {
-            self.render_ring(renderer, theme, (active, thumb, key), (alpha, rise), scale, elements);
+            self.render_ring(renderer, theme, (active, thumb, key), (alpha, rise), scale, &mut chrome.ring);
         }
 
-        let margin = margin();
         let mut captions = Vec::new();
-        for (slot, base) in &slots {
+        for (position, (slot, base)) in slots.iter().enumerate() {
             let drawn = self.drawn(*slot, *base, rise);
             let hover = self.hover.level(*slot, hover_anim());
             let drop = self.drop.level(*slot, hover_anim());
+            let mut pieces = Vec::new();
             match slot {
                 Slot::Workspace(id) => {
-                    let buckets = (bucket(hover), bucket(drop));
-                    let size = (thumb.w, thumb.h);
-                    let frames = self.frames.entry(output_scale).or_default();
-                    let outdated = frames.get(&buckets).is_none_or(|(cached, at, _)| *cached != key || *at != size);
-                    if outdated && let Some(memory) = draw_frame(theme, size, buckets, output_scale).map(|c| c.finish())
-                    {
-                        frames.insert(buckets, (key, size, memory));
-                    }
-                    if let Some((_, _, memory)) = frames.get(&buckets) {
-                        let factor = drawn.size.w / f64::from(thumb.w);
-                        let outer = Rectangle::new(
-                            Point::from((
-                                drawn.loc.x - f64::from(margin) * factor,
-                                drawn.loc.y - f64::from(margin) * factor,
-                            )),
-                            Size::from((
-                                f64::from(thumb.w + 2 * margin) * factor,
-                                f64::from(thumb.h + 2 * margin) * factor,
-                            )),
-                        );
-                        let logical = (thumb.w + 2 * margin, thumb.h + 2 * margin);
-                        elements.extend(
-                            place_in(renderer, outer, logical, memory, alpha, scale).map(OverviewElement::Buffer),
-                        );
-                    }
+                    let frame = self.render_frame(renderer, theme, (drawn, thumb, key), (hover, drop), (alpha, scale));
+                    pieces.extend(frame);
                     let active = self.active == Some(*id);
                     let index = self.index_of(*id).unwrap_or(0);
                     let text =
                         crate::i18n::t(crate::i18n::Key::OverviewDesktop).replace("{}", &(index + 1).to_string());
-                    captions.push((index, text, active, *base, 1.0));
+                    captions.push(Caption { slot: position, index, text, active, base: *base, share: 1.0 });
                 }
                 Slot::Add => {
                     let open = self.add_open();
-                    self.render_add(renderer, theme, (drawn, drop), (alpha, key), (scale, output_scale), elements);
+                    self.render_add(
+                        renderer,
+                        theme,
+                        (drawn, drop, thumb.w),
+                        (alpha, key),
+                        (scale, output_scale),
+                        &mut pieces,
+                    );
                     if open > 0.0 {
                         let text = crate::i18n::t(crate::i18n::Key::OverviewNewDesktop).to_string();
-                        captions.push((usize::MAX, text, false, *base, glide_theme::motion::assist(open)));
+                        let share = glide_theme::motion::assist(open);
+                        captions.push(Caption {
+                            slot: position,
+                            index: usize::MAX,
+                            text,
+                            active: false,
+                            base: *base,
+                            share,
+                        });
                     }
                 }
             }
+            chrome.slots.push((*slot, pieces));
         }
 
-        for (index, text, active, base, share) in captions {
-            let width = painter.text_width_styled(&text, &glide_theme::TextStyle::CAP).ceil() as i32 + 2;
-            let caption = CaptionKey { text, active, raster: key };
-            let cache = self.captions.entry(output_scale).or_default();
-            let outdated = cache.get(&index).is_none_or(|(cached, _, _)| *cached != caption);
-            if outdated {
-                let colour = if active { theme.strip_caption_active } else { theme.strip_caption };
-                let style = if active {
-                    glide_theme::TextStyle { weight: 600, ..glide_theme::TextStyle::CAP }
-                } else {
-                    glide_theme::TextStyle::CAP
-                };
-                if let Some(mut canvas) = crate::raster::Canvas::new(width, CAPTION_HEIGHT, output_scale) {
-                    canvas.label(painter, (0, width), crate::paint::TextAlign::Center, &caption.text, colour, &style);
-                    cache.insert(index, (caption.clone(), width, canvas.finish()));
-                }
-            }
-            if let Some((_, width, memory)) = cache.get(&index) {
-                let rect = Rectangle::new(
-                    Point::from((
-                        base.loc.x + (base.size.w - f64::from(*width)) / 2.0,
-                        base.loc.y + base.size.h + f64::from(CAPTION_GAP) - rise,
-                    )),
-                    Size::from((f64::from(*width), f64::from(CAPTION_HEIGHT))),
-                );
-                let shown = alpha * share as f32;
-                elements.extend(
-                    place_in(renderer, rect, (*width, CAPTION_HEIGHT), memory, shown, scale)
-                        .map(OverviewElement::Buffer),
-                );
+        for caption in &captions {
+            let element =
+                self.render_caption(renderer, (theme, painter), (key, alpha, rise), (scale, output_scale), caption);
+            chrome.slots[caption.slot].1.extend(element);
+        }
+        chrome
+    }
+
+    fn render_frame<R: ShellRenderer>(
+        &mut self, renderer: &mut R, theme: &OverviewTheme,
+        (drawn, thumb, key): (Rectangle<f64, Logical>, Size<i32, Logical>, RasterKey), (hover, drop): (f64, f64),
+        (alpha, scale): (f32, Scale<f64>),
+    ) -> Option<OverviewElement<R>> {
+        let margin = margin();
+        let buckets = (bucket(hover), bucket(drop));
+        let size = (thumb.w, thumb.h);
+        let frames = self.frames.entry(key.output_scale).or_default();
+        let outdated = frames.get(&buckets).is_none_or(|(cached, at, _)| *cached != key || *at != size);
+        if outdated && let Some(memory) = draw_frame(theme, size, buckets, key.output_scale).map(|c| c.finish()) {
+            frames.insert(buckets, (key, size, memory));
+        }
+        let (_, _, memory) = frames.get(&buckets)?;
+        let factor = drawn.size.w / f64::from(thumb.w);
+        let outer = Rectangle::new(
+            Point::from((drawn.loc.x - f64::from(margin) * factor, drawn.loc.y - f64::from(margin) * factor)),
+            Size::from((f64::from(thumb.w + 2 * margin) * factor, f64::from(thumb.h + 2 * margin) * factor)),
+        );
+        let logical = (thumb.w + 2 * margin, thumb.h + 2 * margin);
+        place_in(renderer, outer, logical, memory, alpha, scale).map(OverviewElement::Buffer)
+    }
+
+    fn render_caption<R: ShellRenderer>(
+        &mut self, renderer: &mut R, (theme, painter): (&OverviewTheme, &crate::paint::Painter),
+        (key, alpha, rise): (RasterKey, f32, f64), (scale, output_scale): (Scale<f64>, i32), caption: &Caption,
+    ) -> Option<OverviewElement<R>> {
+        let width = painter.text_width_styled(&caption.text, &glide_theme::TextStyle::CAP).ceil() as i32 + 2;
+        let wanted = CaptionKey { text: caption.text.clone(), active: caption.active, raster: key };
+        let cache = self.captions.entry(output_scale).or_default();
+        let outdated = cache.get(&caption.index).is_none_or(|(cached, _, _)| *cached != wanted);
+        if outdated {
+            let colour = if caption.active { theme.strip_caption_active } else { theme.strip_caption };
+            let style = if caption.active {
+                glide_theme::TextStyle { weight: 600, ..glide_theme::TextStyle::CAP }
+            } else {
+                glide_theme::TextStyle::CAP
+            };
+            if let Some(mut canvas) = crate::raster::Canvas::new(width, CAPTION_HEIGHT, output_scale) {
+                canvas.label(painter, (0, width), crate::paint::TextAlign::Center, &wanted.text, colour, &style);
+                cache.insert(caption.index, (wanted, width, canvas.finish()));
             }
         }
+        let (_, width, memory) = cache.get(&caption.index)?;
+        let base = caption.base;
+        let rect = Rectangle::new(
+            Point::from((
+                base.loc.x + (base.size.w - f64::from(*width)) / 2.0,
+                base.loc.y + base.size.h + f64::from(CAPTION_GAP) - rise,
+            )),
+            Size::from((f64::from(*width), f64::from(CAPTION_HEIGHT))),
+        );
+        let shown = alpha * caption.share as f32;
+        place_in(renderer, rect, (*width, CAPTION_HEIGHT), memory, shown, scale).map(OverviewElement::Buffer)
     }
 
     fn render_add<R: ShellRenderer>(
-        &mut self, renderer: &mut R, theme: &OverviewTheme, (drawn, drop): (Rectangle<f64, Logical>, f64),
+        &mut self, renderer: &mut R, theme: &OverviewTheme, (drawn, drop, full): (Rectangle<f64, Logical>, f64, i32),
         (alpha, key): (f32, RasterKey), (scale, output_scale): (Scale<f64>, i32),
         elements: &mut Vec<OverviewElement<R>>,
     ) {
@@ -524,7 +559,7 @@ impl Strip {
             elements.extend(place_in(renderer, rect, (PLUS, PLUS), memory, alpha, scale).map(OverviewElement::Buffer));
         }
         let level = bucket(drop);
-        let size = (ADD_WIDTH, drawn.size.h.round() as i32);
+        let size = (add_raster_width(drawn.size.w, full), drawn.size.h.round() as i32);
         let tiles = self.add_tile.entry(output_scale).or_default();
         let outdated = tiles.get(&level).is_none_or(|(cached, at, _)| *cached != key || *at != size);
         let painted = outdated.then(|| draw_add(theme, size, f64::from(level) / BUCKETS, output_scale)).flatten();
@@ -539,10 +574,10 @@ impl Strip {
     pub(super) fn render_wallpapers<R: ShellRenderer>(
         &mut self, renderer: &mut R, (area, output): (Rectangle<i32, Logical>, Rectangle<i32, Logical>),
         (alpha, rise, fit): (f32, f64, WallpaperFit), (scale, output_scale): (Scale<f64>, i32),
-        elements: &mut Vec<OverviewElement<R>>,
-    ) {
+    ) -> Vec<(WorkspaceId, OverviewElement<R>)> {
+        let mut walls = Vec::new();
         if alpha <= 0.0 {
-            return;
+            return walls;
         }
         let thumb = thumb_size(area, output);
         let wall = WallKey { size: (thumb.w, thumb.h), generation: glide_paint::wallpaper_generation(), fit };
@@ -552,18 +587,43 @@ impl Strip {
             self.wallpaper.insert(output_scale, (wall, memory));
         }
         let Some((_, memory)) = self.wallpaper.get(&output_scale) else {
-            return;
+            return walls;
         };
         for (slot, base) in self.slots(area, output) {
-            if matches!(slot, Slot::Add) {
+            let Slot::Workspace(id) = slot else {
                 continue;
-            }
+            };
             let drawn = self.drawn(slot, base, rise);
-            elements.extend(
-                place_in(renderer, drawn, (thumb.w, thumb.h), memory, alpha, scale).map(OverviewElement::Buffer),
-            );
+            let element = place_in(renderer, drawn, (thumb.w, thumb.h), memory, alpha, scale);
+            walls.extend(element.map(|element| (id, OverviewElement::Buffer(element))));
         }
+        walls
     }
+}
+
+#[derive(Debug)]
+struct Caption {
+    slot: usize,
+    index: usize,
+    text: String,
+    active: bool,
+    base: Rectangle<f64, Logical>,
+    share: f64,
+}
+
+pub(super) struct Chrome<R: ShellRenderer> {
+    pub(super) ring: Vec<OverviewElement<R>>,
+    pub(super) slots: Vec<(Slot, Vec<OverviewElement<R>>)>,
+}
+
+fn add_raster_width(drawn: f64, full: i32) -> i32 {
+    let span = full - ADD_WIDTH;
+    if span == 0 {
+        return ADD_WIDTH;
+    }
+    let open = ((drawn - f64::from(ADD_WIDTH)) / f64::from(span)).clamp(0.0, 1.0);
+    let steps = f64::from((span.abs() + ADD_STEP - 1) / ADD_STEP);
+    ADD_WIDTH + (f64::from(span) * (open * steps).round() / steps).round() as i32
 }
 
 fn shadow_layers() -> [glide_theme::elevation::ShadowLayer; 1] {
@@ -808,6 +868,33 @@ mod tests {
         strip.press_reorder(WorkspaceId(3), x, area(), output());
         assert!(strip.cancel_reorder());
         assert!(!strip.reorder_pressed());
+    }
+
+    #[test]
+    fn the_add_tile_raster_follows_the_width_it_is_drawn_at_and_is_exact_at_rest() {
+        let full = 139;
+        assert_eq!(add_raster_width(f64::from(ADD_WIDTH), full), ADD_WIDTH);
+        assert_eq!(add_raster_width(f64::from(full), full), full);
+        let drawn = |step: i32| f64::from(ADD_WIDTH) + f64::from(full - ADD_WIDTH) * f64::from(step) / 40.0;
+        let widths: Vec<i32> = (0..=40).map(|step| add_raster_width(drawn(step), full)).collect();
+        assert!(widths.windows(2).all(|pair| pair[0] <= pair[1]), "it only grows with the tile: {widths:?}");
+        let mut distinct = widths.clone();
+        distinct.dedup();
+        let most = ((full - ADD_WIDTH) / ADD_STEP) as usize + 2;
+        assert!(distinct.len() <= most, "rerasters stay bounded: {distinct:?}");
+        assert!(distinct.len() < widths.len(), "nearby widths share a raster: {distinct:?}");
+        let tolerance = f64::from(ADD_STEP) / 2.0 + 1.0;
+        for (step, width) in (0..=40).zip(&widths) {
+            assert!((f64::from(*width) - drawn(step)).abs() <= tolerance, "step {step}: raster {width}");
+        }
+    }
+
+    #[test]
+    fn a_thumbnail_narrower_than_the_add_tile_gives_a_raster_that_shrinks_with_it() {
+        let full = 40;
+        assert_eq!(add_raster_width(f64::from(ADD_WIDTH), full), ADD_WIDTH);
+        assert_eq!(add_raster_width(f64::from(full), full), full);
+        assert!(add_raster_width(48.0, full) < ADD_WIDTH);
     }
 
     #[test]

@@ -19,6 +19,8 @@ use crate::raster::ShellRenderer;
 
 pub mod close;
 pub mod drag;
+#[cfg(test)]
+mod probe;
 mod strip;
 
 pub use drag::{Side, Target};
@@ -554,8 +556,11 @@ impl OverviewUi {
         {
             let shifted = self.base_scroll() - before as f64 + after as f64;
             self.scroll.jump(shifted);
-        } else if before.is_some() && after.is_none() {
-            self.scroll.jump(target);
+        } else if let Some(before) = before
+            && after.is_none()
+        {
+            let side = if target >= before as f64 { 1.0 } else { 0.0 };
+            self.scroll.jump(self.base_scroll() - side);
         }
         if (self.scroll.target() - target).abs() > f64::EPSILON || self.release_velocity.is_some() {
             self.retarget_scroll(target);
@@ -612,6 +617,7 @@ impl OverviewUi {
         if self.drag.as_ref().is_some_and(|drag| !self.previews.iter().any(|p| p.id == drag.id)) {
             self.drag = None;
             self.strip.set_dragging(false);
+            self.strip.set_drop(None);
         }
         self.landings.retain(|landing| entries.iter().any(|entry| entry.id == landing.id));
 
@@ -970,7 +976,7 @@ impl OverviewUi {
         if pos.x > output.loc.x + output.size.w - EDGE_ZONE && (self.neighbour(1).is_some() || self.can_add) {
             return Some(Target::Edge(Side::Right));
         }
-        None
+        grid.contains(pos).then_some(Target::Page)
     }
 
     pub fn drag_dwell(&mut self) -> Option<WorkspaceId> {
@@ -1001,7 +1007,8 @@ impl OverviewUi {
             Some(Target::Edge(Side::Right)) => {
                 self.neighbour(1).map(MoveTo::Workspace).or_else(|| self.can_add.then_some(MoveTo::New))
             }
-            None => (source != Some(self.active)).then_some(MoveTo::Workspace(self.active)),
+            Some(Target::Page) => (source != Some(self.active)).then_some(MoveTo::Workspace(self.active)),
+            None => None,
         };
         if let Some(to) = to.filter(|to| source.is_none_or(|source| *to != MoveTo::Workspace(source))) {
             self.moved = Some((drag.id, rect));
@@ -1309,6 +1316,37 @@ impl OverviewUi {
         place_in(renderer, rect.to_f64(), (*cw, *ch), memory, alpha, scale).map(OverviewElement::Buffer)
     }
 
+    fn thumbnail_stack<R: ShellRenderer>(
+        &self, slot: Slot, pieces: Vec<OverviewElement<R>>, walls: &mut Vec<(WorkspaceId, OverviewElement<R>)>,
+        hidden: &[WindowId], (alpha, rise): (f32, f64),
+    ) -> Vec<Layer<R>> {
+        let mut stack: Vec<Layer<R>> = pieces.into_iter().map(Layer::chrome).collect();
+        let Slot::Workspace(workspace) = slot else {
+            return stack;
+        };
+        let output = self.place.output;
+        if alpha > 0.0
+            && let Some(thumb) = self.strip.thumb_rect(self.place.area, output, workspace, rise)
+        {
+            let mut on_page: Vec<&Preview> =
+                self.previews.iter().filter(|p| p.workspace == workspace && !hidden.contains(&p.id)).collect();
+            on_page.sort_by_key(|p| std::cmp::Reverse(p.stack));
+            stack.extend(on_page.into_iter().map(|p| {
+                Layer::Window(WindowDraw {
+                    id: p.id,
+                    frame: p.frame,
+                    rect: mini_rect(p.frame, thumb, output),
+                    alpha,
+                    radius: MINI_RADIUS,
+                })
+            }));
+        }
+        if let Some(position) = walls.iter().position(|(id, _)| *id == workspace) {
+            stack.push(Layer::chrome(walls.remove(position).1));
+        }
+        stack
+    }
+
     fn landing_rect(&self, landing: &Landing, rise: f64) -> Option<Rectangle<f64, Logical>> {
         let preview = self.previews.iter().find(|p| p.id == landing.id)?;
         let thumb = self.strip.thumb_rect(self.place.area, self.place.output, preview.workspace, rise)?;
@@ -1366,54 +1404,47 @@ impl OverviewUi {
         }
 
         let place = (self.place.area, output);
-        let mut chrome = Vec::new();
         let theme = self.theme.clone();
-        self.strip.render_chrome(
+        let chrome = self.strip.render_chrome(
             renderer,
             (&theme, frame.painter),
             place,
             (strip_alpha, strip_rise),
             (scale, output_scale),
-            &mut chrome,
         );
-        layers.extend(chrome.into_iter().map(Layer::chrome));
-
-        let dragged = self.dragged();
-        let hidden = |id: WindowId| Some(id) == dragged || landings.iter().any(|landing| landing.id == id);
-        if strip_alpha > 0.0 {
-            for workspace in self.strip.paint_order() {
-                let Some(thumb) = self.strip.thumb_rect(self.place.area, output, workspace, strip_rise) else {
-                    continue;
-                };
-                let mut on_page: Vec<&Preview> =
-                    self.previews.iter().filter(|p| p.workspace == workspace && !hidden(p.id)).collect();
-                on_page.sort_by_key(|p| std::cmp::Reverse(p.stack));
-                layers.extend(on_page.into_iter().map(|p| {
-                    Layer::Window(WindowDraw {
-                        id: p.id,
-                        frame: p.frame,
-                        rect: mini_rect(p.frame, thumb, output),
-                        alpha: strip_alpha,
-                        radius: MINI_RADIUS,
-                    })
-                }));
-            }
-        }
-        let mut walls = Vec::new();
-        self.strip.render_wallpapers(
+        let mut walls = self.strip.render_wallpapers(
             renderer,
             place,
             (strip_alpha, strip_rise, frame.wallpaper),
             (scale, output_scale),
-            &mut walls,
         );
-        layers.extend(walls.into_iter().map(Layer::chrome));
+
+        let dragged = self.dragged();
+        let hidden: Vec<WindowId> = dragged.into_iter().chain(landings.iter().map(|landing| landing.id)).collect();
+        let lifted = self.strip.lifted();
+        let (add, thumbs): (Vec<_>, Vec<_>) = chrome.slots.into_iter().partition(|(slot, _)| *slot == Slot::Add);
+        let mut thumbs = thumbs.into_iter();
+        let mut ring = Some(chrome.ring);
+        let mut push_ring = |layers: &mut Vec<Layer<R>>| {
+            layers.extend(ring.take().into_iter().flatten().map(Layer::chrome));
+        };
+        if lifted.is_none_or(|id| id == self.active) {
+            push_ring(&mut layers);
+        }
+        for (slot, pieces) in thumbs.by_ref().take(usize::from(lifted.is_some())) {
+            layers.extend(self.thumbnail_stack(slot, pieces, &mut walls, &hidden, (strip_alpha, strip_rise)));
+        }
+        push_ring(&mut layers);
+        layers.extend(add.into_iter().flat_map(|(_, pieces)| pieces).map(Layer::chrome));
+        for (slot, pieces) in thumbs {
+            layers.extend(self.thumbnail_stack(slot, pieces, &mut walls, &hidden, (strip_alpha, strip_rise)));
+        }
 
         let output_f = output.to_f64();
         let mut tiles: Vec<(usize, Rectangle<f64, Logical>, bool)> = Vec::new();
         for index in self.paint_order() {
             let preview = &self.previews[index];
-            if hidden(preview.id) {
+            if hidden.contains(&preview.id) {
                 continue;
             }
             let Some(rect) = self.tile_rect(preview, t) else {
