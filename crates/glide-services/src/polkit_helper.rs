@@ -147,6 +147,7 @@ struct Link {
     reader: Box<dyn BufRead + Send>,
     writer: Box<dyn Write + Send>,
     child: Option<Child>,
+    socket: Option<UnixStream>,
 }
 
 fn helper() -> Option<&'static str> {
@@ -161,8 +162,14 @@ fn connect(user: &str, cookie: &str, cancel: &Cancel) -> std::io::Result<Link> {
                 if !cancel.arm(Abort::Socket(stream.try_clone()?)) {
                     return Err(std::io::Error::other("cancelled"));
                 }
+                let socket = stream.try_clone()?;
                 writer.write_all(format!("{user}\n{cookie}\n").as_bytes())?;
-                return Ok(Link { reader: Box::new(BufReader::new(stream)), writer: Box::new(writer), child: None });
+                return Ok(Link {
+                    reader: Box::new(BufReader::new(stream)),
+                    writer: Box::new(writer),
+                    child: None,
+                    socket: Some(socket),
+                });
             }
             Err(err) => tracing::info!(%err, "the polkit helper socket refused; spawning the helper instead"),
         }
@@ -180,8 +187,13 @@ fn connect(user: &str, cookie: &str, cancel: &Cancel) -> std::io::Result<Link> {
         let _ = child.wait();
         return Err(std::io::Error::other("cancelled"));
     }
-    stdin.write_all(format!("{cookie}\n").as_bytes())?;
-    Ok(Link { reader: Box::new(BufReader::new(stdout)), writer: Box::new(stdin), child: Some(child) })
+    if let Err(err) = stdin.write_all(format!("{cookie}\n").as_bytes()) {
+        cancel.disarm();
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(err);
+    }
+    Ok(Link { reader: Box::new(BufReader::new(stdout)), writer: Box::new(stdin), child: Some(child), socket: None })
 }
 
 fn converse(link: &mut Link, password: &Zeroizing<String>) -> Report {
@@ -233,6 +245,9 @@ fn converse(link: &mut Link, password: &Zeroizing<String>) -> Report {
 
 fn finish(link: Link) {
     drop(link.writer);
+    if let Some(socket) = &link.socket {
+        let _ = socket.shutdown(std::net::Shutdown::Write);
+    }
     let mut reader = link.reader;
     let _ = std::io::copy(&mut reader.by_ref().take(64 * 1024), &mut std::io::sink());
     if let Some(mut child) = link.child {
@@ -310,7 +325,36 @@ mod tests {
     fn scripted(lines: &str) -> (Link, Written) {
         let written = Written::default();
         let reader = BufReader::new(Script(std::io::Cursor::new(lines.as_bytes().to_vec())));
-        (Link { reader: Box::new(reader), writer: Box::new(written.clone()), child: None }, written)
+        (Link { reader: Box::new(reader), writer: Box::new(written.clone()), child: None, socket: None }, written)
+    }
+
+    #[test]
+    fn a_helper_socket_left_waiting_for_a_second_answer_is_released_and_the_attempt_ends() {
+        let (ours, theirs) = UnixStream::pair().expect("a socket pair");
+        let helper = std::thread::spawn(move || {
+            let mut theirs = theirs;
+            theirs.write_all(b"PAM_PROMPT_ECHO_OFF Password: \n").expect("first question");
+            let mut answer = [0u8; 64];
+            let _ = theirs.read(&mut answer);
+            theirs.write_all(b"PAM_PROMPT_ECHO_ON Code: \n").expect("second question");
+            let _ = std::io::copy(&mut theirs, &mut std::io::sink());
+        });
+        let link = Link {
+            reader: Box::new(BufReader::new(ours.try_clone().expect("reader"))),
+            writer: Box::new(ours.try_clone().expect("writer")),
+            child: None,
+            socket: Some(ours),
+        };
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut link = link;
+            let outcome = converse(&mut link, &Zeroizing::new(String::from("secret"))).outcome;
+            finish(link);
+            let _ = done.send(outcome);
+        });
+        let outcome = finished.recv_timeout(std::time::Duration::from_secs(5)).expect("the attempt ends");
+        assert!(matches!(outcome, Outcome::Broken(_)));
+        helper.join().expect("the helper sees the end of the conversation");
     }
 
     #[test]
