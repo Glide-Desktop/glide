@@ -125,8 +125,17 @@ impl Audio {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioSupport {
+    pub enabled: bool,
+    pub aac_encoder: bool,
+}
+
 #[must_use]
-pub(crate) fn choose_audio(value: &str) -> Option<Audio> {
+pub(crate) fn choose_audio(value: &str, support: AudioSupport) -> Option<Audio> {
+    if !support.enabled {
+        return None;
+    }
     let codecs: Vec<(String, u32)> = value
         .split(',')
         .filter_map(|codec| {
@@ -137,7 +146,7 @@ pub(crate) fn choose_audio(value: &str) -> Option<Audio> {
     let has = |name: &str, bit: u32| codecs.iter().any(|(codec, modes)| codec == name && modes & (1 << bit) != 0);
     if has("LPCM", 1) {
         Some(Audio::Lpcm48)
-    } else if has("AAC", 0) {
+    } else if support.aac_encoder && has("AAC", 0) {
         Some(Audio::Aac48)
     } else {
         None
@@ -193,11 +202,26 @@ mod tests {
         assert_eq!(video_formats_line(video), "38 00 01 04 00000080 00000000 00000000 00 0000 0000 00 none none");
     }
 
+    const SOUND: AudioSupport = AudioSupport { enabled: true, aac_encoder: true };
+
     #[test]
     fn lpcm_at_48_khz_wins_and_aac_is_the_fallback() {
-        assert_eq!(choose_audio("LPCM 00000003 00, AAC 00000001 00"), Some(Audio::Lpcm48));
-        assert_eq!(choose_audio("LPCM 00000001 00, AAC 00000001 00"), Some(Audio::Aac48));
-        assert_eq!(choose_audio("none"), None);
+        assert_eq!(choose_audio("LPCM 00000003 00, AAC 00000001 00", SOUND), Some(Audio::Lpcm48));
+        assert_eq!(choose_audio("LPCM 00000001 00, AAC 00000001 00", SOUND), Some(Audio::Aac48));
+        assert_eq!(choose_audio("none", SOUND), None);
+    }
+
+    #[test]
+    fn no_audio_is_chosen_when_it_is_off_or_cannot_be_encoded() {
+        let both = "LPCM 00000003 00, AAC 00000001 00";
+        let aac_only = "LPCM 00000001 00, AAC 00000001 00";
+        assert_eq!(choose_audio(both, AudioSupport { enabled: false, ..SOUND }), None, "sound is switched off");
+        assert_eq!(choose_audio(aac_only, AudioSupport { aac_encoder: false, ..SOUND }), None, "no AAC encoder");
+        assert_eq!(
+            choose_audio(both, AudioSupport { aac_encoder: false, ..SOUND }),
+            Some(Audio::Lpcm48),
+            "LPCM needs no encoder"
+        );
     }
 
     #[test]

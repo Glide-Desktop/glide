@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, Value};
 
+use crate::abort::Abort;
 use crate::wfd;
 
 const NM: &str = "org.freedesktop.NetworkManager";
@@ -145,7 +146,7 @@ impl P2p {
 
     pub fn connect(
         &self, peer: &Peer, timeout: Duration, stopped: &std::sync::mpsc::Receiver<()>,
-    ) -> Result<OwnedObjectPath, String> {
+    ) -> Result<OwnedObjectPath, Abort> {
         let nm = Proxy::new(&self.bus, NM, NM_PATH, NM).map_err(failed)?;
         let options = HashMap::from([("persist", Value::from("volatile"))]);
         let specific = ObjectPath::try_from(peer.path.as_str()).map_err(failed)?;
@@ -159,7 +160,7 @@ impl P2p {
         loop {
             if stopped.try_recv().is_ok() {
                 let _ = self.disconnect(&active);
-                return Err("stopped".into());
+                return Err(Abort::Stopped);
             }
             let state = connection_state(
                 Proxy::new(&self.bus, NM, active.as_str(), ACTIVE).and_then(|proxy| proxy.get_property("State")),

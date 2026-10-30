@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use glide_cast::cast::{Discovery, Handle, Source, Status};
+use glide_cast::cast::{Discovery, Handle, Search, Source, Status};
 use glide_cast::p2p::Peer;
 use smithay::output::Output;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -36,6 +36,7 @@ struct Active {
 pub struct Cast {
     send: Option<Send>,
     searching: bool,
+    search: Option<Search>,
     displays: Vec<Peer>,
     active: Option<Active>,
     options: glide_cast::cast::Options,
@@ -59,13 +60,17 @@ impl Cast {
 
     #[must_use]
     pub fn label(&self) -> Option<String> {
-        self.active.as_ref().filter(|active| active.interval.is_some()).map(|active| active.name.clone())
+        self.active
+            .as_ref()
+            .filter(|active| active.interval.is_some() && !active.handle.paused())
+            .map(|active| active.name.clone())
     }
 
     #[must_use]
     pub fn frame_due(&self, output: &Output) -> bool {
         self.active.as_ref().is_some_and(|active| {
-            active.output == *output && frame_due(active.interval, active.last_frame, Instant::now())
+            active.output == *output
+                && capture_due(active.handle.paused(), active.interval, active.last_frame, Instant::now())
         })
     }
 
@@ -92,6 +97,16 @@ pub fn frame_due(interval: Option<Duration>, last: Option<Instant>, now: Instant
     interval.is_some_and(|interval| last.is_none_or(|last| now.saturating_duration_since(last) >= interval * 4 / 5))
 }
 
+#[must_use]
+pub fn capture_due(paused: bool, interval: Option<Duration>, last: Option<Instant>, now: Instant) -> bool {
+    !paused && frame_due(interval, last, now)
+}
+
+#[must_use]
+pub fn pacing(current: Option<Duration>, fps: u32) -> (Duration, bool) {
+    (Duration::from_secs(1) / fps.max(1), current.is_none())
+}
+
 impl GlideState {
     pub fn toggle_screen_mirroring(&mut self) {
         if let Some(active) = self.session.cast.active.as_ref() {
@@ -106,11 +121,13 @@ impl GlideState {
         };
         self.session.cast.displays.clear();
         self.session.cast.searching = true;
-        let started = glide_cast::cast::discover(SEARCH_SECONDS, move |found| send(Event::Found(found)));
-        if let Err(err) = started {
-            self.session.cast.searching = false;
-            self.cast_notice(t(Key::CastUnavailable).replace("{reason}", &err.to_string()), String::new(), vec![]);
-            return;
+        match glide_cast::cast::discover(SEARCH_SECONDS, move |found| send(Event::Found(found))) {
+            Ok(search) => self.session.cast.search = Some(search),
+            Err(err) => {
+                self.session.cast.searching = false;
+                self.cast_notice(t(Key::CastUnavailable).replace("{reason}", &err.to_string()), String::new(), vec![]);
+                return;
+            }
         }
         self.cast_notice(t(Key::CastSearching).to_string(), t(Key::CastSearchingBody).to_string(), vec![]);
     }
@@ -134,12 +151,14 @@ impl GlideState {
             Event::Found(Discovery::Peers(_)) => {}
             Event::Found(Discovery::Finished) => {
                 self.session.cast.searching = false;
+                self.session.cast.search = None;
                 if self.session.cast.displays.is_empty() && self.session.cast.active.is_none() {
                     self.cast_notice(t(Key::CastNone).to_string(), t(Key::CastNoneBody).to_string(), vec![]);
                 }
             }
             Event::Found(Discovery::Failed(reason)) => {
                 self.session.cast.searching = false;
+                self.session.cast.search = None;
                 self.cast_notice(t(Key::CastUnavailable).replace("{reason}", &reason), String::new(), vec![]);
             }
             Event::Status(status) => self.cast_status(status),
@@ -157,13 +176,20 @@ impl GlideState {
                 tracing::info!(width = mode.width, height = mode.height, fps = mode.fps, "mirroring mode agreed");
             }
             Status::Streaming(mode) => {
-                let interval = Duration::from_secs(1) / mode.fps.max(1);
+                let previous = self.session.cast.active.as_ref().and_then(|active| active.interval);
+                let (interval, first) = pacing(previous, mode.fps);
                 if let Some(active) = self.session.cast.active.as_mut() {
                     active.interval = Some(interval);
                 }
-                self.arm_cast_frames(interval);
+                if first {
+                    self.arm_cast_frames(interval);
+                }
                 let body = format!("{}×{}, {} fps", mode.width, mode.height, mode.fps);
                 self.cast_notice(t(Key::CastStreaming).replace("{name}", &name), body, stop());
+                self.sync_screen_capture();
+            }
+            Status::Paused => {
+                tracing::info!("mirroring paused by the display");
                 self.sync_screen_capture();
             }
             Status::Ended(reason) => {
@@ -213,7 +239,8 @@ impl GlideState {
         let source = Source { frame_format: FRAME_FORMAT, size };
         let name = peer.name.clone();
         let options = self.session.cast.options;
-        match glide_cast::cast::start(peer, source, options, move |status| send(Event::Status(status))) {
+        let search = self.session.cast.search.clone();
+        match glide_cast::cast::start(peer, source, options, search, move |status| send(Event::Status(status))) {
             Ok(handle) => {
                 tracing::info!(display = name, output = output.name(), "mirroring started");
                 self.session.cast.active = Some(Active { handle, output, name, interval: None, last_frame: None });
@@ -228,10 +255,12 @@ impl GlideState {
         let timer = Timer::from_duration(interval);
         let armed = self.loop_handle.insert_source(timer, move |_, (), state| {
             let streaming = state.session.cast.active.as_ref().filter(|active| active.interval.is_some());
-            let Some(output) = streaming.map(|active| active.output.clone()) else {
+            let Some((output, paused)) = streaming.map(|active| (active.output.clone(), active.handle.paused())) else {
                 return TimeoutAction::Drop;
             };
-            state.queue_redraw_output(&output);
+            if !paused {
+                state.queue_redraw_output(&output);
+            }
             TimeoutAction::ToDuration(interval)
         });
         if let Err(err) = armed {
@@ -274,6 +303,24 @@ mod tests {
         assert!(frame_due(interval, None, now));
         assert!(!frame_due(interval, Some(now), now + Duration::from_millis(10)));
         assert!(frame_due(interval, Some(now), now + Duration::from_millis(40)));
+    }
+
+    #[test]
+    fn a_paused_display_gets_no_captured_frames() {
+        let now = Instant::now();
+        let interval = Some(Duration::from_millis(33));
+        assert!(capture_due(false, interval, None, now));
+        assert!(!capture_due(true, interval, None, now), "nothing is read back while the display is paused");
+        assert!(!capture_due(true, interval, Some(now), now + Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn only_the_first_streaming_status_arms_the_frame_timer() {
+        let (interval, first) = pacing(None, 30);
+        assert_eq!((interval, first), (Duration::from_secs(1) / 30, true));
+        let (again, first) = pacing(Some(interval), 30);
+        assert_eq!((again, first), (interval, false), "a resume after PAUSE must not stack a second timer");
+        assert_eq!(pacing(None, 0).0, Duration::from_secs(1), "a zero rate does not divide by zero");
     }
 
     #[test]

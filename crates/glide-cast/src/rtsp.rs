@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::time::{Duration, Instant};
 
-use crate::formats::{self, Audio, Video};
+use crate::formats::{self, Audio, AudioSupport, Video};
 
 const VERSION: &str = "RTSP/1.0";
 const WFD_URI: &str = "rtsp://localhost/wfd1.0";
 const MAX_MESSAGE: usize = 64 * 1024;
 pub(crate) const SESSION_TIMEOUT_SECONDS: u32 = 30;
+pub(crate) const REPLY_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const NEGOTIATION_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Start {
@@ -161,6 +164,8 @@ pub struct Negotiated {
 pub enum Event {
     Negotiated(Negotiated),
     Play,
+    Pause,
+    Resume,
     KeyFrame,
     Teardown,
     Failed(String),
@@ -176,61 +181,113 @@ enum Pending {
     TriggerTeardown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Playback {
+    Idle,
+    Playing,
+    Paused,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Outstanding {
+    kind: Pending,
+    due: Option<Instant>,
+}
+
 #[derive(Debug)]
 pub struct Session {
     source_ip: String,
     server_port: u16,
     preference: &'static [u8],
+    audio: AudioSupport,
     id: String,
     cseq: u32,
-    pending: HashMap<u32, Pending>,
+    pending: HashMap<u32, Outstanding>,
     asked_capabilities: bool,
     negotiated: Option<Negotiated>,
     set_up: bool,
+    playback: Playback,
+    play_by: Option<Instant>,
 }
 
 impl Session {
     #[must_use]
-    pub fn new(source_ip: &str, server_port: u16, preference: &'static [u8], id: &str) -> Self {
+    pub fn new(source_ip: &str, server_port: u16, preference: &'static [u8], audio: AudioSupport, id: &str) -> Self {
         Self {
             source_ip: source_ip.into(),
             server_port,
             preference,
+            audio,
             id: id.into(),
             cseq: 0,
             pending: HashMap::new(),
             asked_capabilities: false,
             negotiated: None,
             set_up: false,
+            playback: Playback::Idle,
+            play_by: None,
         }
     }
 
-    fn send(&mut self, message: Message, pending: Pending) -> Message {
+    fn send(&mut self, message: Message, kind: Pending, now: Instant) -> Message {
         self.cseq += 1;
-        self.pending.insert(self.cseq, pending);
+        let due = match kind {
+            Pending::KeepAlive | Pending::TriggerTeardown => Some(now + REPLY_WAIT),
+            Pending::Options | Pending::Capabilities | Pending::Choice | Pending::TriggerSetup => None,
+        };
+        self.pending.insert(self.cseq, Outstanding { kind, due });
         message.with("CSeq", self.cseq.to_string())
     }
 
-    pub fn start(&mut self) -> Message {
-        self.send(Message::request("OPTIONS", "*").with("Require", "org.wfa.wfd1.0"), Pending::Options)
+    pub fn start(&mut self, now: Instant) -> Message {
+        self.play_by = Some(now + NEGOTIATION_WAIT);
+        self.send(Message::request("OPTIONS", "*").with("Require", "org.wfa.wfd1.0"), Pending::Options, now)
     }
 
-    pub(crate) fn keepalive(&mut self) -> Message {
+    pub(crate) fn keepalive(&mut self, now: Instant) -> Message {
         let message = Message::request("GET_PARAMETER", WFD_URI).with("Session", self.id.clone());
-        self.send(message, Pending::KeepAlive)
+        self.send(message, Pending::KeepAlive, now)
     }
 
-    pub(crate) fn teardown(&mut self) -> Message {
+    pub(crate) fn teardown(&mut self, now: Instant) -> Message {
         let message =
             Message::request("SET_PARAMETER", WFD_URI).with_parameters("wfd_trigger_method: TEARDOWN\r\n".into());
-        self.send(message, Pending::TriggerTeardown)
+        self.send(message, Pending::TriggerTeardown, now)
     }
 
-    pub fn receive(&mut self, message: &Message) -> (Vec<Message>, Vec<Event>) {
+    pub fn receive(&mut self, message: &Message, now: Instant) -> (Vec<Message>, Vec<Event>) {
         match &message.start {
-            Start::Request { method, .. } => self.answer(method, message),
-            Start::Response { code, reason } => self.follow_up(message.cseq(), *code, reason, message),
+            Start::Request { method, .. } => self.answer(method, message, now),
+            Start::Response { code, reason } => self.follow_up(message.cseq(), *code, reason, message, now),
         }
+    }
+
+    pub fn poll(&mut self, now: Instant) -> Vec<Event> {
+        let mut overdue: Vec<u32> = self
+            .pending
+            .iter()
+            .filter(|(_, sent)| sent.due.is_some_and(|due| now >= due))
+            .map(|(cseq, _)| *cseq)
+            .collect();
+        overdue.sort_unstable();
+        let mut events = Vec::new();
+        for cseq in overdue {
+            if let Some(Outstanding { kind: Pending::KeepAlive, .. }) = self.pending.remove(&cseq) {
+                events.push(Event::Failed("the display stopped answering the keep-alive".into()));
+            }
+        }
+        if self.play_by.is_some_and(|by| now >= by) {
+            self.play_by = None;
+            events.push(Event::Failed("the display did not start the stream in time".into()));
+        }
+        events
+    }
+
+    fn playing(&mut self, resumed: bool) -> Vec<Event> {
+        self.playback = Playback::Playing;
+        self.play_by = None;
+        self.pending.retain(|_, sent| sent.due.is_some());
+        vec![if resumed { Event::Resume } else { Event::Play }]
     }
 
     fn reply(&self, request: &Message, code: u16, reason: &str) -> Message {
@@ -244,7 +301,7 @@ impl Session {
         reply
     }
 
-    fn answer(&mut self, method: &str, request: &Message) -> (Vec<Message>, Vec<Event>) {
+    fn answer(&mut self, method: &str, request: &Message, now: Instant) -> (Vec<Message>, Vec<Event>) {
         match method {
             "OPTIONS" => {
                 let mut out = vec![
@@ -255,7 +312,7 @@ impl Session {
                     self.asked_capabilities = true;
                     let ask = Message::request("GET_PARAMETER", WFD_URI)
                         .with_parameters("wfd_video_formats\r\nwfd_audio_codecs\r\nwfd_client_rtp_ports\r\n".into());
-                    out.push(self.send(ask, Pending::Capabilities));
+                    out.push(self.send(ask, Pending::Capabilities, now));
                 }
                 (out, vec![])
             }
@@ -268,11 +325,24 @@ impl Session {
                 let transport = format!("RTP/AVP/UDP;unicast;client_port={client};server_port={}", self.server_port);
                 (vec![self.reply(request, 200, "OK").with("Transport", transport)], vec![])
             }
-            "PLAY" if self.set_up => (vec![self.reply(request, 200, "OK")], vec![Event::Play]),
-            "PLAY" => (vec![self.reply(request, 455, "Method Not Valid In This State")], vec![]),
+            "PLAY" if self.set_up => {
+                let events = match self.playback {
+                    Playback::Idle => self.playing(false),
+                    Playback::Paused => self.playing(true),
+                    Playback::Playing => vec![],
+                };
+                (vec![self.reply(request, 200, "OK")], events)
+            }
+            "PAUSE" if self.set_up && self.playback != Playback::Idle => {
+                let events = if self.playback == Playback::Playing { vec![Event::Pause] } else { vec![] };
+                self.playback = Playback::Paused;
+                (vec![self.reply(request, 200, "OK")], events)
+            }
+            "PLAY" | "PAUSE" => (vec![self.reply(request, 455, "Method Not Valid In This State")], vec![]),
             "TEARDOWN" => {
                 let reply = self.reply(request, 200, "OK");
                 self.set_up = false;
+                self.playback = Playback::Idle;
                 (vec![reply], vec![Event::Teardown])
             }
             "GET_PARAMETER" | "SET_PARAMETER" => {
@@ -284,9 +354,9 @@ impl Session {
     }
 
     fn follow_up(
-        &mut self, cseq: Option<u32>, code: u16, reason: &str, message: &Message,
+        &mut self, cseq: Option<u32>, code: u16, reason: &str, message: &Message, now: Instant,
     ) -> (Vec<Message>, Vec<Event>) {
-        let Some(pending) = cseq.and_then(|cseq| self.pending.remove(&cseq)) else {
+        let Some(pending) = cseq.and_then(|cseq| self.pending.remove(&cseq)).map(|sent| sent.kind) else {
             return (vec![], vec![]);
         };
         if code != 200 {
@@ -296,11 +366,11 @@ impl Session {
             };
         }
         match pending {
-            Pending::Capabilities => self.negotiate(message),
+            Pending::Capabilities => self.negotiate(message, now),
             Pending::Choice => {
                 let trigger =
                     Message::request("SET_PARAMETER", WFD_URI).with_parameters("wfd_trigger_method: SETUP\r\n".into());
-                (vec![self.send(trigger, Pending::TriggerSetup)], vec![])
+                (vec![self.send(trigger, Pending::TriggerSetup, now)], vec![])
             }
             Pending::Options | Pending::TriggerSetup | Pending::KeepAlive | Pending::TriggerTeardown => {
                 (vec![], vec![])
@@ -308,7 +378,7 @@ impl Session {
         }
     }
 
-    fn negotiate(&mut self, reply: &Message) -> (Vec<Message>, Vec<Event>) {
+    fn negotiate(&mut self, reply: &Message, now: Instant) -> (Vec<Message>, Vec<Event>) {
         let parameters = reply.parameters();
         let video = parameters
             .get("wfd_video_formats")
@@ -322,7 +392,7 @@ impl Session {
         else {
             return (vec![], vec![Event::Failed("the display gave no RTP port".into())]);
         };
-        let audio = parameters.get("wfd_audio_codecs").and_then(|value| formats::choose_audio(value));
+        let audio = parameters.get("wfd_audio_codecs").and_then(|value| formats::choose_audio(value, self.audio));
         let mut body = format!("wfd_video_formats: {}\r\n", formats::video_formats_line(video));
         if let Some(audio) = audio {
             let _ = write!(body, "wfd_audio_codecs: {}\r\n", audio.line());
@@ -332,7 +402,7 @@ impl Session {
         let negotiated = Negotiated { video, audio, sink_rtp_port };
         self.negotiated = Some(negotiated.clone());
         let choice = Message::request("SET_PARAMETER", WFD_URI).with_parameters(body);
-        (vec![self.send(choice, Pending::Choice)], vec![Event::Negotiated(negotiated)])
+        (vec![self.send(choice, Pending::Choice, now)], vec![Event::Negotiated(negotiated)])
     }
 }
 
@@ -376,27 +446,62 @@ mod tests {
         assert_eq!(reader.next_message(), Err(ReadError::TooLarge));
     }
 
+    const SOUND: AudioSupport = AudioSupport { enabled: true, aac_encoder: true };
+
+    fn new_session(audio: AudioSupport) -> Session {
+        Session::new("192.168.49.1", 19000, &formats::SOFTWARE_PREFERENCE, audio, "6B8B4567")
+    }
+
+    fn secs(count: u64) -> Duration {
+        Duration::from_secs(count)
+    }
+
+    const CAPABILITIES: &str = "wfd_video_formats: 00 00 02 10 0001ffff 1fffffff 00000fff 00 0000 0000 00 none none\r\n\
+                                wfd_audio_codecs: LPCM 00000003 00, AAC 00000001 00\r\n\
+                                wfd_client_rtp_ports: RTP/AVP/UDP;unicast 1028 0 mode=play\r\n";
+
+    fn at_capabilities(session: &mut Session, now: Instant) -> Message {
+        let _ = session.start(now);
+        let (out, _) = session.receive(&parse("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n"), now);
+        out[1].clone()
+    }
+
+    fn set_up(session: &mut Session, now: Instant) {
+        let m3 = at_capabilities(session, now);
+        let (out, _) = session.receive(&reply_to(&m3, "", CAPABILITIES), now);
+        let _ = session.receive(&reply_to(&out[0], "", ""), now);
+        let setup = parse("SETUP rtsp://x/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 2\r\n\r\n");
+        let _ = session.receive(&setup, now);
+    }
+
+    fn request(method: &str, cseq: u32) -> Message {
+        parse(&format!("{method} rtsp://x/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: {cseq}\r\n\r\n"))
+    }
+
+    fn code_of(message: &Message) -> u16 {
+        let Start::Response { code, .. } = message.start else { panic!("{message:?}") };
+        code
+    }
+
     #[test]
     fn a_whole_wfd_session_reaches_play_and_teardown() {
-        let mut session = Session::new("192.168.49.1", 19000, &formats::SOFTWARE_PREFERENCE, "6B8B4567");
-        let m1 = session.start();
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        let m1 = session.start(now);
         assert!(String::from_utf8(m1.to_bytes()).unwrap().starts_with("OPTIONS * RTSP/1.0\r\nRequire: org.wfa.wfd1.0"));
         assert_eq!(
-            session.receive(&reply_to(&m1, "Public: org.wfa.wfd1.0, GET_PARAMETER, SET_PARAMETER\r\n", "")),
+            session.receive(&reply_to(&m1, "Public: org.wfa.wfd1.0, GET_PARAMETER, SET_PARAMETER\r\n", ""), now),
             (vec![], vec![])
         );
 
         let m2 = parse("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nRequire: org.wfa.wfd1.0\r\n\r\n");
-        let (out, _) = session.receive(&m2);
+        let (out, _) = session.receive(&m2, now);
         assert_eq!(out[0].header("CSeq"), Some("1"));
         assert!(out[0].header("Public").unwrap().contains("SETUP"));
         let m3 = &out[1];
         assert!(m3.body.contains("wfd_video_formats"));
 
-        let capabilities = "wfd_video_formats: 00 00 02 10 0001ffff 1fffffff 00000fff 00 0000 0000 00 none none\r\n\
-                            wfd_audio_codecs: LPCM 00000003 00, AAC 00000001 00\r\n\
-                            wfd_client_rtp_ports: RTP/AVP/UDP;unicast 1028 0 mode=play\r\n";
-        let (out, events) = session.receive(&reply_to(m3, "Content-Type: text/parameters\r\n", capabilities));
+        let (out, events) = session.receive(&reply_to(m3, "Content-Type: text/parameters\r\n", CAPABILITIES), now);
         let Event::Negotiated(negotiated) = &events[0] else { panic!("{events:?}") };
         assert_eq!(negotiated.sink_rtp_port, 1028);
         assert_eq!(negotiated.audio, Some(Audio::Lpcm48));
@@ -406,75 +511,252 @@ mod tests {
         assert_eq!(chosen["wfd_presentation_url"], "rtsp://192.168.49.1/wfd1.0/streamid=0 none");
         assert_eq!(chosen["wfd_client_rtp_ports"], "RTP/AVP/UDP;unicast 1028 0 mode=play");
 
-        let (out, _) = session.receive(&reply_to(m4, "", ""));
+        let (out, _) = session.receive(&reply_to(m4, "", ""), now);
         let m5 = &out[0];
         assert_eq!(m5.parameters()["wfd_trigger_method"], "SETUP");
-        assert_eq!(session.receive(&reply_to(m5, "", "")), (vec![], vec![]));
+        assert_eq!(session.receive(&reply_to(m5, "", ""), now), (vec![], vec![]));
 
         let m6 = parse(
             "SETUP rtsp://192.168.49.1/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP/UDP;unicast;client_port=1028\r\n\r\n",
         );
-        let (out, _) = session.receive(&m6);
+        let (out, _) = session.receive(&m6, now);
         assert_eq!(out[0].header("Session"), Some("6B8B4567;timeout=30"));
         assert_eq!(out[0].header("Transport"), Some("RTP/AVP/UDP;unicast;client_port=1028;server_port=19000"));
 
         let m7 = parse("PLAY rtsp://192.168.49.1/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 3\r\nSession: 6B8B4567\r\n\r\n");
-        assert_eq!(session.receive(&m7).1, vec![Event::Play]);
+        assert_eq!(session.receive(&m7, now).1, vec![Event::Play]);
 
-        let keepalive = session.keepalive();
+        let keepalive = session.keepalive(now);
         assert_eq!(keepalive.header("Session"), Some("6B8B4567"));
-        assert_eq!(session.receive(&reply_to(&keepalive, "", "")), (vec![], vec![]));
+        assert_eq!(session.receive(&reply_to(&keepalive, "", ""), now), (vec![], vec![]));
 
         let idr = parse(
             "SET_PARAMETER rtsp://localhost/wfd1.0 RTSP/1.0\r\nCSeq: 4\r\nContent-Length: 17\r\n\r\nwfd_idr_request\r\n",
         );
-        assert_eq!(session.receive(&idr).1, vec![Event::KeyFrame]);
+        assert_eq!(session.receive(&idr, now).1, vec![Event::KeyFrame]);
 
-        let trigger = session.teardown();
+        let trigger = session.teardown(now);
         assert_eq!(trigger.parameters()["wfd_trigger_method"], "TEARDOWN");
         let m8 = parse("TEARDOWN rtsp://192.168.49.1/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 5\r\n\r\n");
-        assert_eq!(session.receive(&m8).1, vec![Event::Teardown]);
+        assert_eq!(session.receive(&m8, now).1, vec![Event::Teardown]);
     }
 
     #[test]
     fn setup_and_play_before_negotiation_are_refused() {
-        let mut session = Session::new("10.0.0.1", 19000, &formats::SOFTWARE_PREFERENCE, "1");
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
         let setup = parse("SETUP rtsp://x/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 9\r\n\r\n");
-        assert!(matches!(session.receive(&setup).0[0].start, Start::Response { code: 455, .. }));
+        assert!(matches!(session.receive(&setup, now).0[0].start, Start::Response { code: 455, .. }));
         let play = parse("PLAY rtsp://x/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 10\r\n\r\n");
-        assert_eq!(session.receive(&play).1, vec![]);
+        assert_eq!(session.receive(&play, now).1, vec![]);
     }
 
     #[test]
     fn a_display_without_a_usable_mode_fails_the_session() {
-        let mut session = Session::new("10.0.0.1", 19000, &formats::SOFTWARE_PREFERENCE, "1");
-        let _ = session.start();
-        let (out, _) = session.receive(&parse("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n"));
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        let _ = session.start(now);
+        let (out, _) = session.receive(&parse("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n"), now);
         let m3 = &out[1];
-        let (_, events) = session.receive(&reply_to(
-            m3,
-            "",
-            "wfd_video_formats: none\r\nwfd_client_rtp_ports: RTP/AVP/UDP;unicast 1028 0 mode=play\r\n",
-        ));
+        let (_, events) = session.receive(
+            &reply_to(
+                m3,
+                "",
+                "wfd_video_formats: none\r\nwfd_client_rtp_ports: RTP/AVP/UDP;unicast 1028 0 mode=play\r\n",
+            ),
+            now,
+        );
         assert!(matches!(events[0], Event::Failed(_)));
     }
 
     #[test]
     fn an_error_reply_fails_negotiation_but_not_a_keepalive() {
-        let mut session = Session::new("10.0.0.1", 19000, &formats::SOFTWARE_PREFERENCE, "1");
-        let keepalive = session.keepalive();
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        let keepalive = session.keepalive(now);
         let refused = parse(&format!("RTSP/1.0 404 Not Found\r\nCSeq: {}\r\n\r\n", keepalive.cseq().unwrap()));
-        assert_eq!(session.receive(&refused), (vec![], vec![]));
-        let m1 = session.start();
+        assert_eq!(session.receive(&refused, now), (vec![], vec![]));
+        let m1 = session.start(now);
         let refused = parse(&format!("RTSP/1.0 551 Option not supported\r\nCSeq: {}\r\n\r\n", m1.cseq().unwrap()));
-        assert!(matches!(session.receive(&refused).1[0], Event::Failed(_)));
+        assert!(matches!(session.receive(&refused, now).1[0], Event::Failed(_)));
     }
 
     #[test]
     fn options_twice_asks_for_capabilities_once() {
-        let mut session = Session::new("10.0.0.1", 19000, &formats::SOFTWARE_PREFERENCE, "1");
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
         let options = parse("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n");
-        assert_eq!(session.receive(&options).0.len(), 2);
-        assert_eq!(session.receive(&options).0.len(), 1);
+        assert_eq!(session.receive(&options, now).0.len(), 2);
+        assert_eq!(session.receive(&options, now).0.len(), 1);
+    }
+
+    #[test]
+    fn an_unanswered_keepalive_fails_the_session_after_five_seconds() {
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        set_up(&mut session, now);
+        assert_eq!(session.receive(&request("PLAY", 3), now).1, vec![Event::Play]);
+        let _ = session.keepalive(now);
+        assert_eq!(session.poll(now + secs(4)), vec![]);
+        assert_eq!(session.poll(now + REPLY_WAIT.saturating_sub(Duration::from_millis(1))), vec![]);
+        let events = session.poll(now + REPLY_WAIT);
+        assert!(matches!(events.as_slice(), [Event::Failed(reason)] if reason.contains("keep-alive")), "{events:?}");
+        assert_eq!(session.poll(now + secs(60)), vec![], "the expired entry is gone and reports once");
+        assert!(session.pending.is_empty());
+    }
+
+    #[test]
+    fn an_answered_keepalive_leaves_nothing_pending_even_when_the_reply_is_an_error() {
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        set_up(&mut session, now);
+        let _ = session.receive(&request("PLAY", 3), now);
+        let ok = session.keepalive(now);
+        let refused = session.keepalive(now + secs(20));
+        assert_eq!(session.receive(&reply_to(&ok, "", ""), now + secs(1)), (vec![], vec![]));
+        let error = parse(&format!("RTSP/1.0 454 Session Not Found\r\nCSeq: {}\r\n\r\n", refused.cseq().unwrap()));
+        assert_eq!(session.receive(&error, now + secs(21)), (vec![], vec![]));
+        assert_eq!(session.poll(now + secs(600)), vec![], "a sink that answers at all is alive");
+        assert!(session.pending.is_empty());
+    }
+
+    #[test]
+    fn every_unanswered_keepalive_is_reported_and_dropped() {
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        set_up(&mut session, now);
+        let _ = session.receive(&request("PLAY", 3), now);
+        for step in 0..3 {
+            let _ = session.keepalive(now + secs(step));
+        }
+        let events = session.poll(now + secs(30));
+        assert_eq!(events.len(), 3);
+        assert!(session.pending.is_empty());
+    }
+
+    #[test]
+    fn negotiation_that_never_reaches_play_fails_after_thirty_seconds() {
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        let _ = session.start(now);
+        assert_eq!(session.poll(now + NEGOTIATION_WAIT.saturating_sub(Duration::from_millis(1))), vec![]);
+        let events = session.poll(now + NEGOTIATION_WAIT);
+        assert!(matches!(events.as_slice(), [Event::Failed(reason)] if reason.contains("in time")), "{events:?}");
+        assert_eq!(session.poll(now + secs(120)), vec![], "it fails once");
+    }
+
+    #[test]
+    fn play_ends_the_negotiation_deadline_and_forgets_requests_the_sink_never_answered() {
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        set_up(&mut session, now);
+        assert!(!session.pending.is_empty(), "the sink never answered M5");
+        assert_eq!(session.receive(&request("PLAY", 3), now + secs(2)).1, vec![Event::Play]);
+        assert!(session.pending.is_empty());
+        assert_eq!(session.poll(now + secs(3600)), vec![], "a healthy stream is not killed by an old M5");
+    }
+
+    #[test]
+    fn an_unanswered_teardown_trigger_expires_without_a_failure() {
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        let _ = session.teardown(now);
+        assert_eq!(session.poll(now + REPLY_WAIT + secs(1)), vec![]);
+        assert!(session.pending.is_empty());
+    }
+
+    #[test]
+    fn pause_is_answered_and_a_later_play_resumes_instead_of_playing_again() {
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        set_up(&mut session, now);
+        let (out, events) = session.receive(&request("PAUSE", 3), now);
+        assert_eq!((code_of(&out[0]), events), (455, vec![]), "nothing plays yet");
+
+        assert_eq!(session.receive(&request("PLAY", 4), now).1, vec![Event::Play]);
+        let (out, events) = session.receive(&request("PLAY", 5), now);
+        assert_eq!((code_of(&out[0]), events), (200, vec![]), "a second PLAY while playing changes nothing");
+
+        let (out, events) = session.receive(&request("PAUSE", 6), now);
+        assert_eq!((code_of(&out[0]), events), (200, vec![Event::Pause]));
+        let (out, events) = session.receive(&request("PAUSE", 7), now);
+        assert_eq!((code_of(&out[0]), events), (200, vec![]), "pausing twice is harmless");
+
+        let (out, events) = session.receive(&request("PLAY", 8), now);
+        assert_eq!((code_of(&out[0]), events), (200, vec![Event::Resume]));
+        assert_eq!(session.receive(&request("PLAY", 9), now).1, vec![]);
+
+        let _ = session.receive(&request("TEARDOWN", 10), now);
+        assert_eq!(code_of(&session.receive(&request("PAUSE", 11), now).0[0]), 455, "nothing is left to pause");
+    }
+
+    #[test]
+    fn pause_before_setup_is_refused() {
+        let mut session = new_session(SOUND);
+        let (out, events) = session.receive(&request("PAUSE", 1), Instant::now());
+        assert_eq!((code_of(&out[0]), events), (455, vec![]));
+    }
+
+    #[test]
+    fn no_method_in_the_public_header_is_answered_with_501() {
+        let mut session = new_session(SOUND);
+        let (out, _) = session.receive(&parse("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\n\r\n"), Instant::now());
+        let public = out[0].header("Public").unwrap();
+        for method in public.split(',').map(str::trim).skip(1) {
+            let (reply, _) = session.receive(&request(method, 9), Instant::now());
+            assert_ne!(code_of(&reply[0]), 501, "{method} is advertised in Public but not implemented");
+        }
+    }
+
+    fn m4_audio(support: AudioSupport, offer: &str) -> (Option<String>, Negotiated) {
+        let now = Instant::now();
+        let mut session = new_session(support);
+        let m3 = at_capabilities(&mut session, now);
+        let body = format!(
+            "wfd_video_formats: 00 00 02 10 0001ffff 1fffffff 00000fff 00 0000 0000 00 none none\r\n\
+             wfd_audio_codecs: {offer}\r\n\
+             wfd_client_rtp_ports: RTP/AVP/UDP;unicast 1028 0 mode=play\r\n"
+        );
+        let (out, events) = session.receive(&reply_to(&m3, "", &body), now);
+        let Event::Negotiated(negotiated) = events[0].clone() else { panic!("{events:?}") };
+        (out[0].parameters().get("wfd_audio_codecs").cloned(), negotiated)
+    }
+
+    #[test]
+    fn m4_promises_audio_exactly_when_the_pipeline_will_send_it() {
+        let offers =
+            ["LPCM 00000003 00, AAC 00000001 00", "LPCM 00000001 00, AAC 00000001 00", "LPCM 00000003 00", "none"];
+        for enabled in [false, true] {
+            for aac_encoder in [false, true] {
+                for offer in offers {
+                    let support = AudioSupport { enabled, aac_encoder };
+                    let (promised, negotiated) = m4_audio(support, offer);
+                    let available = |name: &str| name == "openh264enc" || (aac_encoder && name == "avenc_aac");
+                    let spec = crate::pipeline::Spec {
+                        video: negotiated.video,
+                        audio: negotiated.audio,
+                        host: "127.0.0.1".into(),
+                        port: 1028,
+                        frame_format: "BGRx",
+                        input: (640, 480),
+                    };
+                    let sent = crate::pipeline::description(&spec, available).unwrap().contains("pipewiresrc");
+                    assert_eq!(
+                        promised.is_some(),
+                        sent,
+                        "enabled={enabled} aac_encoder={aac_encoder} offer={offer:?}: M4 says {promised:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn turning_sound_off_leaves_the_audio_line_out_of_m4() {
+        let (promised, negotiated) =
+            m4_audio(AudioSupport { enabled: false, aac_encoder: true }, "LPCM 00000003 00, AAC 00000001 00");
+        assert_eq!((promised, negotiated.audio), (None, None));
+        let (promised, negotiated) = m4_audio(SOUND, "LPCM 00000003 00, AAC 00000001 00");
+        assert_eq!((promised.as_deref(), negotiated.audio), (Some("LPCM 00000002 00"), Some(Audio::Lpcm48)));
     }
 }

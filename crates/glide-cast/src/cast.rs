@@ -1,11 +1,14 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::formats::{self, Mode};
+use crate::abort::Abort;
+use crate::formats::{self, AudioSupport, Mode};
 use crate::p2p::{P2p, Peer};
-use crate::pipeline::{Spec, Stream};
+use crate::pipeline::{Gate, Spec, Stream};
 use crate::rtsp::{Event, Message, Negotiated, Reader, Session};
 use crate::wfd::CONTROL_PORT;
 
@@ -13,6 +16,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(40);
 const ADDRESS_WAIT: Duration = Duration::from_secs(15);
 const ACCEPT_WAIT: Duration = Duration::from_secs(30);
 const KEEPALIVE: Duration = Duration::from_secs(20);
+const FIND_POLL: Duration = Duration::from_secs(1);
 const TICK: Duration = Duration::from_millis(100);
 const SERVER_PORT: u16 = 19000;
 
@@ -21,23 +25,44 @@ pub enum Status {
     Connecting(String),
     Negotiated(Mode),
     Streaming(Mode),
+    Paused,
     Ended(Option<String>),
+}
+
+#[derive(Default)]
+struct Shared {
+    stream: Mutex<Option<(Stream, Mode)>>,
+    paused: AtomicBool,
+}
+
+impl Shared {
+    fn gate(&self) -> Option<Gate> {
+        self.stream.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|(stream, _)| stream.gate())
+    }
 }
 
 #[derive(Clone)]
 pub struct Handle {
     stop: mpsc::Sender<()>,
-    stream: Arc<Mutex<Option<(Stream, Mode)>>>,
+    shared: Arc<Shared>,
 }
 
 impl Handle {
     #[must_use]
     pub fn mode(&self) -> Option<Mode> {
-        self.stream.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|(_, mode)| *mode)
+        self.shared.stream.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|(_, mode)| *mode)
+    }
+
+    #[must_use]
+    pub fn paused(&self) -> bool {
+        self.shared.paused.load(Ordering::Acquire)
     }
 
     pub fn push_frame(&self, pixels: Vec<u8>) {
-        if let Some((stream, _)) = self.stream.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+        if self.paused() {
+            return;
+        }
+        if let Some((stream, _)) = self.shared.stream.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
             let _ = stream.push_frame(pixels);
         }
     }
@@ -54,8 +79,78 @@ pub enum Discovery {
     Failed(String),
 }
 
-pub fn discover(seconds: u32, found: impl Fn(Discovery) + Send + 'static) -> std::io::Result<()> {
-    std::thread::Builder::new().name("glide-cast-find".into()).spawn(move || {
+#[derive(Default)]
+struct Flag {
+    cancelled: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Flag {
+    fn cancel(&self) {
+        *self.cancelled.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        self.changed.notify_all();
+    }
+
+    fn cancelled(&self) -> bool {
+        *self.cancelled.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn wait(&self, limit: Duration) -> bool {
+        let guard = self.cancelled.lock().unwrap_or_else(PoisonError::into_inner);
+        let (guard, _) = self
+            .changed
+            .wait_timeout_while(guard, limit, |cancelled| !*cancelled)
+            .unwrap_or_else(PoisonError::into_inner);
+        *guard
+    }
+}
+
+#[derive(Clone)]
+pub struct Search {
+    flag: Arc<Flag>,
+    thread: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl Search {
+    pub fn cancel(&self) {
+        self.flag.cancel();
+    }
+
+    pub(crate) fn finish(&self) {
+        self.flag.cancel();
+        let thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(thread) = thread {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn search(
+    flag: &Flag, limit: Duration, poll: Duration, mut peers: impl FnMut() -> Option<Vec<Peer>>,
+    stop_find: impl FnOnce(), found: &impl Fn(Discovery),
+) {
+    let deadline = Instant::now() + limit;
+    let mut last = Vec::new();
+    let mut cancelled = flag.cancelled();
+    while !cancelled && Instant::now() < deadline {
+        if let Some(list) = peers()
+            && list != last
+        {
+            last.clone_from(&list);
+            found(Discovery::Peers(list));
+        }
+        cancelled = flag.wait(poll);
+    }
+    if !flag.cancelled() {
+        stop_find();
+    }
+    found(Discovery::Finished);
+}
+
+pub fn discover(seconds: u32, found: impl Fn(Discovery) + Send + 'static) -> std::io::Result<Search> {
+    let flag = Arc::new(Flag::default());
+    let shared = Arc::clone(&flag);
+    let thread = std::thread::Builder::new().name("glide-cast-find".into()).spawn(move || {
         let p2p = match P2p::open() {
             Ok(p2p) => p2p,
             Err(err) => return found(Discovery::Failed(err)),
@@ -63,21 +158,19 @@ pub fn discover(seconds: u32, found: impl Fn(Discovery) + Send + 'static) -> std
         if let Err(err) = p2p.start_find(i32::try_from(seconds).unwrap_or(30)) {
             return found(Discovery::Failed(err));
         }
-        let deadline = Instant::now() + Duration::from_secs(u64::from(seconds));
-        let mut last = Vec::new();
-        while Instant::now() < deadline {
-            if let Ok(peers) = p2p.peers()
-                && peers != last
-            {
-                last.clone_from(&peers);
-                found(Discovery::Peers(peers));
-            }
-            std::thread::sleep(Duration::from_secs(1));
-        }
-        let _ = p2p.stop_find();
-        found(Discovery::Finished);
+        let limit = Duration::from_secs(u64::from(seconds));
+        search(
+            &shared,
+            limit,
+            FIND_POLL,
+            || p2p.peers().ok(),
+            || {
+                let _ = p2p.stop_find();
+            },
+            &found,
+        );
     })?;
-    Ok(())
+    Ok(Search { flag, thread: Arc::new(Mutex::new(Some(thread))) })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,18 +180,22 @@ pub struct Source {
 }
 
 pub fn start(
-    peer: Peer, source: Source, options: Options, status: impl Fn(Status) + Send + 'static,
+    peer: Peer, source: Source, options: Options, search: Option<Search>, status: impl Fn(Status) + Send + 'static,
 ) -> std::io::Result<Handle> {
     let (stop, stopped) = mpsc::channel();
-    let stream = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&stream);
+    let shared = Arc::new(Shared::default());
+    let owned = Arc::clone(&shared);
     std::thread::Builder::new().name("glide-cast".into()).spawn(move || {
         status(Status::Connecting(peer.name.clone()));
-        let outcome = run(&peer, source, options, &stopped, &slot, &status);
-        drop(swap(&slot, None));
-        status(Status::Ended(outcome.err()));
+        let outcome = run(&peer, source, options, search.as_ref(), &stopped, &owned, &status);
+        drop(swap(&owned.stream, None));
+        status(ending(outcome));
     })?;
-    Ok(Handle { stop, stream })
+    Ok(Handle { stop, shared })
+}
+
+fn ending(outcome: Result<(), Abort>) -> Status {
+    Status::Ended(outcome.err().and_then(Abort::into_reason))
 }
 
 fn swap<T>(slot: &Mutex<Option<T>>, next: Option<T>) -> Option<T> {
@@ -107,20 +204,27 @@ fn swap<T>(slot: &Mutex<Option<T>>, next: Option<T>) -> Option<T> {
 }
 
 fn run(
-    peer: &Peer, source: Source, options: Options, stopped: &mpsc::Receiver<()>,
-    slot: &Arc<Mutex<Option<(Stream, Mode)>>>, status: &impl Fn(Status),
-) -> Result<(), String> {
+    peer: &Peer, source: Source, options: Options, search: Option<&Search>, stopped: &mpsc::Receiver<()>,
+    shared: &Shared, status: &impl Fn(Status),
+) -> Result<(), Abort> {
+    if let Some(search) = search {
+        search.finish();
+    }
     gstreamer::init().map_err(|err| format!("GStreamer did not start: {err}"))?;
     let preference = preference(crate::pipeline::hardware_encoder(crate::pipeline::element_exists), options.quality);
+    let sound = AudioSupport {
+        enabled: options.audio,
+        aac_encoder: crate::pipeline::aac_encoder(crate::pipeline::element_exists),
+    };
     let p2p = P2p::open()?;
     let _ = p2p.stop_find();
     let active = p2p.connect(peer, CONNECT_TIMEOUT, stopped)?;
-    let served = (|| {
+    let served: Result<(), Abort> = (|| {
         let local = wait_for(ADDRESS_WAIT, stopped, || p2p.local_address(&active))?
             .ok_or("the Wi-Fi Direct link got no address")?;
         let (tcp, display) = accept(local, stopped)?.ok_or("the display did not open its control connection")?;
-        let link = Link { tcp, display, local, source, preference, audio: options.audio };
-        link.serve(stopped, slot, status)
+        let link = Link { tcp, display, local, source, preference, sound };
+        link.serve(stopped, shared, status).map_err(Abort::from)
     })();
     let _ = p2p.disconnect(&active);
     served
@@ -128,11 +232,11 @@ fn run(
 
 fn wait_for<T>(
     limit: Duration, stopped: &mpsc::Receiver<()>, mut probe: impl FnMut() -> Option<T>,
-) -> Result<Option<T>, String> {
+) -> Result<Option<T>, Abort> {
     let deadline = Instant::now() + limit;
     while Instant::now() < deadline {
         if stopped.try_recv().is_ok() {
-            return Err("stopped".into());
+            return Err(Abort::Stopped);
         }
         if let Some(value) = probe() {
             return Ok(Some(value));
@@ -142,7 +246,7 @@ fn wait_for<T>(
     Ok(None)
 }
 
-fn accept(local: Ipv4Addr, stopped: &mpsc::Receiver<()>) -> Result<Option<(TcpStream, SocketAddr)>, String> {
+fn accept(local: Ipv4Addr, stopped: &mpsc::Receiver<()>) -> Result<Option<(TcpStream, SocketAddr)>, Abort> {
     let listener = TcpListener::bind((local, CONTROL_PORT)).map_err(|err| format!("port {CONTROL_PORT}: {err}"))?;
     listener.set_nonblocking(true).map_err(|err| err.to_string())?;
     wait_for(ACCEPT_WAIT, stopped, || match listener.accept() {
@@ -173,7 +277,18 @@ struct Link {
     local: Ipv4Addr,
     source: Source,
     preference: &'static [u8],
-    audio: bool,
+    sound: AudioSupport,
+}
+
+struct Serving {
+    negotiated: Option<Negotiated>,
+    last_keepalive: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flow {
+    Continue,
+    Finished,
 }
 
 impl Link {
@@ -181,23 +296,75 @@ impl Link {
         self.tcp.write_all(&message.to_bytes()).map_err(|err| format!("the display connection broke: {err}"))
     }
 
-    fn serve(
-        mut self, stopped: &mpsc::Receiver<()>, slot: &Arc<Mutex<Option<(Stream, Mode)>>>, status: &impl Fn(Status),
-    ) -> Result<(), String> {
+    fn apply(
+        &self, events: Vec<Event>, serving: &mut Serving, shared: &Shared, status: &impl Fn(Status),
+    ) -> Result<Flow, String> {
+        for event in events {
+            match event {
+                Event::Negotiated(choice) => {
+                    status(Status::Negotiated(choice.video.mode));
+                    serving.negotiated = Some(choice);
+                }
+                Event::Play => {
+                    let choice = serving.negotiated.clone().ok_or("PLAY came before negotiation")?;
+                    let spec = Spec {
+                        video: choice.video,
+                        audio: choice.audio,
+                        host: display_host(self.display.ip()),
+                        port: choice.sink_rtp_port,
+                        frame_format: self.source.frame_format,
+                        input: self.source.size,
+                    };
+                    let stream = Stream::start(&spec)?;
+                    shared.paused.store(false, Ordering::Release);
+                    drop(swap(&shared.stream, Some((stream, choice.video.mode))));
+                    status(Status::Streaming(choice.video.mode));
+                    serving.last_keepalive = Instant::now();
+                }
+                Event::Pause => {
+                    shared.paused.store(true, Ordering::Release);
+                    if let Some(gate) = shared.gate() {
+                        gate.pause()?;
+                    }
+                    status(Status::Paused);
+                }
+                Event::Resume => {
+                    let choice = serving.negotiated.as_ref().ok_or("PLAY came before negotiation")?;
+                    if let Some(gate) = shared.gate() {
+                        gate.resume()?;
+                    }
+                    if let Some((stream, _)) = shared.stream.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                        stream.request_keyframe();
+                    }
+                    shared.paused.store(false, Ordering::Release);
+                    status(Status::Streaming(choice.video.mode));
+                }
+                Event::KeyFrame => {
+                    if let Some((stream, _)) = shared.stream.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                        stream.request_keyframe();
+                    }
+                }
+                Event::Teardown => return Ok(Flow::Finished),
+                Event::Failed(reason) => return Err(reason),
+            }
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn serve(mut self, stopped: &mpsc::Receiver<()>, shared: &Shared, status: &impl Fn(Status)) -> Result<(), String> {
         self.tcp.set_nonblocking(false).map_err(|err| err.to_string())?;
         self.tcp.set_read_timeout(Some(TICK)).map_err(|err| err.to_string())?;
         self.tcp.set_write_timeout(Some(WRITE_WAIT)).map_err(|err| err.to_string())?;
         let id = format!("{:08X}", session_id());
-        let mut session = Session::new(&self.local.to_string(), SERVER_PORT, self.preference, &id);
+        let mut session = Session::new(&self.local.to_string(), SERVER_PORT, self.preference, self.sound, &id);
         let mut reader = Reader::default();
-        let mut negotiated: Option<Negotiated> = None;
-        let mut last_keepalive = Instant::now();
-        let first = session.start();
+        let mut serving = Serving { negotiated: None, last_keepalive: Instant::now() };
+        let first = session.start(Instant::now());
         self.write(&first)?;
         let mut buffer = [0; 4096];
         loop {
             if stopped.try_recv().is_ok() {
-                let teardown = session.teardown();
+                let teardown = session.teardown(Instant::now());
                 let _ = self.write(&teardown);
                 return Ok(());
             }
@@ -208,50 +375,30 @@ impl Link {
                 Err(err) => return Err(format!("the display connection broke: {err}")),
             }
             while let Some(message) = reader.next_message().map_err(|err| format!("{err:?}"))? {
-                let (out, events) = session.receive(&message);
+                let (out, events) = session.receive(&message, Instant::now());
                 for reply in &out {
                     self.write(reply)?;
                 }
-                for event in events {
-                    match event {
-                        Event::Negotiated(choice) => {
-                            status(Status::Negotiated(choice.video.mode));
-                            negotiated = Some(choice);
-                        }
-                        Event::Play => {
-                            let choice = negotiated.clone().ok_or("PLAY came before negotiation")?;
-                            let spec = Spec {
-                                video: choice.video,
-                                audio: choice.audio.filter(|_| self.audio),
-                                host: display_host(self.display.ip()),
-                                port: choice.sink_rtp_port,
-                                frame_format: self.source.frame_format,
-                                input: self.source.size,
-                            };
-                            let stream = Stream::start(&spec)?;
-                            drop(swap(slot, Some((stream, choice.video.mode))));
-                            status(Status::Streaming(choice.video.mode));
-                            last_keepalive = Instant::now();
-                        }
-                        Event::KeyFrame => {
-                            if let Some((stream, _)) = slot.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
-                                stream.request_keyframe();
-                            }
-                        }
-                        Event::Teardown => return Ok(()),
-                        Event::Failed(reason) => return Err(reason),
-                    }
+                if self.apply(events, &mut serving, shared, status)? == Flow::Finished {
+                    return Ok(());
                 }
             }
-            if let Some(failure) =
-                slot.lock().unwrap_or_else(PoisonError::into_inner).as_ref().and_then(|(stream, _)| stream.failure())
+            if self.apply(session.poll(Instant::now()), &mut serving, shared, status)? == Flow::Finished {
+                return Ok(());
+            }
+            if let Some(failure) = shared
+                .stream
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .and_then(|(stream, _)| stream.failure())
             {
                 return Err(failure);
             }
-            if negotiated.is_some() && last_keepalive.elapsed() >= KEEPALIVE {
-                let keepalive = session.keepalive();
+            if serving.negotiated.is_some() && serving.last_keepalive.elapsed() >= KEEPALIVE {
+                let keepalive = session.keepalive(Instant::now());
                 self.write(&keepalive)?;
-                last_keepalive = Instant::now();
+                serving.last_keepalive = Instant::now();
             }
         }
     }
@@ -322,7 +469,158 @@ mod tests {
         assert_eq!(wait_for(Duration::from_millis(50), &stopped, || None::<u8>), Ok(None));
         assert_eq!(wait_for(Duration::from_secs(5), &stopped, || Some(7)), Ok(Some(7)));
         stop.send(()).unwrap();
-        assert!(wait_for(Duration::from_secs(5), &stopped, || None::<u8>).is_err());
+        assert_eq!(wait_for(Duration::from_secs(5), &stopped, || None::<u8>), Err(Abort::Stopped));
+    }
+
+    #[test]
+    fn a_stop_ends_the_cast_quietly_and_a_failure_ends_it_with_its_reason() {
+        assert_eq!(ending(Ok(())), Status::Ended(None));
+        assert_eq!(ending(Err(Abort::Stopped)), Status::Ended(None), "pressing Stop is not a failure");
+        assert_eq!(
+            ending(Err(Abort::from("the display closed the connection"))),
+            Status::Ended(Some("the display closed the connection".into()))
+        );
+    }
+
+    #[test]
+    fn a_stop_while_waiting_for_the_link_address_is_not_reported_as_a_failure() {
+        let (stop, stopped) = mpsc::channel();
+        stop.send(()).unwrap();
+        let outcome = wait_for(ADDRESS_WAIT, &stopped, || None::<Ipv4Addr>).map(|_| ());
+        assert_eq!(ending(outcome), Status::Ended(None));
+    }
+
+    fn cancelled_after(flag: &Arc<Flag>, delay: Duration) -> JoinHandle<()> {
+        let flag = Arc::clone(flag);
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            flag.cancel();
+        })
+    }
+
+    const SHORT: Duration = Duration::from_millis(5);
+
+    fn display(name: &str) -> Peer {
+        Peer {
+            path: zbus::zvariant::OwnedObjectPath::try_from(format!("/peer/{name}")).unwrap(),
+            name: name.into(),
+            address: "aa:bb:cc:dd:ee:ff".into(),
+            strength: 50,
+            display: None,
+        }
+    }
+
+    #[test]
+    fn a_search_that_runs_out_stops_the_find_once_and_reports_its_end() {
+        let flag = Flag::default();
+        let stops = Mutex::new(0);
+        let found = Mutex::new(Vec::new());
+        search(&flag, Duration::ZERO, SHORT, || None, || *stops.lock().unwrap() += 1, &|event| {
+            found.lock().unwrap().push(event);
+        });
+        assert_eq!(*stops.lock().unwrap(), 1);
+        assert_eq!(*found.lock().unwrap(), [Discovery::Finished]);
+    }
+
+    #[test]
+    fn a_cancelled_search_skips_the_trailing_stop_find_but_still_reports_its_end() {
+        let flag = Flag::default();
+        flag.cancel();
+        let stops = Mutex::new(0);
+        let found = Mutex::new(Vec::new());
+        search(&flag, Duration::from_secs(30), SHORT, || None, || *stops.lock().unwrap() += 1, &|event| {
+            found.lock().unwrap().push(event);
+        });
+        assert_eq!(*stops.lock().unwrap(), 0, "StopFind would reset wpa_supplicant in the middle of a join");
+        assert_eq!(*found.lock().unwrap(), [Discovery::Finished], "the compositor still learns the search is over");
+    }
+
+    #[test]
+    fn a_cancel_that_arrives_during_the_search_also_skips_the_trailing_stop_find() {
+        let flag = Flag::default();
+        let mut polls = 0;
+        let stops = Mutex::new(0);
+        let peers = || {
+            polls += 1;
+            if polls == 3 {
+                flag.cancel();
+            }
+            None
+        };
+        search(&flag, Duration::from_secs(30), SHORT, peers, || *stops.lock().unwrap() += 1, &|_| {});
+        assert_eq!(*stops.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_search_notices_a_cancel_without_waiting_out_its_poll_interval() {
+        let flag = Arc::new(Flag::default());
+        let stops = Mutex::new(0);
+        let canceller = cancelled_after(&flag, Duration::from_millis(50));
+        let started = Instant::now();
+        search(
+            &flag,
+            Duration::from_mins(1),
+            Duration::from_secs(30),
+            || None,
+            || *stops.lock().unwrap() += 1,
+            &|_| {},
+        );
+        canceller.join().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10), "took {:?}", started.elapsed());
+        assert_eq!(*stops.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_search_reports_a_list_only_when_it_changes() {
+        let flag = Flag::default();
+        let mut lists = vec![vec![display("tv"), display("box")], vec![display("tv")], vec![display("tv")], vec![]];
+        let peers = || {
+            lists.pop().or_else(|| {
+                flag.cancel();
+                None
+            })
+        };
+        let found = Mutex::new(Vec::new());
+        search(&flag, Duration::from_secs(30), SHORT, peers, || {}, &|event| found.lock().unwrap().push(event));
+        assert_eq!(
+            *found.lock().unwrap(),
+            [
+                Discovery::Peers(vec![display("tv")]),
+                Discovery::Peers(vec![display("tv"), display("box")]),
+                Discovery::Finished
+            ],
+            "the empty list at the start and the repeated list are not news"
+        );
+    }
+
+    #[test]
+    fn finishing_a_search_cancels_it_and_waits_for_its_thread() {
+        let flag = Arc::new(Flag::default());
+        let ended = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let flag = Arc::clone(&flag);
+            let ended = Arc::clone(&ended);
+            std::thread::spawn(move || {
+                while !flag.wait(Duration::from_secs(30)) {}
+                std::thread::sleep(Duration::from_millis(150));
+                ended.store(true, Ordering::Release);
+            })
+        };
+        let search = Search { flag, thread: Arc::new(Mutex::new(Some(thread))) };
+        let copy = search.clone();
+        let started = Instant::now();
+        search.finish();
+        assert!(ended.load(Ordering::Acquire), "the thread was still running when finish returned");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        copy.finish();
+    }
+
+    #[test]
+    fn dropping_a_search_handle_does_not_cancel_the_search() {
+        let flag = Arc::new(Flag::default());
+        let search = Search { flag: Arc::clone(&flag), thread: Arc::new(Mutex::new(None)) };
+        drop(search);
+        assert!(!flag.cancelled());
     }
 
     struct UnlockProbe {
@@ -379,11 +677,72 @@ mod tests {
             self.tcp.write_all(request.as_bytes()).unwrap();
             self.next()
         }
+
+        fn handshake(&mut self, rtp_port: u16) {
+            let m1 = self.next();
+            self.ok(&m1, "");
+            let m2 = self.send("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nRequire: org.wfa.wfd1.0\r\n\r\n");
+            assert!(matches!(m2.start, crate::rtsp::Start::Response { code: 200, .. }));
+            let m3 = self.next();
+            self.ok(
+                &m3,
+                &format!(
+                    "wfd_video_formats: 00 00 01 01 00000001 00000000 00000000 00 0000 0000 00 none none\r\n\
+                     wfd_audio_codecs: none\r\n\
+                     wfd_client_rtp_ports: RTP/AVP/UDP;unicast {rtp_port} 0 mode=play\r\n"
+                ),
+            );
+            let m4 = self.next();
+            assert!(m4.parameters()["wfd_video_formats"].starts_with("00 00 01 01 00000001"));
+            self.ok(&m4, "");
+            let m5 = self.next();
+            self.ok(&m5, "");
+            let setup = self.send(&format!(
+                "SETUP rtsp://127.0.0.1/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP/UDP;unicast;client_port={rtp_port}\r\n\r\n"
+            ));
+            assert!(setup.header("Session").is_some());
+        }
+
+        fn command(&mut self, method: &str, cseq: u32) -> u16 {
+            let reply =
+                self.send(&format!("{method} rtsp://127.0.0.1/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: {cseq}\r\n\r\n"));
+            let crate::rtsp::Start::Response { code, .. } = reply.start else { panic!("{reply:?}") };
+            code
+        }
+    }
+
+    type Outcome = (Result<(), String>, Vec<Status>);
+
+    fn spawn_source(
+        listener: TcpListener, stopped: mpsc::Receiver<()>, shared: Arc<Shared>,
+    ) -> std::thread::JoinHandle<Outcome> {
+        std::thread::spawn(move || {
+            let (tcp, display) = listener.accept().unwrap();
+            let source = Source { frame_format: "BGRx", size: (800, 500) };
+            let preference = &formats::SOFTWARE_PREFERENCE;
+            let sound = AudioSupport { enabled: true, aac_encoder: false };
+            let link = Link { tcp, display, local: Ipv4Addr::LOCALHOST, source, preference, sound };
+            let statuses = Mutex::new(Vec::new());
+            let outcome = link.serve(&stopped, &shared, &|status| statuses.lock().unwrap().push(status));
+            (outcome, statuses.into_inner().unwrap())
+        })
+    }
+
+    fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn encoder_installed() -> bool {
+        gstreamer::init().is_ok() && gstreamer::ElementFactory::find("openh264enc").is_some()
     }
 
     #[test]
     fn a_display_gets_rtp_after_the_full_rtsp_exchange() {
-        if gstreamer::init().is_err() || gstreamer::ElementFactory::find("openh264enc").is_none() {
+        if !encoder_installed() {
             eprintln!("no openh264enc; skipping");
             return;
         }
@@ -392,50 +751,16 @@ mod tests {
         let rtp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         rtp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let rtp_port = rtp.local_addr().unwrap().port();
-        let slot = Arc::new(Mutex::new(None));
+        let shared = Arc::new(Shared::default());
         let (stop, stopped) = mpsc::channel::<()>();
-        let source_slot = Arc::clone(&slot);
-        let source = std::thread::spawn(move || {
-            let (tcp, display) = listener.accept().unwrap();
-            let source = Source { frame_format: "BGRx", size: (800, 500) };
-            let preference = &formats::SOFTWARE_PREFERENCE;
-            let link = Link { tcp, display, local: Ipv4Addr::LOCALHOST, source, preference, audio: true };
-            let statuses = Mutex::new(Vec::new());
-            let outcome = link.serve(&stopped, &source_slot, &|status| statuses.lock().unwrap().push(status));
-            (outcome, statuses.into_inner().unwrap())
-        });
+        let source = spawn_source(listener, stopped, Arc::clone(&shared));
 
         let mut sink = Sink { tcp: TcpStream::connect(address).unwrap(), reader: Reader::default() };
-        let m1 = sink.next();
-        sink.ok(&m1, "");
-        let m3 = sink.send("OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nRequire: org.wfa.wfd1.0\r\n\r\n");
-        assert!(matches!(m3.start, crate::rtsp::Start::Response { code: 200, .. }));
-        let m3 = sink.next();
-        sink.ok(
-            &m3,
-            &format!(
-                "wfd_video_formats: 00 00 01 01 00000001 00000000 00000000 00 0000 0000 00 none none\r\n\
-                 wfd_audio_codecs: none\r\n\
-                 wfd_client_rtp_ports: RTP/AVP/UDP;unicast {rtp_port} 0 mode=play\r\n"
-            ),
-        );
-        let m4 = sink.next();
-        assert!(m4.parameters()["wfd_video_formats"].starts_with("00 00 01 01 00000001"));
-        sink.ok(&m4, "");
-        let m5 = sink.next();
-        sink.ok(&m5, "");
-        let setup = sink.send(&format!(
-            "SETUP rtsp://127.0.0.1/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP/UDP;unicast;client_port={rtp_port}\r\n\r\n"
-        ));
-        assert!(setup.header("Session").is_some());
-        let play = sink.send("PLAY rtsp://127.0.0.1/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 3\r\n\r\n");
-        assert!(matches!(play.start, crate::rtsp::Start::Response { code: 200, .. }));
+        sink.handshake(rtp_port);
+        assert_eq!(sink.command("PLAY", 3), 200);
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while slot.lock().unwrap().is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let handle = Handle { stop, stream: Arc::clone(&slot) };
+        wait_until("the stream", || shared.stream.lock().unwrap().is_some());
+        let handle = Handle { stop, shared: Arc::clone(&shared) };
         assert_eq!(handle.mode().map(|mode| (mode.width, mode.height)), Some((640, 480)));
         for _ in 0..15 {
             handle.push_frame(vec![0x40; 800 * 500 * 4]);
@@ -452,5 +777,47 @@ mod tests {
         let (outcome, statuses) = source.join().unwrap();
         assert_eq!(outcome, Ok(()));
         assert!(matches!(statuses.as_slice(), [Status::Negotiated(_), Status::Streaming(_)]), "{statuses:?}");
+    }
+
+    #[test]
+    fn pause_stops_the_frames_and_a_later_play_resumes_the_same_pipeline() {
+        if !encoder_installed() {
+            eprintln!("no openh264enc; skipping");
+            return;
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let rtp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let rtp_port = rtp.local_addr().unwrap().port();
+        let shared = Arc::new(Shared::default());
+        let (stop, stopped) = mpsc::channel::<()>();
+        let source = spawn_source(listener, stopped, Arc::clone(&shared));
+
+        let mut sink = Sink { tcp: TcpStream::connect(address).unwrap(), reader: Reader::default() };
+        sink.handshake(rtp_port);
+        assert_eq!(sink.command("PLAY", 3), 200);
+        wait_until("the stream", || shared.stream.lock().unwrap().is_some());
+        let handle = Handle { stop, shared: Arc::clone(&shared) };
+        let pipeline = shared.gate().unwrap();
+        assert!(!handle.paused());
+
+        assert_eq!(sink.command("PAUSE", 4), 200, "PAUSE is advertised, so it must be answered");
+        wait_until("the pause", || handle.paused());
+        assert_eq!(sink.command("PLAY", 5), 200);
+        wait_until("the resume", || !handle.paused());
+        assert_eq!(shared.gate().unwrap(), pipeline, "PLAY after PAUSE must not build a second pipeline");
+        assert_eq!(sink.command("PLAY", 6), 200, "a PLAY while playing is harmless");
+
+        handle.stop();
+        let _ = sink.next();
+        let (outcome, statuses) = source.join().unwrap();
+        assert_eq!(outcome, Ok(()));
+        assert!(
+            matches!(
+                statuses.as_slice(),
+                [Status::Negotiated(_), Status::Streaming(_), Status::Paused, Status::Streaming(_)]
+            ),
+            "{statuses:?}"
+        );
     }
 }

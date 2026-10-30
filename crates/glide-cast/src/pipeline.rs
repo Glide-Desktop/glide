@@ -37,6 +37,11 @@ pub(crate) fn hardware_encoder(available: impl Fn(&str) -> bool) -> bool {
     ENCODERS[..3].iter().any(|name| available(name))
 }
 
+#[must_use]
+pub(crate) fn aac_encoder(available: impl Fn(&str) -> bool) -> bool {
+    AAC_ENCODERS.iter().any(|name| available(name))
+}
+
 fn encoder(spec: &Spec, available: &impl Fn(&str) -> bool) -> Option<String> {
     let kbps = spec.bitrate_kbps();
     let gop = spec.video.mode.fps;
@@ -49,6 +54,7 @@ fn encoder(spec: &Spec, available: &impl Fn(&str) -> bool) -> Option<String> {
             "openh264enc complexity=low gop-size={gop} rate-control=bitrate bitrate={} enable-frame-skip=true",
             kbps * 1000
         ),
+        "vaapih264enc" => format!("vaapih264enc bitrate={kbps} keyframe-period={gop}"),
         hardware => format!("{hardware} bitrate={kbps} key-int-max={gop}"),
     })
 }
@@ -101,6 +107,29 @@ pub(crate) fn element_exists(name: &str) -> bool {
     gst::ElementFactory::find(name).is_some()
 }
 
+fn play(pipeline: &gst::Pipeline) -> Result<(), String> {
+    if let Err(err) = pipeline.set_state(gst::State::Playing) {
+        let _ = pipeline.set_state(gst::State::Null);
+        return Err(err.to_string());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Gate {
+    pipeline: gst::Pipeline,
+}
+
+impl Gate {
+    pub(crate) fn pause(&self) -> Result<(), String> {
+        self.pipeline.set_state(gst::State::Paused).map(|_| ()).map_err(|err| err.to_string())
+    }
+
+    pub(crate) fn resume(&self) -> Result<(), String> {
+        self.pipeline.set_state(gst::State::Playing).map(|_| ()).map_err(|err| err.to_string())
+    }
+}
+
 pub struct Stream {
     pipeline: gst::Pipeline,
     video: gst_app::AppSrc,
@@ -118,8 +147,13 @@ impl Stream {
             .by_name("video")
             .and_then(|element| element.downcast::<gst_app::AppSrc>().ok())
             .ok_or("the pipeline has no video source")?;
-        pipeline.set_state(gst::State::Playing).map_err(|err| err.to_string())?;
+        play(&pipeline)?;
         Ok(Self { pipeline, video })
+    }
+
+    #[must_use]
+    pub(crate) fn gate(&self) -> Gate {
+        Gate { pipeline: self.pipeline.clone() }
     }
 
     pub fn push_frame(&self, pixels: Vec<u8>) -> Result<(), String> {
@@ -175,6 +209,108 @@ mod tests {
         assert!(text.contains("openh264enc complexity=low gop-size=30"), "{text}");
         assert!(!hardware_encoder(software));
         assert_eq!(description(&spec(None), |_: &str| false), None, "no encoder, no stream");
+    }
+
+    fn only(wanted: &'static str) -> impl Fn(&str) -> bool {
+        move |name| name == wanted
+    }
+
+    #[test]
+    fn each_encoder_is_given_the_keyframe_property_it_really_has() {
+        let line = |name: &'static str| encoder(&spec(None), &only(name)).unwrap();
+        assert_eq!(line("vaapih264enc"), "vaapih264enc bitrate=3456 keyframe-period=30");
+        assert_eq!(line("vah264enc"), "vah264enc bitrate=3456 key-int-max=30");
+        assert_eq!(line("vah264lpenc"), "vah264lpenc bitrate=3456 key-int-max=30");
+        assert!(line("x264enc").contains(" key-int-max=30 "));
+        assert!(line("openh264enc").contains(" gop-size=30 "));
+        let text = description(&spec(None), only("vaapih264enc")).unwrap();
+        assert!(!text.contains("key-int-max"), "gstreamer-vaapi calls it keyframe-period: {text}");
+    }
+
+    #[test]
+    fn installed_encoders_know_every_property_they_are_given() {
+        if gst::init().is_err() {
+            eprintln!("GStreamer did not start; skipping");
+            return;
+        }
+        for name in ENCODERS {
+            let Ok(element) = gst::ElementFactory::make(name).build() else {
+                eprintln!("{name} cannot be made here; skipping");
+                continue;
+            };
+            let text = encoder(&spec(None), &only(name)).unwrap();
+            for property in text.split_whitespace().filter_map(|token| token.split_once('=')).map(|(key, _)| key) {
+                assert!(element.find_property(property).is_some(), "{name} has no property {property}: {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_aac_encoder_is_one_of_the_three_the_pipeline_can_use() {
+        assert!(aac_encoder(only("avenc_aac")));
+        assert!(aac_encoder(only("fdkaacenc")));
+        assert!(!aac_encoder(only("openh264enc")));
+    }
+
+    #[test]
+    fn a_pipeline_that_cannot_start_is_left_in_the_null_state() {
+        if gst::init().is_err() {
+            eprintln!("GStreamer did not start; skipping");
+            return;
+        }
+        let broken = || {
+            gst::parse::launch("filesrc location=/nonexistent/glide-cast-test ! fakesink")
+                .unwrap()
+                .downcast::<gst::Pipeline>()
+                .unwrap()
+        };
+        let raw = broken();
+        assert!(raw.set_state(gst::State::Playing).is_err());
+        assert_ne!(raw.current_state(), gst::State::Null, "a failed start leaves the pipeline half started");
+        let _ = raw.set_state(gst::State::Null);
+
+        let pipeline = broken();
+        assert!(play(&pipeline).is_err());
+        assert_eq!(pipeline.current_state(), gst::State::Null);
+    }
+
+    #[test]
+    fn a_paused_stream_sends_nothing_and_a_resumed_one_goes_on() {
+        if gst::init().is_err() || !element_exists("openh264enc") && !hardware_encoder(element_exists) {
+            eprintln!("no GStreamer H.264 encoder; skipping");
+            return;
+        }
+        let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = receiver.local_addr().unwrap().port();
+        let small = Spec { video: Video { mode: CEA[0], ..spec(None).video }, port, ..spec(None) };
+        let stream = Stream::start(&small).unwrap();
+        let frame = vec![0x80; 640 * 480 * 4];
+        let feed = |count: usize| {
+            for _ in 0..count {
+                let _ = stream.push_frame(frame.clone());
+                std::thread::sleep(std::time::Duration::from_millis(33));
+            }
+        };
+        let mut packet = [0; 2048];
+        receiver.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        feed(15);
+        receiver.recv(&mut packet).unwrap();
+
+        let gate = stream.gate();
+        assert_eq!(gate, stream.gate(), "every gate is the same pipeline");
+        gate.pause().unwrap();
+        receiver.set_read_timeout(Some(std::time::Duration::from_millis(400))).unwrap();
+        while receiver.recv(&mut packet).is_ok() {}
+        feed(15);
+        assert!(receiver.recv(&mut packet).is_err(), "a paused stream sends no packets");
+
+        gate.resume().unwrap();
+        stream.request_keyframe();
+        receiver.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        feed(15);
+        receiver.recv(&mut packet).unwrap();
+        assert_eq!(packet[12], 0x47, "the payload starts with a TS sync byte again");
+        assert_eq!(stream.failure(), None);
     }
 
     #[test]
