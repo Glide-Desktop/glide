@@ -74,6 +74,7 @@ const SPINNER_STEPS: u32 = 36;
 const MAX_CACHED_ICONS: usize = 256;
 const SCRIM_ROWS: i32 = 64;
 const FAILLOCK_CONF: &str = "/etc/security/faillock.conf";
+const MAX_CONVERSATION_NOTICES: usize = 8;
 
 const fn style(size_px: f32, line_height_px: f32, weight: u16, tracking_em: f32) -> TextStyle {
     TextStyle { size_px, line_height_px, weight, tracking_em, uppercase: false, tabular: false }
@@ -514,6 +515,7 @@ pub struct GreeterUi {
     needs_session: bool,
     answered: bool,
     message: Option<(String, Tone)>,
+    conversation_notices: Vec<String>,
     error_at: Option<Instant>,
     error_held: bool,
     unavailable: bool,
@@ -636,6 +638,7 @@ impl GreeterUi {
             needs_session: false,
             answered: false,
             message: None,
+            conversation_notices: Vec::new(),
             error_at: None,
             error_held: false,
             unavailable: false,
@@ -831,6 +834,7 @@ impl GreeterUi {
         self.needs_session = false;
         self.clear_error();
         self.message = None;
+        self.conversation_notices.clear();
         self.failures = 0;
         self.locked_until = None;
         self.close_menus();
@@ -1031,6 +1035,13 @@ impl GreeterUi {
 
     pub fn on_notice(&mut self, text: String, error: bool) {
         let tone = if error { Tone::Error } else { Tone::Info };
+        let kept = text.trim();
+        if !kept.is_empty() {
+            if self.conversation_notices.len() >= MAX_CONVERSATION_NOTICES {
+                self.conversation_notices.remove(0);
+            }
+            self.conversation_notices.push(kept.to_string());
+        }
         self.message = Some((text, tone));
         self.dirty = true;
     }
@@ -1043,16 +1054,20 @@ impl GreeterUi {
         self.queued = None;
         self.prompt = None;
         self.needs_session = recreate_later;
+        self.conversation_notices.clear();
         self.message = Some((message, Tone::Error));
         self.error_held = false;
         self.dirty = true;
     }
 
     pub fn set_auth_denied(&mut self, reason: Option<String>, fallback: &str) {
-        let notice = self.message.as_ref().map(|(text, _)| text.clone());
-        let lockout = reason.as_deref().or(notice.as_deref()).and_then(lockout_left);
-        if let Some(left) = lockout {
-            let text = reason.or(notice).unwrap_or_default();
+        let conversation = std::mem::take(&mut self.conversation_notices).join(" ");
+        let current = self.message.as_ref().map(|(text, _)| text.clone());
+        let lockout = [reason.as_deref(), current.as_deref(), Some(conversation.as_str())]
+            .into_iter()
+            .flatten()
+            .find_map(|text| lockout_left(text).map(|left| (text.to_string(), left)));
+        if let Some((text, left)) = lockout {
             self.set_auth_error(text, false);
             self.locked_until = Some(Instant::now() + left);
             self.error_held = true;
@@ -1082,6 +1097,7 @@ impl GreeterUi {
     pub fn set_auth_success(&mut self) {
         self.auth = AuthState::Success;
         self.message = None;
+        self.conversation_notices.clear();
         self.failures = 0;
         self.close_menus();
         self.spinner_epoch = Instant::now();
@@ -2275,8 +2291,16 @@ mod tests {
         ui.deny = None;
         ui.on_notice("The account is locked due to 3 failed logins. (1 minutes left to unlock)".into(), false);
         assert_eq!(ui.on_question(true, "Password:".into()), None);
+        ui.type_char('a');
+        assert!(matches!(ui.submit(), Submit::Send(_)));
         ui.set_auth_denied(None, "Wrong password");
-        assert!(ui.locked_out().is_none(), "a new prompt starts a new conversation");
+        assert!(ui.locked_out().is_some(), "the prompt belongs to the conversation the notice came from");
+        ui.locked_until = None;
+        assert_eq!(ui.on_question(true, "Password:".into()), None);
+        ui.type_char('b');
+        assert!(matches!(ui.submit(), Submit::Send(_)));
+        ui.set_auth_denied(None, "Wrong password");
+        assert!(ui.locked_out().is_none(), "a denial consumed the notice, so the next conversation starts clean");
         assert_eq!(ui.hint().0, "Wrong password");
     }
 
@@ -2293,6 +2317,46 @@ mod tests {
         ui.tick();
         assert!(ui.locked_out().is_none());
         assert!(ui.type_char('a'));
+    }
+
+    #[test]
+    fn a_lockout_notice_survives_the_password_prompt_that_follows_it() {
+        let mut ui = ui();
+        ui.on_notice("The account is locked due to 3 failed logins.".into(), false);
+        ui.on_notice("(10 minutes left to unlock)".into(), false);
+        assert_eq!(ui.on_question(true, "Password:".into()), None);
+        assert!(ui.message.is_none(), "the prompt still clears the shown notice");
+        ui.type_char('a');
+        assert!(matches!(ui.submit(), Submit::Send(_)));
+        ui.set_auth_denied(None, "Wrong password");
+        let left = ui.locked_out().expect("the notices that came before the prompt still lock the field");
+        assert!(left > Duration::from_mins(9) && left <= Duration::from_mins(10));
+        assert!(!ui.type_char('b'));
+        assert_eq!(ui.hint().0, t(Key::GreeterLockedHint));
+    }
+
+    #[test]
+    fn notices_do_not_leak_from_one_conversation_into_the_next_denial() {
+        let mut ui = ui();
+        ui.on_notice("The account is locked due to 3 failed logins. (10 minutes left to unlock)".into(), false);
+        ui.set_auth_success();
+        ui.on_notice("Welcome back".into(), false);
+        ui.on_question(true, "Password:".into());
+        ui.set_auth_denied(None, "Wrong password");
+        assert!(ui.locked_out().is_none(), "a finished conversation leaves no lockout behind");
+
+        let mut ui = self::ui();
+        ui.on_notice("The account is locked due to 3 failed logins. (10 minutes left to unlock)".into(), false);
+        ui.set_auth_error("greetd said no".into(), true);
+        ui.on_question(true, "Password:".into());
+        ui.set_auth_denied(None, "Wrong password");
+        assert!(ui.locked_out().is_none(), "an error ends the conversation and its notices");
+
+        let mut ui = self::ui();
+        ui.on_notice("The account is locked due to 3 failed logins. (10 minutes left to unlock)".into(), false);
+        ui.reset_for_user();
+        ui.set_auth_denied(None, "Wrong password");
+        assert!(ui.locked_out().is_none(), "switching user starts a new conversation");
     }
 
     #[test]

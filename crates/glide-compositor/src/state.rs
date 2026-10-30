@@ -3676,6 +3676,10 @@ impl GlideState {
         if self.lock_auth.is_none() {
             self.lock_auth = self.start_lock_auth(&user.username);
         }
+        self.lock_password = None;
+        if let Some(auth) = self.lock_auth.as_mut() {
+            auth.begin();
+        }
 
         if let Some(launcher) = self.launcher.as_mut() {
             launcher.begin_close();
@@ -3715,6 +3719,10 @@ impl GlideState {
         if let Some(greeter) = self.greeter.as_mut().filter(|greeter| greeter.is_lock()) {
             greeter.set_auth_success();
             greeter.leave();
+            self.lock_password = None;
+            if let Some(auth) = self.lock_auth.as_ref() {
+                auth.end();
+            }
             self.queue_redraw();
         }
     }
@@ -3881,21 +3889,21 @@ impl GlideState {
     }
 
     fn start_lock_auth(&self, user: &str) -> Option<crate::greeter::pam::Authenticator> {
-        use crate::greeter::pam::{Authenticator, Verdict};
+        use crate::greeter::pam::{Authenticator, Reply};
         use smithay::reexports::calloop::channel;
 
-        let (sender, receiver) = channel::channel::<Verdict>();
+        let (sender, receiver) = channel::channel::<Reply>();
         let inserted = self.loop_handle.insert_source(receiver, |event, (), state| {
-            if let channel::Event::Msg(verdict) = event {
-                state.handle_lock_verdict(verdict);
+            if let channel::Event::Msg(reply) = event {
+                state.handle_lock_verdict(reply);
             }
         });
         if let Err(err) = inserted {
             tracing::error!("failed to watch the lock screen authenticator: {err}");
             return None;
         }
-        Authenticator::start(user, move |verdict| {
-            let _ = sender.send(verdict);
+        Authenticator::start(user, move |reply| {
+            let _ = sender.send(reply);
         })
         .inspect_err(|err| tracing::error!(?err, "failed to start the lock screen authenticator"))
         .ok()
@@ -3937,10 +3945,11 @@ impl GlideState {
                 return;
             }
         }
-        match Authenticator::start(&user.username, move |verdict| {
-            let _ = sender.send(verdict);
+        match Authenticator::start(&user.username, move |reply| {
+            let _ = sender.send(reply.verdict);
         }) {
-            Ok(authenticator) => {
+            Ok(mut authenticator) => {
+                authenticator.begin();
                 if !authenticator.check(secret) {
                     tracing::warn!("the PAM worker stopped before the changed login password reached it");
                 }
@@ -3949,11 +3958,16 @@ impl GlideState {
         }
     }
 
-    fn handle_lock_verdict(&mut self, verdict: crate::greeter::pam::Verdict) {
+    fn handle_lock_verdict(&mut self, reply: crate::greeter::pam::Reply) {
         use crate::{
             greeter::pam::Verdict,
             i18n::{Key, t},
         };
+        if !self.lock_auth.as_ref().is_some_and(|auth| auth.is_current(reply.generation)) {
+            tracing::debug!(generation = reply.generation, "ignoring a PAM result that belongs to an earlier lock");
+            return;
+        }
+        let verdict = reply.verdict;
         if let Verdict::Ask { secret, text } = verdict {
             let queued = self
                 .greeter
@@ -3961,7 +3975,7 @@ impl GlideState {
                 .filter(|greeter| greeter.is_lock())
                 .and_then(|greeter| greeter.on_question(secret, text));
             if let Some(answer) = queued
-                && !self.lock_auth.as_ref().is_some_and(|auth| auth.check(answer))
+                && !self.lock_auth.as_ref().is_some_and(|auth| auth.answer(answer))
             {
                 tracing::warn!("the lock screen authenticator stopped while asking a second question");
             }
@@ -4005,7 +4019,7 @@ impl GlideState {
         match greeter.submit() {
             crate::greeter::Submit::Nothing => return,
             crate::greeter::Submit::Send(answer) => {
-                if !self.lock_auth.as_ref().is_some_and(|auth| auth.check(answer)) {
+                if !self.lock_auth.as_ref().is_some_and(|auth| auth.answer(answer)) {
                     greeter.set_auth_error(t(Key::LockUnavailable).to_string(), false);
                 }
                 self.queue_redraw();

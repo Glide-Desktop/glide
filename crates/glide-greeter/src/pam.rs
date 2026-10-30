@@ -1,7 +1,13 @@
 use std::{
+    cell::RefCell,
     ffi::{CStr, CString, c_char, c_int, c_void},
     path::Path,
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
 };
 
 const PAM_SUCCESS: c_int = 0;
@@ -26,7 +32,13 @@ pub enum Verdict {
     Ask { secret: bool, text: String },
 }
 
-const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_mins(2);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    pub generation: u64,
+    pub verdict: Verdict,
+}
+
+const ANSWER_WAIT: Duration = Duration::from_mins(2);
 
 #[repr(C)]
 struct PamMessage {
@@ -275,36 +287,166 @@ pub fn service_name(exists: impl Fn(&Path) -> bool) -> &'static str {
     if installed { SERVICE } else { FALLBACK_SERVICE }
 }
 
+enum Input {
+    Password { generation: u64, text: String },
+    Answer { generation: u64, text: String },
+    Wake,
+}
+
+fn forget(text: String) {
+    let mut bytes = text.into_bytes();
+    bytes.fill(0);
+}
+
+fn forget_input(input: Input) {
+    if let Input::Password { text, .. } | Input::Answer { text, .. } = input {
+        forget(text);
+    }
+}
+
+fn wait_for_answer(
+    incoming: &mpsc::Receiver<Input>, current: &AtomicU64, generation: u64, wait: Duration,
+    carry: &RefCell<Option<Input>>,
+) -> Option<String> {
+    let deadline = Instant::now() + wait;
+    loop {
+        if current.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        match incoming.recv_timeout(left) {
+            Ok(Input::Answer { generation: given, text })
+                if given == generation && current.load(Ordering::Acquire) == generation =>
+            {
+                return Some(text);
+            }
+            Ok(Input::Answer { text, .. }) => forget(text),
+            Ok(Input::Password { generation: given, text }) => {
+                if current.load(Ordering::Acquire) == given {
+                    *carry.borrow_mut() = Some(Input::Password { generation: given, text });
+                    return None;
+                }
+                forget(text);
+            }
+            Ok(Input::Wake) => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+fn serve(
+    incoming: &mpsc::Receiver<Input>, current: &AtomicU64, reply: &dyn Fn(Reply),
+    authenticate: &dyn for<'a> Fn(String, Ask<'a>) -> Verdict, wait: Duration,
+) {
+    let mut carried: Option<Input> = None;
+    loop {
+        let input = match carried.take() {
+            Some(input) => input,
+            None => match incoming.recv() {
+                Ok(input) => input,
+                Err(_) => return,
+            },
+        };
+        let Input::Password { generation, text } = input else {
+            forget_input(input);
+            continue;
+        };
+        if current.load(Ordering::Acquire) != generation {
+            forget(text);
+            continue;
+        }
+        let carry = RefCell::new(None);
+        let ask = |secret: bool, question: String| {
+            if current.load(Ordering::Acquire) != generation {
+                return None;
+            }
+            reply(Reply { generation, verdict: Verdict::Ask { secret, text: question } });
+            wait_for_answer(incoming, current, generation, wait, &carry)
+        };
+        let verdict = authenticate(text, &ask);
+        reply(Reply { generation, verdict });
+        carried = carry.into_inner();
+    }
+}
+
 pub struct Authenticator {
-    requests: mpsc::Sender<String>,
+    requests: mpsc::Sender<Input>,
+    current: Arc<AtomicU64>,
+    issued: u64,
 }
 
 impl Authenticator {
-    pub fn start(user: &str, reply: impl Fn(Verdict) + Send + 'static) -> std::io::Result<Self> {
-        let (requests, incoming) = mpsc::channel::<String>();
+    pub fn start(user: &str, reply: impl Fn(Reply) + Send + 'static) -> std::io::Result<Self> {
         let user = CString::new(user).unwrap_or_default();
-        std::thread::Builder::new().name("glide-lock-auth".into()).spawn(move || {
+        Self::spawn(reply, ANSWER_WAIT, move || {
             let library = Library::open();
             let service = service_name(Path::exists);
             tracing::info!(service, "lock screen authenticates through PAM");
             let service = CString::new(service).unwrap_or_default();
-            while let Ok(password) = incoming.recv() {
-                let ask = |secret: bool, text: String| {
-                    reply(Verdict::Ask { secret, text });
-                    incoming.recv_timeout(ANSWER_WAIT).ok()
-                };
-                let verdict = library.as_ref().map_or(Verdict::Unavailable, |library| {
-                    library.authenticate(&service, &user, password, Some(&ask))
-                });
-                reply(verdict);
+            move |password: String, ask: Ask<'_>| {
+                if let Some(library) = &library {
+                    library.authenticate(&service, &user, password, Some(ask))
+                } else {
+                    forget(password);
+                    Verdict::Unavailable
+                }
             }
+        })
+    }
+
+    fn spawn<A>(
+        reply: impl Fn(Reply) + Send + 'static, wait: Duration, build: impl FnOnce() -> A + Send + 'static,
+    ) -> std::io::Result<Self>
+    where
+        A: for<'a> Fn(String, Ask<'a>) -> Verdict,
+    {
+        let (requests, incoming) = mpsc::channel::<Input>();
+        let current = Arc::new(AtomicU64::new(0));
+        let shared = Arc::clone(&current);
+        std::thread::Builder::new().name("glide-lock-auth".into()).spawn(move || {
+            let authenticate = build();
+            serve(&incoming, &shared, &reply, &authenticate, wait);
         })?;
-        Ok(Self { requests })
+        Ok(Self { requests, current, issued: 0 })
+    }
+
+    pub fn begin(&mut self) -> u64 {
+        self.issued += 1;
+        self.current.store(self.issued, Ordering::Release);
+        let _ = self.requests.send(Input::Wake);
+        self.issued
+    }
+
+    pub fn end(&self) {
+        self.current.store(0, Ordering::Release);
+        let _ = self.requests.send(Input::Wake);
+    }
+
+    #[must_use]
+    pub fn is_current(&self, generation: u64) -> bool {
+        generation != 0 && self.current.load(Ordering::Acquire) == generation
     }
 
     #[must_use]
     pub fn check(&self, password: String) -> bool {
-        self.requests.send(password).is_ok()
+        match self.current.load(Ordering::Acquire) {
+            0 => {
+                forget(password);
+                false
+            }
+            generation => self.requests.send(Input::Password { generation, text: password }).is_ok(),
+        }
+    }
+
+    #[must_use]
+    pub fn answer(&self, text: String) -> bool {
+        match self.current.load(Ordering::Acquire) {
+            0 => {
+                forget(text);
+                false
+            }
+            generation => self.requests.send(Input::Answer { generation, text }).is_ok(),
+        }
     }
 }
 
@@ -427,6 +569,263 @@ mod tests {
     fn an_unknown_message_style_fails_the_conversation() {
         let (status, _, _) = converse_with(&[(99, c"?")], "x");
         assert_eq!(status, PAM_CONV_ERR);
+    }
+
+    type Log = Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
+    const PATIENCE: Duration = Duration::from_secs(5);
+
+    fn logged(log: &Log) -> Vec<(String, Option<String>)> {
+        log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    fn code_asker(log: Log) -> impl for<'a> Fn(String, Ask<'a>) -> Verdict {
+        move |password: String, ask: Ask<'_>| {
+            let answer = password.starts_with("ask").then(|| ask(true, "Verification code:".into())).flatten();
+            let asked = password.starts_with("ask");
+            log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((password, answer.clone()));
+            if asked && answer.is_none() { Verdict::Denied(None) } else { Verdict::Granted }
+        }
+    }
+
+    fn collected() -> (impl Fn(Reply) + Send + 'static, mpsc::Receiver<Reply>) {
+        let (sender, receiver) = mpsc::channel();
+        (
+            move |reply| {
+                let _ = sender.send(reply);
+            },
+            receiver,
+        )
+    }
+
+    fn question() -> Verdict {
+        Verdict::Ask { secret: true, text: "Verification code:".into() }
+    }
+
+    #[test]
+    fn every_reply_carries_the_generation_of_the_lock_that_asked_for_it() {
+        let (reply, replies) = collected();
+        let mut auth = Authenticator::spawn(reply, ANSWER_WAIT, move || code_asker(Log::default())).expect("worker");
+        let first = auth.begin();
+        assert!(auth.check("pw".into()));
+        let got = replies.recv_timeout(PATIENCE).expect("verdict");
+        assert_eq!(got, Reply { generation: first, verdict: Verdict::Granted });
+        assert!(auth.is_current(got.generation));
+        let second = auth.begin();
+        assert_ne!(first, second);
+        assert!(!auth.is_current(first), "a new lock retires the generation of the old one");
+        assert!(auth.check("pw".into()));
+        assert_eq!(replies.recv_timeout(PATIENCE).expect("verdict").generation, second);
+    }
+
+    #[test]
+    fn nothing_is_sent_to_pam_before_a_lock_begins_or_after_it_ends() {
+        let log = Log::default();
+        let (reply, replies) = collected();
+        let mut auth = Authenticator::spawn(reply, ANSWER_WAIT, {
+            let log = log.clone();
+            move || code_asker(log)
+        })
+        .expect("worker");
+        assert!(!auth.check("pw".into()) && !auth.answer("1".into()));
+        auth.begin();
+        auth.end();
+        assert!(!auth.check("pw".into()) && !auth.answer("1".into()));
+        assert!(!auth.is_current(0), "generation zero is never a lock");
+        assert!(replies.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(logged(&log).is_empty());
+    }
+
+    #[test]
+    fn ending_the_lock_wakes_a_pending_question_at_once() {
+        let log = Log::default();
+        let (reply, replies) = collected();
+        let mut auth = Authenticator::spawn(reply, ANSWER_WAIT, {
+            let log = log.clone();
+            move || code_asker(log)
+        })
+        .expect("worker");
+        let first = auth.begin();
+        assert!(auth.check("ask-1".into()));
+        assert_eq!(replies.recv_timeout(PATIENCE), Ok(Reply { generation: first, verdict: question() }));
+        auth.end();
+        let denied = replies.recv_timeout(PATIENCE).expect("the question gives up long before the two-minute wait");
+        assert_eq!(denied, Reply { generation: first, verdict: Verdict::Denied(None) });
+        assert!(!auth.is_current(denied.generation), "the compositor ignores what the ended lock produced");
+        assert_eq!(logged(&log), [("ask-1".to_string(), None)]);
+        let second = auth.begin();
+        assert!(auth.check("pw".into()));
+        assert_eq!(replies.recv_timeout(PATIENCE), Ok(Reply { generation: second, verdict: Verdict::Granted }));
+    }
+
+    #[test]
+    fn the_first_password_of_a_new_lock_is_never_the_answer_to_the_old_locks_question() {
+        let log = Log::default();
+        let (reply, replies) = collected();
+        let mut auth = Authenticator::spawn(reply, ANSWER_WAIT, {
+            let log = log.clone();
+            move || code_asker(log)
+        })
+        .expect("worker");
+        let first = auth.begin();
+        assert!(auth.check("ask-1".into()));
+        assert_eq!(replies.recv_timeout(PATIENCE), Ok(Reply { generation: first, verdict: question() }));
+        let second = auth.begin();
+        assert!(auth.check("pw-2".into()));
+        assert_eq!(
+            replies.recv_timeout(PATIENCE),
+            Ok(Reply { generation: first, verdict: Verdict::Denied(None) }),
+            "the old attempt fails without ever seeing the new password"
+        );
+        assert_eq!(replies.recv_timeout(PATIENCE), Ok(Reply { generation: second, verdict: Verdict::Granted }));
+        assert_eq!(logged(&log), [("ask-1".to_string(), None), ("pw-2".to_string(), None)]);
+    }
+
+    #[test]
+    fn a_dropped_authenticator_aborts_the_pending_question() {
+        let (reply, replies) = collected();
+        let mut auth = Authenticator::spawn(reply, ANSWER_WAIT, move || code_asker(Log::default())).expect("worker");
+        let first = auth.begin();
+        assert!(auth.check("ask-1".into()));
+        assert_eq!(replies.recv_timeout(PATIENCE), Ok(Reply { generation: first, verdict: question() }));
+        drop(auth);
+        let denied = replies.recv_timeout(PATIENCE).expect("the question gives up when its owner is gone");
+        assert_eq!(denied.verdict, Verdict::Denied(None));
+    }
+
+    #[test]
+    fn a_verdict_that_arrives_after_its_lock_ended_is_no_longer_current() {
+        let (started, begun) = mpsc::channel::<()>();
+        let (release, gate) = mpsc::channel::<()>();
+        let (reply, replies) = collected();
+        let mut auth = Authenticator::spawn(reply, ANSWER_WAIT, move || {
+            move |_: String, _: Ask<'_>| {
+                let _ = started.send(());
+                let _ = gate.recv();
+                Verdict::Granted
+            }
+        })
+        .expect("worker");
+        let first = auth.begin();
+        assert!(auth.check("pw".into()));
+        begun.recv_timeout(PATIENCE).expect("the attempt started");
+        auth.end();
+        let second = auth.begin();
+        release.send(()).expect("release");
+        let late = replies.recv_timeout(PATIENCE).expect("verdict");
+        assert_eq!(late, Reply { generation: first, verdict: Verdict::Granted });
+        assert!(!auth.is_current(late.generation));
+        assert!(auth.is_current(second));
+    }
+
+    #[test]
+    fn an_attempt_queued_under_an_ended_lock_never_reaches_pam() {
+        let log = Log::default();
+        let (started, begun) = mpsc::channel::<()>();
+        let (release, gate) = mpsc::channel::<()>();
+        let (reply, replies) = collected();
+        let mut auth = Authenticator::spawn(reply, ANSWER_WAIT, {
+            let log = log.clone();
+            move || {
+                move |password: String, _: Ask<'_>| {
+                    if password == "pw-1" {
+                        let _ = started.send(());
+                        let _ = gate.recv();
+                    }
+                    log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((password, None));
+                    Verdict::Granted
+                }
+            }
+        })
+        .expect("worker");
+        let first = auth.begin();
+        assert!(auth.check("pw-1".into()));
+        begun.recv_timeout(PATIENCE).expect("the first attempt is inside PAM");
+        assert!(auth.check("queued-behind-it".into()));
+        auth.end();
+        let second = auth.begin();
+        assert!(auth.check("pw-2".into()));
+        release.send(()).expect("release");
+        assert_eq!(replies.recv_timeout(PATIENCE), Ok(Reply { generation: first, verdict: Verdict::Granted }));
+        assert_eq!(replies.recv_timeout(PATIENCE), Ok(Reply { generation: second, verdict: Verdict::Granted }));
+        assert_eq!(logged(&log), [("pw-1".to_string(), None), ("pw-2".to_string(), None)]);
+    }
+
+    #[test]
+    fn an_unanswered_question_gives_up_after_the_wait() {
+        let (reply, replies) = collected();
+        let mut auth =
+            Authenticator::spawn(reply, Duration::from_millis(30), move || code_asker(Log::default())).expect("worker");
+        let first = auth.begin();
+        assert!(auth.check("ask-1".into()));
+        assert_eq!(replies.recv_timeout(PATIENCE), Ok(Reply { generation: first, verdict: question() }));
+        assert_eq!(
+            replies.recv_timeout(PATIENCE),
+            Ok(Reply { generation: first, verdict: Verdict::Denied(None) }),
+            "the lock is still current, so the user sees the failure"
+        );
+        assert!(auth.is_current(first));
+    }
+
+    fn run(inputs: Vec<Input>, current: u64, log: &Log) -> Vec<Reply> {
+        let (sender, incoming) = mpsc::channel();
+        for input in inputs {
+            sender.send(input).expect("queued");
+        }
+        drop(sender);
+        let current = AtomicU64::new(current);
+        let replies = RefCell::new(Vec::new());
+        serve(&incoming, &current, &|reply| replies.borrow_mut().push(reply), &code_asker(log.clone()), ANSWER_WAIT);
+        replies.into_inner()
+    }
+
+    fn password(generation: u64, text: &str) -> Input {
+        Input::Password { generation, text: text.into() }
+    }
+
+    fn answer(generation: u64, text: &str) -> Input {
+        Input::Answer { generation, text: text.into() }
+    }
+
+    #[test]
+    fn a_password_is_never_taken_as_the_answer_to_a_question() {
+        let log = Log::default();
+        let replies = run(vec![password(1, "ask-1"), password(1, "pw")], 1, &log);
+        assert_eq!(logged(&log), [("ask-1".to_string(), None), ("pw".to_string(), None)]);
+        assert_eq!(
+            replies,
+            [
+                Reply { generation: 1, verdict: question() },
+                Reply { generation: 1, verdict: Verdict::Denied(None) },
+                Reply { generation: 1, verdict: Verdict::Granted },
+            ]
+        );
+    }
+
+    #[test]
+    fn only_an_answer_of_the_current_lock_answers_a_question_and_a_stray_one_is_not_a_password() {
+        let log = Log::default();
+        let inputs = vec![
+            answer(1, "stray"),
+            password(1, "ask-1"),
+            answer(2, "from another lock"),
+            password(0, "stale password"),
+            answer(1, "482913"),
+        ];
+        let replies = run(inputs, 1, &log);
+        assert_eq!(logged(&log), [("ask-1".to_string(), Some("482913".to_string()))]);
+        assert_eq!(
+            replies,
+            [Reply { generation: 1, verdict: question() }, Reply { generation: 1, verdict: Verdict::Granted }]
+        );
+    }
+
+    #[test]
+    fn a_password_of_an_older_lock_is_dropped_while_asking_and_while_idle() {
+        let log = Log::default();
+        let replies = run(vec![password(3, "old"), password(4, "ask-4"), password(3, "late"), answer(4, "1")], 4, &log);
+        assert_eq!(logged(&log), [("ask-4".to_string(), Some("1".to_string()))]);
+        assert_eq!(replies.last().map(|reply| reply.generation), Some(4));
     }
 
     #[test]

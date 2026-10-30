@@ -48,8 +48,13 @@ const UID_MAX: u32 = 60000;
 
 #[must_use]
 pub fn list_users() -> Vec<UserEntry> {
-    let users = fs::read_to_string("/etc/passwd").map(|content| parse_passwd(&content)).unwrap_or_default();
+    let users = fs::read("/etc/passwd").map(|content| parse_passwd_bytes(&content)).unwrap_or_default();
     if users.is_empty() { default_users() } else { users }
+}
+
+#[must_use]
+pub fn parse_passwd_bytes(content: &[u8]) -> Vec<UserEntry> {
+    parse_passwd(&String::from_utf8_lossy(content))
 }
 
 #[must_use]
@@ -328,6 +333,20 @@ mod tests {
         assert_eq!(users[0].initial, 'А');
         assert_eq!(users[1].display_name, "bob");
         assert_eq!(users[1].initial, 'B');
+    }
+
+    #[test]
+    fn one_latin1_gecos_byte_does_not_hide_every_other_account() {
+        let mut passwd = b"root:x:0:0:root:/root:/bin/bash\n".to_vec();
+        passwd.extend_from_slice(b"jose:x:1000:1000:Jos\xe9,,,:/home/jose:/bin/zsh\n");
+        passwd.extend_from_slice(b"bob:x:1002:1002::/home/bob:/bin/bash\n");
+        assert!(String::from_utf8(passwd.clone()).is_err(), "the fixture is not valid UTF-8");
+        let users = parse_passwd_bytes(&passwd);
+        let names: Vec<&str> = users.iter().map(|u| u.username.as_str()).collect();
+        assert_eq!(names, ["jose", "bob"]);
+        assert!(users[0].display_name.starts_with("Jos"));
+        assert_eq!(users[0].uid, 1000);
+        assert_eq!(users[1].display_name, "bob");
     }
 
     #[test]
