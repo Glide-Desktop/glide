@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -264,7 +265,7 @@ pub enum Message {
     Chosen(Purpose, Chosen),
     SaveTo(u64, Chosen),
     Saved(u64, PathBuf, u64, Result<SystemTime, String>),
-    Highlighted(u64, u64, Arc<Lines>),
+    Highlighted(u64, u64, Language, Arc<Lines>),
     Listed(PathBuf, Result<Vec<Entry>, String>),
     TreeClicked(PathBuf),
     TreeMenu(PathBuf),
@@ -623,6 +624,20 @@ pub(crate) fn suggested_name(document: &Document, untitled: &str) -> String {
     format!("{stem}.{}", document.language().extension())
 }
 
+#[must_use]
+pub fn parse_args<I: IntoIterator<Item = OsString>>(args: I) -> (bool, Vec<PathBuf>) {
+    let mut fresh = false;
+    let mut paths = Vec::new();
+    for arg in args {
+        fresh |= arg == "--new-window";
+        if arg.as_encoded_bytes().starts_with(b"--") {
+            continue;
+        }
+        paths.push(arg.to_str().and_then(chooser::uri_path).unwrap_or_else(|| PathBuf::from(arg)));
+    }
+    (fresh, paths)
+}
+
 fn stamp() -> Option<SystemTime> {
     look::stamp(config::path().as_deref())
 }
@@ -646,14 +661,8 @@ fn date_time() -> String {
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        let fresh = args.iter().any(|arg| arg == "--new-window");
-        let paths: Vec<PathBuf> = args
-            .iter()
-            .filter(|arg| !arg.starts_with("--"))
-            .map(|arg| chooser::uri_path(arg).unwrap_or_else(|| PathBuf::from(arg)))
-            .map(|path| std::path::absolute(&path).unwrap_or(path))
-            .collect();
+        let (fresh, paths) = parse_args(std::env::args_os().skip(1));
+        let paths: Vec<PathBuf> = paths.into_iter().map(|path| std::path::absolute(&path).unwrap_or(path)).collect();
         let primary = if fresh { None } else { claim_primary() };
         Self::launch(primary, &paths)
     }
@@ -1021,10 +1030,11 @@ impl App {
             Message::Loaded(path, result) => self.loaded(path, result),
             Message::Reloaded(id, result) => {
                 let reverting = self.reverting.remove(&id);
-                if let (Some(index), Ok(decoded)) = (self.index_of(id), result)
-                    && (reverting || !self.docs[index].dirty())
-                {
-                    self.docs[index].reload(&decoded);
+                if let Some(index) = self.index_of(id) {
+                    match result {
+                        Ok(decoded) if reverting || !self.docs[index].dirty() => self.docs[index].reload(&decoded),
+                        _ => self.docs[index].changed_on_disk = true,
+                    }
                 }
                 Task::none()
             }
@@ -1041,10 +1051,10 @@ impl App {
                 }
             },
             Message::Saved(id, path, generation, result) => self.saved(id, &path, generation, result),
-            Message::Highlighted(id, revision, lines) => {
+            Message::Highlighted(id, revision, language, lines) => {
                 self.in_flight.remove(&id);
                 if let Some(index) = self.index_of(id) {
-                    self.docs[index].install(revision, Arc::unwrap_or_clone(lines));
+                    self.docs[index].install(revision, language, Arc::unwrap_or_clone(lines));
                 }
                 Task::none()
             }
@@ -1134,9 +1144,9 @@ impl App {
             Message::Disk(reload) => {
                 let Some(doc) = self.doc_mut() else { return Task::none() };
                 doc.changed_on_disk = false;
-                if let (true, Some(path)) = (reload, doc.path.clone()) {
+                if reload && doc.path.is_some() {
                     let id = doc.id;
-                    blocking(move || document::read(&path), move |result| Message::Reloaded(id, result))
+                    self.revert(id)
                 } else {
                     doc.disk = doc.path.as_deref().and_then(document::modified);
                     Task::none()
@@ -1273,12 +1283,12 @@ impl App {
         let revision = doc.revision;
         if language == Language::Plain {
             let count = doc.text.matches('\n').count() + 1;
-            doc.install(revision, vec![Vec::new(); count]);
+            doc.install(revision, language, vec![Vec::new(); count]);
             return Task::none();
         }
         if doc.text.len() <= SYNC_HIGHLIGHT {
             let lines = syntax::highlight(language, &doc.text);
-            doc.install(revision, lines);
+            doc.install(revision, language, lines);
             return Task::none();
         }
         let id = doc.id;
@@ -1286,7 +1296,7 @@ impl App {
         self.in_flight.insert(id);
         blocking(
             move || Arc::new(syntax::highlight(language, &text)),
-            move |lines| Message::Highlighted(id, revision, lines),
+            move |lines| Message::Highlighted(id, revision, language, lines),
         )
     }
 
@@ -2906,6 +2916,123 @@ mod tests {
         assert!(app.find.is_none() && app.focus, "Escape closes the find bar before it leaves the mode");
         let _ = app.update(named(Named::Escape, Code::Escape, false));
         assert!(!app.focus && app.sidebar_visible() && app.status_visible());
+    }
+
+    fn opened_file(tag: &str, text: &str) -> (App, PathBuf, PathBuf) {
+        let folder = std::env::temp_dir().join(format!("glide-text-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("notes.txt");
+        std::fs::write(&path, text).unwrap();
+        let mut app = app();
+        let _ = app.update(Message::Loaded(path.clone(), document::read(&path)));
+        assert_eq!(app.docs.len(), 1);
+        (app, folder, path)
+    }
+
+    fn changed_behind_our_back(app: &mut App, path: &Path, text: &str) {
+        std::fs::write(path, text).unwrap();
+        app.docs[0].disk = Some(SystemTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn the_reload_button_replaces_a_modified_document_with_the_file_and_the_bar_stays_gone() {
+        let (mut app, folder, path) = opened_file("reload", "one\n");
+        typed(&mut app, "mine");
+        changed_behind_our_back(&mut app, &path, "external\n");
+        let _ = app.update(Message::Tick);
+        assert!(app.doc().unwrap().changed_on_disk, "a modified document is flagged, not reloaded");
+        let id = app.doc().unwrap().id;
+        let _ = app.update(Message::Disk(true));
+        assert!(app.reverting.contains(&id), "the reload was asked for, so it may replace unsaved edits");
+        let _ = app.update(Message::Reloaded(id, document::read(&path)));
+        let doc = app.doc().unwrap();
+        assert_eq!(doc.text, "external\n");
+        assert!(!doc.dirty() && !doc.changed_on_disk);
+        assert_eq!(doc.disk, document::modified(&path));
+        let _ = app.update(Message::Tick);
+        assert!(!app.doc().unwrap().changed_on_disk, "the bar does not come back a second later");
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn an_external_change_read_while_the_user_types_is_flagged_instead_of_dropped() {
+        let (mut app, folder, path) = opened_file("raced", "one\n");
+        changed_behind_our_back(&mut app, &path, "external\n");
+        let _ = app.update(Message::Tick);
+        assert!(!app.doc().unwrap().changed_on_disk, "a clean document is reloaded quietly");
+        typed(&mut app, "x");
+        let id = app.doc().unwrap().id;
+        let _ = app.update(Message::Reloaded(id, document::read(&path)));
+        let doc = app.doc().unwrap();
+        assert_eq!(doc.text, "xone\n", "the edit made meanwhile is kept");
+        assert!(doc.dirty() && doc.changed_on_disk, "the next save would overwrite the external edit unnoticed");
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_re_read_that_fails_leaves_the_info_bar_up() {
+        let (mut app, folder, _) = opened_file("unreadable", "one\n");
+        let id = app.doc().unwrap().id;
+        let _ = app.update(Message::Reloaded(id, Err(LoadError::Io("gone".into()))));
+        assert!(app.doc().unwrap().changed_on_disk);
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_highlight_that_finishes_after_a_language_switch_does_not_replace_the_new_one() {
+        let mut app = app();
+        let doc = app.doc_mut().unwrap();
+        doc.pinned = Some(Language::Markdown);
+        doc.replace(0..0, "# One\n\ntext\n", Kind::Other);
+        let (id, revision) = (doc.id, doc.revision);
+        let markdown = Arc::new(syntax::highlight(Language::Markdown, &doc.text));
+        assert!(markdown[0].iter().any(|(_, style)| style.tint == Some(syntax::Tint::Heading)));
+        app.in_flight.insert(id);
+        let _ = app.update(Message::Command(Command::SetLanguage(Some(Language::Plain))));
+        assert!(app.doc().unwrap().stale(), "the switch waits for the job that is still running");
+        let _ = app.update(Message::Highlighted(id, revision, Language::Markdown, markdown));
+        let doc = app.doc().unwrap();
+        assert!(!doc.stale(), "the finished job was refused and Plain Text was installed instead");
+        assert!(doc.lines.iter().all(Vec::is_empty), "no Markdown spans survive in a Plain Text document");
+    }
+
+    fn os(bytes: &[u8]) -> OsString {
+        std::os::unix::ffi::OsStringExt::from_vec(bytes.to_vec())
+    }
+
+    #[test]
+    fn launch_arguments_keep_paths_that_are_not_utf8_and_split_off_flags() {
+        let odd = os(b"/tmp/caf\xe9.txt");
+        let (fresh, paths) = parse_args([
+            OsString::from("--new-window"),
+            odd.clone(),
+            OsString::from("file:///tmp/a%20b.md"),
+            OsString::from("--unknown"),
+            os(b"--\xff"),
+            OsString::from("relative.txt"),
+        ]);
+        assert!(fresh);
+        assert_eq!(paths, [PathBuf::from(odd), PathBuf::from("/tmp/a b.md"), PathBuf::from("relative.txt")]);
+        let (fresh, paths) = parse_args([OsString::from("plain.txt")]);
+        assert!(!fresh);
+        assert_eq!(paths, [PathBuf::from("plain.txt")]);
+        assert_eq!(parse_args(Vec::new()), (false, Vec::new()));
+    }
+
+    #[test]
+    fn a_file_whose_name_is_not_utf8_opens_and_shows_in_the_chrome() {
+        let folder = std::env::temp_dir().join(format!("glide-text-odd-name-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join(os(b"caf\xe9.txt"));
+        std::fs::write(&path, "hello\n").unwrap();
+        let (mut app, _) = App::launch(None, std::slice::from_ref(&path));
+        app.prefs = Preferences::default();
+        let _ = app.update(Message::Loaded(path.clone(), document::read(&path)));
+        assert_eq!(app.doc().and_then(|doc| doc.path.clone()), Some(path));
+        assert!(app.title().contains("caf"));
+        assert!(app.subtitle().is_some());
+        let _ = app.update(Message::Tick);
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

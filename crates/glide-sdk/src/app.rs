@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::ffi::OsString;
 use std::time::{Duration, Instant, SystemTime};
 
 use glide_app::menubar::{self, Handles, Publisher};
@@ -751,16 +752,21 @@ impl<A: App> Host<A> {
     }
 }
 
+#[must_use]
+fn forwardable_args<I: IntoIterator<Item = OsString>>(args: I) -> Option<Vec<String>> {
+    args.into_iter().map(|arg| arg.into_string().ok()).collect()
+}
+
 pub fn run<A: App>(settings: Settings) -> iced::Result {
     let single = match settings.single_instance.as_deref() {
-        Some(name) => {
-            let args: Vec<String> = std::env::args().skip(1).collect();
-            match crate::instance::claim(name, &args, &crate::instance::launch_token()) {
+        Some(name) => match forwardable_args(std::env::args_os().skip(1)) {
+            Some(args) => match crate::instance::claim(name, &args, &crate::instance::launch_token()) {
                 crate::instance::Claim::Forwarded => return Ok(()),
                 crate::instance::Claim::First => true,
                 crate::instance::Claim::Alone => false,
-            }
-        }
+            },
+            None => false,
+        },
         None => false,
     };
     let chrome = settings.chrome;
@@ -1077,5 +1083,17 @@ mod tests {
         host.exported = menu::export(&host.menus).1;
         let _ = host.update(Event::MenuBar(menubar::Event::Activated(1)));
         assert_eq!(host.app.saved, 1);
+    }
+
+    #[test]
+    fn arguments_that_are_not_utf8_are_not_forwarded_to_another_instance_and_do_not_panic() {
+        let text = |argument: &str| OsString::from(argument);
+        assert_eq!(
+            forwardable_args([text("power"), text("--flag")]),
+            Some(vec!["power".to_string(), "--flag".to_string()])
+        );
+        assert_eq!(forwardable_args(Vec::new()), Some(Vec::new()));
+        let odd: OsString = std::os::unix::ffi::OsStringExt::from_vec(b"caf\xe9".to_vec());
+        assert_eq!(forwardable_args([text("power"), odd]), None);
     }
 }

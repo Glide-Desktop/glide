@@ -115,6 +115,7 @@ impl Tree {
         }
         let Some(index) = self.position(folder) else { return };
         if !self.nodes[index].expanded {
+            self.nodes[index].loading = false;
             return;
         }
         let end = self.subtree_end(index);
@@ -144,6 +145,7 @@ impl Tree {
             let end = self.subtree_end(index);
             self.nodes.drain(index + 1..end);
             self.nodes[index].expanded = false;
+            self.nodes[index].loading = false;
             return None;
         }
         self.nodes[index].expanded = true;
@@ -229,6 +231,46 @@ mod tests {
         tree.fill(&PathBuf::from("/r"), vec![entry("/r/a", true), entry("/r/new", false)]);
         assert_eq!(tree.pending(), vec![PathBuf::from("/r/a")]);
         assert!(tree.nodes[0].expanded);
+    }
+
+    #[test]
+    fn collapsing_a_folder_that_is_still_loading_leaves_nothing_pending() {
+        let mut tree = Tree::new(PathBuf::from("/r"));
+        tree.fill(&PathBuf::from("/r"), vec![entry("/r/a", true), entry("/r/b", true)]);
+        assert_eq!(tree.toggle(&PathBuf::from("/r/a")), Some(PathBuf::from("/r/a")));
+        assert_eq!(tree.pending(), vec![PathBuf::from("/r/a")]);
+        assert_eq!(tree.toggle(&PathBuf::from("/r/a")), None);
+        assert!(tree.pending().is_empty(), "a collapsed folder is not waiting for a listing");
+        tree.fill(&PathBuf::from("/r/a"), vec![entry("/r/a/x", false)]);
+        assert_eq!(tree.nodes.len(), 2, "the late listing of a collapsed folder adds nothing");
+        assert!(tree.pending().is_empty());
+    }
+
+    #[test]
+    fn two_folders_collapsed_while_loading_do_not_ask_for_each_other_forever() {
+        let a = PathBuf::from("/r/a");
+        let b = PathBuf::from("/r/b");
+        let mut tree = Tree::new(PathBuf::from("/r"));
+        tree.fill(&PathBuf::from("/r"), vec![entry("/r/a", true), entry("/r/b", true)]);
+        for folder in [&a, &b, &a, &b] {
+            tree.toggle(folder);
+        }
+        let mut relisted = 0;
+        for arrived in [&a, &b] {
+            tree.fill(arrived, vec![entry("/r/n", false)]);
+            relisted += tree.pending().into_iter().filter(|path| path != arrived).count();
+        }
+        assert_eq!(relisted, 0, "no listing may trigger another one while both folders are collapsed");
+    }
+
+    #[test]
+    fn a_listing_that_arrives_for_a_collapsed_folder_clears_its_loading_flag() {
+        let mut tree = Tree::new(PathBuf::from("/r"));
+        tree.fill(&PathBuf::from("/r"), vec![entry("/r/a", true)]);
+        tree.nodes[0].loading = true;
+        tree.fill(&PathBuf::from("/r/a"), vec![entry("/r/a/x", false)]);
+        assert!(!tree.nodes[0].loading);
+        assert_eq!(tree.nodes.len(), 1);
     }
 
     #[test]

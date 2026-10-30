@@ -543,8 +543,8 @@ impl Document {
         true
     }
 
-    pub fn install(&mut self, revision: u64, lines: Lines) {
-        if revision < self.highlighted && self.highlighted != u64::MAX {
+    pub fn install(&mut self, revision: u64, language: Language, lines: Lines) {
+        if language != self.language() || (revision < self.highlighted && self.highlighted != u64::MAX) {
             return;
         }
         self.highlighted = revision;
@@ -650,6 +650,33 @@ mod tests {
         assert!(!document.dirty());
         document.undo();
         assert!(document.dirty());
+    }
+
+    #[test]
+    fn a_document_stays_modified_after_the_budget_evicts_its_first_edit_and_the_rest_is_undone() {
+        let mut document = Document::new(1, 1);
+        document.history = History::with_budget(8);
+        for chunk in ["aaaa", "bbbb", "cccc"] {
+            let end = document.text.len();
+            document.replace(end..end, chunk, Kind::Other);
+        }
+        while document.undo() {}
+        assert_eq!(document.text, "aaaa", "the oldest edit is still applied");
+        assert!(document.dirty(), "the evicted edit was never saved");
+    }
+
+    #[test]
+    fn a_highlight_computed_for_another_language_is_not_installed() {
+        let mut document = Document::new(1, 1);
+        document.set_text("# Title\n".into());
+        document.pinned = Some(Language::Plain);
+        let markdown = syntax::highlight(Language::Markdown, &document.text);
+        assert!(markdown[0].iter().any(|(_, style)| style.tint == Some(syntax::Tint::Heading)));
+        document.install(document.revision, Language::Markdown, markdown);
+        assert!(document.stale(), "a result for the old language leaves the document waiting for its own");
+        assert!(document.lines.iter().all(Vec::is_empty));
+        document.install(document.revision, Language::Plain, vec![Vec::new(); 2]);
+        assert!(!document.stale());
     }
 
     #[test]

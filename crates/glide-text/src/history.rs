@@ -55,12 +55,20 @@ pub fn diff(old: &str, new: &str) -> Option<Diff> {
     Some(Diff { start: prefix, old_end: old.len() - suffix, new_end: new.len() - suffix })
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct History {
     undo: Vec<Change>,
     redo: Vec<Change>,
     next: u64,
     sealed: bool,
+    floor: u64,
+    budget: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self::with_budget(BUDGET)
+    }
 }
 
 pub struct Step<'a> {
@@ -71,8 +79,13 @@ pub struct Step<'a> {
 
 impl History {
     #[must_use]
+    pub const fn with_budget(budget: usize) -> Self {
+        Self { undo: Vec::new(), redo: Vec::new(), next: 0, sealed: false, floor: 0, budget }
+    }
+
+    #[must_use]
     pub fn generation(&self) -> u64 {
-        self.undo.last().map_or(0, |change| change.id)
+        self.undo.last().map_or(self.floor, |change| change.id)
     }
 
     #[must_use]
@@ -90,6 +103,7 @@ impl History {
     }
 
     pub fn clear(&mut self) {
+        self.floor = self.generation();
         self.undo.clear();
         self.redo.clear();
         self.sealed = true;
@@ -118,8 +132,10 @@ impl History {
         self.next += 1;
         self.undo.push(Change { id: self.next, ..change });
         let mut total: usize = self.undo.iter().map(Change::size).sum();
-        while total > BUDGET && self.undo.len() > 1 {
-            total -= self.undo.remove(0).size();
+        while total > self.budget && self.undo.len() > 1 {
+            let evicted = self.undo.remove(0);
+            total -= evicted.size();
+            self.floor = evicted.id;
         }
         Some(diff)
     }
@@ -260,6 +276,55 @@ mod tests {
         apply(&mut text, &step);
         assert_eq!(text, "ab");
         assert_ne!(history.generation(), saved);
+    }
+
+    fn grow(history: &mut History, text: &mut String, added: &str) {
+        let old = text.clone();
+        text.push_str(added);
+        history.record(&old, text, at(old.len()), at(text.len()), Kind::Other);
+    }
+
+    fn undo_all(history: &mut History, text: &mut String) {
+        while let Some(step) = history.undo() {
+            apply(text, &step);
+        }
+    }
+
+    #[test]
+    fn undoing_everything_that_survived_the_budget_is_not_the_pristine_generation() {
+        let mut history = History::with_budget(8);
+        let mut text = String::new();
+        for chunk in ["aaaa", "bbbb", "cccc"] {
+            grow(&mut history, &mut text, chunk);
+        }
+        assert_eq!(history.undo.len(), 2, "the oldest change went over the budget");
+        undo_all(&mut history, &mut text);
+        assert_eq!(text, "aaaa", "the evicted edit is still applied");
+        assert_ne!(history.generation(), 0, "an emptied stack must not read as the state before any edit");
+    }
+
+    #[test]
+    fn a_save_point_inside_the_evicted_history_reads_clean_once_undone_back_to_it() {
+        let mut history = History::with_budget(8);
+        let mut text = String::new();
+        grow(&mut history, &mut text, "aaaa");
+        let saved = history.generation();
+        grow(&mut history, &mut text, "bbbb");
+        grow(&mut history, &mut text, "cccc");
+        undo_all(&mut history, &mut text);
+        assert_eq!(text, "aaaa");
+        assert_eq!(history.generation(), saved);
+    }
+
+    #[test]
+    fn clearing_the_history_keeps_the_generation_of_the_text_it_describes() {
+        let mut history = History::default();
+        let mut text = String::new();
+        grow(&mut history, &mut text, "a");
+        let before = history.generation();
+        history.clear();
+        assert!(!history.can_undo());
+        assert_eq!(history.generation(), before);
     }
 
     #[test]
