@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use hyper_util::rt::TokioIo;
 use tokio::net::UnixStream;
@@ -456,10 +456,36 @@ impl Daemon {
 }
 
 const SUBSCRIBE_WAIT: Duration = Duration::from_secs(10);
+const POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusFeed {
+    Stream,
+    Poll,
+}
+
+impl StatusFeed {
+    fn after_failure(self, error: &Error) -> Self {
+        match error {
+            Error::Daemon { code: tonic::Code::Unimplemented, .. } => Self::Poll,
+            error if error.is_unavailable() => Self::Stream,
+            _ => self,
+        }
+    }
+
+    fn pause(self, backoff: Duration) -> Duration {
+        match self {
+            Self::Stream => backoff,
+            Self::Poll => POLL_INTERVAL,
+        }
+    }
+}
 
 async fn watch_status(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn(Feed) + Send + Sync>) {
     let mut delay = FIRST_RETRY;
     let mut unavailable = false;
+    let mut feed = StatusFeed::Stream;
+    let mut last_polled: Option<Status> = None;
     let report = |error: &Error, unavailable: &mut bool| {
         if error.is_unavailable() && !*unavailable {
             *unavailable = true;
@@ -468,44 +494,94 @@ async fn watch_status(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn
     };
     loop {
         let request = pb::StatusRequest { get_full_peer_status: true, ..pb::StatusRequest::default() };
-        match tokio::time::timeout(SUBSCRIBE_WAIT, client.subscribe_status(request)).await {
-            Err(_) => report(&Error::Timeout, &mut unavailable),
-            Ok(Ok(response)) => {
-                let mut stream = response.into_inner();
-                loop {
-                    match stream.message().await {
-                        Ok(Some(message)) => {
-                            unavailable = false;
-                            delay = FIRST_RETRY;
-                            sink(Feed::Status(Box::new(Status::from(message))));
-                        }
-                        Ok(None) => break,
-                        Err(status) => {
-                            report(&Error::from_status(&status), &mut unavailable);
-                            break;
+        let before = feed;
+        let failure = match feed {
+            StatusFeed::Stream => match tokio::time::timeout(SUBSCRIBE_WAIT, client.subscribe_status(request)).await {
+                Err(_) => Some(Error::Timeout),
+                Ok(Err(status)) => Some(Error::from_status(&status)),
+                Ok(Ok(response)) => {
+                    let mut stream = response.into_inner();
+                    loop {
+                        match stream.message().await {
+                            Ok(Some(message)) => {
+                                unavailable = false;
+                                delay = FIRST_RETRY;
+                                sink(Feed::Status(Box::new(Status::from(message))));
+                            }
+                            Ok(None) => break None,
+                            Err(status) => break Some(Error::from_status(&status)),
                         }
                     }
                 }
-            }
-            Ok(Err(status)) => report(&Error::from_status(&status), &mut unavailable),
+            },
+            StatusFeed::Poll => match tokio::time::timeout(CALL, client.status(request)).await {
+                Err(_) => Some(Error::Timeout),
+                Ok(Err(status)) => Some(Error::from_status(&status)),
+                Ok(Ok(response)) => {
+                    unavailable = false;
+                    delay = FIRST_RETRY;
+                    let polled = Status::from(response.into_inner());
+                    if last_polled.as_ref() != Some(&polled) {
+                        last_polled = Some(polled.clone());
+                        sink(Feed::Status(Box::new(polled)));
+                    }
+                    None
+                }
+            },
+        };
+        if let Some(error) = &failure {
+            report(error, &mut unavailable);
+            feed = feed.after_failure(error);
+            last_polled = None;
         }
-        tokio::time::sleep(delay).await;
-        delay = (delay * 2).min(LAST_RETRY);
+        if before == StatusFeed::Stream && feed == StatusFeed::Poll {
+            continue;
+        }
+        tokio::time::sleep(feed.pause(delay)).await;
+        if feed == StatusFeed::Stream {
+            delay = (delay * 2).min(LAST_RETRY);
+        }
+    }
+}
+
+fn missed_since(events: Vec<Event>, since: SystemTime) -> Vec<Event> {
+    let mut missed: Vec<Event> =
+        events.into_iter().filter(|event| event.timestamp.is_some_and(|stamp| stamp > since)).collect();
+    missed.sort_by_key(|event| event.timestamp);
+    missed
+}
+
+async fn backfill(
+    client: &mut DaemonServiceClient<Channel>, sink: &Arc<dyn Fn(Feed) + Send + Sync>, since: SystemTime,
+) -> Option<SystemTime> {
+    match tokio::time::timeout(CALL, client.get_events(pb::GetEventsRequest {})).await {
+        Ok(Ok(response)) => {
+            let events = response.into_inner().events.into_iter().map(Event::from).collect();
+            for event in missed_since(events, since) {
+                sink(Feed::Event(event));
+            }
+            None
+        }
+        Ok(Err(status)) if status.code() == tonic::Code::Unimplemented => None,
+        _ => Some(since),
     }
 }
 
 async fn watch_events(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn(Feed) + Send + Sync>) {
     let mut delay = FIRST_RETRY;
+    let mut outage: Option<SystemTime> = None;
     loop {
-        if let Ok(Ok(response)) =
-            tokio::time::timeout(SUBSCRIBE_WAIT, client.subscribe_events(pb::SubscribeRequest {})).await
-        {
+        if let Some(since) = outage {
+            outage = backfill(&mut client, &sink, since).await;
+        }
+        if let Ok(response) = client.subscribe_events(pb::SubscribeRequest {}).await {
             let mut stream = response.into_inner();
             while let Ok(Some(event)) = stream.message().await {
                 delay = FIRST_RETRY;
                 sink(Feed::Event(Event::from(event)));
             }
         }
+        outage.get_or_insert_with(SystemTime::now);
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(LAST_RETRY);
     }
@@ -538,6 +614,56 @@ mod tests {
         let outer = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("rt");
         let daemon = missing();
         assert!(outer.block_on(async move { daemon.status() }).is_err());
+    }
+
+    fn daemon_error(code: tonic::Code) -> Error {
+        Error::from_status(&tonic::Status::new(code, "refused"))
+    }
+
+    #[test]
+    fn a_status_stream_the_daemon_does_not_implement_switches_to_polling_at_once() {
+        assert_eq!(StatusFeed::Stream.after_failure(&daemon_error(tonic::Code::Unimplemented)), StatusFeed::Poll);
+        assert_eq!(StatusFeed::Poll.after_failure(&daemon_error(tonic::Code::Unimplemented)), StatusFeed::Poll);
+    }
+
+    #[test]
+    fn polling_hands_back_to_the_stream_when_the_daemon_goes_away_because_it_may_come_back_newer() {
+        assert_eq!(StatusFeed::Poll.after_failure(&Error::Unavailable), StatusFeed::Stream);
+        assert_eq!(StatusFeed::Stream.after_failure(&Error::Unavailable), StatusFeed::Stream);
+    }
+
+    #[test]
+    fn other_failures_keep_the_mode_they_happened_in() {
+        for error in [Error::Timeout, Error::Cancelled, daemon_error(tonic::Code::Internal)] {
+            assert_eq!(StatusFeed::Stream.after_failure(&error), StatusFeed::Stream, "{error:?}");
+            assert_eq!(StatusFeed::Poll.after_failure(&error), StatusFeed::Poll, "{error:?}");
+        }
+    }
+
+    #[test]
+    fn polling_waits_a_fixed_interval_while_the_stream_backs_off() {
+        assert_eq!(StatusFeed::Poll.pause(LAST_RETRY), POLL_INTERVAL);
+        assert_eq!(StatusFeed::Poll.pause(FIRST_RETRY), POLL_INTERVAL);
+        assert_eq!(StatusFeed::Stream.pause(Duration::from_secs(4)), Duration::from_secs(4));
+    }
+
+    fn stamped(id: &str, stamp: Option<SystemTime>) -> Event {
+        Event { id: id.into(), timestamp: stamp, ..Event::default() }
+    }
+
+    #[test]
+    fn a_back_fill_keeps_only_events_newer_than_the_outage_oldest_first() {
+        let since = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let at = |seconds| Some(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
+        let events = vec![
+            stamped("late", at(1500)),
+            stamped("before", at(900)),
+            stamped("exactly", at(1000)),
+            stamped("unstamped", None),
+            stamped("soon", at(1001)),
+        ];
+        let ids: Vec<String> = missed_since(events, since).into_iter().map(|event| event.id).collect();
+        assert_eq!(ids, ["soon", "late"]);
     }
 
     #[test]

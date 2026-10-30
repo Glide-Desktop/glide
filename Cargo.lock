@@ -2186,7 +2186,10 @@ dependencies = [
 name = "glide-netbird"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "glide-config",
+ "h2",
+ "http",
  "hyper-util",
  "prost",
  "prost-types",
