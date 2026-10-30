@@ -66,6 +66,33 @@ pub(crate) fn folders(database: &Database) -> Vec<String> {
     folders
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Placed {
+    pub group: GroupId,
+    pub folder: String,
+    pub in_bin: bool,
+}
+
+pub(crate) fn placed(database: &Database) -> Vec<Placed> {
+    let bin = database.recycle_bin().map(|group| group.id());
+    let root = database.root();
+    let mut found = vec![Placed { group: root.id(), folder: String::new(), in_bin: false }];
+    place_groups(&root, &[], false, bin, &mut found);
+    found
+}
+
+fn place_groups(group: &GroupRef<'_>, path: &[&str], in_bin: bool, bin: Option<GroupId>, found: &mut Vec<Placed>) {
+    for child in group.groups() {
+        let into_bin = Some(child.id()) == bin;
+        let mut inner = path.to_vec();
+        if !into_bin && !child.name.trim().is_empty() {
+            inner.push(child.name.trim());
+        }
+        found.push(Placed { group: child.id(), folder: inner.join(FOLDER_SEPARATOR), in_bin: in_bin || into_bin });
+        place_groups(&child, &inner, in_bin || into_bin, bin, found);
+    }
+}
+
 fn walk_folders(group: &GroupRef<'_>, path: &[&str], bin: Option<GroupId>, folders: &mut Vec<String>) {
     for child in group.groups() {
         if Some(child.id()) == bin || child.name.trim().is_empty() {

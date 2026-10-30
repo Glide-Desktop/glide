@@ -1,4 +1,3 @@
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -9,7 +8,7 @@ use keepass::{Database, DatabaseKey};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use super::{FOLDER_SEPARATOR, folders, records, write};
+use super::{FOLDER_SEPARATOR, folders, placed, records, write};
 use crate::provider::{Fault, Provider, Record};
 use crate::transfer::ImportError;
 
@@ -83,23 +82,8 @@ fn read(path: &Path, password: &str) -> Result<(Database, Option<Stamp>), Fault>
 
 fn replace(path: &Path, bytes: &[u8]) -> Result<(), Fault> {
     let failed = |err: std::io::Error| Fault::Failed(format!("the KeePass file was not saved: {err}"));
-    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    let temp = dir.join(format!(".{name}.glide-{}", std::process::id()));
-    let permissions = std::fs::metadata(path).map(|meta| meta.permissions()).map_err(failed)?;
-    let written = (|| {
-        let mut file =
-            std::os::unix::fs::OpenOptionsExt::mode(std::fs::OpenOptions::new().write(true).create_new(true), 0o600)
-                .open(&temp)?;
-        file.write_all(bytes)?;
-        file.set_permissions(permissions)?;
-        file.sync_all()?;
-        std::fs::rename(&temp, path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    written.map_err(failed)
+    std::fs::metadata(path).map_err(failed)?;
+    glide_config::write_atomic(path, bytes, 0o600).map_err(failed)
 }
 
 fn find(database: &Database, id: &str) -> Result<EntryId, Fault> {
@@ -110,10 +94,28 @@ fn find(database: &Database, id: &str) -> Result<EntryId, Fault> {
         .ok_or(Fault::NotFound)
 }
 
+fn current_folder(database: &Database, entry: EntryId) -> Option<String> {
+    let group = database.entry(entry)?.parent().id();
+    placed(database).into_iter().find(|found| found.group == group).map(|found| found.folder)
+}
+
+fn existing_group(database: &Database, folder: &str) -> Option<GroupId> {
+    placed(database).into_iter().find(|found| !found.in_bin && found.folder == folder).map(|found| found.group)
+}
+
 fn group_for(database: &mut Database, folder: &str) -> GroupId {
+    let folder = folder.trim();
+    if let Some(group) = existing_group(database, folder) {
+        return group;
+    }
     let bin = database.recycle_bin().map(|group| group.id());
     let mut current = database.root().id();
-    for name in folder.split(['/', '\\']).map(str::trim).filter(|name| !name.is_empty()) {
+    let names: Vec<&str> = if folder.contains(FOLDER_SEPARATOR) {
+        folder.split(FOLDER_SEPARATOR).collect()
+    } else {
+        folder.split(['/', '\\']).collect()
+    };
+    for name in names.into_iter().map(str::trim).filter(|name| !name.is_empty()) {
         let existing = database.group(current).and_then(|group| {
             group.groups().find(|child| Some(child.id()) != bin && child.name.trim() == name).map(|child| child.id())
         });
@@ -257,9 +259,8 @@ impl Provider for KeePass {
 
     fn save(&mut self, draft: &Draft, _now: u64) -> Result<String, Fault> {
         self.change(|database| {
-            let folder = draft.folder.split(FOLDER_SEPARATOR).collect::<Vec<_>>().join("/");
-            let group = group_for(database, &folder);
             let Some(item) = &draft.item else {
+                let group = group_for(database, &draft.folder);
                 let mut parent = database.group_mut(group).ok_or(Fault::NotFound)?;
                 let mut entry = parent.add_entry();
                 write(&mut entry, draft);
@@ -267,10 +268,12 @@ impl Provider for KeePass {
             };
             let id = find(database, &item.id)?;
             let bin = database.recycle_bin().map(|bin| bin.id());
+            let unchanged = current_folder(database, id).is_some_and(|current| current == draft.folder.trim());
             let mut entry = database.entry_mut(id).ok_or(Fault::NotFound)?;
             entry.edit_tracking(|tracked| write(&mut tracked.as_mut(), draft));
             entry.times.last_modification = Some(Times::now());
-            if Some(entry.as_ref().parent().id()) != bin {
+            if Some(entry.as_ref().parent().id()) != bin && !unchanged {
+                let group = group_for(database, &draft.folder);
                 place(database, id, group)?;
             }
             Ok(item.id.clone())
@@ -515,5 +518,147 @@ pub(crate) mod tests {
         assert_eq!(std::fs::metadata(&path).expect("meta").permissions().mode() & 0o777, 0o640);
         let leftovers = std::fs::read_dir(path.parent().expect("dir")).expect("dir").count();
         assert_eq!(leftovers, 1, "no temporary file is left behind");
+    }
+
+    #[test]
+    fn saving_through_a_symlinked_database_keeps_the_link_and_writes_the_real_file() {
+        let real = file("linked", "door");
+        let real_dir = real.parent().expect("dir").to_path_buf();
+        let link_dir = real_dir.join("elsewhere");
+        std::fs::create_dir_all(&link_dir).expect("link dir");
+        let link = link_dir.join("Passwords.kdbx");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let mut keepass = vault(&link);
+        keepass.unlock(&Hidden::new("door".into())).expect("unlock");
+        keepass.save(&login("GitHub", "hunter2"), 0).expect("save");
+        assert!(
+            std::fs::symlink_metadata(&link).expect("link meta").file_type().is_symlink(),
+            "the link is not replaced by a regular file"
+        );
+        assert_eq!(std::fs::read_link(&link).expect("target"), real);
+        let names: Vec<String> = reopen(&real, "door").into_iter().map(|record| record.name).collect();
+        assert!(names.contains(&"GitHub".to_string()), "the real file received the save: {names:?}");
+        assert_eq!(std::fs::read_dir(&real_dir).expect("dir").count(), 2, "the real file and the link folder only");
+        assert_eq!(std::fs::read_dir(&link_dir).expect("dir").count(), 1, "no temporary file next to the link");
+    }
+
+    fn with_groups(name: &str, groups: &[(&str, &str)]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("glide-kdbx-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("Passwords.kdbx");
+        let mut config = keepass::config::DatabaseConfig::default();
+        config.kdf_config = keepass::config::KdfConfig::Aes { rounds: 10 };
+        let mut database = Database::with_config(config);
+        for (group, title) in groups {
+            database.root_mut().add_group().edit(|found| found.name = (*group).into()).add_entry().edit(|entry| {
+                entry.set_unprotected(fields::TITLE, *title);
+                entry.set_protected(fields::PASSWORD, "first");
+            });
+        }
+        let mut bytes = Vec::new();
+        database.save(&mut bytes, DatabaseKey::new().with_password("door")).expect("save");
+        std::fs::write(&path, bytes).expect("write");
+        path
+    }
+
+    fn unlocked(path: &Path) -> KeePass {
+        let mut keepass = vault(path);
+        keepass.unlock(&Hidden::new("door".into())).expect("unlock");
+        keepass
+    }
+
+    fn edit_of(keepass: &KeePass, title: &str, password: &str) -> Draft {
+        let record = keepass.records().expect("records").iter().find(|record| record.name == title).expect("record");
+        let mut draft = login(title, password);
+        draft.item = Some(ItemRef::new("keepass-1", &record.id));
+        draft.folder = record.folder.clone();
+        draft.fields.clear();
+        draft
+    }
+
+    fn sorted(mut folders: Vec<String>) -> Vec<String> {
+        folders.sort();
+        folders
+    }
+
+    #[test]
+    fn editing_an_entry_in_a_group_named_with_a_slash_keeps_it_where_it_is() {
+        let path = with_groups("slash", &[("Clients/2024", "Acme"), ("Work", "Jira")]);
+        let mut keepass = unlocked(&path);
+        let edit = edit_of(&keepass, "Acme", "changed");
+        assert_eq!(edit.folder, "Clients/2024");
+        keepass.save(&edit, 0).expect("edit");
+        let acme = reopen(&path, "door").into_iter().find(|record| record.name == "Acme").expect("acme");
+        assert_eq!((acme.folder.as_str(), acme.password_text().as_str()), ("Clients/2024", "changed"));
+        assert_eq!(
+            sorted(keepass.folders().expect("folders")),
+            ["Clients/2024", "Work"],
+            "no Clients / 2024 chain is created"
+        );
+    }
+
+    #[test]
+    fn a_folder_picked_by_its_shown_path_resolves_to_the_existing_group() {
+        let path = with_groups("pick", &[("Clients/2024", "Acme"), ("Work", "Jira")]);
+        let mut keepass = unlocked(&path);
+        let mut moved = edit_of(&keepass, "Jira", "second");
+        moved.folder = "Clients/2024".into();
+        keepass.save(&moved, 0).expect("move");
+        let jira = reopen(&path, "door").into_iter().find(|record| record.name == "Jira").expect("jira");
+        assert_eq!(jira.folder, "Clients/2024");
+        assert_eq!(sorted(keepass.folders().expect("folders")), ["Clients/2024", "Work"], "nothing new was created");
+
+        let mut nested = login("Quarter", "q");
+        nested.folder = "Clients/2024 / Q1".into();
+        keepass.save(&nested, 0).expect("nested");
+        assert_eq!(
+            sorted(keepass.folders().expect("folders")),
+            ["Clients/2024", "Clients/2024 / Q1", "Work"],
+            "a new group goes under the existing slash-named one"
+        );
+
+        let mut typed = login("Typed", "t");
+        typed.folder = "Archive/Old".into();
+        keepass.save(&typed, 0).expect("typed");
+        assert!(keepass.folders().expect("folders").contains(&"Archive / Old".to_string()), "typed slashes still nest");
+    }
+
+    #[test]
+    fn entries_in_unnamed_or_duplicate_groups_stay_put_when_their_folder_is_unchanged() {
+        let path = with_groups("twins", &[]);
+        let bytes = std::fs::read(&path).expect("read");
+        let mut database = super::super::open(&bytes, "door").expect("open");
+        let work = database.root_mut().add_group().edit(|group| group.name = "Work".into()).id();
+        let first = database.group_mut(work).expect("work").add_group().edit(|group| group.name = "Dup".into()).id();
+        let second = database.group_mut(work).expect("work").add_group().edit(|group| group.name = "Dup".into()).id();
+        let anonymous = database.group_mut(work).expect("work").add_group().id();
+        for (group, title) in [(first, "First"), (second, "Second"), (anonymous, "Anonymous")] {
+            database.group_mut(group).expect("group").add_entry().edit(|entry| {
+                entry.set_unprotected(fields::TITLE, title);
+                entry.set_protected(fields::PASSWORD, "first");
+            });
+        }
+        let mut saved = Vec::new();
+        database.save(&mut saved, DatabaseKey::new().with_password("door")).expect("save");
+        std::fs::write(&path, saved).expect("write");
+
+        let mut keepass = unlocked(&path);
+        for title in ["Second", "Anonymous"] {
+            let edit = edit_of(&keepass, title, "changed");
+            keepass.save(&edit, 0).expect("edit");
+        }
+        let after = super::super::open(&std::fs::read(&path).expect("read"), "door").expect("open");
+        let parent_of = |title: &str| {
+            after
+                .iter_all_entries()
+                .find(|entry| entry.get(fields::TITLE) == Some(title))
+                .map(|entry| entry.parent().id())
+                .expect("entry")
+        };
+        assert_eq!(parent_of("First"), first);
+        assert_eq!(parent_of("Second"), second, "the second Dup is not mistaken for the first");
+        assert_eq!(parent_of("Anonymous"), anonymous, "an unnamed group is not mistaken for its parent");
+        assert_eq!(after.root().groups().count(), 1, "no group was added");
     }
 }

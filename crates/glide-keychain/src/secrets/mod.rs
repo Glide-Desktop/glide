@@ -1,7 +1,8 @@
 pub mod index;
 pub mod session;
+pub mod sessions;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -14,6 +15,7 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
 use self::index::Index;
 use self::session::SessionKey;
+use self::sessions::Sessions;
 use crate::service::{Events, Service};
 use crate::vault::{Item, Secret};
 
@@ -69,14 +71,12 @@ enum Pending {
     Create { label: String, attributes: BTreeMap<String, String>, secret: Secret, content_type: String, replace: bool },
 }
 
-const MAX_SESSIONS: usize = 1024;
-
 pub struct Secrets {
     service: Arc<Service>,
     events: Events,
     index_path: PathBuf,
     index: Mutex<Index>,
-    sessions: Mutex<HashMap<String, Option<SessionKey>>>,
+    sessions: Mutex<Sessions>,
     prompts: Mutex<HashMap<String, Pending>>,
     registered: Mutex<BTreeSet<u64>>,
     next: AtomicU64,
@@ -101,7 +101,7 @@ impl Secrets {
             events,
             index_path,
             index: Mutex::new(index),
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(Sessions::default()),
             prompts: Mutex::new(HashMap::new()),
             registered: Mutex::new(BTreeSet::new()),
             next: AtomicU64::new(1),
@@ -160,10 +160,14 @@ impl Secrets {
     }
 
     fn check_session(&self, session: &ObjectPath<'_>) -> Result<Option<SessionKey>, Error> {
-        lock(&self.sessions)
-            .get(session.as_str())
-            .cloned()
-            .ok_or_else(|| Error::NoSession(format!("no session {session}")))
+        lock(&self.sessions).key(session.as_str()).ok_or_else(|| Error::NoSession(format!("no session {session}")))
+    }
+
+    pub fn forget_owner(&self, server: &zbus::blocking::ObjectServer, owner: &str) {
+        let paths = lock(&self.sessions).drop_owner(owner);
+        for path in paths {
+            let _ = server.remove::<SessionObject, _>(path.as_str());
+        }
     }
 
     fn secret_of(item: &Item, session: &ObjectPath<'_>, key: Option<&SessionKey>) -> Result<SecretValue, Error> {
@@ -315,6 +319,7 @@ pub struct ServiceObject {
 impl ServiceObject {
     async fn open_session(
         &self, algorithm: &str, input: OwnedValue, #[zbus(object_server)] server: &zbus::ObjectServer,
+        #[zbus(header)] header: zbus::message::Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(OwnedValue, OwnedObjectPath), Error> {
         let (output, key): (OwnedValue, Option<SessionKey>) = match algorithm {
             session::PLAIN => (Value::from("").try_into().expect("s is owned"), None),
@@ -329,26 +334,28 @@ impl ServiceObject {
             }
             _ => return Err(not_supported("the algorithm is not offered")),
         };
+        let owner = header.sender().map(ToString::to_string);
         let session = self.secrets.new_path("session");
-        let evicted = {
+        let crowded = {
             let mut sessions = lock(&self.secrets.sessions);
-            sessions.insert(session.clone(), key);
-            let serial = |path: &String| path.rsplit('/').next().and_then(|tail| tail.parse::<u64>().ok());
-            if sessions.len() > MAX_SESSIONS {
-                let oldest = sessions.keys().min_by_key(|path| serial(path)).cloned();
-                oldest.inspect(|oldest| {
-                    sessions.remove(oldest);
-                })
-            } else {
-                None
-            }
+            sessions.insert(session.clone(), key, owner);
+            sessions.over_limit()
         };
-        if let Some(oldest) = evicted {
-            let _ = server.remove::<SessionObject, _>(oldest.as_str()).await;
+        let evicted = if crowded {
+            let names = live_names(connection).await;
+            let alive = |owner: &str| names.as_ref().is_none_or(|names| names.contains(owner));
+            lock(&self.secrets.sessions).evict(alive)
+        } else {
+            None
+        };
+        if let Some(gone) = &evicted {
+            let _ = server.remove::<SessionObject, _>(gone.as_str()).await;
         }
-        let _ = server
-            .at(session.as_str(), SessionObject { secrets: Arc::clone(&self.secrets), path: session.clone() })
-            .await;
+        if evicted.as_deref() != Some(session.as_str()) {
+            let _ = server
+                .at(session.as_str(), SessionObject { secrets: Arc::clone(&self.secrets), path: session.clone() })
+                .await;
+        }
         Ok((output, path(&session)))
     }
 
@@ -717,12 +724,45 @@ async fn complete(connection: &zbus::Connection, at: &str, dismissed: bool, resu
     Ok(())
 }
 
+async fn live_names(connection: &zbus::Connection) -> Option<HashSet<String>> {
+    let bus = fdo::DBusProxy::new(connection).await.ok()?;
+    let names = bus.list_names().await.ok()?;
+    Some(names.into_iter().map(|name| name.to_string()).collect())
+}
+
+fn watch_clients(connection: &zbus::blocking::Connection, secrets: &Arc<Secrets>) -> zbus::Result<()> {
+    let bus = zbus::blocking::fdo::DBusProxy::new(connection)?;
+    let changes = bus.receive_name_owner_changed()?;
+    let (connection, secrets) = (connection.clone(), Arc::clone(secrets));
+    let spawned = std::thread::Builder::new().name("glide-secrets-clients".into()).spawn(move || {
+        let _bus = bus;
+        for change in changes {
+            let Ok(args) = change.args() else {
+                continue;
+            };
+            if args.new_owner().is_some() {
+                continue;
+            }
+            if let zbus::names::BusName::Unique(owner) = args.name() {
+                secrets.forget_owner(&connection.object_server(), owner.as_str());
+            }
+        }
+    });
+    if let Err(err) = spawned {
+        eprintln!("glide-keychain: the Secret Service cannot tell when a client leaves ({err})");
+    }
+    Ok(())
+}
+
 pub fn serve(connection: &zbus::blocking::Connection, secrets: &Arc<Secrets>) -> zbus::Result<()> {
     let server = connection.object_server();
     server.at(ROOT, ServiceObject { secrets: Arc::clone(secrets) })?;
     server.at(COLLECTION, CollectionObject { secrets: Arc::clone(secrets) })?;
     server.at(DEFAULT_ALIAS, CollectionObject { secrets: Arc::clone(secrets) })?;
     zbus::block_on(secrets.sync_objects(connection.inner().object_server()));
+    if let Err(err) = watch_clients(connection, secrets) {
+        eprintln!("glide-keychain: the Secret Service cannot tell when a client leaves ({err})");
+    }
     Ok(())
 }
 

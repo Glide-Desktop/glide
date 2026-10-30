@@ -195,6 +195,52 @@ fn a_keyring_wrapped_by_the_login_password_waits_for_it_and_a_closed_island_answ
 }
 
 #[test]
+fn a_clients_sessions_go_away_with_the_client() {
+    let Some(bus) = private_bus() else {
+        return;
+    };
+    let path = temp("departed");
+    let service = Service::start(Daemon::new(path.clone(), FAST), Arc::new(|_| {}));
+    let _server = serve(&bus, &service, &path, Arc::new(|_| {}));
+    let stays = connect(&bus);
+    let stays_root = proxy(&stays, ROOT, SERVICE);
+    let (_, kept): (OwnedValue, OwnedObjectPath) = stays_root.call("OpenSession", &("plain", Value::from(""))).unwrap();
+
+    let leaver = connect(&bus);
+    let leaving: OwnedObjectPath = {
+        let root = proxy(&leaver, ROOT, SERVICE);
+        let (_, session): (OwnedValue, OwnedObjectPath) =
+            root.call("OpenSession", &("plain", Value::from(""))).unwrap();
+        let known = stays_root.call::<_, _, HashMap<OwnedObjectPath, SecretValue>>(
+            "GetSecrets",
+            &(Vec::<OwnedObjectPath>::new(), session.clone()),
+        );
+        assert!(known.is_ok(), "the session works while its client is connected");
+        session
+    };
+    drop(leaver);
+
+    let started = std::time::Instant::now();
+    loop {
+        let gone = stays_root
+            .call::<_, _, HashMap<OwnedObjectPath, SecretValue>>(
+                "GetSecrets",
+                &(Vec::<OwnedObjectPath>::new(), leaving.clone()),
+            )
+            .map_err(|err| err.to_string());
+        if gone.as_ref().is_err_and(|err| err.contains("NoSession")) {
+            break;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "the session outlived its client: {gone:?}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let still: HashMap<OwnedObjectPath, SecretValue> =
+        stays_root.call("GetSecrets", &(Vec::<OwnedObjectPath>::new(), kept)).unwrap();
+    assert!(still.is_empty(), "a client that stays keeps its session");
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
 fn programs_store_and_read_secrets_that_stay_encrypted() {
     let Some(bus) = private_bus() else {
         return;
