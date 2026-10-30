@@ -1,7 +1,7 @@
 use glide_ipc::keychain::{Hidden, Request, SyncState, VaultKind};
 use glide_sdk::theme::{SP2, SP3, SP4, SP5, SP6, TextStyle};
 use glide_sdk::widget::{self as ui, ListRow, Severity, Size, Tone};
-use glide_sdk::{Item, Shell};
+use glide_sdk::{Dialog, Item, Shell};
 use iced::widget::{Column, column, container, row};
 use iced::{Alignment, Element, Fill, Length, Padding, Task};
 
@@ -26,10 +26,12 @@ pub enum Event {
     VaultMenu(String),
     Sync(String),
     Remove(String),
+    ConfirmRemove(String),
     ChangePassword(String),
     Old(String),
     New(String),
     Repeat(String),
+    ToggleSecrets,
     SubmitPassword,
     CancelPassword,
     Soon,
@@ -41,6 +43,7 @@ pub struct PasswordChange {
     pub old: String,
     pub new: String,
     pub repeat: String,
+    pub shown: bool,
 }
 
 type Change = Box<dyn Fn(&mut Prefs)>;
@@ -80,7 +83,11 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::Default(vault) => return ask(Request::SetDefault { vault }, Message::Done),
         Event::VaultMenu(vault) => shell.context_menu(vault_menu(app, vault)),
         Event::Sync(vault) => return ask(Request::Sync { vault: Some(vault) }, Message::Done),
-        Event::Remove(vault) => return ask(Request::RemoveVault { vault }, Message::Done),
+        Event::Remove(vault) => match remove_dialog(app, &vault) {
+            Some(dialog) => shell.dialog(dialog),
+            None => return ask(Request::RemoveVault { vault }, Message::Done),
+        },
+        Event::ConfirmRemove(vault) => return ask(Request::RemoveVault { vault }, Message::Done),
         Event::ChangePassword(vault) => {
             app.password_change = Some(PasswordChange { vault, ..PasswordChange::default() });
         }
@@ -97,6 +104,11 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::Repeat(value) => {
             if let Some(change) = app.password_change.as_mut() {
                 change.repeat = value;
+            }
+        }
+        Event::ToggleSecrets => {
+            if let Some(change) = app.password_change.as_mut() {
+                change.shown = !change.shown;
             }
         }
         Event::SubmitPassword => {
@@ -148,6 +160,26 @@ fn choice<'a, T: PartialEq + Clone + 'a>(
     container(ui::dropdown(&app.paint, options, chosen, "", move |picked: Labeled<T>| on_pick(picked.0)))
         .width(200)
         .into()
+}
+
+fn remove_dialog(app: &App, vault: &str) -> Option<Dialog<Message>> {
+    let known = app.data.vaults.iter().find(|known| known.id == vault);
+    if known.is_some_and(|known| known.kind == VaultKind::KeePass) {
+        return None;
+    }
+    let name = known.map_or(vault, |known| known.name.as_str());
+    let mut body = app.t(Key::RemoveVaultBody).to_string();
+    if let Some(SyncState::Offline { pending }) = known.map(|known| &known.sync)
+        && *pending > 0
+    {
+        let queued = plural(app.lang, u64::from(*pending), [Key::QueuedOne, Key::QueuedFew, Key::QueuedMany]);
+        body = format!("{body}\n\n{}", app.t(Key::RemoveVaultPending).replace("{queued}", &queued));
+    }
+    Some(
+        Dialog::new(app.t(Key::RemoveVaultTitle).replace("{name}", name), body)
+            .choice(app.t(Key::RemoveVault), Tone::Danger, Message::Settings(Event::ConfirmRemove(vault.to_string())))
+            .cancel(app.t(Key::Cancel)),
+    )
 }
 
 fn vault_menu(app: &App, vault: String) -> Vec<Item<Message>> {
@@ -280,18 +312,30 @@ fn password_form(app: &App) -> Option<Element<'_, Message>> {
                         ),
                         TextStyle::HEAD
                     ),
-                    crate::view::secret_input(&paint, t(Key::VaultPassword), &change.old, |value| Message::Settings(
-                        Event::Old(value)
-                    )),
-                    crate::view::secret_input(
+                    ui::password_field(
+                        &paint,
+                        t(Key::VaultPassword),
+                        &change.old,
+                        change.shown,
+                        |value| Message::Settings(Event::Old(value)),
+                        Message::Settings(Event::ToggleSecrets)
+                    ),
+                    ui::password_field(
                         &paint,
                         t(Key::NewVaultPassword),
                         &change.new,
-                        |value| Message::Settings(Event::New(value))
+                        change.shown,
+                        |value| Message::Settings(Event::New(value)),
+                        Message::Settings(Event::ToggleSecrets)
                     ),
-                    crate::view::secret_input(&paint, t(Key::RepeatPassword), &change.repeat, |value| {
-                        Message::Settings(Event::Repeat(value))
-                    }),
+                    ui::password_field(
+                        &paint,
+                        t(Key::RepeatPassword),
+                        &change.repeat,
+                        change.shown,
+                        |value| Message::Settings(Event::Repeat(value)),
+                        Message::Settings(Event::ToggleSecrets)
+                    ),
                     row![
                         iced::widget::Space::new().width(Fill),
                         ui::secondary(&paint, t(Key::Cancel), Message::Settings(Event::CancelPassword)),
@@ -470,4 +514,85 @@ pub fn view(app: &App) -> Element<'_, Message> {
         Some(Message::CloseSettings),
         app.window.corner(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use glide_ipc::keychain::Vault;
+
+    use super::*;
+    use crate::app::Snapshot;
+
+    fn vault(id: &str, kind: VaultKind, sync: SyncState) -> Vault {
+        Vault {
+            id: id.into(),
+            name: format!("Name of {id}"),
+            kind,
+            account: "me@example.com".into(),
+            server: String::new(),
+            exists: true,
+            unlocked: true,
+            sync,
+            count: 3,
+        }
+    }
+
+    fn harness(vaults: Vec<Vault>) -> glide_sdk::Harness<App> {
+        let mut harness =
+            glide_sdk::Harness::<App>::new(crate::APP_ID, glide_sdk::Look::default(), iced::Size::new(1100.0, 720.0));
+        harness.message(Message::Loaded(Ok(Snapshot { vaults, ..Snapshot::default() })));
+        harness
+    }
+
+    #[test]
+    fn removing_an_account_asks_first_and_the_request_waits_for_the_danger_choice() {
+        let harness = harness(vec![vault("bw-1", VaultKind::Bitwarden, SyncState::Synced { at: 0 })]);
+        let dialog = remove_dialog(harness.app(), "bw-1").expect("a Bitwarden account asks before it goes");
+        let danger = dialog.choices.first().expect("a danger choice");
+        assert_eq!(danger.tone, Tone::Danger);
+        assert!(matches!(
+            &danger.message,
+            Some(Message::Settings(Event::ConfirmRemove(vault))) if vault == "bw-1"
+        ));
+        assert!(dialog.choices.get(1).is_some_and(|cancel| cancel.message.is_none()));
+        assert!(dialog.title.contains("Name of bw-1"));
+    }
+
+    #[test]
+    fn the_remove_menu_item_opens_the_dialog_and_does_not_remove_by_itself() {
+        let mut harness = harness(vec![vault("bw-1", VaultKind::Bitwarden, SyncState::Synced { at: 0 })]);
+        assert!(!harness.shell().has_dialog());
+        harness.message(Message::Settings(Event::Remove("bw-1".into())));
+        assert!(harness.shell().has_dialog());
+    }
+
+    #[test]
+    fn changes_still_queued_offline_are_named_in_the_warning() {
+        let harness = harness(vec![vault("bw-1", VaultKind::Bitwarden, SyncState::Offline { pending: 3 })]);
+        let app = harness.app();
+        let dialog = remove_dialog(app, "bw-1").expect("dialog");
+        let queued = plural(app.lang, 3, [Key::QueuedOne, Key::QueuedFew, Key::QueuedMany]);
+        assert!(dialog.body.contains(&queued), "{} should mention {queued}", dialog.body);
+    }
+
+    #[test]
+    fn an_account_with_nothing_queued_does_not_claim_to_lose_changes() {
+        let harness = harness(vec![
+            vault("bw-1", VaultKind::Bitwarden, SyncState::Offline { pending: 0 }),
+            vault("bw-2", VaultKind::Bitwarden, SyncState::Synced { at: 0 }),
+        ]);
+        let app = harness.app();
+        for id in ["bw-1", "bw-2"] {
+            let dialog = remove_dialog(app, id).expect("dialog");
+            assert_eq!(dialog.body, app.t(Key::RemoveVaultBody));
+        }
+    }
+
+    #[test]
+    fn a_keepass_file_is_dropped_from_the_list_without_asking_because_the_file_stays() {
+        let mut harness = harness(vec![vault("keepass-1", VaultKind::KeePass, SyncState::Local)]);
+        assert!(remove_dialog(harness.app(), "keepass-1").is_none());
+        harness.message(Message::Settings(Event::Remove("keepass-1".into())));
+        assert!(!harness.shell().has_dialog());
+    }
 }

@@ -98,6 +98,7 @@ pub enum Prompt {
 pub struct ApiDraft {
     pub client_id: String,
     pub client_secret: String,
+    pub shown: bool,
 }
 
 fn api_event(wizard: &mut Wizard, event: Event) {
@@ -105,6 +106,11 @@ fn api_event(wizard: &mut Wizard, event: Event) {
         Event::ApiKey(on) => {
             wizard.api = on.then(ApiDraft::default);
             wizard.error = None;
+        }
+        Event::ToggleClientSecret => {
+            if let Some(api) = wizard.api.as_mut() {
+                api.shown = !api.shown;
+            }
         }
         Event::ClientId(value) => {
             if let Some(api) = wizard.api.as_mut() {
@@ -184,6 +190,7 @@ pub enum Event {
     ApiKey(bool),
     ClientId(String),
     ClientSecret(String),
+    ToggleClientSecret,
     FileChosen(Chosen),
     OpenFile,
 }
@@ -197,6 +204,7 @@ fn keepass_event(wizard: &mut Wizard, event: Event, shell: &mut Shell<Message>) 
                 }
                 wizard.file = Some(path);
                 wizard.password.clear();
+                wizard.shown = false;
                 wizard.error = None;
                 wizard.step = Step::KeePass;
             }
@@ -320,6 +328,7 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         event @ (Event::FileChosen(_) | Event::OpenFile) => return keepass_event(wizard, event, shell),
         Event::Back => {
             wizard.error = None;
+            wizard.shown = false;
             wizard.step = match wizard.step {
                 Step::Login | Step::KeePass => Step::Kind,
                 Step::TwoFactor => Step::Login,
@@ -333,7 +342,9 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         Event::Email(value) => wizard.email = value,
         Event::Password(value) => wizard.password = value,
         Event::TogglePassword => wizard.shown = !wizard.shown,
-        event @ (Event::ApiKey(_) | Event::ClientId(_) | Event::ClientSecret(_)) => api_event(wizard, event),
+        event @ (Event::ApiKey(_) | Event::ClientId(_) | Event::ClientSecret(_) | Event::ToggleClientSecret) => {
+            api_event(wizard, event);
+        }
         Event::SignIn => {
             if wizard.busy || (wizard.step == Step::TwoFactor && wizard.code.len() != 6) {
                 return Task::none();
@@ -397,6 +408,7 @@ pub struct Create {
     pub repeat: String,
     pub mismatch: bool,
     pub busy: bool,
+    pub shown: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -404,6 +416,7 @@ pub enum CreateEvent {
     Open,
     Password(String),
     Repeat(String),
+    Reveal,
     Submit,
     Reply(Result<Response, String>),
     Close,
@@ -427,6 +440,7 @@ pub fn create(app: &mut App, event: CreateEvent, shell: &mut Shell<Message>) -> 
             form.repeat = value;
             form.mismatch = false;
         }
+        CreateEvent::Reveal => form.shown = !form.shown,
         CreateEvent::Submit => {
             if form.password.is_empty() || form.password != form.repeat {
                 form.mismatch = true;
@@ -591,9 +605,14 @@ fn keepass_step<'a>(app: &'a App, wizard: &'a Wizard) -> Column<'a, Message> {
         t(Key::MasterPassword),
         glide_sdk::anim::shake(
             wizard.shakes,
-            crate::view::secret_input(&paint, t(Key::MasterPassword), &wizard.password, |value| {
-                Message::Wizard(Event::Password(value))
-            }),
+            ui::password_field(
+                &paint,
+                t(Key::MasterPassword),
+                &wizard.password,
+                wizard.shown,
+                |value| Message::Wizard(Event::Password(value)),
+                Message::Wizard(Event::TogglePassword),
+            ),
         ),
     );
     let mut content = Column::new()
@@ -638,9 +657,14 @@ fn api_key_fields<'a>(app: &'a App, api: &'a ApiDraft) -> Element<'a, Message> {
     let secret = labelled(
         &paint,
         "client_secret",
-        crate::view::secret_input(&paint, "client_secret", &api.client_secret, |value| {
-            Message::Wizard(Event::ClientSecret(value))
-        }),
+        ui::password_field(
+            &paint,
+            "client_secret",
+            &api.client_secret,
+            api.shown,
+            |value| Message::Wizard(Event::ClientSecret(value)),
+            Message::Wizard(Event::ToggleClientSecret),
+        ),
     );
     column![row![id, secret].spacing(SP3), ui::text(t(Key::ApiKeyHint), TextStyle::CAP).color(paint.fg_3()),]
         .spacing(6)
@@ -846,16 +870,26 @@ fn create_view<'a>(app: &'a App, form: &'a Create) -> Element<'a, Message> {
         .push(labelled(
             &paint,
             t(Key::VaultPassword),
-            crate::view::secret_input(&paint, t(Key::VaultPassword), &form.password, |value| {
-                Message::CreateVault(CreateEvent::Password(value))
-            }),
+            ui::password_field(
+                &paint,
+                t(Key::VaultPassword),
+                &form.password,
+                form.shown,
+                |value| Message::CreateVault(CreateEvent::Password(value)),
+                Message::CreateVault(CreateEvent::Reveal),
+            ),
         ))
         .push(labelled(
             &paint,
             t(Key::RepeatPassword),
-            crate::view::secret_input(&paint, t(Key::RepeatPassword), &form.repeat, |value| {
-                Message::CreateVault(CreateEvent::Repeat(value))
-            }),
+            ui::password_field(
+                &paint,
+                t(Key::RepeatPassword),
+                &form.repeat,
+                form.shown,
+                |value| Message::CreateVault(CreateEvent::Repeat(value)),
+                Message::CreateVault(CreateEvent::Reveal),
+            ),
         ));
     if !form.password.is_empty() {
         let level = glide_ipc::keychain::strength(&form.password);

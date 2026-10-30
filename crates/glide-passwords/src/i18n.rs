@@ -384,6 +384,9 @@ glide_sdk::catalogue! {
     TodayAt => "today at {t}", "сьогодні о {t}";
     TomorrowAt => "tomorrow at {t}", "завтра о {t}";
     CopyRefused => "Not copied: Glide only lets the focused window copy a secret", "Не скопійовано: Glide дозволяє копіювати секрети лише вікну у фокусі";
+    RemoveVaultTitle => "Remove «{name}»?", "Прибрати «{name}»?";
+    RemoveVaultBody => "The account is forgotten on this device. What is already on the server stays there.", "Обліковий запис буде забуто на цьому пристрої. Те, що вже є на сервері, там і лишиться.";
+    RemoveVaultPending => "Not yet sent to the server, and lost for good: {queued}.", "Ще не надіслано на сервер, тож буде втрачено безповоротно: {queued}.";
 }
 
 #[must_use]
@@ -398,17 +401,22 @@ pub fn plural(lang: Lang, n: u64, [one, few, many]: [Key; 3]) -> String {
 
 #[must_use]
 pub fn date(lang: Lang, unix: u64, now: u64) -> String {
+    date_at(lang, unix, now, utc_offset())
+}
+
+#[must_use]
+pub fn date_at(lang: Lang, unix: u64, now: u64, offset: i64) -> String {
     const UK: [&str; 12] =
         ["січ.", "лют.", "бер.", "квіт.", "трав.", "черв.", "лип.", "серп.", "вер.", "жовт.", "лист.", "груд."];
-    let day = |time: u64| time / 86_400;
+    let day = |time: u64| (time as i64 + offset).div_euclid(86_400);
     if day(unix) == day(now) {
         return Key::Today.text(lang).to_string();
     }
     if day(unix) + 1 == day(now) {
         return Key::Yesterday.text(lang).to_string();
     }
-    let (year, month, date) = civil(unix);
-    let (this_year, ..) = civil(now);
+    let (year, month, date) = civil_at(unix, offset);
+    let (this_year, ..) = civil_at(now, offset);
     let short: String = match lang {
         Lang::Uk => UK[month as usize - 1].to_string(),
         Lang::En => lang.month_of_date(month as usize - 1).chars().take(3).collect(),
@@ -421,31 +429,35 @@ pub fn date(lang: Lang, unix: u64, now: u64) -> String {
 }
 
 #[must_use]
-pub fn utc_offset(now: u64) -> i64 {
+pub fn utc_offset() -> i64 {
     let Some(minute) = glide_config::local_minute() else {
         return 0;
     };
-    let utc = (now % 86_400) as i64 / 60 * 60;
+    let utc = (crate::app::unix_now() % 86_400) as i64 / 60 * 60;
     let mut offset = i64::from(minute) * 60 - utc;
     if offset > 14 * 3600 {
         offset -= 86_400;
     } else if offset < -12 * 3600 {
         offset += 86_400;
     }
-    offset
+    (offset + 450).div_euclid(900) * 900
 }
 
 #[must_use]
 pub fn moment(lang: Lang, unix: u64, now: u64) -> String {
-    moment_at(lang, unix, now, utc_offset(now))
+    moment_at(lang, unix, now, utc_offset())
 }
 
 #[must_use]
 pub fn stamp(lang: Lang, unix: u64, now: u64) -> String {
-    let offset = utc_offset(now);
+    stamp_at(lang, unix, now, utc_offset())
+}
+
+#[must_use]
+pub fn stamp_at(lang: Lang, unix: u64, now: u64, offset: i64) -> String {
     let at = unix as i64 + offset;
     let time = format!("{:02}:{:02}", at.rem_euclid(86_400) / 3600, at.rem_euclid(3600) / 60);
-    format!("{} {time}", date(lang, unix, now))
+    format!("{} {time}", date_at(lang, unix, now, offset))
 }
 
 #[must_use]
@@ -458,13 +470,13 @@ pub fn moment_at(lang: Lang, unix: u64, now: u64, offset: i64) -> String {
     } else if day(at) == day(today) + 1 {
         Key::TomorrowAt.text(lang).replace("{t}", &time)
     } else {
-        date(lang, unix, now)
+        date_at(lang, unix, now, offset)
     }
 }
 
 #[must_use]
-pub const fn civil(unix: u64) -> (i64, u32, u32) {
-    let days = (unix / 86_400) as i64 + 719_468;
+pub const fn civil_at(unix: u64, offset: i64) -> (i64, u32, u32) {
+    let days = (unix as i64 + offset).div_euclid(86_400) + 719_468;
     let era = days.div_euclid(146_097);
     let doe = days - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -480,15 +492,67 @@ pub const fn civil(unix: u64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
 
+    const OCTOBER_12: u64 = 1_791_763_200;
+    const KYIV: i64 = 3 * 3600;
+
     #[test]
     fn dates_are_short_and_local() {
-        let october_12 = 1_791_763_200;
-        let later = october_12 + 13 * 86_400 + 43_200;
-        assert_eq!(date(Lang::Uk, october_12, later), "12 жовт.");
-        assert_eq!(date(Lang::En, october_12, later), "Oct 12");
-        assert_eq!(date(Lang::Uk, later - 60, later), "сьогодні");
-        assert_eq!(date(Lang::Uk, later - 86_400, later), "вчора");
-        assert!(date(Lang::Uk, 1_704_067_200, later).ends_with("2024"));
+        let later = OCTOBER_12 + 13 * 86_400 + 43_200;
+        assert_eq!(date_at(Lang::Uk, OCTOBER_12, later, 0), "12 жовт.");
+        assert_eq!(date_at(Lang::En, OCTOBER_12, later, 0), "Oct 12");
+        assert_eq!(date_at(Lang::Uk, later - 60, later, 0), "сьогодні");
+        assert_eq!(date_at(Lang::Uk, later - 86_400, later, 0), "вчора");
+        assert!(date_at(Lang::Uk, 1_704_067_200, later, 0).ends_with("2024"));
+    }
+
+    #[test]
+    fn something_changed_at_one_in_the_morning_local_time_reads_as_today_east_of_greenwich() {
+        let changed = OCTOBER_12 - 2 * 3600;
+        let now = OCTOBER_12 + 10 * 3600;
+        assert_eq!(date_at(Lang::Uk, changed, now, 0), "вчора", "in UTC it was the evening before");
+        assert_eq!(date_at(Lang::Uk, changed, now, KYIV), "сьогодні");
+        assert_eq!(date_at(Lang::En, changed, now, KYIV), "today");
+    }
+
+    #[test]
+    fn something_changed_late_in_the_evening_local_time_reads_as_yesterday_west_of_greenwich() {
+        let changed = OCTOBER_12 + 3 * 3600;
+        let now = OCTOBER_12 + 12 * 3600;
+        let new_york = -5 * 3600;
+        assert_eq!(date_at(Lang::Uk, changed, now, 0), "сьогодні");
+        assert_eq!(date_at(Lang::Uk, changed, now, new_york), "вчора");
+    }
+
+    #[test]
+    fn an_older_date_is_the_local_calendar_day_not_the_utc_one() {
+        let changed = OCTOBER_12 - 2 * 3600;
+        let later = OCTOBER_12 + 13 * 86_400;
+        assert_eq!(date_at(Lang::Uk, changed, later, 0), "11 жовт.");
+        assert_eq!(date_at(Lang::Uk, changed, later, KYIV), "12 жовт.");
+    }
+
+    #[test]
+    fn the_year_is_the_local_one_around_new_year() {
+        let new_year_utc = 1_798_761_600;
+        let changed = new_year_utc + 1800;
+        let now = new_year_utc + 40 * 86_400;
+        assert_eq!(civil_at(changed, 0), (2027, 1, 1));
+        assert_eq!(civil_at(changed, -3600), (2026, 12, 31));
+        assert_eq!(date_at(Lang::Uk, changed, now, -3600), "31 груд. 2026");
+        assert_eq!(date_at(Lang::Uk, changed, now, 0), "1 січ.");
+    }
+
+    #[test]
+    fn a_stamp_combines_the_local_day_with_the_local_time() {
+        let changed = OCTOBER_12 - 2 * 3600;
+        let now = OCTOBER_12 + 10 * 3600;
+        assert_eq!(stamp_at(Lang::Uk, changed, now, KYIV), "сьогодні 01:00");
+        assert_eq!(stamp_at(Lang::Uk, changed, now, 0), "вчора 22:00");
+    }
+
+    #[test]
+    fn the_local_offset_is_a_whole_number_of_quarter_hours() {
+        assert_eq!(utc_offset() % 900, 0);
     }
 
     #[test]
@@ -498,7 +562,7 @@ mod tests {
         assert_eq!(moment_at(Lang::Uk, now + 3600, now, 0), "сьогодні о 11:00");
         assert_eq!(moment_at(Lang::Uk, now + 26 * 3600 + 32 * 60, now, 0), "завтра о 12:32");
         assert_eq!(moment_at(Lang::Uk, now + 15 * 3600, now, 2 * 3600), "завтра о 03:00");
-        assert_eq!(moment_at(Lang::En, now + 3 * 86_400, now, 0), date(Lang::En, now + 3 * 86_400, now));
+        assert_eq!(moment_at(Lang::En, now + 3 * 86_400, now, 0), date_at(Lang::En, now + 3 * 86_400, now, 0));
     }
 
     #[test]

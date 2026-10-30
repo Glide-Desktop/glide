@@ -45,6 +45,30 @@ impl Copied {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    Placed,
+    Refused,
+    Absent,
+}
+
+#[must_use]
+pub fn placement(result: &zbus::Result<()>) -> Placement {
+    match result {
+        Ok(()) => Placement::Placed,
+        Err(zbus::Error::MethodError(name, ..)) if name.as_str() == ACCESS_DENIED => Placement::Refused,
+        Err(zbus::Error::FDO(inner)) if matches!(**inner, zbus::fdo::Error::AccessDenied(_)) => Placement::Refused,
+        Err(_) => Placement::Absent,
+    }
+}
+
+const ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
+
+#[must_use]
+pub fn seconds_until(expires: u64, now: u64, period: u32) -> u32 {
+    u32::try_from(expires.saturating_sub(now)).unwrap_or(u32::MAX).min(period)
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Window(Action),
@@ -62,11 +86,11 @@ pub enum Message {
     Copy(Copied),
     CopyText(Copied, Result<Response, String>),
     ClipboardCheck(u64),
-    ShellCopied(u64, bool),
-    ToggleSecrets,
+    ShellCopied(u64, Placement),
     ClipboardRead(u64, Option<String>),
     Tick,
     CodeLoaded(ItemRef, Result<Response, String>),
+    CodeForCopy(ItemRef, Result<Response, String>),
     Sync,
     LockAll,
     RequestUnlock,
@@ -150,6 +174,7 @@ pub struct App {
     pub detail: Option<Detail>,
     pub revealed: Option<Hidden>,
     pub code: Option<Code>,
+    pub code_expires: u64,
     pub editor: Option<Editor>,
     pub generator: Option<Generating>,
     pub generated: Vec<zeroize::Zeroizing<String>>,
@@ -210,9 +235,10 @@ fn copy_here(text: String, token: u64, clears: u32) -> Task<Message> {
     if clears == 0 {
         return write;
     }
-    let wait = Task::perform(tokio::time::sleep(Duration::from_secs(u64::from(clears))), move |()| {
-        Message::ClipboardCheck(token)
-    });
+    let wait =
+        Task::perform(async move { tokio::time::sleep(Duration::from_secs(u64::from(clears))).await }, move |()| {
+            Message::ClipboardCheck(token)
+        });
     Task::batch([write, wait])
 }
 
@@ -257,6 +283,7 @@ impl App {
             detail: None,
             revealed: None,
             code: None,
+            code_expires: 0,
             editor: None,
             generator: None,
             generated: Vec::new(),
@@ -364,6 +391,19 @@ impl App {
         Task::perform(load(), Message::Loaded)
     }
 
+    fn set_code(&mut self, code: Code) {
+        self.code_expires = unix_now() + u64::from(code.seconds_left);
+        self.code = Some(code);
+    }
+
+    fn code_left(&self) -> u32 {
+        self.code.as_ref().map_or(0, |code| seconds_until(self.code_expires, unix_now(), code.period))
+    }
+
+    fn code_for(item: ItemRef, done: fn(ItemRef, Result<Response, String>) -> Message) -> Task<Message> {
+        ask(Request::Totp { item: item.clone() }, move |result| done(item.clone(), result))
+    }
+
     fn select(&mut self, item: ItemRef) -> Task<Message> {
         self.selected = Some(item.clone());
         self.revealed = None;
@@ -425,7 +465,7 @@ impl App {
         if what.is_secret() {
             let secret = zeroize::Zeroizing::new(text);
             return Task::perform(
-                async move { glide_sdk::system::copy_secret(&secret, clears).is_ok() },
+                async move { placement(&glide_sdk::system::copy_secret(&secret, clears)) },
                 move |placed| Message::ShellCopied(token, placed),
             );
         }
@@ -477,14 +517,20 @@ impl App {
         if self.prefs.leak_check { ask(Request::CheckLeaks, Message::Done) } else { Task::none() }
     }
 
-    fn after(&mut self, result: Result<Response, String>, shell: &mut Shell<Message>) {
+    pub(crate) fn reply_notice(&self, result: &Result<Response, String>) -> Option<String> {
         match result {
-            Ok(Response::WrongPassword) => shell.toast(self.t(Key::WrongPassword)),
-            Ok(Response::Unsupported) => shell.toast(self.t(Key::NotAvailable)),
-            Ok(Response::Error { message }) => shell.toast(humane(self.lang, &message)),
-            Ok(Response::Locked) => shell.toast(self.t(Key::VaultIsLocked)),
-            Ok(_) => {}
-            Err(err) => shell.toast(format!("{}: {err}", self.t(Key::DaemonMissing))),
+            Ok(Response::WrongPassword) => Some(self.t(Key::WrongPassword).to_string()),
+            Ok(Response::Unsupported) => Some(self.t(Key::NotAvailable).to_string()),
+            Ok(Response::Error { message }) => Some(humane(self.lang, message)),
+            Ok(Response::Locked) => Some(self.t(Key::VaultIsLocked).to_string()),
+            Ok(_) => None,
+            Err(err) => Some(format!("{}: {err}", self.t(Key::DaemonMissing))),
+        }
+    }
+
+    fn after(&self, result: &Result<Response, String>, shell: &mut Shell<Message>) {
+        if let Some(text) = self.reply_notice(result) {
+            shell.toast(text);
         }
     }
 
@@ -583,9 +629,16 @@ impl App {
                 if self.selected.as_ref() == Some(&item)
                     && let Ok(Response::Code { code }) = result
                 {
-                    self.code = Some(code);
+                    self.set_code(code);
                 }
                 Task::none()
+            }
+            Message::CodeForCopy(item, Ok(Response::Code { code })) => {
+                let text = Hidden::new(code.code.clone());
+                if self.selected.as_ref() == Some(&item) {
+                    self.set_code(code);
+                }
+                self.copy(Copied::Code, text, shell)
             }
             Message::Ignored | Message::Frame => Task::none(),
             Message::Step(step) => self.step_selection(step),
@@ -612,6 +665,9 @@ impl App {
                         if code.is_empty() {
                             return Task::none();
                         }
+                        if self.code_left() == 0 {
+                            return Self::code_for(item, Message::CodeForCopy);
+                        }
                         self.copy(what, Hidden::new(code), shell)
                     }
                     Copied::Password | Copied::CardNumber | Copied::CardCode | Copied::Field(_) => {
@@ -636,17 +692,26 @@ impl App {
                 }
             }
             Message::CopyText(what, Ok(Response::Secret { secret })) => self.copy(what, secret, shell),
-            Message::CopyText(_, result) | Message::Done(result) => {
-                self.after(result, shell);
+            Message::CodeForCopy(_, result) | Message::CopyText(_, result) | Message::Done(result) => {
+                self.after(&result, shell);
                 Task::none()
             }
             Message::ShellCopied(token, placed) => {
-                if placed || token != self.clipboard {
+                if token != self.clipboard {
                     return Task::none();
                 }
-                self.copied = None;
-                shell.toast(self.t(Key::CopyRefused));
-                Task::none()
+                match placed {
+                    Placement::Placed => Task::none(),
+                    Placement::Absent => match &self.copied {
+                        Some(secret) => copy_here(secret.expose().to_string(), token, self.prefs.clear_after),
+                        None => Task::none(),
+                    },
+                    Placement::Refused => {
+                        self.copied = None;
+                        shell.toast(self.t(Key::CopyRefused));
+                        Task::none()
+                    }
+                }
             }
             Message::ClipboardCheck(token) => {
                 if token != self.clipboard {
@@ -664,17 +729,18 @@ impl App {
             }
             Message::Tick => {
                 self.now = unix_now();
+                let left = self.code_left();
                 let Some(code) = self.code.as_mut() else {
                     return Task::none();
                 };
-                if code.seconds_left > 1 {
-                    code.seconds_left -= 1;
+                code.seconds_left = left;
+                if left > 0 {
                     return Task::none();
                 }
                 let Some(item) = self.selected.clone() else {
                     return Task::none();
                 };
-                ask(Request::Totp { item: item.clone() }, move |result| Message::CodeLoaded(item.clone(), result))
+                Self::code_for(item, Message::CodeLoaded)
             }
             Message::Sync => ask(Request::Sync { vault: None }, Message::Done),
             Message::LockAll => ask(Request::Lock { vault: None }, Message::Done),
@@ -689,10 +755,6 @@ impl App {
                 let item = self.selected.clone();
                 let kind = self.detail.as_ref().map_or(ItemKind::Login, |detail| detail.summary.kind);
                 self.open_editor(item.as_ref(), kind)
-            }
-            Message::ToggleSecrets => {
-                crate::view::SECRETS_SHOWN.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-                Task::none()
             }
             Message::EditorLoaded(editor) => {
                 if editor.item.is_some() && editor.item != self.selected {
@@ -716,7 +778,7 @@ impl App {
                     self.selected = Some(item);
                     return self.reload();
                 }
-                self.after(result, shell);
+                self.after(&result, shell);
                 Task::none()
             }
             Message::Trash => {
@@ -1042,6 +1104,138 @@ mod tests {
             Some(other),
             "the purge was for the named item, so the moved selection stays"
         );
+    }
+
+    fn harness() -> glide_sdk::Harness<App> {
+        glide_sdk::Harness::<App>::new(crate::APP_ID, glide_sdk::Look::default(), iced::Size::new(1100.0, 720.0))
+    }
+
+    fn with_code(seconds_left: u32) -> (glide_sdk::Harness<App>, ItemRef) {
+        let mut harness = harness();
+        let item = ItemRef::new(LOCAL, "mail");
+        harness.message(Message::Select(item.clone()));
+        let code = Code { code: "123456".into(), seconds_left, period: 30 };
+        harness.message(Message::CodeLoaded(item.clone(), Ok(Response::Code { code })));
+        (harness, item)
+    }
+
+    #[test]
+    fn the_countdown_is_the_wall_clock_so_a_suspend_cannot_leave_it_behind() {
+        assert_eq!(seconds_until(1_000 + 20, 1_000, 30), 20);
+        assert_eq!(seconds_until(1_000 + 20, 1_000 + 19, 30), 1);
+        assert_eq!(seconds_until(1_000 + 20, 1_000 + 20, 30), 0);
+        assert_eq!(seconds_until(1_000 + 20, 1_000 + 600, 30), 0, "ten minutes asleep expire the code");
+        assert_eq!(seconds_until(1_000 + 20, 400, 30), 30, "a clock set back never shows more than a period");
+    }
+
+    #[test]
+    fn ticks_follow_the_clock_not_their_own_count() {
+        let (mut harness, _) = with_code(25);
+        for _ in 0..5 {
+            harness.message(Message::Tick);
+        }
+        let left = harness.app().code.as_ref().map(|code| code.seconds_left).expect("a code");
+        assert!(left >= 24, "five ticks inside one second took {} seconds off", 25 - left);
+    }
+
+    #[test]
+    fn an_expired_code_is_fetched_again_instead_of_being_copied() {
+        let (mut harness, _) = with_code(0);
+        harness.message(Message::Copy(Copied::Code));
+        assert!(harness.app().copied.is_none(), "the stale code must not reach the clipboard");
+
+        let (mut harness, _) = with_code(25);
+        harness.message(Message::Copy(Copied::Code));
+        assert_eq!(harness.app().copied.as_ref().map(Hidden::expose), Some("123456"));
+    }
+
+    #[test]
+    fn the_fresh_code_that_replaces_an_expired_one_is_what_gets_copied() {
+        let (mut harness, item) = with_code(0);
+        let fresh = Code { code: "654321".into(), seconds_left: 25, period: 30 };
+        harness.message(Message::CodeForCopy(item, Ok(Response::Code { code: fresh })));
+        assert_eq!(harness.app().copied.as_ref().map(Hidden::expose), Some("654321"));
+        assert_eq!(harness.app().code.as_ref().map(|code| code.code.as_str()), Some("654321"));
+        assert!(harness.app().code_left() > 0);
+    }
+
+    #[test]
+    fn a_missing_shell_falls_back_to_the_clipboard_and_keeps_the_secret_to_clear_it_later() {
+        let mut harness = harness();
+        let secret = Hidden::new("hunter2".to_string());
+        harness.message(Message::CopyText(Copied::Password, Ok(Response::Secret { secret })));
+        let token = harness.app().clipboard;
+
+        harness.message(Message::ShellCopied(token, Placement::Absent));
+        assert_eq!(harness.app().copied.as_ref().map(Hidden::expose), Some("hunter2"));
+
+        harness.message(Message::ShellCopied(token + 1, Placement::Refused));
+        assert!(harness.app().copied.is_some(), "an answer for an older copy is ignored");
+
+        harness.message(Message::ShellCopied(token, Placement::Refused));
+        assert!(harness.app().copied.is_none(), "an explicit refusal drops the secret");
+    }
+
+    #[test]
+    fn only_an_explicit_access_denied_counts_as_a_refusal() {
+        assert_eq!(placement(&Ok(())), Placement::Placed);
+        let denied: zbus::Error = zbus::fdo::Error::AccessDenied("not focused".into()).into();
+        assert_eq!(placement(&Err(denied)), Placement::Refused);
+        let missing: zbus::Error = zbus::fdo::Error::ServiceUnknown("org.glide.Shell".into()).into();
+        assert_eq!(placement(&Err(missing)), Placement::Absent);
+        assert_eq!(placement(&Err(zbus::Error::Failure("no session bus".into()))), Placement::Absent);
+    }
+
+    #[test]
+    fn an_access_denied_reply_from_the_bus_counts_as_a_refusal() {
+        let call = zbus::Message::method_call("/org/glide/Shell1", "CopySecret").unwrap().build(&()).unwrap();
+        let reply = zbus::Message::error(&call.header(), ACCESS_DENIED).unwrap().build(&()).unwrap();
+        let name = zbus::names::OwnedErrorName::try_from(ACCESS_DENIED).unwrap();
+        assert_eq!(placement(&Err(zbus::Error::MethodError(name, None, reply))), Placement::Refused);
+        let other = zbus::names::OwnedErrorName::try_from("org.freedesktop.DBus.Error.ServiceUnknown").unwrap();
+        let reply = zbus::Message::error(&call.header(), "org.freedesktop.DBus.Error.ServiceUnknown")
+            .unwrap()
+            .build(&())
+            .unwrap();
+        assert_eq!(placement(&Err(zbus::Error::MethodError(other, None, reply))), Placement::Absent);
+    }
+
+    #[test]
+    fn revealing_a_password_in_one_form_leaves_every_other_form_masked() {
+        use crate::{sends, settings, transfer, wizard};
+
+        let mut harness = harness();
+        harness.message(Message::Settings(settings::Event::ChangePassword("bw".into())));
+        harness.message(Message::OpenWizard);
+        harness.message(Message::Wizard(wizard::Event::TogglePassword));
+        assert!(harness.app().wizard.as_ref().is_some_and(|wizard| wizard.shown));
+        assert!(
+            harness.app().password_change.as_ref().is_some_and(|change| !change.shown),
+            "the wizard's eye must not reveal the vault password form"
+        );
+
+        harness.message(Message::Wizard(wizard::Event::Close));
+        harness.message(Message::OpenWizard);
+        assert!(harness.app().wizard.as_ref().is_some_and(|wizard| !wizard.shown), "a new wizard starts masked");
+
+        harness.message(Message::CreateVault(wizard::CreateEvent::Open));
+        harness.message(Message::CreateVault(wizard::CreateEvent::Reveal));
+        harness.message(Message::CreateVault(wizard::CreateEvent::Close));
+        harness.message(Message::CreateVault(wizard::CreateEvent::Open));
+        assert!(harness.app().create.as_ref().is_some_and(|form| !form.shown));
+
+        harness.message(Message::Transfer(transfer::Event::Export));
+        harness.message(Message::Transfer(transfer::Event::ToggleSecrets));
+        assert!(matches!(harness.app().transfer, Some(crate::transfer::Transfer::Export { shown: true, .. })));
+        harness.message(Message::Transfer(transfer::Event::Close));
+        harness.message(Message::Transfer(transfer::Event::Export));
+        assert!(matches!(harness.app().transfer, Some(crate::transfer::Transfer::Export { shown: false, .. })));
+        assert!(harness.app().create.as_ref().is_some_and(|form| !form.shown));
+
+        harness.message(Message::Sends(sends::Event::Reveal));
+        assert!(harness.app().send.shown);
+        harness.message(Message::Sends(sends::Event::New));
+        assert!(!harness.app().send.shown);
     }
 
     #[test]

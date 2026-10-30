@@ -770,20 +770,4 @@ pub fn dialog_frame<'a>(
     glide_sdk::overlay::modal(&paint, app.modal_progress(), card, Some(dismiss), app.window.corner())
 }
 
-#[must_use]
-pub fn secret_input<'a>(
-    paint: &Paint, placeholder: &'a str, value: &'a str, on_input: impl Fn(String) -> Message + 'a,
-) -> Element<'a, Message> {
-    let shown = SECRETS_SHOWN.load(std::sync::atomic::Ordering::Relaxed);
-    ui::secret_input(
-        paint,
-        text_input(placeholder, value).on_input(on_input),
-        shown,
-        Message::ToggleSecrets,
-        ui::Validity::Neutral,
-    )
-}
-
-pub static SECRETS_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 pub const DIALOG_RADIUS: f32 = R3;

@@ -34,8 +34,8 @@ impl Payload {
 #[derive(Debug, Clone)]
 pub enum Transfer {
     Importing { contents: Payload },
-    ImportPassword { contents: Payload, password: String, wrong: bool, busy: bool },
-    Export { password: String, repeat: String, mismatch: bool, busy: bool },
+    ImportPassword { contents: Payload, password: String, wrong: bool, busy: bool, shown: bool },
+    Export { password: String, repeat: String, mismatch: bool, busy: bool, shown: bool },
     Saving { data: String, count: u32 },
 }
 
@@ -46,6 +46,7 @@ pub enum Event {
     ImportRead(Result<Payload, String>),
     ImportDone(Result<Response, String>),
     Password(String),
+    ToggleSecrets,
     SubmitPassword,
     Export,
     ExportPassword(String),
@@ -88,8 +89,18 @@ fn import(app: &App, contents: Payload, password: Option<Hidden>) -> Task<Messag
 }
 
 fn export_name(now: u64) -> String {
-    let (year, month, day) = crate::i18n::civil(now);
+    export_name_at(now, crate::i18n::utc_offset())
+}
+
+fn export_name_at(now: u64, offset: i64) -> String {
+    let (year, month, day) = crate::i18n::civil_at(now, offset);
     format!("glide-passwords-{year:04}-{month:02}-{day:02}.json")
+}
+
+fn toggle_secrets(transfer: &mut Option<Transfer>) {
+    if let Some(Transfer::ImportPassword { shown, .. } | Transfer::Export { shown, .. }) = transfer {
+        *shown = !*shown;
+    }
 }
 
 pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Message> {
@@ -118,6 +129,7 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
                 *wrong = false;
             }
         }
+        Event::ToggleSecrets => toggle_secrets(&mut app.transfer),
         Event::SubmitPassword => {
             if let Some(Transfer::ImportPassword { contents, password, busy, .. }) = app.transfer.as_mut() {
                 if password.is_empty() {
@@ -129,8 +141,13 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
             }
         }
         Event::Export => {
-            app.transfer =
-                Some(Transfer::Export { password: String::new(), repeat: String::new(), mismatch: false, busy: false });
+            app.transfer = Some(Transfer::Export {
+                password: String::new(),
+                repeat: String::new(),
+                mismatch: false,
+                busy: false,
+                shown: false,
+            });
         }
         Event::ExportPassword(value) => {
             if let Some(Transfer::Export { password, mismatch, .. }) = app.transfer.as_mut() {
@@ -145,7 +162,7 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
             }
         }
         Event::ExportSubmit => {
-            if let Some(Transfer::Export { password, repeat, mismatch, busy }) = app.transfer.as_mut() {
+            if let Some(Transfer::Export { password, repeat, mismatch, busy, .. }) = app.transfer.as_mut() {
                 if password.is_empty() || password != repeat {
                     *mismatch = true;
                     return Task::none();
@@ -192,11 +209,16 @@ fn imported(app: &mut App, result: Result<Response, String>, shell: &mut Shell<M
         Ok(Response::NeedsFilePassword) => {
             match app.transfer.take() {
                 Some(Transfer::Importing { contents }) => {
-                    app.transfer =
-                        Some(Transfer::ImportPassword { contents, password: String::new(), wrong: false, busy: false });
+                    app.transfer = Some(Transfer::ImportPassword {
+                        contents,
+                        password: String::new(),
+                        wrong: false,
+                        busy: false,
+                        shown: false,
+                    });
                 }
-                Some(Transfer::ImportPassword { contents, password, wrong, .. }) => {
-                    app.transfer = Some(Transfer::ImportPassword { contents, password, wrong, busy: false });
+                Some(Transfer::ImportPassword { contents, password, wrong, shown, .. }) => {
+                    app.transfer = Some(Transfer::ImportPassword { contents, password, wrong, busy: false, shown });
                 }
                 other => app.transfer = other,
             }
@@ -271,17 +293,19 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
     let close = Message::Transfer(Event::Close);
     let content: Column<'_, Message> = match app.transfer.as_ref()? {
         Transfer::Saving { .. } | Transfer::Importing { .. } => return None,
-        Transfer::ImportPassword { contents, password, wrong, busy } => {
+        Transfer::ImportPassword { contents, password, wrong, busy, shown } => {
             let (title, body) = if contents.binary {
                 (Key::KeePassPassword, Key::KeePassPasswordBody)
             } else {
                 (Key::FilePassword, Key::FilePasswordBody)
             };
-            let mut content = Column::new().spacing(SP4).push(heading(title, body)).push(crate::view::secret_input(
+            let mut content = Column::new().spacing(SP4).push(heading(title, body)).push(ui::password_field(
                 &paint,
                 t(title),
                 password,
+                *shown,
                 |value| Message::Transfer(Event::Password(value)),
+                Message::Transfer(Event::ToggleSecrets),
             ));
             if *wrong {
                 content = content.push(ui::text(t(Key::FileWrongPassword), TextStyle::CAP).color(paint.danger()));
@@ -300,23 +324,34 @@ pub fn view(app: &App) -> Option<Element<'_, Message>> {
                 .spacing(SP2),
             )
         }
-        Transfer::Export { password, repeat, mismatch, busy } => {
+        Transfer::Export { password, repeat, mismatch, busy, shown } => {
+            let reveal = Message::Transfer(Event::ToggleSecrets);
             let mut content = Column::new()
                 .spacing(SP4)
                 .push(heading(Key::ExportTitle, Key::ExportBody))
                 .push(crate::wizard::labelled(
                     &paint,
                     t(Key::FilePassword),
-                    crate::view::secret_input(&paint, t(Key::FilePassword), password, |value| {
-                        Message::Transfer(Event::ExportPassword(value))
-                    }),
+                    ui::password_field(
+                        &paint,
+                        t(Key::FilePassword),
+                        password,
+                        *shown,
+                        |value| Message::Transfer(Event::ExportPassword(value)),
+                        reveal.clone(),
+                    ),
                 ))
                 .push(crate::wizard::labelled(
                     &paint,
                     t(Key::RepeatPassword),
-                    crate::view::secret_input(&paint, t(Key::RepeatPassword), repeat, |value| {
-                        Message::Transfer(Event::ExportRepeat(value))
-                    }),
+                    ui::password_field(
+                        &paint,
+                        t(Key::RepeatPassword),
+                        repeat,
+                        *shown,
+                        |value| Message::Transfer(Event::ExportRepeat(value)),
+                        reveal,
+                    ),
                 ));
             if *mismatch {
                 content = content.push(ui::text(t(Key::Mismatch), TextStyle::CAP).color(paint.danger()));
@@ -349,6 +384,14 @@ mod tests {
 
     #[test]
     fn the_export_file_is_named_after_the_day() {
-        assert_eq!(export_name(1_800_000_000), "glide-passwords-2027-01-15.json");
+        assert_eq!(export_name_at(1_800_000_000, 0), "glide-passwords-2027-01-15.json");
+    }
+
+    #[test]
+    fn the_export_file_is_named_after_the_local_day_not_the_utc_one() {
+        let late_evening_utc = 1_800_000_000 + 14 * 3600;
+        assert_eq!(export_name_at(late_evening_utc, 0), "glide-passwords-2027-01-15.json");
+        assert_eq!(export_name_at(late_evening_utc, 3 * 3600), "glide-passwords-2027-01-16.json");
+        assert_eq!(export_name_at(1_800_000_000, -9 * 3600), "glide-passwords-2027-01-14.json");
     }
 }

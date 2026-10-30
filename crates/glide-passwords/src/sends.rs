@@ -1,4 +1,4 @@
-use glide_ipc::keychain::{Hidden, Request, Response, Send, SendDraft, VaultKind};
+use glide_ipc::keychain::{Hidden, Request, Response, Send, SendDraft, Vault, VaultKind};
 use glide_sdk::theme::{SP1, SP2, SP3, SP4, SP5, SP6, TextStyle};
 use glide_sdk::widget::{self as ui, ListRow, Severity, Size, Tone};
 use glide_sdk::{Lang, Shell};
@@ -43,6 +43,7 @@ pub struct SendForm {
     pub opens: u32,
     pub protect: bool,
     pub password: String,
+    pub shown: bool,
     pub hide_text: bool,
     pub hide_email: bool,
     pub vault: String,
@@ -69,6 +70,7 @@ impl Default for SendForm {
             opens: 5,
             protect: false,
             password: String::new(),
+            shown: false,
             hide_text: true,
             hide_email: true,
             vault: String::new(),
@@ -85,10 +87,25 @@ impl Default for SendForm {
     }
 }
 
+fn unlocked_servers(vaults: &[Vault]) -> Vec<&Vault> {
+    vaults.iter().filter(|vault| vault.kind == VaultKind::Bitwarden && vault.unlocked).collect()
+}
+
+fn chosen_server<'a>(servers: &[&'a Vault], wanted: &str) -> Option<&'a Vault> {
+    servers.iter().copied().find(|server| server.id == wanted).or_else(|| servers.first().copied())
+}
+
 impl SendForm {
-    fn request(&self, fallback: String) -> Request {
+    fn target(&self, vaults: &[Vault]) -> String {
+        if self.editing.is_some() && !self.vault.is_empty() {
+            return self.vault.clone();
+        }
+        chosen_server(&unlocked_servers(vaults), &self.vault).map(|server| server.id.clone()).unwrap_or_default()
+    }
+
+    fn request(&self, vaults: &[Vault]) -> Request {
         let draft = Box::new(SendDraft {
-            vault: if self.vault.is_empty() { fallback } else { self.vault.clone() },
+            vault: self.target(vaults),
             name: self.name.trim().to_string(),
             text: Hidden::new(self.text.text().trim_end().to_string()),
             lifetime_hours: self.kept_hours.filter(|_| self.editing.is_some()).unwrap_or_else(|| self.lifetime.hours()),
@@ -114,6 +131,7 @@ impl SendForm {
         self.protect = send.has_password;
         self.had_password = send.has_password;
         self.password.clear();
+        self.shown = false;
         self.hide_text = send.hide_text;
         self.hide_email = send.hide_email;
         self.vault = send.vault;
@@ -131,6 +149,7 @@ pub enum Event {
     Opens(u32),
     Protect(bool),
     Password(String),
+    Reveal,
     HideText(bool),
     HideEmail(bool),
     Vault(String),
@@ -209,6 +228,13 @@ fn describe(lang: Lang, send: &Send, now: u64) -> String {
     text
 }
 
+fn failure_notice(app: &App, result: &Result<Response, String>) -> Option<String> {
+    match result {
+        Ok(Response::Unsupported) => Some(app.t(Key::NeedsServer).to_string()),
+        other => app.reply_notice(other),
+    }
+}
+
 pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Message> {
     let form = &mut app.send;
     match event {
@@ -228,43 +254,35 @@ pub fn update(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<M
         }
         Event::Protect(on) => form.protect = on,
         Event::Password(value) => form.password = value,
+        Event::Reveal => form.shown = !form.shown,
         Event::HideText(on) => form.hide_text = on,
         Event::HideEmail(on) => form.hide_email = on,
         Event::Vault(value) => form.vault = value,
         Event::Create => {
-            let fallback = app
-                .data
-                .vaults
-                .iter()
-                .find(|vault| vault.kind == VaultKind::Bitwarden && vault.unlocked)
-                .map(|vault| vault.id.clone())
-                .unwrap_or_default();
             form.busy = true;
-            return ask(form.request(fallback), |result| Message::Sends(Event::Created(result)));
+            return ask(form.request(&app.data.vaults), |result| Message::Sends(Event::Created(result)));
         }
         Event::Created(Ok(Response::SendCreated { send })) => {
             form.busy = false;
             form.open = false;
             form.editing = None;
             form.password.clear();
+            form.shown = false;
             form.selected = Some((send.vault.clone(), send.id.clone()));
             form.created = Some(*send);
             return app.reload();
         }
         Event::Created(result) => {
             form.busy = false;
-            app.send.busy = false;
-            match result {
-                Ok(Response::Unsupported) => shell.toast(app.t(Key::NeedsServer)),
-                Ok(Response::Error { message }) => shell.toast(crate::app::humane(app.lang, &message)),
-                Err(err) => shell.toast(crate::app::humane(app.lang, &err)),
-                Ok(_) => {}
+            if let Some(text) = failure_notice(app, &result) {
+                shell.toast(text);
             }
         }
         Event::Select(vault, id) => {
             form.open = false;
             form.editing = None;
             form.password.clear();
+            form.shown = false;
             form.created = app.data.sends.iter().find(|send| send.vault == vault && send.id == id).cloned();
             form.selected = Some((vault, id));
         }
@@ -330,6 +348,7 @@ fn editing(app: &mut App, event: Event, shell: &mut Shell<Message>) -> Task<Mess
             form.editing = None;
             form.open = false;
             form.password.clear();
+            form.shown = false;
         }
         _ => {}
     }
@@ -472,14 +491,11 @@ fn form_view(app: &App) -> Element<'_, Message> {
             .padding(Padding::from([SP2, SP3])),
     ]
     .spacing(6);
-    let servers: Vec<Labeled<String>> = app
-        .data
-        .vaults
-        .iter()
-        .filter(|vault| vault.kind == VaultKind::Bitwarden && vault.unlocked)
-        .map(|vault| labeled(vault.id.clone(), format!("{} · {}", vault.name, vault.account)))
-        .collect();
-    let chosen = servers.iter().find(|server| server.0 == form.vault).cloned().or_else(|| servers.first().cloned());
+    let unlocked = unlocked_servers(&app.data.vaults);
+    let target = form.target(&app.data.vaults);
+    let servers: Vec<Labeled<String>> =
+        unlocked.iter().map(|vault| labeled(vault.id.clone(), format!("{} · {}", vault.name, vault.account))).collect();
+    let chosen = servers.iter().find(|server| server.0 == target).cloned();
     let mut options = lifetime_rows(app);
     options.extend([
         ListRow::new(paint, t(Key::MaxOpens))
@@ -499,9 +515,14 @@ fn form_view(app: &App) -> Element<'_, Message> {
     if form.protect {
         let hint = if form.had_password { t(Key::KeepSendPassword) } else { t(Key::OpenPassword) };
         options.push(
-            container(crate::view::secret_input(&paint, hint, &form.password, |value| {
-                Message::Sends(Event::Password(value))
-            }))
+            container(ui::password_field(
+                &paint,
+                hint,
+                &form.password,
+                form.shown,
+                |value| Message::Sends(Event::Password(value)),
+                Message::Sends(Event::Reveal),
+            ))
             .padding(Padding::from([SP1, SP3]))
             .into(),
         );
@@ -666,4 +687,88 @@ pub fn view(app: &App) -> Element<'_, Message> {
         ui::pane(paint.win_bg(), 0.0, container(main).width(Fill).height(Fill))
     ]
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use glide_ipc::keychain::SyncState;
+
+    use super::*;
+
+    fn vault(id: &str, kind: VaultKind, unlocked: bool) -> Vault {
+        Vault {
+            id: id.into(),
+            name: id.into(),
+            kind,
+            account: String::new(),
+            server: String::new(),
+            exists: true,
+            unlocked,
+            sync: SyncState::Local,
+            count: 0,
+        }
+    }
+
+    fn created_in(form: &SendForm, vaults: &[Vault]) -> String {
+        let Request::CreateSend { draft } = form.request(vaults) else {
+            panic!("a form that is not editing creates a send");
+        };
+        draft.vault
+    }
+
+    #[test]
+    fn a_new_send_goes_to_the_account_the_dropdown_shows_not_to_a_locked_one() {
+        let vaults = [vault("a", VaultKind::Bitwarden, false), vault("b", VaultKind::Bitwarden, true)];
+        let form = SendForm { vault: "a".into(), ..SendForm::default() };
+        assert_eq!(created_in(&form, &vaults), "b");
+    }
+
+    #[test]
+    fn a_chosen_unlocked_account_is_kept_and_an_empty_choice_means_the_first_unlocked_one() {
+        let vaults = [
+            vault("local", VaultKind::Local, true),
+            vault("a", VaultKind::Bitwarden, true),
+            vault("b", VaultKind::Bitwarden, true),
+        ];
+        let chosen = SendForm { vault: "b".into(), ..SendForm::default() };
+        assert_eq!(created_in(&chosen, &vaults), "b");
+        assert_eq!(created_in(&SendForm::default(), &vaults), "a");
+        let removed = SendForm { vault: "gone".into(), ..SendForm::default() };
+        assert_eq!(created_in(&removed, &vaults), "a", "a vault that no longer exists is not a target");
+    }
+
+    #[test]
+    fn without_an_unlocked_server_there_is_no_target() {
+        let vaults = [vault("local", VaultKind::Local, true), vault("a", VaultKind::Bitwarden, false)];
+        assert_eq!(created_in(&SendForm { vault: "a".into(), ..SendForm::default() }, &vaults), "");
+    }
+
+    #[test]
+    fn editing_a_send_stays_on_the_account_that_owns_it() {
+        let vaults = [vault("a", VaultKind::Bitwarden, false), vault("b", VaultKind::Bitwarden, true)];
+        let form = SendForm { vault: "a".into(), editing: Some("send-1".into()), ..SendForm::default() };
+        let Request::EditSend { draft, .. } = form.request(&vaults) else { panic!("an edit form edits") };
+        assert_eq!(draft.vault, "a");
+    }
+
+    #[test]
+    fn the_target_is_what_the_dropdown_would_pick() {
+        let vaults = [vault("a", VaultKind::Bitwarden, false), vault("b", VaultKind::Bitwarden, true)];
+        let servers = unlocked_servers(&vaults);
+        let shown = chosen_server(&servers, "a").map(|server| server.id.as_str());
+        let form = SendForm { vault: "a".into(), ..SendForm::default() };
+        assert_eq!(shown, Some(form.target(&vaults).as_str()));
+    }
+
+    #[test]
+    fn a_locked_reply_to_a_create_is_reported_and_not_swallowed() {
+        let harness =
+            glide_sdk::Harness::<App>::new(crate::APP_ID, glide_sdk::Look::default(), iced::Size::new(1100.0, 720.0));
+        let app = harness.app();
+        assert_eq!(failure_notice(app, &Ok(Response::Locked)).as_deref(), Some(app.t(Key::VaultIsLocked)));
+        assert_eq!(failure_notice(app, &Ok(Response::Unsupported)).as_deref(), Some(app.t(Key::NeedsServer)));
+        assert!(failure_notice(app, &Ok(Response::Error { message: "boom".into() })).is_some());
+        assert!(failure_notice(app, &Err("no bus".into())).is_some());
+        assert!(failure_notice(app, &Ok(Response::Done)).is_none());
+    }
 }
