@@ -71,6 +71,12 @@ Further fixes made after the first pass, with the commit that holds each:
 | `glide-dock` Bug 1: a disabled dock kept the frame pump running | `4c19c74` |
 | `glide-appmenu` Bug 2 (fire-and-forget calls no longer wait; replies-needed calls are still serial) | `e8f3980` |
 | `glide-cast` Trap 1 and Bug 1: stream torn down outside the render lock; a refused Wi-Fi Direct connection no longer waits 40 s | `66a45c3` |
+| `glide-launcher` Bugs 1–6: provider timeouts, selection kept by identity, context menu closed on result changes, `%` before a sign, apostrophes in recent files, global provider generations | `7c74916` |
+| `glide-shot` Bugs 1, 2, 3, 5, 6 and the badge half of Bug 4 (the dim and outline still round differently on fractional edges) | `31b9e57` |
+| `glide-text` Bugs 2, 3, 5, 6, 7 | `48b3486` |
+| `glide-layout` Bugs 1–2 and the tiled-insets Trap | `674faed` |
+| `glide-terminal` Bugs 2–3 | `fc773ba` |
+| Passwords applet showed the unlocked look while locked until the pointer moved (cache key did not change with the phase) | `9d096fe` |
 
 The individual findings below still describe the code as it was reviewed.
 
