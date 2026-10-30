@@ -2,7 +2,7 @@ pub mod config;
 pub mod preview;
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{HashMap, HashSet, hash_map::Entry},
     hash::Hash,
     time::{Duration, Instant},
 };
@@ -125,6 +125,7 @@ const TOOLTIP_GAP: i32 = glide_theme::spacing::SP2;
 const TOOLTIP_RADIUS: f32 = glide_theme::shape::R2;
 const DRAG_THRESHOLD: f64 = 6.0;
 const DRAG_LIFT: i32 = 8;
+const DROP_FRAME_GRACE: Duration = Duration::from_millis(50);
 
 const MENU_RISE: i32 = 6;
 const MENU_SCALE_FROM: f64 = 0.94;
@@ -448,6 +449,7 @@ pub struct DockItem {
     pub app_id: String,
     pub separator_before: bool,
     pub action: DockAction,
+    pub fixed: bool,
 }
 
 impl DockItem {
@@ -466,16 +468,29 @@ impl DockItem {
             app_id: app_id.to_string(),
             separator_before: false,
             action: DockAction::Activate,
+            fixed: false,
         }
     }
 
-    fn from_config(config: &DockItemConfig) -> Self {
+    fn from_config(config: &DockItemConfig, fixed: bool) -> Self {
         Self {
             app_id: config.app_id.clone().unwrap_or_else(|| config.name.to_lowercase()),
             separator_before: config.separator_before,
+            fixed,
             ..Self::app("", &config.name, &config.command)
         }
     }
+}
+
+fn pinned_items_from(config: &DockConfig) -> Vec<DockItem> {
+    let mut seen = HashSet::new();
+    config
+        .items
+        .iter()
+        .map(|item| DockItem::from_config(item, true))
+        .chain(config.pins.iter().map(|pin| DockItem::from_config(pin, false)))
+        .filter(|item| seen.insert(app_key(&item.app_id)))
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -639,6 +654,7 @@ pub struct Dock {
     focus_wells: Layers,
     scroll: glide_shell::scroll::ScrollAccumulator,
     preview: Option<crate::preview::Preview>,
+    frame_until: Option<Instant>,
 }
 
 type Buffers<K> = HashMap<K, MemoryRenderBuffer>;
@@ -681,7 +697,7 @@ struct TooltipState {
 impl Dock {
     #[must_use]
     pub fn new(config: &DockConfig) -> Self {
-        let pinned: Vec<DockItem> = config.items.iter().map(DockItem::from_config).collect();
+        let pinned = pinned_items_from(config);
         let mut items = pinned.clone();
         items.push(DockItem::launcher());
         let count = items.len();
@@ -725,17 +741,33 @@ impl Dock {
             focus_wells: HashMap::new(),
             scroll: glide_shell::scroll::ScrollAccumulator::default(),
             preview: None,
+            frame_until: None,
         }
     }
 
     pub fn reconfigure(&mut self, config: &DockConfig) {
-        let launching = std::mem::take(&mut self.launching);
-        let urgent = std::mem::take(&mut self.urgent);
-        let badges = std::mem::take(&mut self.badges);
-        *self = Self::new(config);
-        self.launching = launching;
-        self.urgent = urgent;
-        self.badges = badges;
+        let mut fresh = Self::new(config);
+        fresh.launching = std::mem::take(&mut self.launching);
+        fresh.urgent = std::mem::take(&mut self.urgent);
+        fresh.badges = std::mem::take(&mut self.badges);
+        fresh.badge_fades = std::mem::take(&mut self.badge_fades);
+        fresh.run_alphas = std::mem::take(&mut self.run_alphas);
+        fresh.focus_wells = std::mem::take(&mut self.focus_wells);
+        fresh.slides = std::mem::take(&mut self.slides);
+        fresh.hide = self.hide;
+        fresh.hide_pending = self.hide_pending;
+        fresh.edge_since = self.edge_since;
+        fresh.reveal_until = self.reveal_until;
+        let keyboard_app =
+            self.keyboard_index().and_then(|index| self.items.get(index)).map(|item| item.app_id.clone());
+        if self.keyboard && fresh.begin_keyboard() {
+            let index = keyboard_app
+                .and_then(|app_id| fresh.items.iter().position(|item| item.app_id.eq_ignore_ascii_case(&app_id)));
+            if let Some(index) = index {
+                fresh.set_hover(Some(index));
+            }
+        }
+        *self = fresh;
     }
 
     pub fn begin_launch(&mut self, app_id: &str, name: &str, command: &str) -> bool {
@@ -1129,6 +1161,12 @@ impl Dock {
                 self.close_menu();
             }
             self.drag = None;
+            if let Some(preview) = self.preview.as_mut() {
+                match items.iter().position(|item| item.app_id == preview.app_id) {
+                    Some(index) => preview.index = index,
+                    None => self.preview = None,
+                }
+            }
             fade_all(&mut self.press_layers, t1());
             if hover_moved {
                 self.hover.retarget_without_restarting(None);
@@ -1227,6 +1265,10 @@ impl Dock {
     #[must_use]
     pub fn pinned_items(&self) -> &[DockItem] {
         &self.pinned
+    }
+
+    pub fn saved_pins(&self) -> impl Iterator<Item = &DockItem> {
+        self.pinned.iter().filter(|item| !item.fixed)
     }
 
     pub fn toggle_pinned(&mut self, index: usize, identity: Option<(String, String)>) -> bool {
@@ -1599,6 +1641,7 @@ impl Dock {
             || (self.edge_since.is_some() && self.is_hidden());
         let preview = self.preview.as_ref().is_some_and(crate::preview::Preview::is_animating);
         autohide
+            || self.frame_until.is_some_and(|until| now < until)
             || preview
             || any_animating(&self.focus_wells, t2())
             || self.is_bouncing(now)
@@ -1706,6 +1749,10 @@ impl Dock {
         };
         fade_all(&mut self.press_layers, t1());
         if drag.active {
+            self.frame_until = Some(Instant::now() + DROP_FRAME_GRACE);
+            if !self.drop_changes_pins(&drag, area) {
+                return PressOutcome::Nothing;
+            }
             let target = self.drag_target(&drag, area);
             return PressOutcome::Drop { index: drag.index, target };
         }
@@ -1716,8 +1763,26 @@ impl Dock {
         }
     }
 
+    fn drag_centre(&self, drag: &DockDrag) -> f64 {
+        drag.pointer.x - drag.grab_offset + f64::from(self.theme.item_size) / 2.0
+    }
+
+    fn drop_changes_pins(&self, drag: &DockDrag, area: Rectangle<i32, Logical>) -> bool {
+        if self.is_pinned(drag.index) {
+            return true;
+        }
+        let shell = self.rect(area).to_f64();
+        let slack = f64::from(self.theme.item_size);
+        if drag.pointer.y < shell.loc.y - slack || drag.pointer.y > shell.loc.y + shell.size.h + slack {
+            return false;
+        }
+        self.item_rects(area)
+            .get(self.pinned.len())
+            .is_some_and(|first_unpinned| self.drag_centre(drag) <= f64::from(first_unpinned.loc.x))
+    }
+
     fn drag_target(&self, drag: &DockDrag, area: Rectangle<i32, Logical>) -> usize {
-        let tile_centre = drag.pointer.x - drag.grab_offset + f64::from(self.theme.item_size) / 2.0;
+        let tile_centre = self.drag_centre(drag);
         self.item_rects(area)
             .iter()
             .enumerate()
@@ -1742,6 +1807,9 @@ impl Dock {
     fn display_order(&self, area: Rectangle<i32, Logical>) -> Option<(Vec<DockItem>, Vec<usize>)> {
         let drag = self.drag.filter(|drag| drag.active)?;
         self.items.get(drag.index)?;
+        if !self.drop_changes_pins(&drag, area) {
+            return None;
+        }
 
         let mut order: Vec<usize> = (0..self.items.len()).filter(|index| *index != drag.index).collect();
         let pinned_slots = order.iter().filter(|index| self.is_pinned(**index)).count();
@@ -2670,21 +2738,24 @@ fn draw_run_indicator(
 mod tests {
     use super::*;
 
+    fn item_config(name: &str, app_id: Option<&str>) -> DockItemConfig {
+        DockItemConfig {
+            name: name.to_string(),
+            command: "true".to_string(),
+            icon: "terminal".to_string(),
+            app_id: app_id.map(str::to_string),
+            color_from: None,
+            color_to: None,
+            separator_before: false,
+        }
+    }
+
     fn config(count: usize) -> DockConfig {
         DockConfig {
             theme: DockTheme::default(),
             autohide: DockAutohide::default(),
-            items: (0..count)
-                .map(|i| DockItemConfig {
-                    name: format!("App {i}"),
-                    command: "true".to_string(),
-                    icon: "terminal".to_string(),
-                    app_id: None,
-                    color_from: None,
-                    color_to: None,
-                    separator_before: false,
-                })
-                .collect(),
+            items: (0..count).map(|i| item_config(&format!("App {i}"), None)).collect(),
+            pins: Vec::new(),
         }
     }
 
@@ -3272,6 +3343,182 @@ mod tests {
             assert!(!dock.is_dragging());
         }
 
+        fn drag_to(dock: &mut Dock, index: usize, to: Point<f64, Logical>) -> PressOutcome {
+            let rects = dock.item_rects(area());
+            dock.begin_press(index, centre_of(rects[index]), area());
+            assert!(dock.drag_motion(to), "the move is past the drag threshold");
+            dock.end_press(area(), to)
+        }
+
+        #[test]
+        fn a_running_tile_dropped_back_where_it_was_is_not_pinned() {
+            let mut dock = dock_with_one_running();
+            let firefox = index_of(&dock, "firefox");
+            let start = centre_of(dock.item_rects(area())[firefox]);
+            let drift = Point::from((start.x + DRAG_THRESHOLD + 2.0, start.y));
+            assert_eq!(drag_to(&mut dock, firefox, drift), PressOutcome::Nothing);
+            assert!(!dock.is_dragging());
+        }
+
+        #[test]
+        fn a_running_tile_dragged_out_of_the_dock_is_not_pinned() {
+            let mut dock = dock_with_one_running();
+            let firefox = index_of(&dock, "firefox");
+            let pinned = dock.item_rects(area())[0];
+            let shell = dock.rect(area());
+            let above = Point::from((f64::from(pinned.loc.x), f64::from(shell.loc.y - 4 * dock.theme.item_size)));
+            assert_eq!(drag_to(&mut dock, firefox, above), PressOutcome::Nothing);
+            let below = Point::from((
+                f64::from(pinned.loc.x),
+                f64::from(shell.loc.y + shell.size.h + 4 * dock.theme.item_size),
+            ));
+            assert_eq!(drag_to(&mut dock, firefox, below), PressOutcome::Nothing);
+        }
+
+        #[test]
+        fn a_running_tile_pins_only_when_it_ends_inside_the_pinned_group() {
+            let mut dock = dock_with_one_running();
+            let firefox = index_of(&dock, "firefox");
+            let rects = dock.item_rects(area());
+            let y = centre_of(rects[firefox]).y;
+
+            let first_slot = Point::from((f64::from(rects[0].loc.x), y));
+            assert_eq!(drag_to(&mut dock, firefox, first_slot), PressOutcome::Drop { index: firefox, target: 0 });
+
+            let end_of_group = Point::from((f64::from(rects[firefox].loc.x), y));
+            assert_eq!(
+                drag_to(&mut dock, firefox, end_of_group),
+                PressOutcome::Drop { index: firefox, target: dock.pinned_items().len() },
+                "right after the last pin still pins, at the end of the group"
+            );
+
+            let just_past = Point::from((f64::from(rects[firefox].loc.x) + 1.0, y));
+            assert_eq!(drag_to(&mut dock, firefox, just_past), PressOutcome::Nothing);
+        }
+
+        #[test]
+        fn a_pinned_tile_dropped_back_still_reports_a_drop_in_its_own_slot() {
+            let mut dock = Dock::new(&config(3));
+            let start = centre_of(dock.item_rects(area())[0]);
+            let drift = Point::from((start.x + DRAG_THRESHOLD + 2.0, start.y));
+            assert_eq!(drag_to(&mut dock, 0, drift), PressOutcome::Drop { index: 0, target: 0 });
+        }
+
+        #[test]
+        fn the_display_only_rearranges_for_a_running_tile_that_would_be_pinned() {
+            let mut dock = dock_with_one_running();
+            let firefox = index_of(&dock, "firefox");
+            let rects = dock.item_rects(area());
+            let start = centre_of(rects[firefox]);
+
+            dock.begin_press(firefox, start, area());
+            dock.drag_motion(Point::from((start.x + DRAG_THRESHOLD + 2.0, start.y)));
+            assert!(dock.is_dragging());
+            assert!(dock.display_order(area()).is_none(), "the tiles stay where they are");
+
+            dock.drag_motion(Point::from((f64::from(rects[0].loc.x), start.y)));
+            let (_, order) = dock.display_order(area()).expect("over the pinned group");
+            assert_eq!(order[0], firefox);
+        }
+
+        #[test]
+        fn with_no_pins_a_lone_running_tile_pins_only_when_dragged_past_the_left_end() {
+            let mut dock = Dock::new(&config(0));
+            dock.set_running(&[running("firefox")]);
+            let rects = dock.item_rects(area());
+            let start = centre_of(rects[0]);
+            let drift = Point::from((start.x + DRAG_THRESHOLD + 2.0, start.y));
+            assert_eq!(drag_to(&mut dock, 0, drift), PressOutcome::Nothing);
+            let nudge = Point::from((start.x - DRAG_THRESHOLD - 2.0, start.y));
+            assert_eq!(drag_to(&mut dock, 0, nudge), PressOutcome::Nothing, "a small drift to the left is no pin");
+            let past_the_end = Point::from((f64::from(rects[0].loc.x), start.y));
+            assert_eq!(drag_to(&mut dock, 0, past_the_end), PressOutcome::Drop { index: 0, target: 0 });
+        }
+
+        #[test]
+        fn a_cancelled_drag_asks_for_a_frame_so_the_tile_does_not_stay_lifted_and_stops_asking() {
+            let mut dock = Dock::new(&config(0));
+            dock.set_running(&[running("firefox")]);
+            dock.run_alphas.clear();
+            let start = centre_of(dock.item_rects(area())[0]);
+            let drift = Point::from((start.x + DRAG_THRESHOLD + 2.0, start.y));
+            assert_eq!(drag_to(&mut dock, 0, drift), PressOutcome::Nothing);
+            dock.press_layers.clear();
+            dock.hover_layers.clear();
+            assert!(dock.is_animating(), "nothing else is moving, so only the request keeps the frame pump alive");
+            dock.frame_until = Instant::now().checked_sub(Duration::from_millis(1));
+            assert!(!dock.is_animating(), "the request lapses on its own");
+        }
+
+        fn preview_window(id: u64) -> crate::preview::PreviewWindow {
+            crate::preview::PreviewWindow { id, title: format!("w{id}"), minimized: false, size: (800, 600) }
+        }
+
+        #[test]
+        fn a_preview_closes_instead_of_switching_to_the_app_that_takes_its_index() {
+            let mut dock = Dock::new(&config(3));
+            dock.set_running(&[running("a"), running("b")]);
+            let (a, b) = (index_of(&dock, "a"), index_of(&dock, "b"));
+            assert_eq!((a, b), (3, 4));
+            assert!(dock.show_preview(a, vec![preview_window(1)]));
+
+            dock.set_running(&[running("b")]);
+            assert_eq!(index_of(&dock, "b"), a, "b slid into the slot a left");
+            assert_eq!(dock.preview_index(), None, "the preview of a must not reopen on b");
+            assert!(!dock.preview_open());
+        }
+
+        #[test]
+        fn a_preview_follows_its_app_when_a_tile_before_it_leaves() {
+            let mut dock = Dock::new(&config(3));
+            dock.set_running(&[running("a"), running("b")]);
+            let b = index_of(&dock, "b");
+            assert!(dock.show_preview(b, vec![preview_window(2)]));
+
+            dock.set_running(&[running("b")]);
+            let moved = index_of(&dock, "b");
+            assert_ne!(moved, b);
+            assert_eq!(dock.preview_index(), Some(moved));
+            assert_eq!(dock.preview.as_ref().map(|preview| preview.app_id.as_str()), Some("b"));
+        }
+
+        #[test]
+        fn static_items_are_never_saved_as_pins_and_every_key_gets_one_tile() {
+            let mut config = config(0);
+            config.items = vec![item_config("Firefox", None), item_config("Files", Some("glide-files"))];
+            config.pins = vec![
+                item_config("Firefox", Some("firefox")),
+                item_config("Files", Some("GLIDE-FILES")),
+                item_config("Editor", Some("org.example.Editor")),
+                item_config("Editor again", Some("org.example.editor")),
+            ];
+            let mut dock = Dock::new(&config);
+            let ids: Vec<&str> = dock.pinned_items().iter().map(|item| item.app_id.as_str()).collect();
+            assert_eq!(ids, ["firefox", "glide-files", "org.example.Editor"]);
+            assert_eq!(dock.items().len(), 4, "three tiles and the launcher");
+            let saved: Vec<&str> = dock.saved_pins().map(|item| item.app_id.as_str()).collect();
+            assert_eq!(saved, ["org.example.Editor"], "only what the user pinned is written to pins.toml");
+
+            assert!(dock.pin_app("org.example.Mail", "Mail", "mail"));
+            let saved: Vec<&str> = dock.saved_pins().map(|item| item.app_id.as_str()).collect();
+            assert_eq!(saved, ["org.example.Editor", "org.example.Mail"]);
+        }
+
+        #[test]
+        fn a_static_item_removed_from_the_config_does_not_linger_as_a_pin() {
+            let mut with_static = config(0);
+            with_static.items = vec![item_config("Files", Some("glide-files"))];
+            let mut dock = Dock::new(&with_static);
+            assert!(dock.pin_app("org.example.Mail", "Mail", "mail"));
+
+            let mut reloaded = config(0);
+            reloaded.pins = dock.saved_pins().map(|item| item_config(&item.name, Some(&item.app_id))).collect();
+            dock.reconfigure(&reloaded);
+            dock.set_running(&[]);
+            let ids: Vec<&str> = dock.items().iter().map(|item| item.app_id.as_str()).collect();
+            assert_eq!(ids, ["org.example.Mail", ""], "the launcher follows the one real pin");
+        }
+
         #[test]
         fn a_tooltip_appears_only_after_the_delay_and_never_during_a_drag() {
             let mut dock = Dock::new(&config(2));
@@ -3398,6 +3645,88 @@ mod tests {
             let before = dock.pinned_items().len();
             assert!(dock.toggle_pinned(0, None), "configured items unpin too");
             assert_eq!(dock.pinned_items().len(), before - 1);
+        }
+    }
+
+    mod reconfigure {
+        use super::*;
+
+        fn running(app_id: &str, focused: bool) -> RunningApp {
+            RunningApp { name: app_id.to_string(), app_id: app_id.to_string(), focused, windows: 1 }
+        }
+
+        fn always_hidden() -> DockConfig {
+            let mut config = config(3);
+            config.autohide = DockAutohide::Always;
+            config
+        }
+
+        #[test]
+        fn a_config_apply_keeps_a_hidden_dock_hidden_and_its_timers_running() {
+            let config = always_hidden();
+            let mut dock = Dock::new(&config);
+            dock.hide = AutohideFade { tween: glide_ui::Tween::at(1.0) };
+            dock.hide_pending = Some(Instant::now());
+            dock.edge_since = Some(Instant::now());
+            dock.reveal_until = Some(Instant::now() + ATTENTION_REVEAL);
+
+            dock.reconfigure(&config);
+
+            assert!(dock.is_hidden());
+            assert!((dock.autohide_level() - 1.0).abs() < 1e-9, "no frame of the dock may be drawn shown");
+            assert!(!dock.hide.is_animating());
+            assert!(dock.hide_pending.is_some() && dock.edge_since.is_some() && dock.reveal_until.is_some());
+        }
+
+        #[test]
+        fn a_hide_that_is_under_way_survives_a_config_apply() {
+            let config = always_hidden();
+            let mut dock = Dock::new(&config);
+            dock.update_autohide(false, false);
+            if let Some(since) = dock.hide_pending.as_mut() {
+                *since -= AUTOHIDE_DELAY;
+            }
+            dock.update_autohide(false, false);
+            assert!(dock.is_hidden());
+
+            dock.reconfigure(&config);
+            assert!(dock.is_hidden());
+            assert!(!dock.update_autohide(false, false), "nothing is left to change, so no second countdown starts");
+            assert_eq!(dock.hide_pending, None);
+        }
+
+        #[test]
+        fn keyboard_mode_survives_a_config_apply_on_the_same_app() {
+            let mut dock = Dock::new(&config(3));
+            assert!(dock.begin_keyboard());
+            assert!(dock.keyboard_step(1));
+            assert_eq!(dock.keyboard_index(), Some(1));
+
+            let mut next = config(3);
+            next.items.insert(0, item_config("Fresh", None));
+            dock.reconfigure(&next);
+
+            assert!(dock.keyboard_active());
+            assert_eq!(dock.keyboard_index(), Some(2), "app 1 moved one slot right and kept the selection");
+        }
+
+        #[test]
+        fn running_dots_wells_slides_and_badges_do_not_restart_on_a_config_apply() {
+            let mut dock = Dock::new(&config(1));
+            dock.set_running(&[running("app 0", true)]);
+            assert!(dock.set_badge("app 0", Badge { count: Some(2), progress: None }));
+            dock.settle();
+            dock.settle_slides(&[("app 0", 100)], None, Instant::now(), Duration::ZERO);
+            let carried = |dock: &Dock| {
+                dock.run_alphas.contains_key("app 0")
+                    && dock.focus_wells.contains_key("app 0")
+                    && dock.badge_fades.contains_key("app 0")
+                    && dock.slides.contains_key("app 0")
+            };
+            assert!(carried(&dock));
+
+            dock.reconfigure(&config(1));
+            assert!(carried(&dock));
         }
     }
 

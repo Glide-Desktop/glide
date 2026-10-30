@@ -757,27 +757,51 @@ impl AppliedConfig {
     }
 }
 
+fn parse_dock_pins(text: &str) -> Result<Vec<DockItemConfig>, toml::de::Error> {
+    toml::from_str::<DockPins>(text).map(|pins| {
+        pins.pinned
+            .into_iter()
+            .map(|pin| DockItemConfig {
+                name: pin.name,
+                command: pin.command,
+                icon: String::new(),
+                app_id: Some(pin.app_id),
+                color_from: None,
+                color_to: None,
+                separator_before: false,
+            })
+            .collect()
+    })
+}
+
+fn broken_path(config: &Path) -> PathBuf {
+    let mut name = config.file_name().unwrap_or_default().to_os_string();
+    name.push(".broken");
+    config.with_file_name(name)
+}
+
 #[must_use]
 pub fn load_dock_pins() -> Option<Vec<DockItemConfig>> {
-    let path = glide_config::xdg_path("glide", PINS_FILE)?;
-    let text = fs::read_to_string(&path).ok()?;
-    match toml::from_str::<DockPins>(&text) {
-        Ok(pins) => Some(
-            pins.pinned
-                .into_iter()
-                .map(|pin| DockItemConfig {
-                    name: pin.name,
-                    command: pin.command,
-                    icon: String::new(),
-                    app_id: Some(pin.app_id),
-                    color_from: None,
-                    color_to: None,
-                    separator_before: false,
-                })
-                .collect(),
-        ),
+    load_dock_pins_at(&glide_config::xdg_path("glide", PINS_FILE)?)
+}
+
+fn load_dock_pins_at(path: &Path) -> Option<Vec<DockItemConfig>> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {
-            tracing::warn!(path = %path.display(), "ignoring malformed dock pins: {err}");
+            tracing::warn!(path = %path.display(), "ignoring unreadable dock pins: {err}");
+            return Some(Vec::new());
+        }
+    };
+    match parse_dock_pins(&text) {
+        Ok(pins) => Some(pins),
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                backup = %broken_path(path).display(),
+                "ignoring malformed dock pins; the next change to the pins keeps a copy: {err}"
+            );
             Some(Vec::new())
         }
     }
@@ -797,8 +821,8 @@ pub fn load_or_seed_dock_pins() -> Vec<DockItemConfig> {
     seed
 }
 
-pub fn save_dock_pins(items: &[crate::dock::DockItem]) {
-    save_pins(items.iter().map(|item| PinnedApp {
+pub fn save_dock_pins<'a>(items: impl IntoIterator<Item = &'a crate::dock::DockItem>) {
+    save_pins(items.into_iter().map(|item| PinnedApp {
         app_id: item.app_id.clone(),
         name: item.name.clone(),
         command: item.command.clone(),
@@ -809,14 +833,35 @@ fn save_pins(pinned: impl Iterator<Item = PinnedApp>) {
     let Some(path) = glide_config::xdg_path("glide", PINS_FILE) else {
         return;
     };
-    let pins = DockPins { pinned: pinned.collect() };
-
-    let Ok(text) = toml::to_string_pretty(&pins) else {
-        return;
-    };
-    if let Err(err) = write_atomic(&path, text.as_bytes()) {
+    if let Err(err) = save_pins_at(&path, pinned) {
         tracing::error!(path = %path.display(), "failed to save dock pins: {err}");
     }
+}
+
+fn save_pins_at(path: &Path, pinned: impl Iterator<Item = PinnedApp>) -> std::io::Result<()> {
+    let pins = DockPins { pinned: pinned.collect() };
+    let text = toml::to_string_pretty(&pins).map_err(std::io::Error::other)?;
+    keep_broken_pins(path)?;
+    write_atomic(path, text.as_bytes())
+}
+
+fn keep_broken_pins(path: &Path) -> std::io::Result<()> {
+    let old = match fs::read(path) {
+        Ok(old) => old,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    if std::str::from_utf8(&old).is_ok_and(|text| parse_dock_pins(text).is_ok()) {
+        return Ok(());
+    }
+    let backup = broken_path(path);
+    write_atomic(&backup, &old)?;
+    tracing::warn!(
+        path = %path.display(),
+        backup = %backup.display(),
+        "dock pins file is malformed; kept a copy before replacing it"
+    );
+    Ok(())
 }
 
 pub fn write_atomic(target: &Path, contents: &[u8]) -> std::io::Result<()> {
@@ -1330,16 +1375,7 @@ impl Config {
         let mut dock = self.dock.clone();
         dock.theme.icon_theme = Some(self.icon_theme());
         dock.theme.repaint(&palette);
-        for pin in state.applied_config.pins() {
-            let already = dock.items.iter().any(|item| {
-                item.app_id
-                    .as_deref()
-                    .is_some_and(|id| pin.app_id.as_deref().is_some_and(|p| id.eq_ignore_ascii_case(p)))
-            });
-            if !already {
-                dock.items.push(pin);
-            }
-        }
+        dock.pins = state.applied_config.pins();
         state.dock.reconfigure(&dock);
         state.refresh_dock();
         state.topbar.reconfigure(self.topbar.theme());
@@ -1516,6 +1552,58 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("glide-pins-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch folder");
+        dir
+    }
+
+    fn pin(app_id: &str) -> PinnedApp {
+        PinnedApp { app_id: app_id.to_string(), name: app_id.to_string(), command: app_id.to_string() }
+    }
+
+    fn pinned_ids(path: &Path) -> Vec<String> {
+        load_dock_pins_at(path)
+            .expect("the file exists")
+            .into_iter()
+            .map(|item| item.app_id.unwrap_or_default())
+            .collect()
+    }
+
+    #[test]
+    fn a_malformed_pins_file_is_kept_as_a_backup_before_the_next_save_replaces_it() {
+        let dir = scratch("malformed");
+        let path = dir.join(PINS_FILE);
+        let backup = broken_path(&path);
+        assert_eq!(backup.file_name().and_then(|name| name.to_str()), Some("pins.toml.broken"));
+        let damaged: [&[u8]; 3] = [
+            b"[[pinned]]\napp_id = \"firefox\"\nname = \"Firefox\"\n[[pinned\n",
+            b"typo = 1\n[[pinned]]\napp_id = \"firefox\"\nname = \"Firefox\"\n",
+            b"[[pinned]]\napp_id = \"fire\xffox\"\nname = \"Firefox\"\n",
+        ];
+        for original in damaged {
+            fs::write(&path, original).expect("write the damaged file");
+            assert_eq!(load_dock_pins_at(&path), Some(Vec::new()), "a damaged file loads as no pins, never as a seed");
+            save_pins_at(&path, [pin("mail")].into_iter()).expect("save");
+            assert_eq!(fs::read(&backup).expect("the damaged file was kept"), original);
+            assert_eq!(pinned_ids(&path), ["mail"]);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_healthy_or_missing_pins_file_makes_no_backup() {
+        let dir = scratch("healthy");
+        let path = dir.join(PINS_FILE);
+        assert_eq!(load_dock_pins_at(&path), None, "a missing file is the seeding case");
+        save_pins_at(&path, [pin("files")].into_iter()).expect("first save");
+        save_pins_at(&path, [pin("files"), pin("mail")].into_iter()).expect("second save");
+        assert_eq!(pinned_ids(&path), ["files", "mail"]);
+        assert!(!broken_path(&path).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_dark_style_tile_rewrites_only_the_appearance() {

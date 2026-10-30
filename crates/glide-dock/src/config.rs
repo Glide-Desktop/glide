@@ -9,6 +9,8 @@ pub struct DockConfig {
     pub theme: DockTheme,
     pub autohide: DockAutohide,
     pub items: Vec<DockItemConfig>,
+    #[serde(skip)]
+    pub pins: Vec<DockItemConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]

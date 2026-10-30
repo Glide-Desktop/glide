@@ -2727,7 +2727,7 @@ impl GlideState {
                     self.dock.unpin_app(&app.id)
                 };
                 if changed {
-                    crate::config::save_dock_pins(self.dock.pinned_items());
+                    crate::config::save_dock_pins(self.dock.saved_pins());
                     self.refresh_dock();
                 }
                 self.queue_redraw();
@@ -2850,14 +2850,14 @@ impl GlideState {
             return;
         }
 
-        crate::config::save_dock_pins(self.dock.pinned_items());
+        crate::config::save_dock_pins(self.dock.saved_pins());
         self.refresh_dock();
         self.queue_redraw();
     }
 
     pub fn drop_dock_tile(&mut self, index: usize, target: usize) {
-        let from = if self.dock.is_pinned(index) {
-            index
+        let (from, newly_pinned) = if self.dock.is_pinned(index) {
+            (index, false)
         } else {
             let app_id = self.dock.items().get(index).map(|item| item.app_id.clone()).unwrap_or_default();
             let identity = self.pin_identity(&app_id);
@@ -2865,10 +2865,12 @@ impl GlideState {
                 self.queue_redraw();
                 return;
             }
-            self.dock.pinned_items().len() - 1
+            (self.dock.pinned_items().len() - 1, true)
         };
-        self.dock.move_pinned(from, target);
-        crate::config::save_dock_pins(self.dock.pinned_items());
+        let moved = self.dock.move_pinned(from, target);
+        if newly_pinned || moved {
+            crate::config::save_dock_pins(self.dock.saved_pins());
+        }
         self.refresh_dock();
         self.queue_redraw();
     }
