@@ -77,6 +77,25 @@ Further fixes made after the first pass, with the commit that holds each:
 | `glide-layout` Bugs 1–2 and the tiled-insets Trap | `674faed` |
 | `glide-terminal` Bugs 2–3 | `fc773ba` |
 | Passwords applet showed the unlocked look while locked until the pointer moved (cache key did not change with the phase) | `9d096fe` |
+| `glide-passwords` Bugs 4–7, 9, 10 | `ba2038f` |
+| `glide-app` Bug 1: underscores in exported menu labels | `8179417` |
+| `glide-cast` Bugs 2–8 | `64da214` |
+| `glide-overlays` Bugs 1–5 | `b26169f` |
+| `glide-dock` Bugs 2–6 | `0d3fe2c` |
+| `glide-tray` Bugs 1, 2, 4, 5, 6 | `d396260` |
+| `glide-config` Bugs 1, 3–6 | `beb7404` |
+| `glide-system` Bugs 1–2 | `1d52c86` |
+| `glide-theme` Bug 1 | `db28779` |
+| `glide-paint` Bugs 1–3 and the Traps (premultiplied saturation, first wallpaper load) | `e462a2b` |
+| `glide-shot` Bug 4 (dim and outline now follow the saved crop) | `6fb737c` |
+| `glide-shell` Bugs 1–5 | `a204cbd` |
+| `glide-catalog` Bugs 1–5 | `4cf135c` |
+| `glide-greeter` Bugs 2, 4, 5 | `6d67c8c` |
+| `glide-keychain` Bugs 3–5 | `e10ad61` |
+| `glide-netbird` Bugs 1–2 | `3e6abb6` |
+| `glide-appmenu` Bugs 1, 3, 4 (Bug 2 remains partial: calls that need a reply are still serial) | `108ac9a` |
+
+All five Critical findings and all 103 Bugs of sections 12–33 are fixed. Still open: the AGENTS.md Trap items that are not listed above (mostly §8 opacity-only motion and cache keys) and every Code Health item.
 
 The individual findings below still describe the code as it was reviewed.
 
