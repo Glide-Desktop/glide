@@ -62,9 +62,20 @@ pub fn gtk_settings(look: &DesktopAppearance, gtk_theme: Option<&str>, gtk3: boo
     keys
 }
 
+fn user_file(path: &Path) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(String::new()),
+        Err(err) => {
+            tracing::warn!(path = %path.display(), "leaving a settings file alone because it cannot be read: {err}");
+            None
+        }
+    }
+}
+
 fn write_settings_ini(dir: &Path, keys: &[(&str, String)]) {
     let path = dir.join("settings.ini");
-    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+    let Some(mut text) = user_file(&path) else { return };
     for (key, value) in keys {
         text = set_ini(&text, "Settings", key, value);
     }
@@ -131,7 +142,7 @@ fn write(path: &Path, contents: &str) {
 fn write_gtk(dir: &Path, css: &str) {
     write(&dir.join("glide.css"), css);
     let main = dir.join("gtk.css");
-    let current = std::fs::read_to_string(&main).unwrap_or_default();
+    let Some(current) = user_file(&main) else { return };
     if !current.lines().any(|line| line.trim() == GTK_IMPORT) {
         write(&main, &format!("{GTK_IMPORT}\n{current}"));
     }
@@ -197,7 +208,7 @@ fn write_qtct(dir: &Path, name: &str, colors: &str, family: &str, icon_theme: Op
     let scheme = dir.join("colors").join(QT_SCHEME);
     write(&scheme, colors);
     let conf = dir.join(format!("{name}.conf"));
-    let text = std::fs::read_to_string(&conf).unwrap_or_default();
+    let Some(text) = user_file(&conf) else { return };
     write(&conf, &qtct_conf(&text, &scheme.to_string_lossy(), family, icon_theme, kvantum));
 }
 
@@ -228,7 +239,7 @@ fn write_kde(config: &Path, data: &Path, tokens: &Tokens, family: &str, icon_the
     let scheme = export::kde_color_scheme(tokens, KDE_SCHEME);
     write(&data.join("color-schemes").join(format!("{KDE_SCHEME}.colors")), &scheme);
     let globals_path = config.join("kdeglobals");
-    let mut globals = std::fs::read_to_string(&globals_path).unwrap_or_default();
+    let Some(mut globals) = user_file(&globals_path) else { return };
     let mut section = String::new();
     for line in scheme.lines() {
         let trimmed = line.trim();
@@ -287,7 +298,7 @@ fn write_kvantum(dir: &Path, tokens: &Tokens) {
     write(&theme.join(format!("{}.kvconfig", glide_theme::kvantum::THEME)), &glide_theme::kvantum::config(tokens));
     write(&theme.join(format!("{}.svg", glide_theme::kvantum::THEME)), &glide_theme::kvantum::svg(tokens));
     let manager = dir.join("kvantum.kvconfig");
-    let current = std::fs::read_to_string(&manager).unwrap_or_default();
+    let Some(current) = user_file(&manager) else { return };
     if glide_theme::kvantum::replaces_theme(&current) {
         write(&manager, &glide_theme::kvantum::manager_config(&current));
     }
@@ -321,6 +332,19 @@ pub fn qt_platform_theme() -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gtk_css_that_cannot_be_read_as_text_is_left_untouched() {
+        let dir = std::env::temp_dir().join(format!("glide-theme-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir is writable");
+        let main = dir.join("gtk.css");
+        let latin1 = b"/* caf\xe9 */\nwindow { color: red; }\n";
+        std::fs::write(&main, latin1).expect("seed");
+        write_gtk(&dir, "window {}");
+        assert_eq!(std::fs::read(&main).expect("still there"), latin1, "the user's CSS survives");
+        assert!(user_file(&dir.join("missing.css")).is_some_and(|text| text.is_empty()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn ini_keys_are_replaced_in_place_and_others_are_kept() {
