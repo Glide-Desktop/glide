@@ -155,6 +155,13 @@ impl Drop for Find {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TabId(pub(crate) u64);
 
+fn man_topic(selected: &str) -> Option<&str> {
+    let topic = selected.trim();
+    let word = |c: char| c.is_alphanumeric() || "-_.:+".contains(c);
+    let usable = !topic.is_empty() && !topic.starts_with('-') && topic.len() <= 64 && topic.chars().all(word);
+    usable.then_some(topic)
+}
+
 fn select(term: &mut alacritty_terminal::term::Term<session::Listener>, found: &Match) {
     let mut selection = Selection::new(SelectionType::Simple, *found.start(), Side::Left);
     selection.update(*found.end(), Side::Right);
@@ -575,9 +582,7 @@ impl App {
     #[must_use]
     pub(crate) fn man_topic(&self) -> Option<String> {
         let selected = self.focused()?.term.lock().selection_to_string()?;
-        let topic = selected.trim();
-        let word = |c: char| c.is_alphanumeric() || "-_.:+".contains(c);
-        (!topic.is_empty() && topic.len() <= 64 && topic.chars().all(word)).then(|| topic.to_string())
+        man_topic(&selected).map(str::to_string)
     }
 
     #[must_use]
@@ -1876,6 +1881,16 @@ impl glide_sdk::App for App {
 mod tests {
     use super::*;
     use iced::keyboard::key::{Code, NativeCode, Physical};
+
+    #[test]
+    fn a_selected_word_that_looks_like_an_option_is_never_handed_to_man() {
+        assert_eq!(man_topic(" printf "), Some("printf"));
+        assert_eq!(man_topic("systemd.unit"), Some("systemd.unit"));
+        assert_eq!(man_topic("-Pfoo"), None);
+        assert_eq!(man_topic("-C.evil"), None);
+        assert_eq!(man_topic("--help"), None);
+        assert_eq!(man_topic("rm -rf"), None);
+    }
 
     fn unidentified() -> Physical {
         Physical::Unidentified(NativeCode::Unidentified)
