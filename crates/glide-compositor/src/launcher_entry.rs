@@ -209,7 +209,7 @@ mod tests {
         let owner = server.unique_name().expect("unique name").to_string();
         let client = bus.client();
         let items = fetch_quicklist(&client, &owner, glide_app::quicklist::PATH).expect("layout");
-        assert_eq!(items, [(1, "New Tab".to_string()), (2, "New Window".to_string())]);
+        assert_eq!(items, [(1, "_New Tab".to_string()), (2, "New Window".to_string())]);
     }
     use zbus::zvariant::Value;
 

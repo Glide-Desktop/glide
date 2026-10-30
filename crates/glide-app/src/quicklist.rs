@@ -29,7 +29,7 @@ impl QuickMenu {
         if let Some(label) =
             id.checked_sub(1).and_then(|index| usize::try_from(index).ok()).and_then(|index| self.labels.get(index))
         {
-            props.insert("label".to_string(), Value::from(label.clone()));
+            props.insert("label".to_string(), Value::from(crate::menubar::escape_mnemonics(label)));
             props.insert("enabled".to_string(), Value::from(true));
             props.insert("visible".to_string(), Value::from(true));
         }
@@ -179,5 +179,18 @@ mod tests {
         menu.event(9, "clicked".into(), Value::from(0_i32).try_to_owned().expect("owned"), 0);
         menu.event(1, "hovered".into(), Value::from(0_i32).try_to_owned().expect("owned"), 0);
         assert_eq!(*clicked.lock().expect("lock"), [1]);
+    }
+
+    #[test]
+    fn folder_names_with_underscores_read_back_unchanged_through_the_mnemonic_stripping_reader() {
+        let names = ["my_docs", "__init__.py", "plain"];
+        let menu = QuickMenu::new(names.iter().map(ToString::to_string).collect(), |_| {});
+        let (_, (_, _, children)) = menu.get_layout(0, -1, Vec::new());
+        assert_eq!(children.len(), names.len());
+        for (index, name) in names.iter().enumerate() {
+            let id = i32::try_from(index).expect("small") + 1;
+            let label = menu.properties(id).remove("label").and_then(|value| String::try_from(value).ok());
+            assert_eq!(label.as_deref().map(glide_appmenu::strip_mnemonic).as_deref(), Some(*name));
+        }
     }
 }

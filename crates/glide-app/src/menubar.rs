@@ -85,6 +85,11 @@ fn owned<'a>(value: impl Into<Value<'a>>) -> Option<OwnedValue> {
 }
 
 #[must_use]
+pub fn escape_mnemonics(label: &str) -> String {
+    label.replace('_', "__")
+}
+
+#[must_use]
 pub fn shortcut_chord(label: &str) -> Option<Vec<String>> {
     let (modifiers, key) = match label.strip_suffix("++") {
         Some(modifiers) => (modifiers, "+"),
@@ -133,7 +138,7 @@ impl Tree {
             match entry {
                 Entry::Separator => insert("type", owned("separator")),
                 Entry::Action { id: action, label, enabled, check, shortcut } => {
-                    insert("label", owned(label.as_str()));
+                    insert("label", owned(escape_mnemonics(label)));
                     insert("enabled", owned(*enabled));
                     if let Some(on) = check {
                         insert("toggle-type", owned("checkmark"));
@@ -145,7 +150,7 @@ impl Tree {
                     nodes[id].action = Some(*action);
                 }
                 Entry::Submenu { label, enabled, children } => {
-                    insert("label", owned(label.as_str()));
+                    insert("label", owned(escape_mnemonics(label)));
                     insert("enabled", owned(*enabled));
                     insert("children-display", owned("submenu"));
                     let children = Self::add(nodes, children);
@@ -449,6 +454,47 @@ mod tests {
                 (label.unwrap_or_default(), children.len())
             })
             .collect()
+    }
+
+    fn label_of(tree: &Tree, id: i32) -> String {
+        tree.properties(id)
+            .get("label")
+            .and_then(|value| String::try_from(value.try_clone().ok()?).ok())
+            .expect("a label")
+    }
+
+    #[test]
+    fn underscores_in_labels_survive_the_readers_that_strip_mnemonics() {
+        let names = ["report_final.md", "__init__.py", "my_docs", "trailing_", "plain"];
+        let entries = vec![Entry::Submenu {
+            label: "Open_Recent".into(),
+            enabled: true,
+            children: names
+                .iter()
+                .zip(1..)
+                .map(|(name, id)| Entry::Action {
+                    id,
+                    label: (*name).into(),
+                    enabled: true,
+                    check: None,
+                    shortcut: None,
+                })
+                .collect(),
+        }];
+        let mut tree = Tree::default();
+        assert!(tree.rebuild(entries));
+        assert_eq!(glide_appmenu::strip_mnemonic(&label_of(&tree, 1)), "Open_Recent");
+        for (index, name) in names.iter().enumerate() {
+            let id = i32::try_from(index).expect("small") + 2;
+            assert_eq!(glide_appmenu::strip_mnemonic(&label_of(&tree, id)), *name, "{name} must read back unchanged");
+        }
+    }
+
+    #[test]
+    fn a_label_without_underscores_is_exported_as_it_is() {
+        assert_eq!(escape_mnemonics("Save As…"), "Save As…");
+        assert_eq!(escape_mnemonics("a_b"), "a__b");
+        assert_eq!(glide_appmenu::strip_mnemonic(&escape_mnemonics("__")), "__");
     }
 
     #[test]
