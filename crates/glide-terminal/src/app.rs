@@ -314,8 +314,9 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Launch {
         } else if matches!(arg.as_str(), "--working-directory" | "-d" | "--cwd") {
             launch.directory = args.next().map(|directory| uri_path(&directory));
         } else if matches!(arg.as_str(), "-e" | "-x" | "--command" | "--") {
+            let exact = arg == "--";
             let mut rest: Vec<String> = args.by_ref().collect();
-            if rest.len() == 1 && rest[0].contains(char::is_whitespace) {
+            if !exact && rest.len() == 1 && rest[0].contains(char::is_whitespace) && !Path::new(&rest[0]).exists() {
                 rest = vec!["sh".into(), "-c".into(), rest.remove(0)];
             }
             if !rest.is_empty() {
@@ -1004,7 +1005,7 @@ impl App {
                 let Some(index) = self.tabs.iter().position(|tab| tab.id.0 == *id) else {
                     return Task::none();
                 };
-                self.active = index;
+                self.select(index);
                 Task::done(Message::Window(WindowAction::Activate))
             }
         }
@@ -1976,6 +1977,32 @@ mod tests {
     }
 
     #[test]
+    fn a_lone_argument_naming_an_existing_file_runs_that_file_instead_of_a_shell_line() {
+        let folder = std::env::temp_dir().join(format!("glide-terminal args {}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a scratch folder");
+        let program = folder.join("run me.sh");
+        std::fs::write(&program, "#!/bin/sh\n").expect("a scratch program");
+        let path = program.to_string_lossy().into_owned();
+        let launches: Vec<Launch> =
+            ["-e", "-x", "--command"].map(|flag| parse_args([flag.to_string(), path.clone()])).into();
+        let _ = std::fs::remove_dir_all(&folder);
+        for launch in launches {
+            assert_eq!(launch.command, Some((path.clone(), Vec::new())));
+        }
+    }
+
+    #[test]
+    fn double_dash_is_exact_argv_and_never_goes_through_a_shell() {
+        let hostile = "echo hi; $(touch pwned) `id`";
+        let launch = parse_args(["--", hostile].map(String::from));
+        assert_eq!(launch.command, Some((hostile.into(), Vec::new())));
+        let launch = parse_args(["--", "ls", "-la", "a b"].map(String::from));
+        assert_eq!(launch.command, Some(("ls".into(), vec!["-la".into(), "a b".into()])));
+        let launch = parse_args(["-e", hostile].map(String::from));
+        assert_eq!(launch.command, Some(("sh".into(), vec!["-c".into(), hostile.into()])));
+    }
+
+    #[test]
     fn find_queries_are_literal() {
         assert_eq!(escape("a.b*(c)"), "a\\.b\\*\\(c\\)");
         assert!(RegexSearch::new(&format!("(?i){}", escape("[x]+?"))).is_ok());
@@ -2162,6 +2189,21 @@ mod tests {
         app.hint_mode = Some(HintMode { pane: app.focused().unwrap().id, items: Vec::new(), typed: String::new() });
         let _ = app.update(Message::Command(Command::NewTab));
         assert!(app.hint_mode.is_none());
+    }
+
+    #[test]
+    fn focusing_a_tab_from_the_launcher_search_clears_its_marks_and_ends_find_like_a_click() {
+        let mut app = review_app();
+        let _ = app.update(Message::Command(Command::NewTab));
+        let first = app.tabs[0].id.0;
+        app.tabs[0].bell = true;
+        app.tabs[0].activity = true;
+        app.find = Some(Find::default());
+        assert_eq!(app.active, 1);
+        let _ = app.update(Message::Remote(crate::service::Request::FocusTab(first)));
+        assert_eq!(app.active, 0);
+        assert!(!app.tabs[0].bell && !app.tabs[0].activity, "the marks mean unseen output");
+        assert!(app.find.is_none(), "a find bar belongs to the tab it was opened in");
     }
 
     #[test]
