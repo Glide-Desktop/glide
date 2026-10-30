@@ -971,7 +971,7 @@ impl Launcher {
             .filter(|(_, found)| self.options.allows_provider(&found.desktop_id))
             .map(|(index, found)| search::Entry::Provided {
                 index,
-                app: self.apps.iter().position(|app| app.id.trim_end_matches(".desktop") == found.desktop_id),
+                app: self.apps.iter().position(|app| app.id.eq_ignore_ascii_case(&found.desktop_id)),
             })
             .collect()
     }
@@ -3004,6 +3004,30 @@ mod tests {
         let fresh = second.provider_generation;
         second.set_provided(fresh, vec![answer]);
         assert_eq!(second.provided.len(), 1, "the launcher's own generation is still accepted");
+    }
+
+    #[test]
+    fn a_provider_result_links_to_the_app_whose_id_itself_ends_in_desktop() {
+        let mut launcher = Launcher::new(
+            vec![
+                app("org.telegram", "Telegram Desktop Beta", AppCategory::Other),
+                app("org.telegram.desktop", "Telegram", AppCategory::Other),
+            ],
+            area(),
+        );
+        let provider = glide_config::search_providers::parse_ini(
+            "[Shell Search Provider]\nDesktopId=org.telegram.desktop.desktop\nBusName=org.telegram.Search\nObjectPath=/org/telegram/Search\nVersion=2\n",
+        )
+        .expect("an enabled version 2 provider");
+        launcher.provided = vec![providers::Found {
+            desktop_id: provider.desktop_id.clone(),
+            provider,
+            id: "chat".into(),
+            name: "Chat".into(),
+            description: String::new(),
+        }];
+        let entries = launcher.provided_entries();
+        assert!(matches!(entries.as_slice(), [crate::search::Entry::Provided { index: 0, app: Some(1) }]));
     }
 
     #[test]

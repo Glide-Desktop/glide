@@ -24,7 +24,7 @@ pub struct Senders {
 #[must_use]
 pub fn key(desktop_entry: &str, app_name: &str) -> Option<String> {
     let entry = desktop_entry.trim();
-    let entry = entry.strip_suffix(".desktop").unwrap_or(entry);
+    let entry = entry.strip_suffix(".desktop").filter(|stem| stem.ends_with(".desktop")).unwrap_or(entry);
     let chosen = if entry.is_empty() { app_name.trim() } else { entry };
     (!chosen.is_empty()).then(|| chosen.to_string())
 }
@@ -97,6 +97,20 @@ mod tests {
         assert_eq!(key("org.telegram.desktop.desktop", "Telegram").as_deref(), Some("org.telegram.desktop"));
         assert_eq!(key("", "Firefox").as_deref(), Some("Firefox"));
         assert_eq!(key(" ", " "), None);
+    }
+
+    #[test]
+    fn a_desktop_entry_hint_that_itself_ends_in_desktop_is_not_cut_short() {
+        assert_eq!(key("org.telegram.desktop", "Telegram").as_deref(), Some("org.telegram.desktop"));
+        assert_eq!(key(" org.telegram.desktop ", "Telegram").as_deref(), Some("org.telegram.desktop"));
+        assert_eq!(key("org.telegram.desktop.desktop", "Telegram").as_deref(), Some("org.telegram.desktop"));
+        assert_eq!(key("a.desktop.desktop.desktop", "").as_deref(), Some("a.desktop.desktop"), "one suffix only");
+        assert_eq!(key("firefox", "Firefox").as_deref(), Some("firefox"));
+        assert_eq!(
+            key("firefox.desktop", "Firefox").as_deref(),
+            Some("firefox.desktop"),
+            "ambiguous with a reverse-DNS id, so kept; consumers match both spellings"
+        );
     }
 
     #[test]

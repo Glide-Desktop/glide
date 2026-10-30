@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use glide_config::search_providers::same_app;
 use glide_config::senders::Senders;
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::{self as sdk, text};
@@ -102,15 +103,9 @@ pub struct Page {
 }
 
 #[must_use]
-pub(crate) fn mute_key(id: &str) -> String {
-    id.strip_suffix(".desktop").unwrap_or(id).to_string()
-}
-
-#[must_use]
 pub(crate) fn names_app(entry: &str, key: &str, name: &str) -> bool {
     let entry = entry.trim();
-    let entry = entry.strip_suffix(".desktop").unwrap_or(entry);
-    !entry.is_empty() && (entry.eq_ignore_ascii_case(key) || (!name.is_empty() && entry.eq_ignore_ascii_case(name)))
+    !entry.is_empty() && (same_app(entry, key) || (!name.is_empty() && same_app(entry, name)))
 }
 
 #[must_use]
@@ -163,7 +158,7 @@ struct AppLine {
 impl Page {
     fn lines(&self, config: &ConfigStore) -> Vec<AppLine> {
         let resolve = |key: &str, fallback: &str| {
-            let app = self.catalog.apps.iter().find(|app| mute_key(&app.id).eq_ignore_ascii_case(key));
+            let app = self.catalog.apps.iter().find(|app| same_app(&app.id, key));
             let name = app.map_or_else(
                 || if fallback.is_empty() { key.to_string() } else { fallback.to_string() },
                 |app| app.name.clone(),
@@ -181,7 +176,7 @@ impl Page {
             })
             .collect();
         for entry in config.get_str_array(SECTION, MUTED).into_iter().chain(config.get_str_array(SECTION, SILENT)) {
-            let key = mute_key(entry.trim());
+            let key = entry.trim().to_string();
             if key.is_empty() || lines.iter().any(|line| names_app(&entry, &line.key, &line.name)) {
                 continue;
             }
@@ -432,6 +427,44 @@ mod tests {
         assert!(listed(&list, "org.telegram.desktop", "Telegram"));
         assert!(listed(&list, "steam", "Steam"));
         assert!(!listed(&list, "firefox", "Firefox"));
+    }
+
+    #[test]
+    fn an_app_whose_desktop_id_ends_in_desktop_is_found_by_the_key_settings_wrote() {
+        let list = vec!["org.telegram.desktop".to_string()];
+        assert!(listed(&list, "org.telegram.desktop", "Telegram"));
+        assert!(with_app(&list, "org.telegram.desktop", "Telegram", false).is_empty());
+        assert_eq!(with_app(&list, "org.telegram.desktop", "Telegram", true), ["org.telegram.desktop"]);
+        assert!(listed(&["firefox".to_string()], "firefox.desktop", "Firefox"));
+        assert!(!listed(&list, "org.signal.desktop", "Signal"));
+    }
+
+    #[test]
+    fn a_sender_and_a_muted_entry_both_resolve_to_the_installed_app() {
+        let telegram = DesktopApp {
+            id: "org.telegram.desktop.desktop".to_string(),
+            name: "Telegram".to_string(),
+            icon: "telegram".to_string(),
+            ..DesktopApp::default()
+        };
+        let mut senders = Senders::default();
+        senders.note("org.telegram.desktop", "org.telegram.desktop", now());
+        let catalog = Catalog {
+            apps: vec![telegram],
+            icons: HashMap::from([("telegram".to_string(), PathBuf::from("/icons/telegram.svg"))]),
+            senders,
+        };
+        let page = Page { catalog, ..Page::default() };
+        let config = ConfigStore::parse("[notifications]\nmuted-apps = [\"org.telegram.desktop\"]\n");
+        let lines = page.lines(&config);
+        assert_eq!(lines.len(), 1, "the muted entry is the sender, not a second line");
+        assert_eq!(lines[0].name, "Telegram");
+        assert_eq!(lines[0].icon, Some(PathBuf::from("/icons/telegram.svg")));
+        assert_eq!(lines[0].key, "org.telegram.desktop");
+        let muted_only = Page { catalog: Catalog { apps: page.catalog.apps, ..Catalog::default() }, ..Page::default() };
+        let lines = muted_only.lines(&config);
+        assert_eq!(lines.len(), 1);
+        assert_eq!((lines[0].key.as_str(), lines[0].name.as_str()), ("org.telegram.desktop", "Telegram"));
     }
 
     #[test]

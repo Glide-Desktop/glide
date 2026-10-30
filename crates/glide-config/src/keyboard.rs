@@ -80,11 +80,13 @@ impl SystemKeyboard {
             "da" => "dk",
             "nb" | "nn" => "no",
             "ja" => "jp",
+            "be" => "by",
+            "kk" => "kz",
             "en" if locale.starts_with("en_GB") => "gb",
-            "ru" | "be" | "kk" | "de" | "fr" | "es" | "it" | "pl" | "pt" | "fi" | "tr" | "hu" => language,
+            "ru" | "de" | "fr" | "es" | "it" | "pl" | "pt" | "fi" | "tr" | "hu" => language,
             _ => "us",
         };
-        if matches!(native, "ua" | "ru" | "be" | "kk" | "gr") {
+        if matches!(native, "ua" | "ru" | "by" | "kz" | "gr") {
             Self { layout: format!("us,{native}"), options: "grp:win_space_toggle".to_string(), ..Self::default() }
         } else {
             Self { layout: native.to_string(), ..Self::default() }
@@ -161,6 +163,16 @@ EndSection
         let keyboard = SystemKeyboard::for_locale("uk_UA.UTF-8");
         assert_eq!(keyboard.layout, "us,ua");
         assert_eq!(keyboard.options, "grp:win_space_toggle");
+    }
+
+    #[test]
+    fn belarusian_and_kazakh_use_the_xkb_names_by_and_kz_with_a_switch_key() {
+        for (locale, second) in [("be_BY.UTF-8", "by"), ("be_BY", "by"), ("kk_KZ.UTF-8", "kz"), ("kk", "kz")] {
+            let keyboard = SystemKeyboard::for_locale(locale);
+            assert_eq!(keyboard.layout, format!("us,{second}"), "{locale}");
+            assert_eq!(keyboard.options, "grp:win_space_toggle", "{locale}");
+        }
+        assert_eq!(SystemKeyboard::for_locale("fr_BE.UTF-8").layout, "be", "Belgian stays Belgian");
     }
 
     #[test]
