@@ -52,7 +52,27 @@ Crates 12–33 add 5 Critical findings and 103 Bugs. Every Critical and Bug item
 4. **Command execution through paste or drop**: `glide-terminal` (Critical 1). Raw C0 control bytes in pasted text or dropped file names escape bracketed paste and shell quoting.
 5. **Silent loss of unsaved text**: `glide-text` (Critical 1). Quit never asks while session restore is on, yet failures to write the session or drafts are ignored.
 
-Status on 2026-10-29: all five are fixed. Items 1–4 are committed as `c206e2d` (logind), `cf1f717` (paint), `71c7859` (launcher) and `e2c2376` (terminal). The `glide-text` fix sits uncommitted in `app.rs`, because it builds on uncommitted session-saving code in the same file. With it, quit with restore on writes the session first and falls back to the Unsaved dialog when any draft or the session cannot be written; the stale-draft sweep runs only after the session landed; and clean tabs, the folder and recent entries with non-UTF-8 paths are left out of the session. The individual findings below still describe the code as it was reviewed.
+Status on 2026-10-30: all five are fixed and committed: `c206e2d` (logind), `cf1f717` (paint), `71c7859` (launcher), `e2c2376` (terminal) and `c2da059` (text: quit with restore on writes the session first and falls back to the Unsaved dialog when any draft or the session cannot be written; the stale-draft sweep runs only after the session landed; non-UTF-8 paths no longer make the session unwritable).
+
+Further fixes made after the first pass, with the commit that holds each:
+
+| Finding | Commit |
+|---|---|
+| `glide-services` Bug 1: a forged `NameOwnerChanged` lifted another client's screen-saver inhibitor | `0ff23a5` |
+| `glide-services` Bugs 2–3: the polkit helper hung after a second PAM question; a failed cookie write left a zombie | `90deed6` |
+| `glide-tray` Bug 3: bus and watcher signals were trusted from any sender | `c2f98fc` |
+| `glide-netbird` Bug 3: non-http(s) sign-in addresses reached the browser | `f01daef` |
+| `glide-terminal` Bug 1: "Open man Page" passed a leading `-` to `man` | `1b5365c` |
+| `glide-passwords` Bugs 1, 2, 3, 8 and `glide-config` Bug 2: TOTP typing, stale preferences, duplicate hidden fields, purge target | `fe76c36` |
+| `glide-keychain` Bugs 1–2 and the Secret Service executor part of Trap 1 (the daemon lock is still held across single-item Bitwarden network calls) | `079d8cd` |
+| `glide-greeter` Bugs 1 and 3: relock during the unlock fade; the `create_session` loop on a refusal before any answer | `6b79e21` |
+| `glide-system` Bug 3: config files that could not be read were overwritten | `b217c07` |
+| `glide-text` Bugs 1 and 4, plus the missing scrollbar and the status islands | `c2da059` |
+| `glide-dock` Bug 1: a disabled dock kept the frame pump running | `4c19c74` |
+| `glide-appmenu` Bug 2 (fire-and-forget calls no longer wait; replies-needed calls are still serial) | `e8f3980` |
+| `glide-cast` Trap 1 and Bug 1: stream torn down outside the render lock; a refused Wi-Fi Direct connection no longer waits 40 s | `66a45c3` |
+
+The individual findings below still describe the code as it was reviewed.
 
 Many bugs in different crates share one of three root causes:
 
