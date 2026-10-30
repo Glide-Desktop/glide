@@ -321,24 +321,42 @@ pub fn list_applications() -> Vec<DesktopApp> {
     let mut seen: HashMap<String, Option<DesktopApp>> = HashMap::new();
 
     for dir in data_dirs() {
-        let Ok(entries) = std::fs::read_dir(dir.join("applications")) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "desktop") {
-                continue;
-            }
-            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            seen.entry(id.to_string()).or_insert_with(|| read_desktop_app(&path));
+        for (id, path) in desktop_files(&dir.join("applications")) {
+            seen.entry(id.clone()).or_insert_with(|| read_desktop_app(&id, &path));
         }
     }
 
     let mut apps: Vec<DesktopApp> = seen.into_values().flatten().collect();
     apps.sort_by_key(|app| app.name.to_lowercase());
     apps
+}
+
+const MAX_APPLICATION_DEPTH: usize = 4;
+
+fn desktop_files(root: &Path) -> Vec<(String, PathBuf)> {
+    let mut found = Vec::new();
+    collect_desktop_files(root, "", MAX_APPLICATION_DEPTH, &mut found);
+    found.sort();
+    found
+}
+
+fn collect_desktop_files(dir: &Path, prefix: &str, depth: usize, found: &mut Vec<(String, PathBuf)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            if depth > 0 {
+                collect_desktop_files(&path, &format!("{prefix}{name}-"), depth - 1, found);
+            }
+        } else if let Some(stem) = name.strip_suffix(".desktop").filter(|stem| !stem.is_empty()) {
+            found.push((format!("{prefix}{stem}"), path));
+        }
+    }
 }
 
 #[must_use]
@@ -351,17 +369,13 @@ pub fn find_application(app_id: &str) -> Option<DesktopApp> {
     for dir in data_dirs() {
         let apps = dir.join("applications");
         let direct = apps.join(format!("{app_id}.desktop"));
-        if let Some(app) = read_desktop_app(&direct) {
+        if let Some(app) = read_desktop_app(app_id, &direct) {
             return Some(app);
         }
-        let Ok(entries) = std::fs::read_dir(&apps) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let stem_matches =
-                path.file_stem().and_then(|stem| stem.to_str()).is_some_and(|stem| stem.to_lowercase() == wanted);
-            if stem_matches && let Some(app) = read_desktop_app(&path) {
+        for (id, path) in desktop_files(&apps) {
+            if id.to_lowercase() == wanted
+                && let Some(app) = read_desktop_app(&id, &path)
+            {
                 return Some(app);
             }
         }
@@ -378,9 +392,8 @@ pub fn find_application(app_id: &str) -> Option<DesktopApp> {
     })
 }
 
-fn read_desktop_app(path: &Path) -> Option<DesktopApp> {
+fn read_desktop_app(id: &str, path: &Path) -> Option<DesktopApp> {
     let contents = std::fs::read_to_string(path).ok()?;
-    let id = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
     parse_desktop_entry(id, &contents, ui_language_code())
 }
 
@@ -488,11 +501,34 @@ fn parse_desktop_groups(contents: &str, lang: &str) -> HashMap<String, DesktopGr
     groups
 }
 
-fn parse_desktop_entry(id: &str, contents: &str, lang: &str) -> Option<DesktopApp> {
-    parse_desktop_entry_for(id, contents, lang, &glide_config::terminal::current)
+struct Host<'a> {
+    desktops: &'a [String],
+    installed: &'a dyn Fn(&str) -> bool,
 }
 
-fn parse_desktop_entry_for(id: &str, contents: &str, lang: &str, terminal: &dyn Fn() -> String) -> Option<DesktopApp> {
+fn parse_current_desktops(value: Option<&str>) -> Vec<String> {
+    let names: Vec<String> =
+        value.unwrap_or_default().split(':').map(|name| name.trim().to_lowercase()).filter(|n| !n.is_empty()).collect();
+    if names.is_empty() { vec![String::from("glide")] } else { names }
+}
+
+fn shown_in(only: Option<&str>, not: Option<&str>, desktops: &[String]) -> bool {
+    let names = |value: &str| -> Vec<String> {
+        value.split(';').map(|name| name.trim().to_lowercase()).filter(|name| !name.is_empty()).collect()
+    };
+    let listed = |list: &[String]| desktops.iter().any(|desktop| list.contains(desktop));
+    only.is_none_or(|only| listed(&names(only))) && not.is_none_or(|not| !listed(&names(not)))
+}
+
+fn parse_desktop_entry(id: &str, contents: &str, lang: &str) -> Option<DesktopApp> {
+    let desktops = parse_current_desktops(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref());
+    let host = Host { desktops: &desktops, installed: &glide_config::on_path };
+    parse_desktop_entry_for(id, contents, lang, &glide_config::terminal::current, &host)
+}
+
+fn parse_desktop_entry_for(
+    id: &str, contents: &str, lang: &str, terminal: &dyn Fn() -> String, host: &Host<'_>,
+) -> Option<DesktopApp> {
     let groups = parse_desktop_groups(contents, lang);
     let entry = groups.get("Desktop Entry")?;
 
@@ -500,10 +536,16 @@ fn parse_desktop_entry_for(id: &str, contents: &str, lang: &str, terminal: &dyn 
     if entry.flag("NoDisplay") || entry.flag("Hidden") || !is_app {
         return None;
     }
+    if !shown_in(entry.plain("OnlyShowIn"), entry.plain("NotShowIn"), host.desktops) {
+        return None;
+    }
+    if entry.plain("TryExec").map(str::trim).is_some_and(|program| !program.is_empty() && !(host.installed)(program)) {
+        return None;
+    }
 
     let terminal = entry.flag("Terminal").then(terminal);
     let runnable = |exec: &str| {
-        let command = strip_field_codes(exec);
+        let command = exec_command(exec);
         match terminal.as_deref() {
             Some(terminal) if !command.is_empty() => glide_config::terminal::wrap(terminal, &command),
             _ => command,
@@ -551,19 +593,98 @@ fn parse_desktop_entry_for(id: &str, contents: &str, lang: &str, terminal: &dyn 
     })
 }
 
-fn strip_field_codes(exec: &str) -> String {
-    let mut out = String::with_capacity(exec.len());
-    let mut chars = exec.chars().peekable();
+fn unescape_exec_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
     while let Some(ch) = chars.next() {
-        if ch != '%' {
+        if ch != '\\' {
             out.push(ch);
             continue;
         }
-        if chars.next() == Some('%') {
-            out.push('%');
+        match chars.next() {
+            Some('s') => out.push(' '),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('\\') | None => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
         }
     }
-    out.trim().to_string()
+    out
+}
+
+#[derive(Default)]
+struct ArgBuilder {
+    args: Vec<String>,
+    word: String,
+    quoted: bool,
+    had_code: bool,
+}
+
+impl ArgBuilder {
+    fn field_code(&mut self, code: Option<char>) {
+        match code {
+            Some('%') => self.word.push('%'),
+            _ => self.had_code = true,
+        }
+    }
+
+    fn flush(&mut self) {
+        if !self.word.is_empty() || (self.quoted && !self.had_code) {
+            self.args.push(std::mem::take(&mut self.word));
+        }
+        self.quoted = false;
+        self.had_code = false;
+    }
+}
+
+fn exec_argv(exec: &str) -> Vec<String> {
+    #[derive(Clone, Copy)]
+    enum Quote {
+        None,
+        Double,
+        Single,
+    }
+
+    let text = unescape_exec_string(exec);
+    let mut chars = text.chars().peekable();
+    let mut builder = ArgBuilder::default();
+    let mut quote = Quote::None;
+    while let Some(ch) = chars.next() {
+        match (quote, ch) {
+            (Quote::None, '"') => {
+                quote = Quote::Double;
+                builder.quoted = true;
+            }
+            (Quote::None, '\'') => {
+                quote = Quote::Single;
+                builder.quoted = true;
+            }
+            (Quote::None, ch) if ch.is_whitespace() => builder.flush(),
+            (Quote::None, '\\') => builder.word.extend(chars.next()),
+            (Quote::Double, '"') | (Quote::Single, '\'') => quote = Quote::None,
+            (Quote::Double, '\\') => match chars.next_if(|next| matches!(next, '"' | '`' | '$' | '\\')) {
+                Some(escaped) => builder.word.push(escaped),
+                None => builder.word.push('\\'),
+            },
+            (_, '%') => builder.field_code(chars.next()),
+            (_, ch) => builder.word.push(ch),
+        }
+    }
+    builder.flush();
+    builder.args
+}
+
+fn shell_word(arg: &str) -> String {
+    let plain = !arg.is_empty() && arg.chars().all(|ch| ch.is_alphanumeric() || "_@%+=:,./-".contains(ch));
+    if plain { arg.to_string() } else { format!("'{}'", arg.replace('\'', "'\\''")) }
+}
+
+fn exec_command(exec: &str) -> String {
+    exec_argv(exec).iter().map(|arg| shell_word(arg)).collect::<Vec<_>>().join(" ")
 }
 
 #[must_use]
@@ -998,6 +1119,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn entries_in_subdirectories_get_the_spec_id_and_the_walk_is_bounded() {
+        let root = std::env::temp_dir().join(format!("glide-app-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let entry = "[Desktop Entry]\nType=Application\nName=Walked\nExec=walked\n";
+        let write = |relative: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("create dirs");
+            std::fs::write(&path, entry).expect("write entry");
+        };
+        write("top.desktop");
+        write("wine/Programs/Foo/Foo.desktop");
+        write("kde4/bar.desktop");
+        write("a/b/c/d/at-the-limit.desktop");
+        write("a/b/c/d/e/too-deep.desktop");
+        write("wine/readme.txt");
+        write("wine/.desktop");
+        std::os::unix::fs::symlink(root.join("top.desktop"), root.join("linked.desktop")).expect("file link");
+        std::os::unix::fs::symlink(&root, root.join("wine/loop")).expect("directory loop");
+
+        let found = desktop_files(&root);
+        let ids: Vec<&str> = found.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["a-b-c-d-at-the-limit", "kde4-bar", "linked", "top", "wine-Programs-Foo-Foo"],
+            "a symlinked directory is never entered, a symlinked entry is read"
+        );
+        for (id, path) in &found {
+            let app = read_desktop_app(id, path).expect("every walked file parses");
+            assert_eq!(&app.id, id);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     mod desktop_parsing {
         use super::*;
 
@@ -1068,17 +1223,150 @@ Exec=firefox --private-window %u
         fn terminal_apps_and_their_actions_run_inside_the_default_terminal() {
             let body = "[Desktop Entry]\nName=htop\nExec=htop %U\nTerminal=true\nActions=tree;\n\n\
                         [Desktop Action tree]\nName=Tree\nExec=htop --tree\n";
+            let desktops = [String::from("glide")];
+            let host = Host { desktops: &desktops, installed: &|_| true };
             let foot = || String::from("foot");
-            let app = parse_desktop_entry_for("htop", body, "en", &foot).expect("entry");
+            let app = parse_desktop_entry_for("htop", body, "en", &foot, &host).expect("entry");
             assert_eq!(app.command, "foot htop");
             assert_eq!(app.actions[0].command, "foot htop --tree");
             let gnome = || String::from("gnome-terminal");
-            let app = parse_desktop_entry_for("htop", body, "en", &gnome).expect("entry");
+            let app = parse_desktop_entry_for("htop", body, "en", &gnome, &host).expect("entry");
             assert_eq!(app.command, "gnome-terminal -- htop");
             let graphical = body.replace("Terminal=true", "Terminal=false");
             let never = || -> String { panic!("no terminal is looked up for a graphical app") };
-            let app = parse_desktop_entry_for("htop", &graphical, "en", &never).expect("entry");
+            let app = parse_desktop_entry_for("htop", &graphical, "en", &never, &host).expect("entry");
             assert_eq!(app.command, "htop");
+        }
+
+        fn parse_on(desktop: &str, installed: &[&str], body: &str) -> Option<DesktopApp> {
+            let desktops = parse_current_desktops(Some(desktop));
+            let host = Host { desktops: &desktops, installed: &|program| installed.contains(&program) };
+            parse_desktop_entry_for("a", body, "en", &|| String::from("foot"), &host)
+        }
+
+        #[test]
+        fn only_show_in_and_not_show_in_follow_the_current_desktop() {
+            let only = "[Desktop Entry]\nName=A\nExec=a\nOnlyShowIn=GNOME;XFCE;\n";
+            assert_eq!(parse_on("Glide", &[], only), None);
+            assert!(parse_on("Glide:GNOME", &[], only).is_some(), "any listed desktop in the colon list is enough");
+            assert!(parse_on("xfce", &[], only).is_some(), "names compare without case");
+
+            let not = "[Desktop Entry]\nName=A\nExec=a\nNotShowIn=KDE;Glide;\n";
+            assert_eq!(parse_on("Glide", &[], not), None);
+            assert_eq!(parse_on("GNOME:Glide", &[], not), None);
+            assert!(parse_on("GNOME", &[], not).is_some());
+
+            let both = "[Desktop Entry]\nName=A\nExec=a\nOnlyShowIn=Glide;GNOME;\nNotShowIn=GNOME;\n";
+            assert!(parse_on("Glide", &[], both).is_some());
+            assert_eq!(parse_on("Glide:GNOME", &[], both), None);
+
+            let plain = "[Desktop Entry]\nName=A\nExec=a\n";
+            assert!(parse_on("Glide", &[], plain).is_some());
+            assert_eq!(parse_current_desktops(None), ["glide"], "no desktop named means Glide");
+            assert_eq!(parse_current_desktops(Some(" : ")), ["glide"]);
+            assert_eq!(parse_current_desktops(Some("Glide:GNOME")), ["glide", "gnome"]);
+        }
+
+        #[test]
+        fn try_exec_must_be_installed() {
+            let body = "[Desktop Entry]\nName=A\nExec=a --flag\nTryExec=a-binary\n";
+            assert_eq!(parse_on("Glide", &[], body), None);
+            assert!(parse_on("Glide", &["a-binary"], body).is_some());
+            let empty = "[Desktop Entry]\nName=A\nExec=a\nTryExec=\n";
+            assert!(parse_on("Glide", &[], empty).is_some(), "an empty TryExec says nothing");
+        }
+
+        #[test]
+        fn the_real_path_lookup_finds_sh_and_misses_nonsense() {
+            let present = "[Desktop Entry]\nName=A\nExec=sh\nTryExec=sh\n";
+            assert!(parse_desktop_entry("a", present, "en").is_some());
+            let absent = "[Desktop Entry]\nName=A\nExec=sh\nTryExec=glide-no-such-binary-4f1c\n";
+            assert_eq!(parse_desktop_entry("a", absent, "en"), None);
+        }
+
+        fn command_of(exec: &str) -> String {
+            let body = format!("[Desktop Entry]\nName=A\nExec={exec}\n");
+            parse_on("Glide", &[], &body).expect("entry").command
+        }
+
+        #[test]
+        fn exec_escapes_are_decoded_before_the_quoting_rules() {
+            assert_eq!(exec_argv(r#"foo "a\\\\b""#), ["foo", r"a\b"]);
+            assert_eq!(exec_argv(r#"foo "\\$HOME""#), ["foo", "$HOME"]);
+            assert_eq!(exec_argv(r#"foo "say \\"hi\\"""#), ["foo", r#"say "hi""#]);
+            assert_eq!(exec_argv(r"foo a\sb"), ["foo", "a", "b"], "\\s outside quotes is a plain space");
+            assert_eq!(exec_argv(r#"foo "a\sb""#), ["foo", "a b"]);
+            assert_eq!(exec_argv(r#"foo "a\tb""#), ["foo", "a\tb"]);
+            assert_eq!(command_of(r#"foo "a\\\\b""#), r"foo 'a\b'");
+            assert_eq!(command_of(r#"foo "\\$HOME""#), "foo '$HOME'");
+        }
+
+        #[test]
+        fn wine_style_entries_survive_both_escape_layers() {
+            let exec =
+                r#"env WINEPREFIX="/home/u/.wine" wine C:\\\\windows\\\\start.exe /Unix /p/Start\\ Menu/Foo.lnk"#;
+            assert_eq!(
+                exec_argv(exec),
+                ["env", "WINEPREFIX=/home/u/.wine", "wine", r"C:\windows\start.exe", "/Unix", "/p/Start Menu/Foo.lnk"]
+            );
+        }
+
+        #[test]
+        fn field_codes_are_dropped_wherever_they_stand_and_percent_percent_is_a_percent() {
+            assert_eq!(exec_argv("firefox %u"), ["firefox"]);
+            assert_eq!(exec_argv("app %F %U %i %c %k"), ["app"]);
+            assert_eq!(exec_argv("app --open=%f --tag"), ["app", "--open=", "--tag"]);
+            assert_eq!(exec_argv(r#"app "%f" "%U" next"#), ["app", "next"], "a quoted lone code leaves no empty arg");
+            assert_eq!(exec_argv(r#"app "" next"#), ["app", "", "next"], "an explicit empty argument stays");
+            assert_eq!(exec_argv("app 100%% sure"), ["app", "100%", "sure"]);
+            assert_eq!(exec_argv("app %%u"), ["app", "%u"]);
+            assert_eq!(exec_argv("app %"), ["app"]);
+            assert_eq!(exec_argv("   "), Vec::<String>::new());
+            assert_eq!(command_of("firefox %u"), "firefox");
+            assert_eq!(command_of("%U"), "");
+        }
+
+        #[test]
+        fn quoting_groups_words_and_an_unterminated_quote_takes_the_rest() {
+            assert_eq!(exec_argv(r#"sh -c "echo hi && date""#), ["sh", "-c", "echo hi && date"]);
+            assert_eq!(exec_argv("sh -c 'echo $HOME'"), ["sh", "-c", "echo $HOME"]);
+            assert_eq!(exec_argv("/opt/My App/bin x"), ["/opt/My", "App/bin", "x"]);
+            assert_eq!(exec_argv(r#""/opt/My App/bin" x"#), ["/opt/My App/bin", "x"]);
+            assert_eq!(exec_argv(r#"a --f="b c"d e"#), ["a", "--f=b cd", "e"]);
+            assert_eq!(exec_argv(r#"a "open"#), ["a", "open"]);
+        }
+
+        #[test]
+        fn the_command_survives_sh_with_exactly_the_parsed_arguments() {
+            let execs = [
+                r#"app "a\\\\b" "\\$HOME" '$HOME' "back\\`tick\\`" plain"#,
+                r#"app "semi;colon" amp&ersand "glob*?[x]" ~/tilde 'it'\''s' "two  spaces" "é ж" жук"#,
+                r#"app --a="b c" "line one\nline two" "tab\there" %u "" end"#,
+                r"app Start\\ Menu\\\\Foo C:\\\\dir $(echo INJECTED) `echo INJECTED` | cat",
+            ];
+            for exec in execs {
+                let argv = exec_argv(exec);
+                assert!(argv.len() > 3, "{exec}");
+                let script = format!("printf '%s\\0' {}", exec_command(exec));
+                let output = std::process::Command::new("sh").arg("-c").arg(script).output().expect("sh runs");
+                assert!(output.status.success(), "{exec}");
+                let printed: Vec<String> = output
+                    .stdout
+                    .split(|&byte| byte == 0)
+                    .map(|part| String::from_utf8_lossy(part).into_owned())
+                    .collect();
+                assert_eq!(printed[..printed.len() - 1], argv[..], "{exec}");
+            }
+        }
+
+        #[test]
+        fn shell_words_stay_bare_only_when_nothing_in_them_is_special() {
+            assert_eq!(shell_word("--flag=value/path.txt"), "--flag=value/path.txt");
+            assert_eq!(shell_word("/opt/Програма/bin"), "/opt/Програма/bin", "letters of any script are not special");
+            assert_eq!(shell_word(""), "''");
+            assert_eq!(shell_word("a b"), "'a b'");
+            assert_eq!(shell_word("it's"), r"'it'\''s'");
+            assert_eq!(shell_word("$HOME"), "'$HOME'");
         }
 
         #[test]

@@ -37,7 +37,7 @@ fn exec_program(command: &str) -> Option<&str> {
     if basename(first) == "env" {
         first = words.find(|word| !word.contains('=') && !word.starts_with('-'))?;
     }
-    Some(first.trim_matches('"'))
+    Some(first.trim_matches(['"', '\'']))
 }
 
 fn exec_binary(command: &str) -> Option<&str> {
@@ -231,6 +231,13 @@ impl AppDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_program_in_either_kind_of_quotes_resolves_to_its_bare_path() {
+        assert_eq!(exec_program("'/opt/app/run' --flag"), Some("/opt/app/run"));
+        assert_eq!(exec_program("\"/opt/app/run\" --flag"), Some("/opt/app/run"));
+        assert_eq!(exec_binary("env FOO=1 '/opt/app/run'"), Some("run"));
+    }
 
     fn app(id: &str, name: &str, command: &str) -> DesktopApp {
         DesktopApp {

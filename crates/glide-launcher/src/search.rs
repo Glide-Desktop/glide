@@ -65,6 +65,7 @@ fn binary_name(command: &str) -> &str {
     command
         .split_whitespace()
         .find(|part| !part.contains('='))
+        .map(|part| part.trim_matches(['"', '\'']))
         .and_then(|part| part.rsplit('/').next())
         .unwrap_or_default()
 }
@@ -693,6 +694,13 @@ mod tests {
             app("webcam", "Webcam Viewer"),
         ];
         assert_eq!(names(&apps, &rank(&apps, "web")), ["Webcam Viewer", "Firefox", "Lynx"]);
+    }
+
+    #[test]
+    fn a_quoted_program_path_still_yields_its_bare_binary_name() {
+        assert_eq!(binary_name("'/opt/app/run' --x"), "run");
+        assert_eq!(binary_name("\"/usr/bin/tool\" %U"), "tool");
+        assert_eq!(binary_name("FOO=1 /usr/bin/tool"), "tool");
     }
 
     #[test]

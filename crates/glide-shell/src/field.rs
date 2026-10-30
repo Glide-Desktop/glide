@@ -72,11 +72,11 @@ impl TextField {
     }
 
     fn previous_boundary(&self, from: usize) -> usize {
-        self.text[..from].char_indices().next_back().map_or(0, |(index, _)| index)
+        glide_paint::previous_grapheme_boundary(&self.text, from)
     }
 
     fn next_boundary(&self, from: usize) -> usize {
-        self.text[from..].chars().next().map_or(from, |ch| from + ch.len_utf8())
+        glide_paint::next_grapheme_boundary(&self.text, from)
     }
 
     fn word_start_before(&self, from: usize) -> usize {
@@ -231,6 +231,40 @@ mod tests {
         assert_eq!(f.text(), "їжк");
         assert!(f.move_caret(CaretMove::End));
         assert_eq!(f.caret(), f.text().len());
+    }
+
+    #[test]
+    fn arrows_backspace_and_delete_treat_a_grapheme_cluster_as_one_unit() {
+        for cluster in ["e\u{301}", "🇺🇦", "👩\u{200d}💻", "и\u{306}", "👍🏽", "❤\u{fe0f}"] {
+            let text = format!("a{cluster}b");
+            let after_cluster = 1 + cluster.len();
+
+            let mut f = field(&text);
+            f.move_caret(CaretMove::Left);
+            assert_eq!(f.caret(), after_cluster, "{cluster:?}");
+            f.move_caret(CaretMove::Left);
+            assert_eq!(f.caret(), 1, "Left over {cluster:?} stops inside it");
+            f.move_caret(CaretMove::Right);
+            assert_eq!(f.caret(), after_cluster, "Right over {cluster:?} stops inside it");
+
+            assert!(f.backspace());
+            assert_eq!((f.text(), f.caret()), ("ab", 1), "Backspace left part of {cluster:?}");
+
+            let mut f = field(&text);
+            f.move_caret(CaretMove::Home);
+            f.move_caret(CaretMove::Right);
+            assert!(f.delete());
+            assert_eq!((f.text(), f.caret()), ("ab", 1), "Delete left part of {cluster:?}");
+        }
+    }
+
+    #[test]
+    fn two_flags_in_a_row_are_two_units() {
+        let mut f = field("🇺🇦🇵🇱");
+        assert!(f.backspace());
+        assert_eq!(f.text(), "🇺🇦");
+        f.move_caret(CaretMove::Left);
+        assert_eq!(f.caret(), 0);
     }
 
     #[test]

@@ -45,6 +45,10 @@ fn uevent_number(text: &str, key: &str) -> Option<f64> {
     uevent_value(text, key)?.parse::<f64>().ok().filter(|value| *value >= 0.0)
 }
 
+fn uevent_rate(text: &str, key: &str) -> Option<f64> {
+    uevent_value(text, key)?.parse::<f64>().ok().filter(|value| value.is_finite()).map(f64::abs)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BatteryCell {
     pub pct: u8,
@@ -103,19 +107,16 @@ pub fn parse_battery_cell(text: &str) -> Option<BatteryCell> {
         "Not charging" => BatteryState::NotCharging,
         _ => BatteryState::Discharging,
     };
-    let (energy_units, now, full, rate) = match (
-        uevent_number(text, "POWER_SUPPLY_ENERGY_NOW"),
-        uevent_number(text, "POWER_SUPPLY_ENERGY_FULL"),
-        uevent_number(text, "POWER_SUPPLY_POWER_NOW"),
-    ) {
-        (Some(now), Some(full), Some(rate)) => (true, now, full, rate),
-        _ => (
-            false,
-            uevent_number(text, "POWER_SUPPLY_CHARGE_NOW").unwrap_or(0.0),
-            uevent_number(text, "POWER_SUPPLY_CHARGE_FULL").unwrap_or(0.0),
-            uevent_number(text, "POWER_SUPPLY_CURRENT_NOW").unwrap_or(0.0),
-        ),
-    };
+    let (energy_units, now, full, rate) =
+        match (uevent_number(text, "POWER_SUPPLY_ENERGY_NOW"), uevent_number(text, "POWER_SUPPLY_ENERGY_FULL")) {
+            (Some(now), Some(full)) => (true, now, full, uevent_rate(text, "POWER_SUPPLY_POWER_NOW").unwrap_or(0.0)),
+            _ => (
+                false,
+                uevent_number(text, "POWER_SUPPLY_CHARGE_NOW").unwrap_or(0.0),
+                uevent_number(text, "POWER_SUPPLY_CHARGE_FULL").unwrap_or(0.0),
+                uevent_rate(text, "POWER_SUPPLY_CURRENT_NOW").unwrap_or(0.0),
+            ),
+        };
     let design_key = if energy_units { "POWER_SUPPLY_ENERGY_FULL_DESIGN" } else { "POWER_SUPPLY_CHARGE_FULL_DESIGN" };
     let design = uevent_number(text, design_key).unwrap_or(0.0);
     let cycles = uevent_value(text, "POWER_SUPPLY_CYCLE_COUNT").and_then(|n| n.parse::<u32>().ok()).filter(|n| *n > 0);
@@ -320,6 +321,48 @@ mod tests {
         assert_eq!(parse_battery_uevent(&idle).unwrap().minutes, None);
         let stalled = DISCHARGING.replace("Discharging", "Not charging");
         assert_eq!(parse_battery_uevent(&stalled).unwrap().state, BatteryState::NotCharging);
+    }
+
+    const FULL_ON_AC: &str = "POWER_SUPPLY_NAME=BAT0\nPOWER_SUPPLY_TYPE=Battery\n\
+        POWER_SUPPLY_STATUS=Full\nPOWER_SUPPLY_CAPACITY=100\n\
+        POWER_SUPPLY_ENERGY_FULL_DESIGN=60000000\nPOWER_SUPPLY_ENERGY_FULL=48000000\n\
+        POWER_SUPPLY_ENERGY_NOW=48000000\n";
+
+    #[test]
+    fn a_full_battery_that_hides_its_power_draw_is_still_measured_in_energy() {
+        let cell = parse_battery_cell(FULL_ON_AC).unwrap();
+        assert!(cell.energy_units, "ENERGY_FULL and ENERGY_NOW alone decide the units");
+        assert_eq!(cell.rate, 0.0);
+        let health = aggregate_batteries(&[cell]).unwrap().health;
+        assert_eq!(health.wear_pct, Some(80));
+        assert_eq!(health.draw_dw, Some(0));
+        assert_eq!((health.full_dwh, health.design_dwh), (Some(480), Some(600)));
+
+        let discharging = parse_battery_cell(DISCHARGING).unwrap();
+        let info = aggregate_batteries(&[cell, discharging]).unwrap();
+        assert_eq!(info.minutes, Some(438), "both cells are in energy units, so the estimate survives");
+        assert_eq!(info.pct, 74);
+    }
+
+    #[test]
+    fn drivers_that_sign_the_rate_while_discharging_still_give_an_estimate() {
+        let signed = DISCHARGING.replace("POWER_NOW=10000000", "POWER_NOW=-10000000");
+        let info = parse_battery_uevent(&signed).unwrap();
+        assert_eq!(info.minutes, Some(150));
+        assert_eq!(info.health.draw_dw, Some(100), "a signed power draw is still 10 W");
+
+        let charge = "POWER_SUPPLY_STATUS=Discharging\nPOWER_SUPPLY_CAPACITY=50\n\
+            POWER_SUPPLY_CHARGE_NOW=2500000\nPOWER_SUPPLY_CHARGE_FULL=5000000\n\
+            POWER_SUPPLY_CURRENT_NOW=-1000000\n";
+        let cell = parse_battery_cell(charge).unwrap();
+        assert!(!cell.energy_units);
+        assert_eq!(cell.rate, 1_000_000.0);
+        assert_eq!(aggregate_batteries(&[cell]).unwrap().minutes, Some(150));
+
+        let negative_capacity = DISCHARGING.replace("ENERGY_NOW=25000000", "ENERGY_NOW=-25000000");
+        let cell = parse_battery_cell(&negative_capacity).unwrap();
+        assert!(!cell.energy_units, "capacity-like fields stay non-negative");
+        assert_eq!(cell.now, 0.0);
     }
 
     #[test]
