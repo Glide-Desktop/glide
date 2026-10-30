@@ -52,6 +52,19 @@ fn single_line(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+#[must_use]
+pub fn previous_grapheme_boundary(text: &str, from: usize) -> usize {
+    text.grapheme_indices(true).map(|(start, _)| start).take_while(|&start| start < from).last().unwrap_or(0)
+}
+
+#[must_use]
+pub fn next_grapheme_boundary(text: &str, from: usize) -> usize {
+    text.grapheme_indices(true)
+        .map(|(start, cluster)| start + cluster.len())
+        .find(|&end| end > from)
+        .unwrap_or(text.len())
+}
+
 const NEVER_POISONED: &str = "single-threaded event loop, this lock is never poisoned";
 
 static PAINTER: RwLock<Option<Arc<Painter>>> = RwLock::new(None);
@@ -390,14 +403,12 @@ impl Painter {
         let band_h = (py_max - py_min) as f32;
         let y_off = py_min + ((band_h - content_h) / 2.0 - metrics.baseline_y + metrics.max_ascent) as i32;
 
-        let fg = TextColor::rgba(fg_argb[0], fg_argb[1], fg_argb[2], fg_argb[3]);
+        let fg = text_colour(fg_argb);
         let opacity = u32::from(fg_argb[3]);
         buffer.draw(&mut font_system, &mut swash_cache, fg, |x, y, gw, gh, color| {
-            let (r, g, b, coverage) = color.as_rgba_tuple();
-            let a = ((u32::from(coverage) * opacity + 127) / 255) as u8;
-            if a == 0 {
+            let Some(([b, g, r], a)) = glyph_pixel(color, opacity) else {
                 return;
-            }
+            };
             for row in 0..gh as i32 {
                 for col in 0..gw as i32 {
                     let px = x_off + x + col;
@@ -410,7 +421,7 @@ impl Painter {
                         continue;
                     }
                     let dst: [u8; 4] = buf[offset..offset + 4].try_into().unwrap();
-                    let out = composite_over(dst, [r, g, b], a);
+                    let out = composite_over(dst, [b, g, r], a);
                     buf[offset..offset + 4].copy_from_slice(&out);
                 }
             }
@@ -496,6 +507,17 @@ impl Painter {
             None,
         );
     }
+}
+
+fn text_colour(bgra: [u8; 4]) -> TextColor {
+    let [b, g, r, a] = bgra;
+    TextColor::rgba(r, g, b, a)
+}
+
+fn glyph_pixel(glyph: TextColor, opacity: u32) -> Option<([u8; 3], u8)> {
+    let (r, g, b, coverage) = glyph.as_rgba_tuple();
+    let alpha = ((u32::from(coverage) * opacity + 127) / 255) as u8;
+    (alpha != 0).then_some(([b, g, r], alpha))
 }
 
 fn composite_over(dst: [u8; 4], src_rgb_straight: [u8; 3], src_alpha: u8) -> [u8; 4] {
@@ -677,13 +699,17 @@ fn halve_pixmap(source: &tiny_skia::Pixmap) -> Option<tiny_skia::Pixmap> {
 #[must_use]
 pub fn render_png(data: &[u8], side: i32) -> Option<Vec<u8>> {
     let side_u32 = square_side(side)?;
-    let mut source = wallpaper::decode_png(data)?;
-    while source.width().min(source.height()) >= side_u32 * 2 {
-        source = halve_pixmap(&source)?;
-    }
+    let source = halved_below_twice(wallpaper::decode_png(data)?, side_u32)?;
     let (w, h) = (source.width() as f32, source.height() as f32);
     let transform = fit_square_transform(w, h, side, true);
     draw_bilinear(source.as_ref(), side_u32, transform).map(skia_pixmap_into_buffer_bytes)
+}
+
+fn halved_below_twice(mut source: tiny_skia::Pixmap, side: u32) -> Option<tiny_skia::Pixmap> {
+    while source.width().min(source.height()) >= side.saturating_mul(2) {
+        source = halve_pixmap(&source)?;
+    }
+    Some(source)
 }
 
 fn square_side(side: i32) -> Option<u32> {
@@ -855,8 +881,9 @@ pub(crate) fn render_jpeg(data: &[u8], side: i32) -> Option<Vec<u8>> {
     fit_into_square(wallpaper::decode_jpeg(data)?, side)
 }
 
-fn fit_into_square(mut source: tiny_skia::Pixmap, side: i32) -> Option<Vec<u8>> {
+fn fit_into_square(source: tiny_skia::Pixmap, side: i32) -> Option<Vec<u8>> {
     let side_u32 = square_side(side)?;
+    let mut source = halved_below_twice(source, side_u32)?;
     for px in source.data_mut().chunks_exact_mut(4) {
         px.swap(0, 2);
     }
@@ -1606,6 +1633,35 @@ mod tests {
     }
 
     #[test]
+    fn grapheme_boundaries_step_over_whole_clusters_from_anywhere() {
+        let text = "ae\u{301}🇺🇦👩\u{200d}💻и\u{306}z";
+        let mut starts = Vec::new();
+        let mut at = 0;
+        for cluster in text.graphemes(true) {
+            starts.push(at);
+            at += cluster.len();
+        }
+        starts.push(text.len());
+        assert_eq!(starts.len(), 7, "a, é, flag, ZWJ pair, й, z");
+
+        let mut at = 0;
+        for &end in &starts[1..] {
+            at = next_grapheme_boundary(text, at);
+            assert_eq!(at, end);
+        }
+        assert_eq!(next_grapheme_boundary(text, text.len()), text.len());
+        for &start in starts.iter().rev().skip(1) {
+            at = previous_grapheme_boundary(text, at);
+            assert_eq!(at, start);
+        }
+        assert_eq!(previous_grapheme_boundary(text, 0), 0);
+
+        let inside_accent = "ae".len();
+        assert_eq!(previous_grapheme_boundary(text, inside_accent), 1);
+        assert_eq!(next_grapheme_boundary(text, inside_accent), "ae\u{301}".len());
+    }
+
+    #[test]
     fn labels_stay_on_one_line_whatever_whitespace_they_carry() {
         let painter = Painter::with_embedded_font_only(14.0);
         let flat = painter.text_width("first line second line");
@@ -1707,6 +1763,82 @@ mod tests {
         assert!(opaque > 200, "solid text reaches full coverage, got {opaque}");
         assert!(half.abs_diff(opaque / 2) <= 2, "fg-2 and fg-3 are alpha tokens, got {half} of {opaque}");
         assert_eq!(densest(0), 0);
+    }
+
+    #[test]
+    fn colour_glyphs_keep_their_red_and_blue_while_mask_glyphs_take_the_text_colour() {
+        let text = text_colour([50, 100, 200, 255]);
+        let mask = |coverage: u32| TextColor((coverage << 24) | text.0 & 0x00ff_ffff);
+        assert_eq!(glyph_pixel(mask(255), 255), Some(([50, 100, 200], 255)));
+        assert_eq!(glyph_pixel(mask(128), 128), Some(([50, 100, 200], 64)));
+
+        let emoji_red = TextColor::rgba(220, 20, 40, 255);
+        let (bgr, alpha) = glyph_pixel(emoji_red, 255).expect("an opaque colour pixel paints");
+        assert_eq!((bgr, alpha), ([40, 20, 220], 255));
+        assert_eq!(composite_over([0, 0, 0, 0], bgr, alpha), [40, 20, 220, 255], "red belongs in byte 2 of BGRA");
+        assert_eq!(glyph_pixel(emoji_red, 128).map(|(_, alpha)| alpha), Some(128));
+        assert_eq!(glyph_pixel(TextColor::rgba(1, 2, 3, 0), 255), None);
+        assert_eq!(glyph_pixel(emoji_red, 0), None);
+    }
+
+    #[test]
+    fn text_in_a_bgra_colour_lands_in_the_matching_bytes() {
+        let painter = Painter::with_embedded_font_only(14.0);
+        let mut buf = vec![0u8; 200 * 32 * 4];
+        painter.draw_label_over(&mut buf, 200, 32, 20, 180, 1, TextAlign::Left, "HHH", [0, 0, 255, 255]);
+        let inked: Vec<&[u8]> = buf.chunks_exact(4).filter(|px| px[3] != 0).collect();
+        assert!(!inked.is_empty(), "the text drew nothing");
+        assert!(
+            inked.iter().all(|px| px[0] == 0 && px[1] == 0 && px[2] == px[3]),
+            "red text must be red in BGRA, premultiplied by its coverage"
+        );
+    }
+
+    fn noise(side: u32) -> tiny_skia::Pixmap {
+        let mut pixmap = tiny_skia::Pixmap::new(side, side).unwrap();
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = || {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (state >> 56) as u8
+        };
+        for px in pixmap.pixels_mut() {
+            *px = tiny_skia::PremultipliedColorU8::from_rgba(next(), next(), next(), 255).unwrap();
+        }
+        pixmap
+    }
+
+    fn channel_spread(bgra: &[u8]) -> u8 {
+        let values = bgra.chunks_exact(4).flat_map(|px| px[..3].iter().copied());
+        let (low, high) = values.fold((u8::MAX, u8::MIN), |(low, high), v| (low.min(v), high.max(v)));
+        high - low
+    }
+
+    #[test]
+    fn large_jpeg_and_webp_sources_are_averaged_down_not_point_sampled() {
+        let side = 8;
+        let from_pixmap = fit_into_square(noise(400), side).expect("a noise image fits a square");
+        assert!(
+            channel_spread(&from_pixmap) < 30,
+            "an average of ~1000 random pixels is flat, got a spread of {}",
+            channel_spread(&from_pixmap)
+        );
+
+        let source = noise(400);
+        let rgba: Vec<u8> = source.pixels().iter().flat_map(|px| [px.red(), px.green(), px.blue(), 255]).collect();
+        let mut webp = Vec::new();
+        image_webp::WebPEncoder::new(&mut webp)
+            .encode(&rgba, 400, 400, image_webp::ColorType::Rgba8)
+            .expect("encodes the noise as lossless WebP");
+        let from_webp = decode_cover(&webp, side).expect("the WebP cover decodes");
+        assert!(channel_spread(&from_webp) < 30, "WebP spread {}", channel_spread(&from_webp));
+        assert_eq!(from_webp.len(), (side * side * 4) as usize);
+
+        let from_png = render_png(&noise_png(400), side).expect("the PNG cover decodes");
+        assert!(channel_spread(&from_png) < 30, "PNG spread {}", channel_spread(&from_png));
+    }
+
+    fn noise_png(side: u32) -> Vec<u8> {
+        noise(side).encode_png().expect("a pixmap encodes to PNG")
     }
 
     #[test]
