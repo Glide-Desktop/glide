@@ -397,7 +397,9 @@ impl GlideState {
         self.session.passwords.recent.clear();
         let click = Prefs::load().click;
         let locked = self.topbar.passwords().locked;
-        *self.topbar.passwords_mut() = Applet { app, click, locked, ..Applet::default() };
+        let phase = if locked { Phase::Locked } else { Phase::Loading };
+        let rev = self.topbar.passwords().rev.wrapping_add(1);
+        *self.topbar.passwords_mut() = Applet { app, click, locked, phase, rev, ..Applet::default() };
         self.load_passwords();
     }
 

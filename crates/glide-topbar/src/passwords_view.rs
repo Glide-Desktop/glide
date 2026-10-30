@@ -344,6 +344,7 @@ impl Topbar {
 
     pub fn passwords_mut(&mut self) -> &mut Applet {
         self.touch();
+        self.passwords.rev = self.passwords.rev.wrapping_add(1);
         &mut self.passwords
     }
 
@@ -707,6 +708,19 @@ fn menu_canvas(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_phase_change_made_through_the_topbar_invalidates_the_cached_popover() {
+        let mut bar = crate::Topbar::new(crate::TopbarTheme::default());
+        let loading = bar.passwords().rev;
+        bar.passwords_mut().phase = Phase::Locked;
+        assert_ne!(
+            bar.passwords().rev,
+            loading,
+            "the popover raster is keyed on this revision; an unchanged key keeps drawing the loading look \
+             until the pointer moves"
+        );
+    }
 
     #[test]
     fn codes_are_split_in_halves_like_the_canvas() {
