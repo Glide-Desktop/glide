@@ -64,6 +64,33 @@ fn failed(err: impl std::fmt::Display) -> String {
     err.to_string()
 }
 
+const GONE_ERRORS: [&str; 3] = [
+    "org.freedesktop.DBus.Error.UnknownObject",
+    "org.freedesktop.DBus.Error.UnknownMethod",
+    "org.freedesktop.DBus.Error.UnknownInterface",
+];
+
+fn object_gone(err: &zbus::Error) -> bool {
+    match err {
+        zbus::Error::FDO(err) => matches!(
+            **err,
+            zbus::fdo::Error::UnknownObject(_)
+                | zbus::fdo::Error::UnknownMethod(_)
+                | zbus::fdo::Error::UnknownInterface(_)
+        ),
+        zbus::Error::MethodError(name, _, _) => GONE_ERRORS.contains(&name.as_str()),
+        _ => false,
+    }
+}
+
+fn connection_state(read: zbus::Result<u32>) -> Option<u32> {
+    match read {
+        Ok(state) => Some(state),
+        Err(err) if object_gone(&err) => Some(DEACTIVATED),
+        Err(_) => None,
+    }
+}
+
 pub struct P2p {
     bus: Connection,
     device: OwnedObjectPath,
@@ -134,8 +161,9 @@ impl P2p {
                 let _ = self.disconnect(&active);
                 return Err("stopped".into());
             }
-            let state: Option<u32> =
-                Proxy::new(&self.bus, NM, active.as_str(), ACTIVE).and_then(|proxy| proxy.get_property("State")).ok();
+            let state = connection_state(
+                Proxy::new(&self.bus, NM, active.as_str(), ACTIVE).and_then(|proxy| proxy.get_property("State")),
+            );
             match state {
                 Some(ACTIVATED) => return Ok(active),
                 Some(DEACTIVATED) => return Err("the display refused the Wi-Fi Direct connection".into()),
@@ -188,6 +216,24 @@ mod tests {
         let names: Vec<&str> = sorted.iter().map(|peer| peer.name.as_str()).collect();
         assert_eq!(names, ["TV", "Phone", "Printer"]);
         assert!(sorted[0].is_display() && !sorted[1].is_display(), "a phone that is only a source is no display");
+    }
+
+    #[test]
+    fn a_connection_object_that_vanished_reads_as_refused_while_other_errors_keep_polling() {
+        let fdo = |err: zbus::fdo::Error| Err(zbus::Error::FDO(Box::new(err)));
+        assert_eq!(connection_state(Ok(ACTIVATED)), Some(ACTIVATED));
+        assert_eq!(connection_state(fdo(zbus::fdo::Error::UnknownObject("gone".into()))), Some(DEACTIVATED));
+        assert_eq!(connection_state(fdo(zbus::fdo::Error::UnknownMethod("no object".into()))), Some(DEACTIVATED));
+        assert_eq!(connection_state(fdo(zbus::fdo::Error::UnknownInterface("gone".into()))), Some(DEACTIVATED));
+        assert_eq!(connection_state(fdo(zbus::fdo::Error::NoReply("slow".into()))), None);
+        assert_eq!(connection_state(Err(zbus::Error::Failure("busy".into()))), None);
+
+        let reply = zbus::Message::method_call("/", "Get").unwrap().build(&()).unwrap();
+        let method_error = |name: &str| {
+            Err(zbus::Error::MethodError(zbus::names::OwnedErrorName::try_from(name).unwrap(), None, reply.clone()))
+        };
+        assert_eq!(connection_state(method_error(GONE_ERRORS[0])), Some(DEACTIVATED));
+        assert_eq!(connection_state(method_error("org.freedesktop.DBus.Error.AccessDenied")), None);
     }
 
     #[test]

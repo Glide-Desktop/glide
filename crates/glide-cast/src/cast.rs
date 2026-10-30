@@ -95,10 +95,15 @@ pub fn start(
     std::thread::Builder::new().name("glide-cast".into()).spawn(move || {
         status(Status::Connecting(peer.name.clone()));
         let outcome = run(&peer, source, options, &stopped, &slot, &status);
-        slot.lock().unwrap_or_else(PoisonError::into_inner).take();
+        drop(swap(&slot, None));
         status(Status::Ended(outcome.err()));
     })?;
     Ok(Handle { stop, stream })
+}
+
+fn swap<T>(slot: &Mutex<Option<T>>, next: Option<T>) -> Option<T> {
+    let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    std::mem::replace(&mut *guard, next)
 }
 
 fn run(
@@ -224,7 +229,7 @@ impl Link {
                                 input: self.source.size,
                             };
                             let stream = Stream::start(&spec)?;
-                            *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some((stream, choice.video.mode));
+                            drop(swap(slot, Some((stream, choice.video.mode))));
                             status(Status::Streaming(choice.video.mode));
                             last_keepalive = Instant::now();
                         }
@@ -318,6 +323,30 @@ mod tests {
         assert_eq!(wait_for(Duration::from_secs(5), &stopped, || Some(7)), Ok(Some(7)));
         stop.send(()).unwrap();
         assert!(wait_for(Duration::from_secs(5), &stopped, || None::<u8>).is_err());
+    }
+
+    struct UnlockProbe {
+        slot: Arc<Mutex<Option<UnlockProbe>>>,
+        unlocked: Arc<Mutex<Vec<bool>>>,
+    }
+
+    impl Drop for UnlockProbe {
+        fn drop(&mut self) {
+            let unlocked = self.slot.try_lock().is_ok();
+            self.unlocked.lock().unwrap().push(unlocked);
+        }
+    }
+
+    #[test]
+    fn a_replaced_or_ended_stream_is_torn_down_after_the_render_path_lock_is_released() {
+        let slot = Arc::new(Mutex::new(None));
+        let unlocked = Arc::new(Mutex::new(Vec::new()));
+        let probe = || UnlockProbe { slot: Arc::clone(&slot), unlocked: Arc::clone(&unlocked) };
+        drop(swap(&slot, Some(probe())));
+        drop(swap(&slot, Some(probe())));
+        drop(swap(&slot, None));
+        assert!(slot.lock().unwrap().is_none());
+        assert_eq!(*unlocked.lock().unwrap(), [true, true]);
     }
 
     struct Sink {
