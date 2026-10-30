@@ -22,6 +22,7 @@ pub struct State {
     pub requests: Vec<String>,
     pub known_devices: Vec<String>,
     pub verify_devices: bool,
+    pub refuse_writes: bool,
     pub emails: Vec<String>,
     tokens: Vec<String>,
     next: u64,
@@ -189,6 +190,9 @@ fn route(shared: &Shared, method: &str, path: &str, body: &str, bearer: &str) ->
             (200, Value::Null)
         }
         _ if !state.tokens.iter().any(|token| token == bearer) => (401, json!({ "message": "unauthorised" })),
+        ("POST" | "PUT", path) if state.refuse_writes && path.starts_with("/api/ciphers") => {
+            (400, json!({ "message": "The field Name must be a string with a maximum length of 1000." }))
+        }
         ("GET", "/api/sync?excludeDomains=true") => (
             200,
             json!({
@@ -272,6 +276,11 @@ fn cipher_route(state: &mut State, method: &str, path: &str, body: &str) -> (u16
     match (method, action) {
         ("PUT", "") => {
             let mut cipher: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+            if let Some(known) = text(&cipher, "lastKnownRevisionDate")
+                && Some(known) != text(&state.ciphers[index], "revisionDate")
+            {
+                return (400, json!({ "message": "The cipher you are updating is out of date." }));
+            }
             cipher["id"] = json!(id);
             cipher["revisionDate"] = json!(stamp);
             state.ciphers[index] = cipher.clone();

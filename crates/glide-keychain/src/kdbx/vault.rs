@@ -88,7 +88,9 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<(), Fault> {
     let temp = dir.join(format!(".{name}.glide-{}", std::process::id()));
     let permissions = std::fs::metadata(path).map(|meta| meta.permissions()).map_err(failed)?;
     let written = (|| {
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        let mut file =
+            std::os::unix::fs::OpenOptionsExt::mode(std::fs::OpenOptions::new().write(true).create_new(true), 0o600)
+                .open(&temp)?;
         file.write_all(bytes)?;
         file.set_permissions(permissions)?;
         file.sync_all()?;
@@ -192,6 +194,9 @@ impl KeePass {
         database
             .save(&mut *bytes, DatabaseKey::new().with_password(&open.password))
             .map_err(|err| Fault::Failed(format!("the KeePass file was not saved: {err}")))?;
+        if stamp(&path) != open.stamp {
+            return Err(Fault::Failed("the KeePass file changed on disk while saving; try again".into()));
+        }
         replace(&path, &bytes)?;
         open.adopt(database, stamp(&path));
         Ok(result)

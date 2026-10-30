@@ -45,20 +45,22 @@ impl Keychain {
         let request: Request = serde_json::from_str(&request)
             .map_err(|err| fdo::Error::InvalidArgs(format!("unreadable request: {err}")))?;
         let changes = mutates(&request);
-        let response = match request {
-            Request::RequestUnlock { vault } => {
-                (self.events)(Response::UnlockRequested { vault, requester: None });
-                Response::Done
+        let (service, events) = (Arc::clone(&self.service), Arc::clone(&self.events));
+        let response = blocking::unblock(move || {
+            let response = match request {
+                Request::RequestUnlock { vault } => {
+                    events(Response::UnlockRequested { vault, requester: None });
+                    Response::Done
+                }
+                Request::LoginPassword { .. } => Response::Unsupported,
+                request => service.handle(request),
+            };
+            if changes {
+                events(Response::Changed);
             }
-            Request::LoginPassword { .. } => Response::Unsupported,
-            request => {
-                let service = Arc::clone(&self.service);
-                blocking::unblock(move || service.handle(request)).await
-            }
-        };
-        if changes {
-            (self.events)(Response::Changed);
-        }
+            response
+        })
+        .await;
         serde_json::to_string(&response).map_err(|err| fdo::Error::Failed(err.to_string()))
     }
 }

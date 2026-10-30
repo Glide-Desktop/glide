@@ -173,6 +173,140 @@ fn a_clash_survives_locking_and_resolves_either_way() {
     let _ = std::fs::remove_dir_all(home);
 }
 
+fn server_password(vault: &Bitwarden, id: &str) -> String {
+    vault.records().expect("records").iter().find(|record| record.id == id).expect("item").password_text()
+}
+
+#[test]
+fn an_item_edited_again_while_its_offline_edit_waits_in_the_queue_lands_the_newest_edit_without_a_clash() {
+    let server = Server::start();
+    let home = dir("requeue");
+    let mut vault = Bitwarden::login(&home, &login(&server), NOW).expect("login");
+    let id = vault.save(&draft("GitLab", "first"), NOW).expect("save");
+    server.go_offline(true);
+    vault.save(&edit(&vault, &id, "GitLab", "offline"), NOW).expect("queued edit");
+    server.go_offline(false);
+    vault.save(&edit(&vault, &id, "GitLab", "newest"), NOW).expect("second edit");
+    vault.trash(&id, NOW).expect("trash");
+    sync(&mut vault);
+    assert!(vault.conflicts().is_empty(), "{:?}", vault.account().clashes);
+    assert!(vault.account().queue.is_empty(), "{:?}", vault.account().queue);
+    assert_eq!(server_password(&vault, &id), "newest");
+    let state = server.state.lock().expect("state");
+    let stored = state.ciphers.iter().find(|cipher| text(cipher, "id") == Some(id.as_str())).expect("item");
+    assert!(text(stored, "deletedDate").is_some(), "the trash follows the queued edit");
+    drop(state);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn an_online_edit_of_an_item_still_in_the_queue_joins_the_queue_instead_of_overtaking_it() {
+    let server = Server::start();
+    let home = dir("overtake");
+    let mut vault = Bitwarden::login(&home, &login(&server), NOW).expect("login");
+    let id = vault.save(&draft("GitLab", "first"), NOW).expect("save");
+    let job = vault.prepare_sync(true, NOW).expect("job");
+    vault.save(&edit(&vault, &id, "GitLab", "during"), NOW).expect("queued while syncing");
+    vault.apply_sync(job.run(NOW), NOW);
+    assert_eq!(vault.account().queue.len(), 1);
+    let requests = server.state.lock().expect("state").requests.len();
+    vault.save(&edit(&vault, &id, "GitLab", "newest"), NOW).expect("edit");
+    assert_eq!(server.state.lock().expect("state").requests.len(), requests, "nothing was pushed past the queue");
+    sync(&mut vault);
+    assert!(vault.conflicts().is_empty(), "{:?}", vault.account().clashes);
+    assert_eq!(server_password(&vault, &id), "newest");
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn an_edit_made_while_a_sync_pushes_an_earlier_edit_of_the_same_item_is_not_a_clash() {
+    let server = Server::start();
+    let home = dir("rebase");
+    let mut vault = Bitwarden::login(&home, &login(&server), NOW).expect("login");
+    let id = vault.save(&draft("GitLab", "first"), NOW).expect("save");
+    server.go_offline(true);
+    vault.save(&edit(&vault, &id, "GitLab", "offline"), NOW).expect("queued edit");
+    server.go_offline(false);
+    let job = vault.prepare_sync(true, NOW).expect("job");
+    vault.save(&edit(&vault, &id, "GitLab", "during"), NOW).expect("queued while syncing");
+    vault.apply_sync(job.run(NOW), NOW);
+    sync(&mut vault);
+    assert!(vault.conflicts().is_empty(), "{:?}", vault.account().clashes);
+    assert!(vault.account().queue.is_empty());
+    assert_eq!(server_password(&vault, &id), "during");
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_queued_edit_the_server_refuses_becomes_a_conflict_instead_of_vanishing() {
+    let server = Server::start();
+    let home = dir("refused-edit");
+    let mut vault = Bitwarden::login(&home, &login(&server), NOW).expect("login");
+    let id = vault.save(&draft("GitLab", "first"), NOW).expect("save");
+    server.go_offline(true);
+    vault.save(&edit(&vault, &id, "GitLab", "mine"), NOW).expect("queued edit");
+    server.state.lock().expect("state").refuse_writes = true;
+    server.go_offline(false);
+    sync(&mut vault);
+    assert!(vault.account().queue.is_empty());
+    assert!(matches!(vault.vault().sync, SyncState::Failed { .. }), "{:?}", vault.vault().sync);
+    let conflicts = vault.conflicts();
+    assert_eq!(conflicts.len(), 1, "the refused edit is kept for the user to decide");
+    assert_eq!(conflicts[0].local_password.expose(), "mine");
+    assert_eq!(conflicts[0].remote_password.expose(), "first");
+    server.state.lock().expect("state").refuse_writes = false;
+    vault.resolve(&id, Keep::Local).expect("resolve");
+    sync(&mut vault);
+    assert_eq!(server_password(&vault, &id), "mine");
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_new_item_the_server_refuses_is_kept_as_a_conflict_with_no_server_copy() {
+    let server = Server::start();
+    let home = dir("refused-new");
+    let mut vault = Bitwarden::login(&home, &login(&server), NOW).expect("login");
+    server.go_offline(true);
+    let fresh = vault.save(&draft("Hetzner", "Hetzner2024"), NOW).expect("queued");
+    server.state.lock().expect("state").refuse_writes = true;
+    server.go_offline(false);
+    sync(&mut vault);
+    assert!(vault.account().queue.is_empty(), "{:?}", vault.account().queue);
+    let conflicts = vault.conflicts();
+    assert_eq!(conflicts.len(), 1, "the refused draft is kept for the user to decide");
+    assert_eq!(conflicts[0].local.summary.name, "Hetzner");
+    assert_eq!(conflicts[0].local_password.expose(), "Hetzner2024");
+    assert_eq!(conflicts[0].remote_password.expose(), "");
+    vault.lock();
+    vault.unlock(&Hidden::new(PASSWORD.into())).expect("unlock");
+    assert_eq!(vault.conflicts().len(), 1, "the draft survives locking");
+    server.state.lock().expect("state").refuse_writes = false;
+    vault.resolve(&fresh, Keep::Local).expect("resolve");
+    assert!(vault.conflicts().is_empty());
+    sync(&mut vault);
+    assert_eq!(names(&vault), ["Hetzner"]);
+    assert_eq!(server.state.lock().expect("state").ciphers.len(), 1);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_refused_draft_dropped_in_favour_of_the_server_leaves_nothing_behind() {
+    let server = Server::start();
+    let home = dir("refused-drop");
+    let mut vault = Bitwarden::login(&home, &login(&server), NOW).expect("login");
+    server.go_offline(true);
+    let fresh = vault.save(&draft("Hetzner", "Hetzner2024"), NOW).expect("queued");
+    server.state.lock().expect("state").refuse_writes = true;
+    server.go_offline(false);
+    sync(&mut vault);
+    vault.resolve(&fresh, Keep::Remote).expect("resolve");
+    assert!(vault.conflicts().is_empty());
+    sync(&mut vault);
+    assert!(names(&vault).is_empty());
+    assert!(server.state.lock().expect("state").ciphers.is_empty());
+    let _ = std::fs::remove_dir_all(home);
+}
+
 #[test]
 fn a_send_keeps_its_key_in_the_link_and_only_ciphertext_on_the_server() {
     let server = Server::start();

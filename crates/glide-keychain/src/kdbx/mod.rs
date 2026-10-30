@@ -255,6 +255,7 @@ pub(crate) fn draft_of(record: &Record) -> Draft {
             code: Hidden::new(text(&card.code)),
             expiry: card.expiry.clone(),
         }),
+        history: record.history.iter().map(|past| (Hidden::new(text(&past.secret)), past.until)).collect(),
         ..Draft::default()
     }
 }
@@ -294,7 +295,9 @@ pub(crate) fn write(entry: &mut EntryMut<'_>, draft: &Draft) {
     entry
         .fields
         .retain(|key, _| reserved(key, draft.kind) || draft.fields.iter().any(|field| field.name.trim() == key));
-    for field in draft.fields.iter().filter(|field| !field.name.trim().is_empty()) {
+    for field in
+        draft.fields.iter().filter(|field| !field.name.trim().is_empty() && !reserved(field.name.trim(), draft.kind))
+    {
         if field.hidden && field.value.is_empty() && entry.fields.contains_key(field.name.trim()) {
             continue;
         }

@@ -222,6 +222,17 @@ impl LoginKeyring {
     }
 
     pub fn edit(&mut self, edit: &mut dyn FnMut(&mut Vec<Item>, &mut u64)) -> Result<(), Fault> {
+        let before = self.open.as_ref().ok_or(Fault::Locked)?.contents.clone();
+        let result = self.apply(edit);
+        if result.is_err()
+            && let Some(open) = self.open.as_mut()
+        {
+            open.contents = before;
+        }
+        result
+    }
+
+    fn apply(&mut self, edit: &mut dyn FnMut(&mut Vec<Item>, &mut u64)) -> Result<(), Fault> {
         let open = self.open.as_mut().ok_or(Fault::Locked)?;
         edit(&mut open.contents.items, &mut open.contents.next_id);
         for item in &mut open.contents.items {

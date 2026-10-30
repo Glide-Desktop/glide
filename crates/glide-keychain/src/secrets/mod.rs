@@ -69,6 +69,8 @@ enum Pending {
     Create { label: String, attributes: BTreeMap<String, String>, secret: Secret, content_type: String, replace: bool },
 }
 
+const MAX_SESSIONS: usize = 1024;
+
 pub struct Secrets {
     service: Arc<Service>,
     events: Events,
@@ -104,6 +106,11 @@ impl Secrets {
             registered: Mutex::new(BTreeSet::new()),
             next: AtomicU64::new(1),
         })
+    }
+
+    async fn off<T: Send + 'static>(self: &Arc<Self>, work: impl FnOnce(&Self) -> T + Send + 'static) -> T {
+        let secrets = Arc::clone(self);
+        blocking::unblock(move || work(&secrets)).await
     }
 
     fn unlocked(&self) -> bool {
@@ -223,7 +230,7 @@ impl Secrets {
     }
 
     async fn sync_objects(self: &Arc<Self>, server: &zbus::ObjectServer) {
-        let wanted: BTreeSet<u64> = self.known_ids().into_iter().collect();
+        let wanted: BTreeSet<u64> = self.off(Self::known_ids).await.into_iter().collect();
         let (added, removed) = {
             let registered = lock(&self.registered);
             let added: Vec<u64> = wanted.difference(&registered).copied().collect();
@@ -323,7 +330,22 @@ impl ServiceObject {
             _ => return Err(not_supported("the algorithm is not offered")),
         };
         let session = self.secrets.new_path("session");
-        lock(&self.secrets.sessions).insert(session.clone(), key);
+        let evicted = {
+            let mut sessions = lock(&self.secrets.sessions);
+            sessions.insert(session.clone(), key);
+            let serial = |path: &String| path.rsplit('/').next().and_then(|tail| tail.parse::<u64>().ok());
+            if sessions.len() > MAX_SESSIONS {
+                let oldest = sessions.keys().min_by_key(|path| serial(path)).cloned();
+                oldest.inspect(|oldest| {
+                    sessions.remove(oldest);
+                })
+            } else {
+                None
+            }
+        };
+        if let Some(oldest) = evicted {
+            let _ = server.remove::<SessionObject, _>(oldest.as_str()).await;
+        }
         let _ = server
             .at(session.as_str(), SessionObject { secrets: Arc::clone(&self.secrets), path: session.clone() })
             .await;
@@ -341,13 +363,14 @@ impl ServiceObject {
         &self, attributes: HashMap<String, String>, #[zbus(object_server)] server: &zbus::ObjectServer,
     ) -> (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) {
         self.secrets.sync_objects(server).await;
-        self.secrets.search(&attributes.into_iter().collect())
+        let wanted = attributes.into_iter().collect();
+        self.secrets.off(move |secrets| secrets.search(&wanted)).await
     }
 
     async fn unlock(
         &self, objects: Vec<OwnedObjectPath>, #[zbus(object_server)] server: &zbus::ObjectServer,
     ) -> fdo::Result<(Vec<OwnedObjectPath>, OwnedObjectPath)> {
-        if self.secrets.unlocked() {
+        if self.secrets.off(Secrets::unlocked).await {
             return Ok((objects, path(NONE)));
         }
         let prompt = self.secrets.prompt(Pending::Unlock(objects));
@@ -361,11 +384,12 @@ impl ServiceObject {
         (Vec::new(), path(NONE))
     }
 
-    fn get_secrets(
+    async fn get_secrets(
         &self, items: Vec<OwnedObjectPath>, session: ObjectPath<'_>,
     ) -> Result<HashMap<OwnedObjectPath, SecretValue>, Error> {
         let key = self.secrets.check_session(&session)?;
-        let all = self.secrets.items().ok_or_else(|| Error::IsLocked("the keychain is locked".into()))?;
+        let all =
+            self.secrets.off(Secrets::items).await.ok_or_else(|| Error::IsLocked("the keychain is locked".into()))?;
         let mut found = HashMap::new();
         for object in items {
             let Some(item) = item_id(object.as_str()).and_then(|id| all.iter().find(|item| item.id == id)) else {
@@ -406,7 +430,8 @@ impl CollectionObject {
         &self, attributes: HashMap<String, String>, #[zbus(object_server)] server: &zbus::ObjectServer,
     ) -> Vec<OwnedObjectPath> {
         self.secrets.sync_objects(server).await;
-        let (unlocked, locked) = self.secrets.search(&attributes.into_iter().collect());
+        let wanted = attributes.into_iter().collect();
+        let (unlocked, locked) = self.secrets.off(move |secrets| secrets.search(&wanted)).await;
         unlocked.into_iter().chain(locked).collect()
     }
 
@@ -422,13 +447,13 @@ impl CollectionObject {
             content_type: secret.3,
             replace,
         };
-        if !self.secrets.unlocked() {
+        if !self.secrets.off(Secrets::unlocked).await {
             let prompt = self.secrets.prompt(pending);
             let object = PromptObject { secrets: Arc::clone(&self.secrets), path: prompt.to_string() };
             let _ = server.at(prompt.as_str(), object).await;
             return Ok((path(NONE), prompt));
         }
-        let (id, created) = self.secrets.create(&pending)?;
+        let (id, created) = self.secrets.off(move |secrets| secrets.create(&pending)).await?;
         self.secrets.sync_objects(server).await;
         let change = if created { Change::Created } else { Change::Changed };
         let _ = collection_signal(connection, change, id).await;
@@ -438,7 +463,7 @@ impl CollectionObject {
     #[zbus(property)]
     async fn items(&self, #[zbus(object_server)] server: &zbus::ObjectServer) -> Vec<OwnedObjectPath> {
         self.secrets.sync_objects(server).await;
-        self.secrets.known_ids().into_iter().map(item_path).collect()
+        self.secrets.off(Secrets::known_ids).await.into_iter().map(item_path).collect()
     }
 
     #[zbus(property)]
@@ -447,8 +472,8 @@ impl CollectionObject {
     }
 
     #[zbus(property)]
-    fn locked(&self) -> bool {
-        !self.secrets.unlocked()
+    async fn locked(&self) -> bool {
+        !self.secrets.off(Secrets::unlocked).await
     }
 
     #[zbus(property)]
@@ -457,8 +482,9 @@ impl CollectionObject {
     }
 
     #[zbus(property)]
-    fn modified(&self) -> u64 {
-        self.secrets.items().map_or(0, |items| items.iter().map(|item| item.modified).max().unwrap_or(0))
+    async fn modified(&self) -> u64 {
+        let items = self.secrets.off(Secrets::items).await;
+        items.map_or(0, |items| items.iter().map(|item| item.modified).max().unwrap_or(0))
     }
 
     #[zbus(signal)]
@@ -482,17 +508,21 @@ impl ItemObject {
     async fn delete(
         &self, #[zbus(object_server)] server: &zbus::ObjectServer, #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<OwnedObjectPath, Error> {
-        self.secrets.item(self.id)?;
         let id = self.id;
-        self.secrets.edit(|items, _| items.retain(|item| item.id != id))?;
+        self.secrets
+            .off(move |secrets| {
+                secrets.item(id)?;
+                secrets.edit(|items, _| items.retain(|item| item.id != id))
+            })
+            .await?;
         self.secrets.sync_objects(server).await;
         let _ = collection_signal(connection, Change::Deleted, id).await;
         Ok(path(NONE))
     }
 
-    fn get_secret(&self, session: ObjectPath<'_>) -> Result<SecretValue, Error> {
+    async fn get_secret(&self, session: ObjectPath<'_>) -> Result<SecretValue, Error> {
         let key = self.secrets.check_session(&session)?;
-        let item = self.secrets.item(self.id)?;
+        let item = self.current().await?;
         Secrets::secret_of(&item, &session, key.as_ref())
     }
 
@@ -502,76 +532,107 @@ impl ItemObject {
         let value = self.secrets.incoming(&secret)?;
         let (id, at) = (self.id, now());
         let content_type = secret.3;
-        self.secrets.edit(|items, _| {
-            if let Some(item) = items.iter_mut().find(|item| item.id == id) {
-                item.secret = value.clone();
-                item.content_type.clone_from(&content_type);
-                item.modified = at;
-            }
-        })?;
+        let found = self
+            .secrets
+            .off(move |secrets| {
+                let mut found = false;
+                secrets
+                    .edit(|items, _| {
+                        if let Some(item) = items.iter_mut().find(|item| item.id == id) {
+                            item.secret = value.clone();
+                            item.content_type.clone_from(&content_type);
+                            item.modified = at;
+                            found = true;
+                        }
+                    })
+                    .map(|()| found)
+            })
+            .await?;
+        if !found {
+            return Err(Error::NoSuchObject(format!("no item {id}")));
+        }
         let _ = collection_signal(connection, Change::Changed, id).await;
         Ok(())
     }
 
     #[zbus(property)]
-    fn locked(&self) -> bool {
-        !self.secrets.unlocked()
+    async fn locked(&self) -> bool {
+        !self.secrets.off(Secrets::unlocked).await
     }
 
     #[zbus(property)]
-    fn attributes(&self) -> HashMap<String, String> {
-        self.secrets.item(self.id).map(|item| item.attributes.into_iter().collect()).unwrap_or_default()
+    async fn attributes(&self) -> HashMap<String, String> {
+        self.current().await.map(|item| item.attributes.into_iter().collect()).unwrap_or_default()
     }
 
     #[zbus(property)]
-    fn set_attributes(&mut self, attributes: HashMap<String, String>) -> fdo::Result<()> {
+    async fn set_attributes(&mut self, attributes: HashMap<String, String>) -> fdo::Result<()> {
         let (id, at) = (self.id, now());
         let attributes: BTreeMap<String, String> = attributes.into_iter().collect();
         self.secrets
-            .edit(|items, _| {
-                if let Some(item) = items.iter_mut().find(|item| item.id == id) {
-                    item.attributes.clone_from(&attributes);
-                    item.modified = at;
-                }
+            .off(move |secrets| {
+                secrets.edit(|items, _| {
+                    if let Some(item) = items.iter_mut().find(|item| item.id == id) {
+                        item.attributes.clone_from(&attributes);
+                        item.modified = at;
+                    }
+                })
             })
+            .await
             .map_err(|err| fdo::Error::Failed(err.to_string()))
     }
 
     #[zbus(property)]
-    fn label(&self) -> String {
-        self.secrets.item(self.id).map(|item| item.label).unwrap_or_default()
+    async fn label(&self) -> String {
+        self.current().await.map(|item| item.label).unwrap_or_default()
     }
 
     #[zbus(property)]
-    fn set_label(&mut self, label: String) -> fdo::Result<()> {
+    async fn set_label(&mut self, label: String) -> fdo::Result<()> {
         let (id, at) = (self.id, now());
-        self.secrets
-            .edit(|items, _| {
-                if let Some(item) = items.iter_mut().find(|item| item.id == id) {
-                    item.label.clone_from(&label);
-                    item.modified = at;
-                }
+        let found = self
+            .secrets
+            .off(move |secrets| {
+                let mut found = false;
+                secrets
+                    .edit(|items, _| {
+                        if let Some(item) = items.iter_mut().find(|item| item.id == id) {
+                            item.label.clone_from(&label);
+                            item.modified = at;
+                            found = true;
+                        }
+                    })
+                    .map(|()| found)
             })
-            .map_err(|err| fdo::Error::Failed(err.to_string()))
+            .await
+            .map_err(|err| fdo::Error::Failed(err.to_string()))?;
+        if found { Ok(()) } else { Err(fdo::Error::UnknownObject(format!("no item {id}"))) }
     }
 
     #[zbus(property, name = "Type")]
-    fn kind(&self) -> String {
-        self.secrets
-            .item(self.id)
+    async fn kind(&self) -> String {
+        self.current()
+            .await
             .ok()
             .and_then(|item| item.attributes.get("xdg:schema").cloned())
             .unwrap_or_else(|| GENERIC.to_string())
     }
 
     #[zbus(property)]
-    fn created(&self) -> u64 {
-        self.secrets.item(self.id).map_or(0, |item| item.created)
+    async fn created(&self) -> u64 {
+        self.current().await.map_or(0, |item| item.created)
     }
 
     #[zbus(property)]
-    fn modified(&self) -> u64 {
-        self.secrets.item(self.id).map_or(0, |item| item.modified)
+    async fn modified(&self) -> u64 {
+        self.current().await.map_or(0, |item| item.modified)
+    }
+}
+
+impl ItemObject {
+    async fn current(&self) -> Result<Item, Error> {
+        let id = self.id;
+        self.secrets.off(move |secrets| secrets.item(id)).await
     }
 }
 
@@ -602,7 +663,8 @@ impl PromptObject {
         let _ = window_id;
         let requester = caller_program(&header, connection).await;
         let closed = self.secrets.service.prompts_closed();
-        (self.secrets.events)(Response::UnlockRequested { vault: Some(LOGIN.into()), requester });
+        let events = Arc::clone(&self.secrets.events);
+        blocking::unblock(move || events(Response::UnlockRequested { vault: Some(LOGIN.into()), requester })).await;
         let (secrets, path, connection) = (Arc::clone(&self.secrets), self.path.clone(), connection.clone());
         let spawned = std::thread::Builder::new().name("glide-secrets-prompt".into()).spawn(move || {
             let started = Instant::now();

@@ -198,8 +198,13 @@ impl Provider for Local {
         let file = std::fs::read(&self.path).map_err(|err| Fault::Failed(err.to_string()))?;
         let (contents, _) = vault::open(&file, old.expose().as_bytes())?;
         let key = Key::derive(new.expose().as_bytes(), self.params)?;
+        let previous = self.open.take();
         self.adopt(&contents, key);
-        self.save_file()
+        let saved = self.save_file();
+        if saved.is_err() {
+            self.open = previous;
+        }
+        saved
     }
 
     fn records(&self) -> Result<&[Record], Fault> {

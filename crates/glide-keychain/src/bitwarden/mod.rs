@@ -25,7 +25,7 @@ use self::api::{ApiError, Client, Endpoints, Tokens, field, list, number, text};
 use self::cipher::Keys;
 use self::crypto::{CryptoError, Kdf, PrivateKey, SymmetricKey};
 use self::session::{Session, device_form};
-use self::sync::{NEW_PREFIX, is_new, normalize};
+use self::sync::{NEW_PREFIX, is_new, normalize, rebase};
 pub use self::sync::{Pending, StoredClash, SyncDone, SyncJob};
 use crate::provider::{Fault, Provider, Record};
 
@@ -333,6 +333,7 @@ impl Bitwarden {
             provider.prepare_sync(true, now).ok_or_else(|| LoginError::Failed("the vault did not open".into()))?;
         provider.apply_sync(job.run(now), now);
         if provider.account.cache.is_none() {
+            let _ = std::fs::remove_file(&provider.path);
             return Err(LoginError::Failed(provider.failure.take().unwrap_or_else(|| "the vault did not sync".into())));
         }
         Ok(provider)
@@ -460,6 +461,26 @@ impl Bitwarden {
         }
     }
 
+    pub fn inherit_offline(&mut self, offline: Value) {
+        let Ok((queue, clashes)) = serde_json::from_value::<(Vec<Pending>, Vec<StoredClash>)>(offline) else {
+            return;
+        };
+        let mut merged = queue;
+        merged.append(&mut self.account.queue);
+        self.account.queue = normalize(merged);
+        for clash in clashes {
+            self.account.clashes.retain(|known| known.id != clash.id);
+            self.account.clashes.push(clash);
+        }
+        self.wanted = true;
+        if self.open.is_some() {
+            self.apply_queue_locally();
+        }
+        if let Err(fault) = self.save_account() {
+            eprintln!("glide-keychain: {} could not keep its offline changes ({fault})", self.account.id);
+        }
+    }
+
     fn apply_queue_locally(&mut self) {
         let at = now();
         for pending in self.account.queue.clone() {
@@ -538,8 +559,12 @@ impl Bitwarden {
         Some(id)
     }
 
+    fn queued_for(&self, id: &str) -> bool {
+        self.account.queue.iter().any(|pending| pending.id() == id)
+    }
+
     fn change(&mut self, pending: Pending, at: u64) -> Result<(), Fault> {
-        if self.syncing || is_new(pending.id()) {
+        if self.syncing || self.offline || is_new(pending.id()) || self.queued_for(pending.id()) {
             self.apply_locally(&pending, at);
             return self.enqueue(pending);
         }
@@ -637,6 +662,9 @@ impl Bitwarden {
                 let later = self.account.queue.split_off(consumed.min(self.account.queue.len()));
                 let mut queue = flushed.kept;
                 queue.extend(later.into_iter().map(|pending| pending.renamed(&flushed.renamed)));
+                if !flushed.stale {
+                    queue = rebase(queue, &flushed.touched, &fresh);
+                }
                 self.account.queue = normalize(queue);
                 for clash in flushed.clashes {
                     self.account.clashes.retain(|known| known.id != clash.id);
@@ -652,7 +680,7 @@ impl Bitwarden {
                     self.apply_queue_locally();
                 }
                 self.account.cache = Some(fresh);
-                if !self.account.queue.is_empty() && !self.offline {
+                if (!self.account.queue.is_empty() && !self.offline) || flushed.stale {
                     self.wanted = true;
                 }
             }
@@ -665,7 +693,11 @@ impl Bitwarden {
     fn clash_records(&self, clash: &StoredClash) -> Option<(Record, Record)> {
         let open = self.open.as_ref()?;
         let local = cipher::record(&with_id(&clash.body, &clash.id), &open.keys, &open.folders).ok()?;
-        let remote = cipher::record(&clash.server, &open.keys, &open.folders).ok()?;
+        let remote = if clash.server.is_null() {
+            Record { id: clash.id.clone(), ..Record::default() }
+        } else {
+            cipher::record(&clash.server, &open.keys, &open.folders).ok()?
+        };
         Some((local, remote))
     }
 }
@@ -743,9 +775,13 @@ impl Provider for Bitwarden {
         };
         record.apply(draft, now);
         let raw = existing.as_ref().and_then(|id| open.raw.get(id).cloned());
-        let queued = self.syncing || existing.as_deref().is_some_and(is_new);
-        let folder =
-            if queued { self.known_folder(&record.folder) } else { self.folder_id(&record.folder.clone(), now) };
+        let queued =
+            self.syncing || self.offline || existing.as_deref().is_some_and(|id| is_new(id) || self.queued_for(id));
+        let folder = if queued && self.offline {
+            self.known_folder(&record.folder)
+        } else {
+            self.folder_id(&record.folder.clone(), now)
+        };
         let body = cipher::request(&record, raw.as_ref(), &self.opened()?.keys, folder.as_deref())?;
         if !queued {
             let attempt = match &existing {
@@ -831,6 +867,9 @@ impl Provider for Bitwarden {
         }
         let outcome = match keep {
             Keep::Remote => Ok(None),
+            Keep::Local | Keep::Both if clash.server.is_null() => {
+                self.call(at, |client, token| client.post("/ciphers", token, &body)).map(Some)
+            }
             Keep::Local => {
                 self.call(at, |client, token| client.put(&format!("/ciphers/{id}"), token, Some(&body))).map(Some)
             }
@@ -916,6 +955,15 @@ impl Provider for Bitwarden {
             self.account.name = name.to_string();
             let _ = self.save_account();
         }
+    }
+
+    fn take_offline(&mut self) -> Option<Value> {
+        let queue = std::mem::take(&mut self.account.queue);
+        let clashes = std::mem::take(&mut self.account.clashes);
+        if queue.is_empty() && clashes.is_empty() {
+            return None;
+        }
+        serde_json::to_value((queue, clashes)).ok()
     }
 
     fn forget(&mut self) -> Result<(), Fault> {

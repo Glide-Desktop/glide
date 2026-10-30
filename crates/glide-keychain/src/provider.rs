@@ -66,6 +66,16 @@ impl Record {
         self.kind = draft.kind;
         self.name = draft.name.trim().to_string();
         self.username = draft.username.trim().to_string();
+        if self.history.is_empty() {
+            self.history = draft
+                .history
+                .iter()
+                .map(|(secret, until)| PastSecret {
+                    secret: Secret::new(secret.expose().as_bytes().to_vec()),
+                    until: *until,
+                })
+                .collect();
+        }
         if let Some(password) = &draft.password
             && password.expose().as_bytes() != self.password.expose()
         {
@@ -185,6 +195,10 @@ pub trait Provider: std::marker::Send {
     }
 
     fn rename(&mut self, _name: &str) {}
+
+    fn take_offline(&mut self) -> Option<serde_json::Value> {
+        None
+    }
 
     fn registration(&self) -> Option<crate::kdbx::Registered> {
         None

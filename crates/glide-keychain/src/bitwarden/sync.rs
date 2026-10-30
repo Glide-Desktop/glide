@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -79,9 +79,11 @@ pub struct Flushed {
     pub kept: Vec<Pending>,
     pub clashes: Vec<StoredClash>,
     pub renamed: HashMap<String, String>,
+    pub touched: HashSet<String>,
     pub pushed: usize,
     pub offline: bool,
     pub failure: Option<String>,
+    pub stale: bool,
 }
 
 pub fn push(session: &mut Session, pending: &Pending, now: u64) -> Result<Option<String>, ApiError> {
@@ -105,17 +107,42 @@ pub fn push(session: &mut Session, pending: &Pending, now: u64) -> Result<Option
     }
 }
 
+fn by_id(server: &Value) -> HashMap<&str, &Value> {
+    list(server, "ciphers").iter().filter_map(|item| Some((text(item, "id")?, item))).collect()
+}
+
+#[must_use]
+pub fn rebase<S: std::hash::BuildHasher>(
+    queue: Vec<Pending>, touched: &HashSet<String, S>, server: &Value,
+) -> Vec<Pending> {
+    let revisions = by_id(server);
+    queue
+        .into_iter()
+        .map(|pending| match pending {
+            Pending::Save { id, mut body, base: Some(_) } if touched.contains(&id) => {
+                let current = revisions.get(id.as_str()).and_then(|item| item.get("revisionDate")).cloned();
+                if let Some(object) = body.as_object_mut() {
+                    object.insert("lastKnownRevisionDate".into(), current.clone().unwrap_or(Value::Null));
+                }
+                let base = current.as_ref().and_then(Value::as_str).map(str::to_string);
+                Pending::Save { id, body, base }
+            }
+            other => other,
+        })
+        .collect()
+}
+
 pub fn flush(session: &mut Session, queue: Vec<Pending>, server: &Value, now: u64) -> Flushed {
-    let revisions: HashMap<&str, &Value> =
-        list(server, "ciphers").iter().filter_map(|item| Some((text(item, "id")?, item))).collect();
+    let revisions = by_id(server);
     let mut flushed = Flushed::default();
     let mut refused: Vec<String> = Vec::new();
+    let mut blocked = false;
     for pending in normalize(queue) {
         let pending = pending.renamed(&flushed.renamed);
         if refused.iter().any(|id| id == pending.id()) {
             continue;
         }
-        if flushed.offline || (is_new(pending.id()) && !matches!(pending, Pending::Save { .. })) {
+        if flushed.offline || blocked || (is_new(pending.id()) && !matches!(pending, Pending::Save { .. })) {
             flushed.kept.push(pending);
             continue;
         }
@@ -129,21 +156,33 @@ pub fn flush(session: &mut Session, queue: Vec<Pending>, server: &Value, now: u6
         match push(session, &pending, now) {
             Ok(created) => {
                 flushed.pushed += 1;
+                let id = created.clone().unwrap_or_else(|| pending.id().to_string());
                 if let Some(created) = created {
                     flushed.renamed.insert(pending.id().to_string(), created);
                 }
+                flushed.touched.insert(id);
             }
             Err(ApiError::Offline(reason)) => {
                 eprintln!("glide-keychain: Bitwarden is offline ({reason})");
                 flushed.offline = true;
                 flushed.kept.push(pending);
             }
-            Err(error) => {
+            Err(error @ ApiError::Rejected(_)) => {
                 eprintln!("glide-keychain: a queued Bitwarden change was refused ({error})");
                 if is_new(pending.id()) {
                     refused.push(pending.id().to_string());
                 }
+                if let Pending::Save { id, body, .. } = pending {
+                    let server = revisions.get(id.as_str()).map_or(Value::Null, |current| (*current).clone());
+                    flushed.clashes.push(StoredClash { id, body, server });
+                }
                 flushed.failure = Some(error.to_string());
+            }
+            Err(error) => {
+                eprintln!("glide-keychain: queued Bitwarden changes wait for the account to sign in again ({error})");
+                blocked = true;
+                flushed.failure = Some(error.to_string());
+                flushed.kept.push(pending);
             }
         }
     }
@@ -177,8 +216,15 @@ impl SyncJob {
             Ok(fresh) => fresh,
             Err(error) => return SyncDone { session, consumed: 0, flushed: Flushed::default(), fresh: Err(error) },
         };
-        let flushed = flush(&mut session, queue, &fresh, now);
-        let fresh = if flushed.pushed > 0 { fetch(&mut session, now).unwrap_or(fresh) } else { fresh };
+        let mut flushed = flush(&mut session, queue, &fresh, now);
+        let fresh = if flushed.pushed > 0 {
+            fetch(&mut session, now).unwrap_or_else(|_| {
+                flushed.stale = true;
+                fresh
+            })
+        } else {
+            fresh
+        };
         SyncDone { session, consumed, flushed, fresh: Ok(fresh) }
     }
 }
@@ -204,6 +250,19 @@ mod tests {
         let queue =
             vec![save("new:x", None, 1), Pending::Trash { id: "new:x".into() }, Pending::Purge { id: "new:x".into() }];
         assert!(normalize(queue).is_empty());
+    }
+
+    #[test]
+    fn a_save_queued_behind_a_change_this_sync_pushed_takes_the_new_server_revision_as_its_base() {
+        let server = json!({ "ciphers": [{ "id": "a", "revisionDate": "r2" }, { "id": "b", "revisionDate": "r9" }] });
+        let touched = HashSet::from(["a".to_string()]);
+        let queue = vec![save("a", Some("r1"), 1), save("b", Some("r8"), 2), save("new:c", None, 3)];
+        let rebased = rebase(queue, &touched, &server);
+        let Pending::Save { base, body, .. } = &rebased[0] else { panic!("a save") };
+        assert_eq!(base.as_deref(), Some("r2"));
+        assert_eq!(body["lastKnownRevisionDate"], json!("r2"), "the server checks the body's revision too");
+        assert_eq!(rebased[1], save("b", Some("r8"), 2), "an id this sync did not touch keeps its base");
+        assert_eq!(rebased[2], save("new:c", None, 3));
     }
 
     #[test]

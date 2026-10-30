@@ -35,10 +35,31 @@ pub struct Endpoints {
     pub web: String,
 }
 
+fn loopback(authority: &str) -> bool {
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 impl Endpoints {
     #[must_use]
     pub fn for_server(server: &str) -> Self {
         let base = server.trim().trim_end_matches('/');
+        let secured;
+        let plain = base.get(..7).filter(|scheme| scheme.eq_ignore_ascii_case("http://")).map(|_| &base[7..]);
+        let base = match plain {
+            Some(rest) if !loopback(rest) => {
+                secured = format!("https://{rest}");
+                secured.as_str()
+            }
+            _ => base,
+        };
         let cloud = |region: &str| Self {
             identity: format!("https://identity.bitwarden.{region}"),
             api: format!("https://api.bitwarden.{region}"),
@@ -191,6 +212,9 @@ impl Client {
         match result {
             (200..=299, value) => Ok(value),
             (401, _) => Err(ApiError::Unauthorized),
+            (status @ (429 | 500..=599), value) => {
+                Err(ApiError::Offline(format!("HTTP {status}: {}", message_of(&value))))
+            }
             (_, value) => Err(ApiError::Rejected(message_of(&value))),
         }
     }
@@ -300,6 +324,17 @@ mod tests {
         let own = Endpoints::for_server("https://vault.home.lan");
         assert_eq!(own.identity, "https://vault.home.lan/identity");
         assert_eq!(own.api, "https://vault.home.lan/api");
+    }
+
+    #[test]
+    fn plain_http_is_only_kept_for_this_machine() {
+        assert_eq!(Endpoints::for_server("http://vault.home.lan").api, "https://vault.home.lan/api");
+        assert_eq!(Endpoints::for_server("http://localhost:8000").api, "http://localhost:8000/api");
+        assert_eq!(Endpoints::for_server("http://127.0.0.1:8000/").api, "http://127.0.0.1:8000/api");
+        assert_eq!(Endpoints::for_server("http://[::1]:8000").api, "http://[::1]:8000/api");
+        assert_eq!(Endpoints::for_server("http://127.0.0.1@evil.example").api, "https://127.0.0.1@evil.example/api");
+        assert_eq!(Endpoints::for_server("http://127.evil.example").api, "https://127.evil.example/api");
+        assert_eq!(Endpoints::for_server("HTTP://vault.home.lan").api, "https://vault.home.lan/api");
     }
 
     #[test]

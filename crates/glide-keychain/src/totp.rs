@@ -77,9 +77,10 @@ impl Totp {
                 "secret" => totp.key = Zeroizing::new(base32(&value)?),
                 "algorithm" => {
                     totp.algorithm = match value.to_ascii_uppercase().as_str() {
+                        "SHA1" => Algorithm::Sha1,
                         "SHA256" => Algorithm::Sha256,
                         "SHA512" => Algorithm::Sha512,
-                        _ => Algorithm::Sha1,
+                        _ => return None,
                     };
                 }
                 "digits" => totp.digits = value.parse().ok().filter(|digits| (6..=10).contains(digits))?,
