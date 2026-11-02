@@ -205,14 +205,18 @@ pub fn pixmap_square(pixmaps: &[Pixmap], side: i32) -> Option<Vec<u8>> {
 
 const GREY_TOLERANCE: u8 = 24;
 const TONE_SPREAD: u8 = 56;
+const MIN_CLEAR_PERCENT: usize = 15;
 
 #[must_use]
 pub fn is_monochrome(bgra: &[u8]) -> bool {
     let mut seen = false;
     let (mut lo, mut hi) = (u8::MAX, u8::MIN);
+    let (mut total, mut clear) = (0usize, 0usize);
     for pixel in bgra.chunks_exact(4) {
+        total += 1;
         let alpha = pixel[3];
         if alpha < 128 {
+            clear += 1;
             continue;
         }
         let straight = |channel: u8| {
@@ -229,7 +233,7 @@ pub fn is_monochrome(bgra: &[u8]) -> bool {
         hi = hi.max(max);
         seen = true;
     }
-    seen && hi - lo <= TONE_SPREAD
+    seen && hi - lo <= TONE_SPREAD && clear * 100 >= total * MIN_CLEAR_PERCENT
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -564,7 +568,8 @@ mod tests {
 
     #[test]
     fn grey_single_tone_art_counts_as_monochrome() {
-        let white = [255u8, 255, 255, 255].repeat(4);
+        let mut white = [255u8, 255, 255, 255].repeat(3);
+        white.extend_from_slice(&[0, 0, 0, 0]);
         assert!(is_monochrome(&white));
         let mut two_tone = white.clone();
         two_tone[..4].copy_from_slice(&[20, 20, 20, 255]);
@@ -573,6 +578,18 @@ mod tests {
         coloured[..4].copy_from_slice(&[0, 0, 255, 255]);
         assert!(!is_monochrome(&coloured));
         assert!(!is_monochrome(&[0u8; 16]), "nothing visible is not a glyph");
+    }
+
+    #[test]
+    fn an_opaque_grey_plate_is_a_logo_not_a_glyph() {
+        let plate = [128u8, 128, 128, 255].repeat(100);
+        assert!(!is_monochrome(&plate));
+        let mut almost = plate.clone();
+        almost[..14 * 4].fill(0);
+        assert!(!is_monochrome(&almost), "14 % clear is still a plate");
+        let mut glyph = plate;
+        glyph[..15 * 4].fill(0);
+        assert!(is_monochrome(&glyph), "15 % clear around grey art reads as a glyph");
     }
 
     #[test]

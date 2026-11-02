@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use glide_theme::Color;
@@ -10,13 +10,21 @@ const DEFAULT_THEME: &str = glide_theme::icons::FALLBACK;
 
 const FALLBACK_THEME: &str = "hicolor";
 
-const MISSING_THEME_FALLBACK: &str = "Adwaita";
+const MISSING_THEME_FALLBACK: [&str; 2] = ["Adwaita", "breeze"];
 
 const NEGATIVE_TTL: Duration = Duration::from_secs(30);
 
+const SETTLED: Duration = Duration::from_secs(2);
+
 const EXTENSIONS: [&str; 2] = ["svg", "png"];
 
-#[derive(Debug, Default)]
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed).wrapping_add(1)
+}
+
+#[derive(Debug)]
 pub struct IconLoader {
     theme: Option<String>,
     index: ThemeIndex,
@@ -26,15 +34,32 @@ pub struct IconLoader {
     generation: u64,
 }
 
+impl Default for IconLoader {
+    fn default() -> Self {
+        Self::new(None)
+    }
+}
+
 impl IconLoader {
     #[must_use]
     pub fn new(theme: Option<String>) -> Self {
-        Self { theme, ..Self::default() }
+        Self::with_index(theme, ThemeIndex::default())
+    }
+
+    fn with_index(theme: Option<String>, index: ThemeIndex) -> Self {
+        Self {
+            theme,
+            index,
+            rendered: HashMap::new(),
+            symbolic_rendered: HashMap::new(),
+            refreshed: None,
+            generation: next_generation(),
+        }
     }
 
     #[cfg(test)]
     fn with_roots(theme: &str, roots: Vec<PathBuf>) -> Self {
-        Self { theme: Some(theme.to_string()), index: ThemeIndex::with_roots(roots), ..Self::default() }
+        Self::with_index(Some(theme.to_string()), ThemeIndex::with_roots(roots))
     }
 
     #[must_use]
@@ -60,7 +85,7 @@ impl IconLoader {
         self.rendered.retain(|_, pixels| pixels.is_some());
         self.symbolic_rendered.retain(|_, pixels| pixels.is_some());
         self.index.forget_listings();
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = next_generation();
         true
     }
 
@@ -71,9 +96,13 @@ impl IconLoader {
     pub fn load_named(&mut self, icon: &str, side: i32) -> Option<&[u8]> {
         self.expire_missing();
         let theme = self.theme_name();
+        let name = format!("icon:{}", cache_name(icon));
+        if let Some(stale) = stamp_prefix(&format!("icon:{icon}"), &name) {
+            self.rendered.retain(|(key, _), _| !key.starts_with(&stale) || *key == name);
+        }
         let index = &mut self.index;
         self.rendered
-            .entry((format!("icon:{icon}"), side))
+            .entry((name, side))
             .or_insert_with(|| index.resolve_named(icon, &theme, side).and_then(|path| render(&path, side, None)))
             .as_deref()
     }
@@ -81,9 +110,13 @@ impl IconLoader {
     pub fn load_symbolic(&mut self, icon: &str, side: i32, tint: Color) -> Option<&[u8]> {
         self.expire_missing();
         let theme = self.theme_name();
+        let name = cache_name(icon);
+        if let Some(stale) = stamp_prefix(icon, &name) {
+            self.symbolic_rendered.retain(|(key, _, _), _| !key.starts_with(&stale) || *key == name);
+        }
         let index = &mut self.index;
         self.symbolic_rendered
-            .entry((icon.to_string(), side, tint.to_buffer_bytes()))
+            .entry((name, side, tint.to_buffer_bytes()))
             .or_insert_with(|| {
                 index.resolve_symbolic(icon, &theme, side).and_then(|path| render(&path, side, Some(tint)))
             })
@@ -91,6 +124,9 @@ impl IconLoader {
     }
 
     pub fn load(&mut self, app_id: &str, side: i32) -> Option<&[u8]> {
+        if app_id.trim().is_empty() {
+            return None;
+        }
         self.expire_missing();
         let theme = self.theme_name();
         let index = &mut self.index;
@@ -99,7 +135,7 @@ impl IconLoader {
             .rendered
             .entry(key.clone())
             .or_insert_with(|| {
-                let rendered = index.resolve_app(app_id, &theme, side).and_then(|path| render(&path, side, None));
+                let rendered = index.render_app(app_id, &theme, side);
                 if rendered.is_none() {
                     tracing::debug!(app_id, "no icon found; falling back to a built-in glyph");
                 }
@@ -158,11 +194,31 @@ struct Theme {
     parents: Vec<String>,
 }
 
+#[derive(Debug)]
+struct Listing {
+    stamp: Option<SystemTime>,
+    checked: u64,
+    names: HashSet<String>,
+}
+
+impl Listing {
+    fn read(dir: &Path, epoch: u64) -> Self {
+        let stamp = settled_mtime(dir);
+        let names = std::fs::read_dir(dir)
+            .map(|entries| entries.flatten().filter_map(|entry| entry.file_name().into_string().ok()).collect())
+            .unwrap_or_default();
+        Self { stamp, checked: epoch, names }
+    }
+}
+
 #[derive(Debug, Default)]
 struct ThemeIndex {
     roots: Option<Vec<PathBuf>>,
     themes: HashMap<String, Option<Theme>>,
-    listings: HashMap<PathBuf, HashSet<String>>,
+    listings: HashMap<PathBuf, Listing>,
+    epoch: u64,
+    desktop_icons: HashMap<String, Option<String>>,
+    applications: Option<Vec<Option<SystemTime>>>,
 }
 
 impl ThemeIndex {
@@ -187,7 +243,7 @@ impl ThemeIndex {
     fn chain(&mut self, theme: &str) -> Vec<String> {
         let mut heads = vec![theme.to_string()];
         if self.theme(theme).is_none() {
-            heads.push(MISSING_THEME_FALLBACK.to_string());
+            heads.extend(MISSING_THEME_FALLBACK.iter().map(|name| (*name).to_string()));
         }
         let mut chain = Vec::new();
         for head in heads {
@@ -206,19 +262,41 @@ impl ThemeIndex {
     }
 
     fn forget_listings(&mut self) {
-        self.listings.clear();
+        self.epoch = self.epoch.wrapping_add(1);
         self.themes.retain(|_, theme| theme.is_some());
+        if let Some(seen) = self.applications.take() {
+            let now = applications_stamps();
+            let racy = now.iter().flatten().any(|stamp| !is_settled(*stamp));
+            if racy || seen != now {
+                self.desktop_icons.clear();
+            } else {
+                self.applications = Some(now);
+            }
+        }
     }
 
     fn contains(&mut self, dir: &Path, file: &str) -> bool {
-        self.listings
-            .entry(dir.to_path_buf())
-            .or_insert_with(|| {
-                std::fs::read_dir(dir)
-                    .map(|entries| entries.flatten().filter_map(|entry| entry.file_name().into_string().ok()).collect())
-                    .unwrap_or_default()
-            })
-            .contains(file)
+        let epoch = self.epoch;
+        let listing = self.listings.entry(dir.to_path_buf()).or_insert_with(|| Listing::read(dir, epoch));
+        if listing.checked != epoch {
+            if listing.stamp.is_some() && listing.stamp == settled_mtime(dir) {
+                listing.checked = epoch;
+            } else {
+                *listing = Listing::read(dir, epoch);
+            }
+        }
+        listing.names.contains(file)
+    }
+
+    fn desktop_icon(&mut self, app_id: &str) -> Option<String> {
+        if is_window_key(app_id) {
+            return None;
+        }
+        if self.applications.is_none() {
+            self.desktop_icons.clear();
+            self.applications = Some(applications_stamps());
+        }
+        self.desktop_icons.entry(app_id.to_string()).or_insert_with(|| desktop_icon_name(app_id)).clone()
     }
 
     fn file_in(&mut self, dir: &Path, name: &str) -> Option<PathBuf> {
@@ -239,13 +317,20 @@ impl ThemeIndex {
     }
 
     fn find(&mut self, names: &[String], theme: &str, side: i32) -> Option<PathBuf> {
+        self.find_with(names, theme, side, Some)
+    }
+
+    fn find_with<T>(
+        &mut self, names: &[String], theme: &str, side: i32, mut usable: impl FnMut(PathBuf) -> Option<T>,
+    ) -> Option<T> {
         let px = u32::try_from(side.max(1)).unwrap_or(1);
         let chain = self.chain(theme);
         let roots = self.roots();
         names.iter().find_map(|name| {
-            direct_path(name)
+            let path = direct_path(name)
                 .or_else(|| chain.iter().find_map(|theme_name| self.lookup_in_theme(theme_name, name, px)))
-                .or_else(|| roots.iter().find_map(|root| self.file_in(root, name)))
+                .or_else(|| roots.iter().find_map(|root| self.file_in(root, name)))?;
+            usable(path)
         })
     }
 
@@ -257,14 +342,25 @@ impl ThemeIndex {
         self.find(&symbolic_candidates(icon), theme, side)
     }
 
-    fn resolve_app(&mut self, app_id: &str, theme: &str, side: i32) -> Option<PathBuf> {
+    fn app_candidates(&mut self, app_id: &str) -> Vec<String> {
         let mut primaries = Vec::new();
-        if let Some(from_desktop) = desktop_icon_name(app_id) {
+        if let Some(from_desktop) = self.desktop_icon(app_id) {
             primaries.push(normalize_icon_name(&from_desktop));
         }
         primaries.push(normalize_icon_name(app_id));
         primaries.push(normalize_icon_name(&app_id.to_lowercase()));
-        self.find(&with_variants(&primaries), theme, side)
+        with_variants(&primaries)
+    }
+
+    #[cfg(test)]
+    fn resolve_app(&mut self, app_id: &str, theme: &str, side: i32) -> Option<PathBuf> {
+        let names = self.app_candidates(app_id);
+        self.find(&names, theme, side)
+    }
+
+    fn render_app(&mut self, app_id: &str, theme: &str, side: i32) -> Option<Vec<u8>> {
+        let names = self.app_candidates(app_id);
+        self.find_with(&names, theme, side, |path| render(&path, side, None))
     }
 }
 
@@ -641,7 +737,8 @@ impl ArgBuilder {
     }
 }
 
-fn exec_argv(exec: &str) -> Vec<String> {
+#[must_use]
+pub fn exec_argv(exec: &str) -> Vec<String> {
     #[derive(Clone, Copy)]
     enum Quote {
         None,
@@ -683,7 +780,8 @@ fn shell_word(arg: &str) -> String {
     if plain { arg.to_string() } else { format!("'{}'", arg.replace('\'', "'\\''")) }
 }
 
-fn exec_command(exec: &str) -> String {
+#[must_use]
+pub fn exec_command(exec: &str) -> String {
     exec_argv(exec).iter().map(|arg| shell_word(arg)).collect::<Vec<_>>().join(" ")
 }
 
@@ -727,12 +825,35 @@ fn is_plain_app_id(app_id: &str) -> bool {
     !app_id.is_empty() && !app_id.starts_with('.') && !app_id.contains(['/', '\0'])
 }
 
+fn is_window_key(app_id: &str) -> bool {
+    app_id.strip_prefix("window-").is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
+}
+
+fn is_settled(stamp: SystemTime) -> bool {
+    SystemTime::now().duration_since(stamp).is_ok_and(|age| age >= SETTLED)
+}
+
+fn settled_mtime(dir: &Path) -> Option<SystemTime> {
+    modified(dir).filter(|stamp| is_settled(*stamp))
+}
+
+fn applications_stamps() -> Vec<Option<SystemTime>> {
+    data_dirs().iter().map(|dir| modified(&dir.join("applications"))).collect()
+}
+
 fn desktop_icon_name(app_id: &str) -> Option<String> {
     if !is_plain_app_id(app_id) {
         return None;
     }
-    let exact = if app_id.ends_with(".desktop") { app_id.to_string() } else { format!("{app_id}.desktop") };
-    let candidates = [exact, format!("{app_id}.desktop"), format!("{}.desktop", app_id.to_lowercase())];
+    let mut candidates = vec![format!("{app_id}.desktop"), format!("{}.desktop", app_id.to_lowercase())];
+    if app_id.ends_with(".desktop") {
+        candidates.insert(0, app_id.to_string());
+    }
+    candidates.dedup();
 
     for dir in data_dirs() {
         let apps = dir.join("applications");
@@ -840,6 +961,25 @@ fn parse_index_theme(contents: &str) -> (Vec<ThemeDir>, Vec<String>) {
     (dirs, parents)
 }
 
+fn cache_name(icon: &str) -> String {
+    let normalized = normalize_icon_name(icon);
+    let path = Path::new(&normalized);
+    if !path.is_absolute() {
+        return icon.to_string();
+    }
+    let stamp = std::fs::metadata(path).ok().and_then(|meta| {
+        let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some((modified.as_nanos(), meta.len()))
+    });
+    stamp.map_or_else(|| icon.to_string(), |(at, len)| format!("{icon}{STAMP_MARK}{at}:{len}"))
+}
+
+const STAMP_MARK: char = '\u{1}';
+
+fn stamp_prefix(plain: &str, stamped: &str) -> Option<String> {
+    (plain.len() != stamped.len()).then(|| format!("{plain}{STAMP_MARK}"))
+}
+
 fn direct_path(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     (path.is_absolute() && path.is_file()).then(|| path.to_path_buf())
@@ -847,7 +987,9 @@ fn direct_path(name: &str) -> Option<PathBuf> {
 
 fn normalize_icon_name(icon: &str) -> String {
     let icon = icon.trim();
-    let icon = icon.strip_prefix("file://").unwrap_or(icon);
+    if icon.starts_with("file://") {
+        return glide_config::uri::local_path(icon).map(|path| path.to_string_lossy().into_owned()).unwrap_or_default();
+    }
     if Path::new(icon).is_absolute() {
         return icon.to_string();
     }
@@ -861,7 +1003,7 @@ fn normalize_icon_name(icon: &str) -> String {
 
 fn with_variants(primaries: &[String]) -> Vec<String> {
     let mut names = primaries.to_vec();
-    for primary in primaries.iter().filter(|p| !Path::new(p).is_absolute()) {
+    for primary in primaries.iter().filter(|p| !p.is_empty() && !Path::new(p).is_absolute()) {
         for suffix in ["-symbolic", "-panel"] {
             names.push(primary.strip_suffix(suffix).map_or_else(|| format!("{primary}{suffix}"), str::to_string));
         }
@@ -878,6 +1020,9 @@ fn named_candidates(icon: &str) -> Vec<String> {
 fn symbolic_candidates(icon: &str) -> Vec<String> {
     let icon = normalize_icon_name(icon);
     let base = icon.strip_suffix("-symbolic").unwrap_or(&icon).to_string();
+    if base.is_empty() {
+        return Vec::new();
+    }
     vec![format!("{base}-symbolic"), base]
 }
 
@@ -885,17 +1030,57 @@ const MAX_ICON_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[must_use]
 pub fn render(path: &Path, side: i32, tint: Option<Color>) -> Option<Vec<u8>> {
-    let meta = std::fs::metadata(path).ok()?;
+    let data = read_bounded(path)?;
+    match (Format::sniff(&data, path)?, tint) {
+        (Format::Svg, None) => glide_paint::render_svg(&data, side),
+        (Format::Png, None) => glide_paint::render_png(&data, side),
+        (Format::Photo, None) => glide_paint::decode_cover(&data, side),
+        (Format::Svg, Some(tint)) => glide_paint::render_svg_tinted(&data, side, tint),
+        (Format::Png, Some(tint)) => glide_paint::render_png_tinted(&data, side, tint),
+        (Format::Photo, Some(_)) => None,
+    }
+}
+
+fn read_bounded(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file =
+        std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY).open(path).ok()?;
+    let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > MAX_ICON_FILE_BYTES {
         return None;
     }
-    let data = std::fs::read(path).ok()?;
-    match (path.extension().and_then(|ext| ext.to_str()), tint) {
-        (Some("svg"), None) => glide_paint::render_svg(&data, side),
-        (Some("png"), None) => glide_paint::render_png(&data, side),
-        (Some("svg"), Some(tint)) => glide_paint::render_svg_tinted(&data, side, tint),
-        (Some("png"), Some(tint)) => glide_paint::render_png_tinted(&data, side, tint),
-        _ => None,
+    let mut data = Vec::with_capacity(usize::try_from(meta.len()).ok()?);
+    file.take(MAX_ICON_FILE_BYTES).read_to_end(&mut data).ok()?;
+    Some(data)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Svg,
+    Png,
+    Photo,
+}
+
+impl Format {
+    fn sniff(data: &[u8], path: &Path) -> Option<Self> {
+        if data.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) {
+            return Some(Self::Png);
+        }
+        if data.starts_with(&[0xff, 0xd8, 0xff])
+            || (data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP")
+        {
+            return Some(Self::Photo);
+        }
+        let head = String::from_utf8_lossy(&data[..data.len().min(1024)]);
+        let text = head.trim_start_matches('\u{feff}').trim_start();
+        if text.starts_with("<?xml") || text.starts_with("<svg") || text.starts_with("<!--") || text.contains("<svg") {
+            return Some(Self::Svg);
+        }
+        let svgz = data.starts_with(&[0x1f, 0x8b]);
+        let named_svg =
+            path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("svgz"));
+        (svgz && named_svg).then_some(Self::Svg)
     }
 }
 
@@ -924,7 +1109,66 @@ mod tests {
     #[test]
     fn an_unknown_theme_falls_back_through_adwaita_to_hicolor() {
         let chain = ThemeIndex::with_roots(Vec::new()).chain("DefinitelyNotInstalled");
-        assert_eq!(chain, ["DefinitelyNotInstalled", "Adwaita", "hicolor"]);
+        assert_eq!(chain, ["DefinitelyNotInstalled", "Adwaita", "breeze", "hicolor"]);
+    }
+
+    #[test]
+    fn every_loader_starts_a_generation_no_earlier_loader_reached() {
+        let mut old = IconLoader::new(None);
+        let start = Instant::now();
+        old.rendered.insert(("missing".into(), 16), None);
+        assert!(!old.expire_missing_at(start));
+        assert!(old.expire_missing_at(start + NEGATIVE_TTL));
+        let fresh = IconLoader::new(None);
+        assert!(fresh.generation > old.generation, "a new theme must not reuse the old loader's cache keys");
+        assert_ne!(IconLoader::default().generation, fresh.generation);
+    }
+
+    #[test]
+    fn empty_names_never_turn_into_suffix_lookups() {
+        assert!(symbolic_candidates("").is_empty());
+        assert!(symbolic_candidates("-symbolic").is_empty());
+        assert!(named_candidates("").is_empty());
+        assert!(IconLoader::with_roots("None", Vec::new()).load("", 16).is_none());
+        assert!(is_window_key("window-12"));
+        assert!(!is_window_key("window-"));
+        assert!(!is_window_key("window-manager"));
+    }
+
+    #[test]
+    fn a_candidate_that_does_not_render_gives_way_to_the_next() {
+        let root = std::env::temp_dir().join(format!("glide-icon-next-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let broken = root.join("broken.xpm");
+        std::fs::write(&broken, b"/* XPM */").expect("write");
+        std::fs::write(root.join("good.png"), crate::image::encode_png(2, 2, &[255; 16]).expect("png")).expect("write");
+        let mut index = ThemeIndex::with_roots(vec![root.clone()]);
+        let names = [broken.to_string_lossy().into_owned(), "good".to_string()];
+        assert_eq!(index.find(&names, "None", 16), Some(broken));
+        assert!(index.find_with(&names, "None", 16, |path| render(&path, 16, None)).is_some());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_listing_is_read_again_only_when_its_folder_changed() {
+        let root = std::env::temp_dir().join(format!("glide-icon-mtime-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let age = |seconds| SystemTime::now() - Duration::from_secs(seconds);
+        let stamp = |at: SystemTime| std::fs::File::open(&root).and_then(|dir| dir.set_modified(at)).expect("mtime");
+        let past = age(600);
+        stamp(past);
+        let mut index = ThemeIndex::with_roots(vec![root.clone()]);
+        assert!(!index.contains(&root, "late.png"));
+        std::fs::write(root.join("late.png"), b"x").expect("write");
+        stamp(past);
+        index.forget_listings();
+        assert!(!index.contains(&root, "late.png"), "an unchanged folder keeps its listing");
+        stamp(age(300));
+        index.forget_listings();
+        assert!(index.contains(&root, "late.png"), "a changed folder is read again");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -963,6 +1207,48 @@ mod tests {
         assert_eq!(loader.index.resolve_named("late", "None", 16), Some(root.join("late.png")));
         assert!(!loader.expire_missing_at(start + NEGATIVE_TTL * 3));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn client_image_files_are_sniffed_and_special_files_are_never_read() {
+        let root = std::env::temp_dir().join(format!("glide-icon-sniff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let png = crate::image::encode_png(2, 2, &[255; 16]).expect("png");
+        std::fs::write(root.join("avatar.jpg"), &png).expect("write");
+        assert!(render(&root.join("avatar.jpg"), 16, None).is_some(), "a PNG named .jpg still loads");
+        std::fs::write(
+            root.join("noext"),
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>"#,
+        )
+        .expect("write");
+        assert!(render(&root.join("noext"), 16, None).is_some(), "an SVG without an extension loads");
+        std::fs::write(root.join("junk.png"), b"not an image").expect("write");
+        assert!(render(&root.join("junk.png"), 16, None).is_none());
+        assert!(render(&root, 16, None).is_none(), "a folder is refused");
+        assert!(render(Path::new("/dev/null"), 16, None).is_none(), "a device is refused");
+        let fifo = root.join("pipe.png");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status().is_ok_and(|status| status.success());
+        if made {
+            assert!(render(&fifo, 16, None).is_none(), "a FIFO is refused without blocking");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn photo_formats_are_recognised_by_their_magic_bytes() {
+        let path = Path::new("/x/avatar");
+        assert_eq!(Format::sniff(&[0xff, 0xd8, 0xff, 0xe0, 0, 0], path), Some(Format::Photo));
+        assert_eq!(Format::sniff(b"RIFF\0\0\0\0WEBPVP8 ", path), Some(Format::Photo));
+        assert_eq!(Format::sniff(&[0x1f, 0x8b, 8, 0], Path::new("/x/a.svgz")), Some(Format::Svg));
+        assert_eq!(Format::sniff(&[0x1f, 0x8b, 8, 0], path), None);
+    }
+
+    #[test]
+    fn file_uris_are_percent_decoded_and_may_name_localhost() {
+        assert_eq!(normalize_icon_name("file:///home/me/My%20Pics/a.png"), "/home/me/My Pics/a.png");
+        assert_eq!(normalize_icon_name("file://localhost/opt/a.png"), "/opt/a.png");
+        assert_eq!(normalize_icon_name("file://server/share/a.png"), "");
     }
 
     #[test]
@@ -1099,6 +1385,27 @@ mod tests {
     fn data_dirs_have_the_spec_defaults() {
         let dirs = data_dirs();
         assert!(dirs.iter().any(|dir| dir.ends_with("share")), "expected a system share directory in {dirs:?}");
+    }
+
+    #[test]
+    fn an_icon_file_rewritten_in_place_is_rendered_again() {
+        let dir = std::env::temp_dir().join(format!("glide-icon-rewrite-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("status.svg");
+        let svg = |fill: &str| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="{fill}"/></svg>"#
+            )
+        };
+        let name = path.to_str().expect("utf-8 path").to_string();
+        let mut loader = IconLoader::new(None);
+        std::fs::write(&path, svg("#f00")).expect("write icon");
+        let red = loader.load_named(&name, 4).map(<[u8]>::to_vec).expect("renders");
+        std::fs::write(&path, svg("#0000ff")).expect("rewrite icon");
+        let blue = loader.load_named(&name, 4).map(<[u8]>::to_vec).expect("renders");
+        assert_ne!(red, blue, "a NewIcon that rewrote the same file shows the new art");
+        assert_eq!(loader.rendered.len(), 1, "the stale raster of the old file is dropped");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

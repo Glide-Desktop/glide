@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::BTreeMap,
     sync::{Arc, Mutex, mpsc},
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -31,13 +31,15 @@ pub struct TrayItem {
 pub enum TrayEvent {
     Item(Box<TrayItem>),
     Removed { key: String },
+    ActivateUnsupported { key: String },
+    Stopped,
 }
 
 pub type Sink = Arc<dyn Fn(TrayEvent) + Send + Sync>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Method {
-    Activate(i32, i32),
+    Activate(i32, i32, Option<String>),
     SecondaryActivate(i32, i32),
     ContextMenu(i32, i32),
     Scroll(i32, bool),
@@ -48,21 +50,36 @@ pub(crate) enum Request {
     Register(Address, Option<String>),
     External { service: String, added: bool },
     Vanished(String),
+    OwnerMoved { name: String, owner: String },
     WatcherOwner(String),
-    Changed { sender: String },
+    Changed { sender: String, icon: bool },
     Call { key: String, method: Method },
     Refresh,
+    Disconnected,
     Shutdown,
+}
+
+#[derive(Debug)]
+struct Link {
+    tx: mpsc::Sender<Request>,
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        if self.tx.send(Request::Shutdown).is_err() {
+            tracing::trace!("the tray worker had already stopped");
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct TrayHandle {
-    tx: mpsc::Sender<Request>,
+    link: Arc<Link>,
 }
 
 impl TrayHandle {
     fn send(&self, request: Request) {
-        if self.tx.send(request).is_err() {
+        if self.link.tx.send(request).is_err() {
             tracing::debug!("the tray worker has stopped");
         }
     }
@@ -72,7 +89,11 @@ impl TrayHandle {
     }
 
     pub fn activate(&self, key: &str, x: i32, y: i32) {
-        self.call(key, Method::Activate(x, y));
+        self.activate_with_token(key, x, y, None);
+    }
+
+    pub fn activate_with_token(&self, key: &str, x: i32, y: i32, token: Option<String>) {
+        self.call(key, Method::Activate(x, y, token));
     }
 
     pub fn secondary_activate(&self, key: &str, x: i32, y: i32) {
@@ -130,19 +151,14 @@ pub fn start(sink: Sink) -> anyhow::Result<TrayHandle> {
 }
 
 pub fn start_on(address: &str, sink: Sink) -> anyhow::Result<TrayHandle> {
-    launch(Some(address.to_string()), sink)
+    launch(Some(address), sink)
 }
 
-fn launch(address: Option<String>, sink: Sink) -> anyhow::Result<TrayHandle> {
+fn launch(address: Option<&str>, sink: Sink) -> anyhow::Result<TrayHandle> {
     let (tx, rx) = mpsc::channel();
-    let worker_tx = tx.clone();
-    std::thread::Builder::new().name("glide-tray".into()).spawn(move || {
-        match Worker::connect(address.as_deref(), sink, worker_tx) {
-            Ok(worker) => worker.run(&rx),
-            Err(err) => tracing::warn!("the system tray is unavailable: {err}"),
-        }
-    })?;
-    Ok(TrayHandle { tx })
+    let worker = Worker::connect(address, sink, tx.clone())?;
+    std::thread::Builder::new().name("glide-tray".into()).spawn(move || worker.run(&rx))?;
+    Ok(TrayHandle { link: Arc::new(Link { tx }) })
 }
 
 fn watcher_owner(connection: &zbus::blocking::Connection) -> Option<String> {
@@ -160,6 +176,13 @@ fn trusted(sender: Option<&str>, interface: Option<&str>, watcher: Option<&str>,
 }
 
 fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>, unique: &str) {
+    forward_signals(connection, tx, unique);
+    if tx.send(Request::Disconnected).is_err() {
+        tracing::trace!("the tray worker ended before its signal listener");
+    }
+}
+
+fn forward_signals(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>, unique: &str) {
     let mut watcher = watcher_owner(connection);
     for message in zbus::blocking::MessageIterator::from(connection) {
         let Ok(message) = message else {
@@ -188,12 +211,14 @@ fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>, u
                     Request::WatcherOwner(new)
                 } else if new.is_empty() {
                     Request::Vanished(name)
+                } else if !name.starts_with(':') {
+                    Request::OwnerMoved { name, owner: new }
                 } else {
                     continue;
                 }
             }
-            (Some(ITEM_INTERFACE), _) => match sender {
-                Some(sender) => Request::Changed { sender },
+            (Some(ITEM_INTERFACE), member) => match sender {
+                Some(sender) => Request::Changed { sender, icon: icon_signal(member) },
                 None => continue,
             },
             (
@@ -213,17 +238,21 @@ fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>, u
     }
 }
 
+fn icon_signal(member: Option<&str>) -> bool {
+    matches!(member, Some("NewIcon" | "NewAttentionIcon" | "NewOverlayIcon"))
+}
+
 fn collect_batch(
     first: Request, rx: &mpsc::Receiver<Request>, quiet: Duration, limit: Duration,
-) -> (BTreeSet<String>, Vec<Request>) {
+) -> (BTreeMap<String, bool>, Vec<Request>) {
     let deadline = Instant::now() + limit;
-    let mut changed = BTreeSet::new();
+    let mut changed = BTreeMap::new();
     let mut pending = Vec::new();
     let mut next = Some(first);
     while let Some(request) = next.take() {
         match request {
-            Request::Changed { sender } => {
-                changed.insert(sender);
+            Request::Changed { sender, icon } => {
+                *changed.entry(sender).or_insert(false) |= icon;
             }
             other => {
                 pending.push(other);
@@ -252,6 +281,34 @@ fn gone(err: &zbus::Error) -> bool {
         zbus::Error::FDO(fdo) => {
             matches!(**fdo, zbus::fdo::Error::ServiceUnknown(_) | zbus::fdo::Error::NameHasNoOwner(_))
         }
+        _ => false,
+    }
+}
+
+fn unexported(err: &zbus::Error) -> bool {
+    const MISSING: [&str; 4] = [
+        "org.freedesktop.DBus.Error.UnknownObject",
+        "org.freedesktop.DBus.Error.UnknownMethod",
+        "org.freedesktop.DBus.Error.UnknownInterface",
+        "org.freedesktop.DBus.Error.InvalidArgs",
+    ];
+    match err {
+        zbus::Error::MethodError(name, _, _) => MISSING.contains(&name.as_str()),
+        zbus::Error::FDO(fdo) => matches!(
+            **fdo,
+            zbus::fdo::Error::UnknownObject(_)
+                | zbus::fdo::Error::UnknownMethod(_)
+                | zbus::fdo::Error::UnknownInterface(_)
+                | zbus::fdo::Error::InvalidArgs(_)
+        ),
+        _ => false,
+    }
+}
+
+fn unimplemented(err: &zbus::Error) -> bool {
+    match err {
+        zbus::Error::MethodError(name, _, _) => name.as_str() == "org.freedesktop.DBus.Error.UnknownMethod",
+        zbus::Error::FDO(fdo) => matches!(**fdo, zbus::fdo::Error::UnknownMethod(_)),
         _ => false,
     }
 }
@@ -355,12 +412,11 @@ fn wake_after(now: Instant, deadlines: impl IntoIterator<Item = Option<Instant>>
     deadlines.into_iter().flatten().min().map(|next| next.saturating_duration_since(now))
 }
 
-fn remember(pending: &mut Vec<Pending>, entry: Pending) {
+fn remember(pending: &mut Vec<Pending>, entry: Pending) -> Option<Pending> {
     pending.retain(|p| p.address != entry.address);
-    if pending.len() >= MAX_PENDING {
-        pending.remove(0);
-    }
+    let evicted = (pending.len() >= MAX_PENDING).then(|| pending.remove(0));
     pending.push(entry);
+    evicted
 }
 
 struct Tracked {
@@ -369,6 +425,25 @@ struct Tracked {
     props: ItemProps,
     stall: Stall,
     owed: Owed,
+    icon_owed: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Attach {
+    at: Option<Instant>,
+    backoff: Option<Duration>,
+}
+
+impl Attach {
+    fn fail(&mut self, now: Instant) {
+        let backoff = next_backoff(self.backoff);
+        self.backoff = Some(backoff);
+        self.at = Some(now + backoff);
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl Tracked {
@@ -388,6 +463,8 @@ struct Worker {
     host: String,
     unique: String,
     watcher: bool,
+    joined: bool,
+    attach: Attach,
     items: Vec<Tracked>,
     pending: Vec<Pending>,
     signals: Option<JoinHandle<()>>,
@@ -409,39 +486,37 @@ impl Worker {
             }
         }
         let unique = connection.unique_name().map(ToString::to_string).unwrap_or_default();
-        let signals = {
-            let connection = connection.clone();
-            let tx = tx.clone();
-            let unique = unique.clone();
-            std::thread::Builder::new()
-                .name("glide-tray-signals".into())
-                .spawn(move || listen(&connection, &tx, &unique))?
-        };
         let registry = Arc::new(Mutex::new(Registry::default()));
-        connection.object_server().at(WATCHER_PATH, Watcher { registry: registry.clone(), tx })?;
+        connection.object_server().at(WATCHER_PATH, Watcher { registry: registry.clone(), tx: tx.clone() })?;
         let host = format!("{HOST_PREFIX}-{}", std::process::id());
         lock(&registry).add_host(&host);
         if let Err(err) = connection.request_name(host.as_str()) {
             tracing::debug!("could not own {host}: {err}");
         }
-        let mut worker = Self {
+        let signals = {
+            let connection = connection.clone();
+            let unique = unique.clone();
+            std::thread::Builder::new()
+                .name("glide-tray-signals".into())
+                .spawn(move || listen(&connection, &tx, &unique))?
+        };
+        Ok(Self {
             connection,
             sink,
             registry,
             host,
             unique,
             watcher: false,
+            joined: false,
+            attach: Attach { at: Some(Instant::now()), backoff: None },
             items: Vec::new(),
             pending: Vec::new(),
             signals: Some(signals),
-        };
-        if !worker.claim() {
-            worker.join();
-        }
-        Ok(worker)
+        })
     }
 
     fn run(mut self, rx: &mpsc::Receiver<Request>) {
+        let mut lost = false;
         loop {
             self.retry_due();
             let first = match self.next_wake(Instant::now()) {
@@ -456,30 +531,58 @@ impl Worker {
                 },
             };
             let (changed, pending) = collect_batch(first, rx, COALESCE, MAX_BATCH);
-            for sender in changed {
-                self.refresh_owner(&sender);
+            for (sender, icon) in changed {
+                self.refresh_owner(&sender, icon);
             }
             let mut stop = false;
             for request in pending {
-                if matches!(request, Request::Shutdown) {
-                    stop = true;
+                match request {
+                    Request::Shutdown => stop = true,
+                    Request::Disconnected => {
+                        tracing::warn!("the system tray lost its bus connection");
+                        lost = true;
+                        stop = true;
+                    }
+                    request => self.handle(request),
+                }
+                if stop {
                     break;
                 }
-                self.handle(request);
             }
             if stop {
                 break;
             }
         }
+        let sink = self.sink.clone();
         self.shutdown();
+        if lost {
+            sink(TrayEvent::Stopped);
+        }
     }
 
     fn next_wake(&self, now: Instant) -> Option<Duration> {
-        wake_after(now, self.pending.iter().map(|p| p.owed.at).chain(self.items.iter().map(|t| t.owed.at)))
+        let owed = self.pending.iter().map(|p| p.owed.at).chain(self.items.iter().map(|t| t.owed.at));
+        wake_after(now, owed.chain(std::iter::once(self.attach.at)))
+    }
+
+    fn attached(&self) -> bool {
+        self.watcher || self.joined
+    }
+
+    fn attach(&mut self) {
+        if self.attached() || self.claim() || self.join() {
+            self.attach.clear();
+        } else {
+            self.attach.fail(Instant::now());
+            tracing::debug!(retry_in = ?self.attach.backoff, "neither serving nor joining a tray watcher");
+        }
     }
 
     fn retry_due(&mut self) {
         let now = Instant::now();
+        if self.attach.at.is_some_and(|at| at <= now) {
+            self.attach();
+        }
         let waiting: Vec<Address> = plan(now, self.pending.iter().map(|p| p.owed.at))
             .due
             .into_iter()
@@ -570,24 +673,37 @@ impl Worker {
                 self.pending.retain(|p| p.owner != name && p.address.bus != name);
                 self.forget(|tracked| tracked.owner == name || tracked.address.bus == name);
             }
+            Request::OwnerMoved { name, owner } => self.owner_moved(&name, &owner),
             Request::WatcherOwner(owner) => {
                 if self.watcher || owner == self.unique {
                     return;
                 }
-                if owner.is_empty() {
-                    self.claim();
-                } else {
-                    self.join();
-                }
+                self.joined = false;
+                self.attach.clear();
+                self.attach();
             }
-            Request::Changed { sender } => self.refresh_owner(&sender),
+            Request::Changed { sender, icon } => self.refresh_owner(&sender, icon),
             Request::Call { key, method } => self.call(&key, method),
             Request::Refresh => {
                 for tracked in &self.items {
                     (self.sink)(tracked.event());
                 }
             }
-            Request::Shutdown => {}
+            Request::Disconnected | Request::Shutdown => {}
+        }
+    }
+
+    fn owner_moved(&mut self, name: &str, owner: &str) {
+        let mut moved = false;
+        let entries = self.items.iter_mut().map(|t| (&t.address, &mut t.owner));
+        for (address, current) in entries.chain(self.pending.iter_mut().map(|p| (&p.address, &mut p.owner))) {
+            if address.bus == name && current.as_str() != owner {
+                owner.clone_into(current);
+                moved = true;
+            }
+        }
+        if moved {
+            self.refresh_owner(owner, false);
         }
     }
 
@@ -631,7 +747,7 @@ impl Worker {
         }
     }
 
-    fn join(&mut self) {
+    fn join(&mut self) -> bool {
         let registered: zbus::Result<()> = self
             .connection
             .call_method(
@@ -644,8 +760,9 @@ impl Worker {
             .map(|_| ());
         if let Err(err) = registered {
             tracing::warn!("could not register as a tray host: {err}");
-            return;
+            return false;
         }
+        self.joined = true;
         let items = self
             .get(WATCHER_NAME, WATCHER_PATH, WATCHER_INTERFACE, "RegisteredStatusNotifierItems")
             .ok()
@@ -657,6 +774,7 @@ impl Worker {
                 self.register(address, None);
             }
         }
+        true
     }
 
     fn owner_of(&self, bus: &str, sender: Option<&str>) -> String {
@@ -692,7 +810,9 @@ impl Worker {
         match self.fetch(&address) {
             Ok(props) => {
                 tracing::info!(key = %address.key(), id = %props.id, "tray item registered");
-                let tracked = Tracked { address, owner, props, stall: Stall::default(), owed: Owed::default() };
+                self.list(&address);
+                let tracked =
+                    Tracked { address, owner, props, stall: Stall::default(), owed: Owed::default(), icon_owed: false };
                 (self.sink)(tracked.event());
                 self.items.push(tracked);
             }
@@ -705,8 +825,19 @@ impl Worker {
                 let now = Instant::now();
                 stall.record(&err, now);
                 owed.fail(&stall, now);
-                remember(&mut self.pending, Pending { address, owner, stall, owed });
+                if owed.at.is_none() {
+                    self.unlist(&address);
+                }
+                if let Some(evicted) = remember(&mut self.pending, Pending { address, owner, stall, owed }) {
+                    self.unlist(&evicted.address);
+                }
             }
+        }
+    }
+
+    fn list(&self, address: &Address) {
+        if self.watcher && lock(&self.registry).add_item(address.clone()) {
+            self.emit("StatusNotifierItemRegistered", &address.key());
         }
     }
 
@@ -729,10 +860,11 @@ impl Worker {
         }
     }
 
-    fn refresh_owner(&mut self, sender: &str) {
+    fn refresh_owner(&mut self, sender: &str, icon: bool) {
         for index in (0..self.items.len()).rev() {
-            let tracked = &self.items[index];
+            let tracked = &mut self.items[index];
             if tracked.owner == sender || tracked.address.bus == sender {
+                tracked.icon_owed |= icon;
                 self.refresh(index);
             }
         }
@@ -765,14 +897,15 @@ impl Worker {
             Ok(props) => {
                 tracked.stall.clear();
                 tracked.owed.clear();
-                if props != tracked.props {
+                let icon = std::mem::take(&mut tracked.icon_owed);
+                if icon || props != tracked.props {
                     tracked.props = props;
                     (self.sink)(tracked.event());
                 }
             }
-            Err(err) if gone(&err) => {
+            Err(err) if gone(&err) || unexported(&err) => {
                 let address = tracked.address.clone();
-                tracing::debug!(key = %address.key(), "tray item lost its owner: {err}");
+                tracing::debug!(key = %address.key(), "tray item lost its owner or its object: {err}");
                 self.forget(|tracked| tracked.address == address);
             }
             Err(err) => {
@@ -839,13 +972,14 @@ impl Worker {
         let Some(tracked) = self.items.iter().find(|t| t.address.key() == key) else {
             return;
         };
-        let proxy = zbus::blocking::proxy::Builder::<zbus::blocking::Proxy<'_>>::new(&self.connection)
-            .destination(tracked.address.bus.as_str())
-            .and_then(|b| b.path(tracked.address.path.as_str()))
-            .and_then(|b| b.interface(ITEM_INTERFACE))
-            .map(|b| b.cache_properties(zbus::proxy::CacheProperties::No))
-            .and_then(zbus::blocking::proxy::Builder::build);
-        let proxy = match proxy {
+        let method = match method {
+            Method::Activate(x, y, token) => {
+                self.activate(&tracked.address, x, y, token);
+                return;
+            }
+            method => method,
+        };
+        let proxy = match item_proxy(&self.connection, &tracked.address) {
             Ok(proxy) => proxy,
             Err(err) => {
                 tracing::debug!(key, "tray proxy failed: {err}");
@@ -853,7 +987,7 @@ impl Worker {
             }
         };
         let sent = match method {
-            Method::Activate(x, y) => proxy.call_noreply("Activate", &(x, y)),
+            Method::Activate(..) => return,
             Method::SecondaryActivate(x, y) => proxy.call_noreply("SecondaryActivate", &(x, y)),
             Method::ContextMenu(x, y) => proxy.call_noreply("ContextMenu", &(x, y)),
             Method::Scroll(delta, vertical) => {
@@ -865,6 +999,50 @@ impl Worker {
             tracing::debug!(key, ?method, "tray call failed: {err}");
         }
     }
+
+    fn activate(&self, address: &Address, x: i32, y: i32, token: Option<String>) {
+        let connection = self.connection.clone();
+        let sink = self.sink.clone();
+        let target = address.clone();
+        let spawned = std::thread::Builder::new().name("glide-tray-activate".into()).spawn(move || {
+            let address = target;
+            let key = address.key();
+            let proxy = match item_proxy(&connection, &address) {
+                Ok(proxy) => proxy,
+                Err(err) => {
+                    tracing::debug!(key, "tray proxy failed: {err}");
+                    return;
+                }
+            };
+            if let Some(token) = token
+                && let Err(err) = proxy.call_noreply("ProvideXdgActivationToken", &(token,))
+            {
+                tracing::debug!(key, "handing the tray item an activation token failed: {err}");
+            }
+            match proxy.call_method("Activate", &(x, y)) {
+                Ok(_) => {}
+                Err(err) if unimplemented(&err) => {
+                    tracing::debug!(key, "the tray item does not implement Activate");
+                    sink(TrayEvent::ActivateUnsupported { key });
+                }
+                Err(err) => tracing::debug!(key, "tray activation failed: {err}"),
+            }
+        });
+        if let Err(err) = spawned {
+            tracing::debug!(key = %address.key(), "could not start a tray activation: {err}");
+        }
+    }
+}
+
+fn item_proxy<'a>(
+    connection: &zbus::blocking::Connection, address: &'a Address,
+) -> zbus::Result<zbus::blocking::Proxy<'a>> {
+    zbus::blocking::proxy::Builder::<zbus::blocking::Proxy<'_>>::new(connection)
+        .destination(address.bus.as_str())
+        .and_then(|b| b.path(address.path.as_str()))
+        .and_then(|b| b.interface(ITEM_INTERFACE))
+        .map(|b| b.cache_properties(zbus::proxy::CacheProperties::No))
+        .and_then(zbus::blocking::proxy::Builder::build)
 }
 
 fn read_all(body: &zbus::message::Body, cap: usize) -> zbus::Result<Result<Wire, usize>> {
@@ -1126,27 +1304,98 @@ mod tests {
     #[test]
     fn a_flood_of_icon_changes_is_coalesced_per_sender() {
         let (tx, rx) = mpsc::channel();
-        for _ in 0..5 {
-            tx.send(Request::Changed { sender: ":1.4".into() }).expect("receiver alive");
+        for icon in [false, true, false, false, false] {
+            tx.send(Request::Changed { sender: ":1.4".into(), icon }).expect("receiver alive");
         }
         let (changed, pending) = collect_batch(
-            Request::Changed { sender: ":1.3".into() },
+            Request::Changed { sender: ":1.3".into(), icon: false },
             &rx,
             Duration::from_millis(10),
             Duration::from_millis(200),
         );
         assert_eq!(changed.len(), 2);
+        assert_eq!(changed.get(":1.4"), Some(&true), "one NewIcon in the batch forces a fresh icon");
+        assert_eq!(changed.get(":1.3"), Some(&false));
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn only_icon_signals_force_a_redraw_of_unchanged_properties() {
+        assert!(icon_signal(Some("NewIcon")));
+        assert!(icon_signal(Some("NewAttentionIcon")));
+        assert!(!icon_signal(Some("NewStatus")));
+        assert!(!icon_signal(Some("NewToolTip")));
+        assert!(!icon_signal(None));
+    }
+
+    #[test]
+    fn an_unexported_object_counts_as_removal_only_for_refreshes() {
+        for err in [
+            zbus::fdo::Error::UnknownObject("gone".into()),
+            zbus::fdo::Error::UnknownMethod("no Properties".into()),
+            zbus::fdo::Error::UnknownInterface("no item".into()),
+        ] {
+            let err = zbus::Error::from(err);
+            assert!(unexported(&err), "{err}");
+            assert!(!gone(&err), "a registration still waits for the object: {err}");
+        }
+        assert!(!unexported(&zbus::Error::from(zbus::fdo::Error::NoReply("hung".into()))));
+        assert!(!unexported(&zbus::Error::from(std::io::Error::from(std::io::ErrorKind::TimedOut))));
+    }
+
+    #[test]
+    fn only_a_missing_activate_method_asks_for_the_menu_instead() {
+        assert!(unimplemented(&zbus::Error::from(zbus::fdo::Error::UnknownMethod("Activate".into()))));
+        assert!(!unimplemented(&zbus::Error::from(zbus::fdo::Error::Failed("crashed".into()))));
+        assert!(!unimplemented(&zbus::Error::from(zbus::fdo::Error::NoReply("hung".into()))));
+    }
+
+    #[test]
+    fn attaching_to_a_watcher_retries_with_a_growing_backoff_until_it_works() {
+        let now = Instant::now();
+        let mut attach = Attach::default();
+        attach.fail(now);
+        assert_eq!(attach.at, Some(now + FIRST_BACKOFF));
+        attach.fail(now);
+        assert_eq!(attach.at, Some(now + FIRST_BACKOFF * 2));
+        attach.clear();
+        assert_eq!(attach, Attach::default());
+    }
+
+    #[test]
+    fn a_registration_pushed_out_of_the_pending_list_is_handed_back() {
+        let entry = |n: usize| Pending {
+            address: Address::parse(&format!("org.kde.StatusNotifierItem-{n}-1"), None).expect("valid address"),
+            owner: format!(":1.{n}"),
+            stall: Stall::default(),
+            owed: Owed::default(),
+        };
+        let mut pending = Vec::new();
+        for n in 0..MAX_PENDING {
+            assert!(remember(&mut pending, entry(n)).is_none());
+        }
+        let evicted = remember(&mut pending, entry(MAX_PENDING)).expect("the oldest leaves");
+        assert_eq!(evicted.owner, ":1.0");
+    }
+
+    #[test]
+    fn dropping_the_last_handle_stops_the_worker_but_a_clone_does_not() {
+        let (tx, rx) = mpsc::channel();
+        let handle = TrayHandle { link: Arc::new(Link { tx }) };
+        drop(handle.clone());
+        assert!(rx.try_recv().is_err(), "a clone going away leaves the tray running");
+        drop(handle);
+        assert!(matches!(rx.try_recv(), Ok(Request::Shutdown)));
     }
 
     #[test]
     fn any_other_request_ends_the_batch_so_clicks_are_not_delayed() {
         let (tx, rx) = mpsc::channel();
         tx.send(Request::Refresh).expect("receiver alive");
-        tx.send(Request::Changed { sender: ":1.9".into() }).expect("receiver alive");
+        tx.send(Request::Changed { sender: ":1.9".into(), icon: false }).expect("receiver alive");
         let started = Instant::now();
         let (changed, pending) = collect_batch(
-            Request::Changed { sender: ":1.3".into() },
+            Request::Changed { sender: ":1.3".into(), icon: false },
             &rx,
             Duration::from_millis(40),
             Duration::from_secs(5),

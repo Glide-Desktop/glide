@@ -61,6 +61,21 @@ impl FakeItem {
     }
 }
 
+struct MenuOnlyItem;
+
+#[zbus::interface(name = "org.kde.StatusNotifierItem")]
+impl MenuOnlyItem {
+    #[zbus(property)]
+    fn id(&self) -> String {
+        "indicator".into()
+    }
+
+    #[zbus(property)]
+    fn status(&self) -> String {
+        "Active".into()
+    }
+}
+
 struct FakeWatcher {
     hosts: Log,
 }
@@ -136,7 +151,7 @@ fn start_tray(daemon: &Daemon) -> Tray {
 fn next_item(rx: &mpsc::Receiver<TrayEvent>) -> TrayItem {
     match rx.recv_timeout(Duration::from_secs(5)).expect("an item arrives") {
         TrayEvent::Item(item) => *item,
-        TrayEvent::Removed { key } => panic!("{key} was removed early"),
+        other => panic!("expected an item, got {other:?}"),
     }
 }
 
@@ -262,6 +277,53 @@ fn an_item_registered_by_path_is_watched_activated_refreshed_and_dropped() {
     let removed = tray.rx.recv_timeout(Duration::from_secs(5)).expect("a removal arrives");
     assert_eq!(removed, TrayEvent::Removed { key });
     wait_until("the registry to forget the item", || registered_items(&observer).is_empty());
+}
+
+#[test]
+fn an_item_without_activate_asks_for_its_menu_and_an_unexported_one_is_removed() {
+    let Some(daemon) = private_bus() else { return };
+    let tray = start_tray(&daemon);
+    let observer = connect(&daemon);
+    let dbus = zbus::blocking::fdo::DBusProxy::new(&observer).expect("bus proxy");
+    wait_until("the watcher name", || owned(&dbus, glide_tray::WATCHER_NAME));
+
+    let app = connect(&daemon);
+    app.object_server().at("/StatusNotifierItem", MenuOnlyItem).expect("served item");
+    register(&app, "/StatusNotifierItem");
+    let item = next_item(&tray.rx);
+    assert_eq!(item.props.id, "indicator");
+
+    tray.handle.activate_with_token(&item.key, 1, 2, Some("token".into()));
+    let unsupported = tray.rx.recv_timeout(Duration::from_secs(5)).expect("the fallback is asked for");
+    assert_eq!(unsupported, TrayEvent::ActivateUnsupported { key: item.key.clone() });
+
+    app.object_server().remove::<MenuOnlyItem, _>("/StatusNotifierItem").expect("unexported");
+    app.emit_signal(None::<BusName<'_>>, "/StatusNotifierItem", glide_tray::ITEM_INTERFACE, "NewIcon", &())
+        .expect("signal sent");
+    let removed = tray.rx.recv_timeout(Duration::from_secs(5)).expect("the ghost is dropped");
+    assert_eq!(removed, TrayEvent::Removed { key: item.key });
+    wait_until("the registry to forget the item", || registered_items(&observer).is_empty());
+    drop(app);
+}
+
+#[test]
+fn losing_the_bus_reports_that_the_tray_stopped() {
+    let Some(mut daemon) = private_bus() else { return };
+    let tray = start_tray(&daemon);
+    let observer = connect(&daemon);
+    let dbus = zbus::blocking::fdo::DBusProxy::new(&observer).expect("bus proxy");
+    wait_until("the watcher name", || owned(&dbus, glide_tray::WATCHER_NAME));
+    let _ = daemon.child.kill();
+    let _ = daemon.child.wait();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match tray.rx.recv_timeout(left).expect("a stop is reported") {
+            TrayEvent::Stopped => break,
+            other => assert!(matches!(other, TrayEvent::Removed { .. }), "unexpected {other:?}"),
+        }
+    }
+    assert!(glide_tray::start_on(&daemon.address, Arc::new(|_| {})).is_err(), "a dead bus fails to start at once");
 }
 
 #[test]

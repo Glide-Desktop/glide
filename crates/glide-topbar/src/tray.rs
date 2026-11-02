@@ -17,7 +17,7 @@ use glide_paint::TextAlign;
 use glide_shell::raster::{Canvas, ShellRenderer, buffer_from};
 use glide_theme::Color;
 
-pub const ICON: i32 = 14;
+pub const ICON: i32 = 16;
 pub const SLOT_WIDTH: i32 = 28;
 pub const MAX_SCALE: i32 = 3;
 const TOOLTIP_HEIGHT: i32 = 26;
@@ -143,11 +143,34 @@ pub struct TrayStrip {
     hover: Option<u16>,
     hover_since: Option<Instant>,
     tooltip: Option<(u16, String)>,
-    tooltip_reveal: Reveal,
+    tooltip_reveal: TooltipReveal,
     rasters: HashMap<(u16, i32), (u64, u64, MemoryRenderBuffer)>,
     tooltips: HashMap<i32, (String, u64, MemoryRenderBuffer)>,
     shadows: HashMap<(i32, i32, bool), MemoryRenderBuffer>,
     open_fill: HashMap<i32, (u64, MemoryRenderBuffer)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TooltipReveal(Reveal);
+
+impl Default for TooltipReveal {
+    fn default() -> Self {
+        Self(Reveal::closed().with_ease(ease))
+    }
+}
+
+impl std::ops::Deref for TooltipReveal {
+    type Target = Reveal;
+
+    fn deref(&self) -> &Reveal {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for TooltipReveal {
+    fn deref_mut(&mut self) -> &mut Reveal {
+        &mut self.0
+    }
 }
 
 impl TrayStrip {
@@ -326,6 +349,11 @@ impl Topbar {
     #[must_use]
     pub fn tray_item(&self, id: u16) -> Option<&TrayIcon> {
         self.tray.entry(id).filter(|entry| !entry.gone).map(|entry| &entry.icon)
+    }
+
+    #[must_use]
+    pub fn tray_id(&self, key: &str) -> Option<u16> {
+        self.tray.entries.iter().find(|entry| !entry.gone && entry.icon.key == key).map(|entry| entry.id)
     }
 
     #[must_use]
@@ -523,10 +551,12 @@ fn push_tooltip<R>(
     let Some(anchor) = topbar.tray.rect_of(id) else {
         return;
     };
-    let alpha = topbar.tray.tooltip_reveal.progress(motion::t1(), ease) as f32;
+    let progress = topbar.tray.tooltip_reveal.value(motion::t1());
+    let alpha = motion::assist(progress) as f32;
     if alpha <= 0.0 {
         return;
     }
+    let rise = ((1.0 - progress) * f64::from(glide_theme::component::POPOVER_RISE)).round() as i32;
     let width = tooltip_width(painter, &label);
     let stamp =
         glide_theme::Revision::new().u64(topbar.theme.revision()).u64(crate::paint::painter_generation()).finish();
@@ -537,7 +567,7 @@ fn push_tooltip<R>(
     let left = output.loc.x + EDGE_MARGIN;
     let right = (output.loc.x + output.size.w - EDGE_MARGIN - width).max(left);
     let x = (anchor.loc.x + (anchor.size.w - width) / 2).clamp(left, right);
-    let position = Point::from((x, output.loc.y + HEIGHT + TOOLTIP_GAP));
+    let position = Point::from((x, output.loc.y + HEIGHT + TOOLTIP_GAP - rise));
     if let Some((_, _, buffer)) = topbar.tray.tooltips.get(&output_scale) {
         push_alpha(renderer, buffer, position, alpha, scale, elements);
     }
@@ -581,7 +611,7 @@ pub(super) fn push_tray<R>(
         let Some(entry) = topbar.tray.entry(id) else {
             continue;
         };
-        let alpha = presence_of(&entry.presence) as f32;
+        let alpha = motion::assist(presence_of(&entry.presence)) as f32;
         let stamp = entry.stamp;
         let key = (id, output_scale);
         let fresh = topbar.tray.rasters.get(&key).is_some_and(|(at, rev, _)| *at == stamp && *rev == theme_rev);
@@ -788,8 +818,10 @@ mod tests {
         let id = bar.tray.entries[0].id;
         let items = vec![MenuItem::action("Quit", glide_appmenu::Activation::DbusMenu(4))];
         bar.open_tray_menu(id, items);
+        assert_eq!(bar.tray_id("a"), Some(id));
         assert_eq!(bar.remove_tray_item("a"), Some(id));
         assert!(!bar.tray_menu_showing(id));
         assert!(bar.tray_item(id).is_none());
+        assert_eq!(bar.tray_id("a"), None, "an item fading out takes no more clicks");
     }
 }

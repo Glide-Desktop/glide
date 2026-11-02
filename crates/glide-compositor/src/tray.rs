@@ -2,28 +2,34 @@ use std::{
     collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use glide_appmenu::{Activation, MENU_WAIT, MenuItem, Source};
-use smithay::reexports::calloop::{RegistrationToken, channel};
+use smithay::reexports::calloop::{
+    RegistrationToken, channel,
+    timer::{TimeoutAction, Timer},
+};
 
 use crate::{
     config::Color,
     icon::IconLoader,
     state::GlideState,
-    system_info::ScrollDelta,
+    system_info::{ScrollAccumulator, ScrollDelta},
     topbar::{IconArt, TRAY_ICON, TRAY_MAX_SCALE, TrayButton, TrayClick, TrayIcon},
 };
 
 const THEME_DIR_DEPTH: usize = 5;
-const WHEEL_STEP: f64 = 120.0;
-const PIXELS_PER_STEP: f64 = 15.0;
+const WHEEL_STEP: i32 = 120;
+const RETRY_FIRST: Duration = Duration::from_secs(2);
+const RETRY_MAX: Duration = Duration::from_mins(1);
 
 #[derive(Debug)]
 pub enum TrayUpdate {
     Icon(Box<TrayIcon>),
     Removed(String),
+    ActivateUnsupported(String),
+    Stopped,
 }
 
 #[derive(Debug, Default)]
@@ -31,11 +37,14 @@ pub struct TrayService {
     handle: Option<glide_tray::TrayHandle>,
     started: bool,
     source: Option<RegistrationToken>,
+    retry: Option<RegistrationToken>,
+    backoff: Option<Duration>,
     known: BTreeSet<String>,
     icon_theme: Arc<Mutex<Option<String>>>,
     menus: HashMap<String, Source>,
-    pending: Option<(u16, Source, Instant)>,
+    pending: Option<(u16, Source, Instant, (i32, i32))>,
     open: Option<Source>,
+    scroll: Option<(String, ScrollAccumulator)>,
 }
 
 impl TrayService {
@@ -47,6 +56,7 @@ impl TrayService {
             TrayUpdate::Removed(key) => {
                 self.known.remove(key);
             }
+            TrayUpdate::ActivateUnsupported(_) | TrayUpdate::Stopped => {}
         }
     }
 
@@ -57,8 +67,24 @@ impl TrayService {
         self.started = false;
         self.pending = None;
         self.open = None;
+        self.scroll = None;
         std::mem::take(&mut self.known).into_iter().collect()
     }
+
+    fn scroll_amount(&mut self, key: &str, delta: ScrollDelta) -> Option<i32> {
+        let (current, steps) = self.scroll.get_or_insert_with(|| (key.to_string(), ScrollAccumulator::default()));
+        if current != key {
+            key.clone_into(current);
+            *steps = ScrollAccumulator::default();
+        }
+        let notches = steps.feed(delta);
+        (notches != 0).then(|| -notches.saturating_mul(WHEEL_STEP))
+    }
+}
+
+#[must_use]
+pub fn retry_delay(previous: Option<Duration>) -> Duration {
+    previous.map_or(RETRY_FIRST, |previous| previous.saturating_mul(2).clamp(RETRY_FIRST, RETRY_MAX))
 }
 
 fn find_in_theme_dir(dir: &Path, name: &str, depth: usize) -> Vec<PathBuf> {
@@ -145,17 +171,6 @@ pub fn build_icon(item: &glide_tray::TrayItem, loader: &mut IconLoader) -> TrayI
 }
 
 #[must_use]
-pub fn scroll_amount(delta: ScrollDelta) -> Option<i32> {
-    let steps = match delta {
-        ScrollDelta::Wheel(v120) => v120,
-        ScrollDelta::Continuous(pixels) => pixels * WHEEL_STEP / PIXELS_PER_STEP,
-        ScrollDelta::Stop => return None,
-    };
-    let amount = (-steps).round() as i32;
-    (amount != 0).then_some(amount)
-}
-
-#[must_use]
 pub fn wants_menu(icon: &TrayIcon, button: TrayButton) -> bool {
     match button {
         TrayButton::Context => true,
@@ -175,9 +190,10 @@ impl GlideState {
             *current = icon_theme;
             changed
         };
-        if topbar.tray && !self.tray.started {
+        let waiting = self.tray.retry.is_some();
+        if topbar.tray && !self.tray.started && !waiting {
             self.start_tray();
-        } else if !topbar.tray && self.tray.started {
+        } else if !topbar.tray && (self.tray.started || waiting) {
             self.stop_tray();
         } else if theme_changed && let Some(handle) = &self.tray.handle {
             handle.refresh();
@@ -185,6 +201,10 @@ impl GlideState {
     }
 
     fn stop_tray(&mut self) {
+        if let Some(token) = self.tray.retry.take() {
+            self.loop_handle.remove(token);
+        }
+        self.tray.backoff = None;
         if let Some(token) = self.tray.source.take() {
             self.loop_handle.remove(token);
         }
@@ -193,8 +213,40 @@ impl GlideState {
         }
     }
 
+    fn tray_stopped(&mut self) {
+        if !self.tray.started {
+            return;
+        }
+        for key in self.tray.end() {
+            self.handle_tray_update(TrayUpdate::Removed(key));
+        }
+        self.retry_tray();
+    }
+
+    fn retry_tray(&mut self) {
+        if let Some(token) = self.tray.retry.take() {
+            self.loop_handle.remove(token);
+        }
+        let delay = retry_delay(self.tray.backoff);
+        self.tray.backoff = Some(delay);
+        tracing::info!(?delay, "restarting the system tray later");
+        let inserted = self.loop_handle.insert_source(Timer::from_duration(delay), |_, (), state| {
+            state.tray.retry = None;
+            if !state.tray.started {
+                state.start_tray();
+            }
+            TimeoutAction::Drop
+        });
+        match inserted {
+            Ok(token) => self.tray.retry = Some(token),
+            Err(err) => tracing::warn!("failed to schedule a tray restart: {err}"),
+        }
+    }
+
     fn start_tray(&mut self) {
-        self.tray.started = true;
+        if let Some(token) = self.tray.source.take() {
+            self.loop_handle.remove(token);
+        }
         let (sender, receiver) = channel::channel::<TrayUpdate>();
         let sender = Mutex::new(sender);
         let theme = self.tray.icon_theme.clone();
@@ -216,6 +268,8 @@ impl GlideState {
                     TrayUpdate::Icon(Box::new(build_icon(&item, loader)))
                 }
                 glide_tray::TrayEvent::Removed { key } => TrayUpdate::Removed(key),
+                glide_tray::TrayEvent::ActivateUnsupported { key } => TrayUpdate::ActivateUnsupported(key),
+                glide_tray::TrayEvent::Stopped => TrayUpdate::Stopped,
             };
             let Ok(sender) = sender.lock() else {
                 return;
@@ -225,9 +279,14 @@ impl GlideState {
             }
         });
         match glide_tray::start(sink) {
-            Ok(handle) => self.tray.handle = Some(handle),
+            Ok(handle) => {
+                self.tray.handle = Some(handle);
+                self.tray.started = true;
+                self.tray.backoff = None;
+            }
             Err(err) => {
                 tracing::warn!("the system tray is unavailable: {err}");
+                self.retry_tray();
                 return;
             }
         }
@@ -246,6 +305,17 @@ impl GlideState {
         self.tray.note(&update);
         let dirty = match update {
             TrayUpdate::Icon(icon) => self.topbar.upsert_tray_item(*icon),
+            TrayUpdate::Stopped => {
+                self.tray_stopped();
+                false
+            }
+            TrayUpdate::ActivateUnsupported(key) => {
+                let Some(id) = self.topbar.tray_id(&key) else {
+                    return;
+                };
+                self.run_tray_click(TrayClick { id, button: TrayButton::Context });
+                true
+            }
             TrayUpdate::Removed(key) => {
                 if let Some(source) = self.tray.menus.remove(&key)
                     && let Some(handle) = &self.app_menus.handle
@@ -253,7 +323,10 @@ impl GlideState {
                     handle.unwatch(source);
                 }
                 let id = self.topbar.remove_tray_item(&key);
-                if id.is_some() && self.tray.pending.as_ref().map(|(p, _, _)| *p) == id {
+                if self.tray.scroll.as_ref().is_some_and(|(current, _)| *current == key) {
+                    self.tray.scroll = None;
+                }
+                if id.is_some() && self.tray.pending.as_ref().map(|(p, ..)| *p) == id {
                     self.tray.pending = None;
                 }
                 id.is_some()
@@ -281,38 +354,48 @@ impl GlideState {
                 return;
             }
         }
-        if menu && self.open_tray_menu(click.id, &icon) {
+        let (x, y) = self.pointer_xy();
+        if menu && self.open_tray_menu(click.id, &icon, (x, y)) {
             return;
         }
         self.topbar.close_popup();
         let Some(handle) = self.tray.handle.clone() else {
             return;
         };
-        let (x, y) = self.pointer_xy();
         match click.button {
-            TrayButton::Primary => handle.activate(&icon.key, x, y),
+            TrayButton::Primary if menu => handle.context_menu(&icon.key, x, y),
+            TrayButton::Primary => {
+                let token = self.mint_granted_token(None);
+                handle.activate_with_token(&icon.key, x, y, Some(token));
+            }
             TrayButton::Secondary => handle.secondary_activate(&icon.key, x, y),
             TrayButton::Context => handle.context_menu(&icon.key, x, y),
         }
     }
 
     pub fn scroll_tray(&mut self, id: u16, delta: ScrollDelta) {
-        let (Some(icon), Some(handle), Some(amount)) =
-            (self.topbar.tray_item(id), self.tray.handle.as_ref(), scroll_amount(delta))
-        else {
+        let Some(key) = self.topbar.tray_item(id).map(|icon| icon.key.clone()) else {
             return;
         };
-        handle.scroll(&icon.key, amount, true);
+        if let Some(amount) = self.tray.scroll_amount(&key, delta)
+            && let Some(handle) = &self.tray.handle
+        {
+            handle.scroll(&key, amount, true);
+        }
     }
 
-    fn open_tray_menu(&mut self, id: u16, icon: &TrayIcon) -> bool {
+    fn open_tray_menu(&mut self, id: u16, icon: &TrayIcon, at: (i32, i32)) -> bool {
         let (Some(path), Some(handle)) = (icon.menu.clone(), self.app_menus.handle.clone()) else {
             return false;
         };
         let source = Source::DbusMenu { bus: icon.bus.clone(), path };
         handle.watch(source.clone());
         handle.opened(source.clone(), Activation::DbusMenu(0));
-        self.tray.menus.insert(icon.key.clone(), source.clone());
+        if let Some(previous) = self.tray.menus.insert(icon.key.clone(), source.clone())
+            && previous != source
+        {
+            handle.unwatch(previous);
+        }
         match self.app_menus.cached(&source).map(<[MenuItem]>::to_vec) {
             Some(items) if !items.is_empty() => {
                 self.tray.pending = None;
@@ -320,15 +403,19 @@ impl GlideState {
                     self.tray.open = Some(source);
                 }
             }
-            _ => self.tray.pending = Some((id, source, Instant::now())),
+            _ => self.tray.pending = Some((id, source, Instant::now(), at)),
         }
         true
     }
 
     pub fn sync_tray_menu(&mut self) {
-        if let Some((id, source, since)) = self.tray.pending.clone() {
+        if let Some((id, source, since, (x, y))) = self.tray.pending.clone() {
             if since.elapsed() > MENU_WAIT {
                 self.tray.pending = None;
+                if let (Some(icon), Some(handle)) = (self.topbar.tray_item(id), &self.tray.handle) {
+                    tracing::debug!(key = %icon.key, "the tray menu never arrived; asking the item to show its own");
+                    handle.context_menu(&icon.key, x, y);
+                }
             } else if let Some(items) =
                 self.app_menus.cached(&source).filter(|items| !items.is_empty()).map(<[MenuItem]>::to_vec)
             {
@@ -387,7 +474,8 @@ mod tests {
         service.note(&TrayUpdate::Icon(Box::new(icon(false))));
         service.note(&TrayUpdate::Icon(Box::new(second)));
         service.note(&TrayUpdate::Removed(":1.3/StatusNotifierItem".into()));
-        service.pending = Some((1, Source::DbusMenu { bus: ":1.2".into(), path: "/Menu".into() }, Instant::now()));
+        service.pending =
+            Some((1, Source::DbusMenu { bus: ":1.2".into(), path: "/Menu".into() }, Instant::now(), (0, 0)));
         service.open = Some(Source::DbusMenu { bus: ":1.2".into(), path: "/Menu".into() });
         assert_eq!(service.end(), vec![String::from(":1.2/StatusNotifierItem")]);
         assert!(!service.started, "the guard in configure_tray lets the next enable start a fresh worker");
@@ -397,11 +485,35 @@ mod tests {
 
     #[test]
     fn wheel_notches_become_sni_angle_deltas_with_up_positive() {
-        assert_eq!(scroll_amount(ScrollDelta::Wheel(120.0)), Some(-120));
-        assert_eq!(scroll_amount(ScrollDelta::Wheel(-240.0)), Some(240));
-        assert_eq!(scroll_amount(ScrollDelta::Continuous(15.0)), Some(-120));
-        assert_eq!(scroll_amount(ScrollDelta::Stop), None);
-        assert_eq!(scroll_amount(ScrollDelta::Wheel(0.2)), None);
+        let mut service = TrayService::default();
+        let mut amount = |delta| service.scroll_amount("a", delta);
+        assert_eq!(amount(ScrollDelta::Wheel(120.0)), Some(-120));
+        assert_eq!(amount(ScrollDelta::Wheel(-240.0)), Some(240));
+        assert_eq!(amount(ScrollDelta::Stop), None);
+        assert_eq!(amount(ScrollDelta::Wheel(0.2)), None);
+    }
+
+    #[test]
+    fn partial_scrolls_add_up_to_whole_detents_per_item() {
+        let mut service = TrayService::default();
+        let quarter = crate::system_info::CONTINUOUS_STEP_DISTANCE / 4.0;
+        let sent: Vec<i32> =
+            (0..8).filter_map(|_| service.scroll_amount("a", ScrollDelta::Continuous(quarter))).collect();
+        assert_eq!(sent, vec![-120, -120], "a touchpad stroke is two detents, not eight calls");
+        let hires: Vec<i32> = (0..4).filter_map(|_| service.scroll_amount("a", ScrollDelta::Wheel(30.0))).collect();
+        assert_eq!(hires, vec![-120]);
+        assert_eq!(service.scroll_amount("a", ScrollDelta::Wheel(90.0)), None);
+        assert_eq!(service.scroll_amount("b", ScrollDelta::Wheel(90.0)), None, "another item starts from zero");
+        assert_eq!(service.scroll_amount("b", ScrollDelta::Stop), None);
+        assert_eq!(service.scroll_amount("b", ScrollDelta::Wheel(90.0)), None, "lifting the fingers drops travel");
+    }
+
+    #[test]
+    fn tray_restarts_back_off_from_two_seconds_to_a_minute() {
+        assert_eq!(retry_delay(None), Duration::from_secs(2));
+        assert_eq!(retry_delay(Some(Duration::from_secs(2))), Duration::from_secs(4));
+        assert_eq!(retry_delay(Some(Duration::from_secs(40))), Duration::from_mins(1));
+        assert_eq!(retry_delay(Some(Duration::MAX)), Duration::from_mins(1));
     }
 
     #[test]
