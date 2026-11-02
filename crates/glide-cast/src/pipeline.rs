@@ -81,7 +81,7 @@ pub fn description(spec: &Spec, available: impl Fn(&str) -> bool) -> Option<Stri
     let mut text = format!(
         "appsrc name=video is-live=true do-timestamp=true format=time block=false max-buffers=2 leaky-type=downstream \
          caps=\"video/x-raw,format={},width={},height={},framerate=0/1\" ! queue ! videoscale add-borders=true ! \
-         videoconvert ! videorate ! video/x-raw,format=I420,width={},height={},framerate={}/1,pixel-aspect-ratio=1/1 ! \
+         videoconvert ! videorate ! video/x-raw,width={},height={},framerate={}/1,pixel-aspect-ratio=1/1 ! \
          {encoder} ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au,profile={} ! mux. ",
         spec.frame_format,
         spec.input.0,
@@ -209,6 +209,15 @@ mod tests {
         assert!(text.contains("openh264enc complexity=low gop-size=30"), "{text}");
         assert!(!hardware_encoder(software));
         assert_eq!(description(&spec(None), |_: &str| false), None, "no encoder, no stream");
+    }
+
+    #[test]
+    fn raw_video_format_is_negotiated_with_each_encoder_instead_of_forcing_i420() {
+        for name in ENCODERS {
+            let text = description(&spec(None), only(name)).unwrap();
+            assert!(text.contains("videoconvert ! videorate ! video/x-raw,width="), "{text}");
+            assert!(!text.contains("format=I420"), "{name} must negotiate its input format: {text}");
+        }
     }
 
     fn only(wanted: &'static str) -> impl Fn(&str) -> bool {
