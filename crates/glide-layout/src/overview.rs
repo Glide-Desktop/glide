@@ -142,8 +142,9 @@ fn apply_padding(area: Rectangle, padding: i32) -> Rectangle {
     area.inset(glide_geom::Insets { top: pad_y, bottom: pad_y, left: pad_x, right: pad_x })
 }
 
-fn max_rows_for(count: usize) -> usize {
-    if count < MIN_WINDOWS_FOR_MULTIPLE_ROWS { 1 } else { count }
+fn max_rows_for(count: usize, area: Rectangle) -> usize {
+    let portrait = area.size.height > area.size.width;
+    if count < MIN_WINDOWS_FOR_MULTIPLE_ROWS && !portrait { 1 } else { count }
 }
 
 #[must_use]
@@ -163,7 +164,7 @@ pub fn compute_overview_layout(
 
     let opts = OverviewOptions { gap: opts.gap.max(0), ..*opts };
     let mut best: Option<(Vec<OverviewSlot>, i64)> = None;
-    for rows in 1..=max_rows_for(windows.len()) {
+    for rows in 1..=max_rows_for(windows.len(), area) {
         let Some(candidate) = layout_in_rows(&windows, area, &opts, rows) else {
             continue;
         };
@@ -308,10 +309,16 @@ mod tests {
     #[test]
     fn row_count_follows_window_count_and_area_aspect() {
         assert_eq!(distribute(7, 3), vec![3, 2, 2]);
-        let tall = Rectangle::from_loc_and_size(0, 0, 900, 2400);
         for n in 1..MIN_WINDOWS_FOR_MULTIPLE_ROWS {
-            assert_eq!(rows_used(&compute_overview_layout(&same(n), tall, &opts())), 1);
+            assert_eq!(rows_used(&compute_overview_layout(&same(n), area(), &opts())), 1, "n={n}");
         }
+        let portrait = Rectangle::from_loc_and_size(0, 0, 900, 2400);
+        assert_eq!(rows_used(&compute_overview_layout(&same(1), portrait, &opts())), 1);
+        assert_eq!(
+            rows_used(&compute_overview_layout(&same(2), portrait, &opts())),
+            2,
+            "two windows on a portrait output stack instead of shrinking side by side"
+        );
         let three = compute_overview_layout(&same(MIN_WINDOWS_FOR_MULTIPLE_ROWS), area(), &opts());
         assert!(rows_used(&three) > 1);
 
@@ -329,7 +336,7 @@ mod tests {
                 .iter()
                 .map(|s| i64::from(s.target.size.width) * i64::from(s.target.size.height))
                 .sum();
-            for rows in 1..=max_rows_for(n) {
+            for rows in 1..=max_rows_for(n, area()) {
                 if let Some((_, covered)) = layout_in_rows(&windows, area(), &opts(), rows) {
                     assert!(chosen >= covered, "n={n}, rows={rows}");
                 }

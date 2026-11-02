@@ -107,19 +107,47 @@ fn sole_home(outputs: &[OutputInfo], rect: Rectangle) -> Option<&OutputInfo> {
 }
 
 #[must_use]
-fn origin_shift(before: &[OutputInfo], after: &[OutputInfo], rect: Rectangle) -> Option<(OutputId, i32, i32)> {
+fn home_change<'a>(
+    before: &'a [OutputInfo], after: &'a [OutputInfo], rect: Rectangle,
+) -> Option<(&'a OutputInfo, &'a OutputInfo)> {
     let old = sole_home(before, rect)?;
     let new = after.iter().find(|output| output.id == old.id)?;
-    Some((
-        old.id,
-        new.geometry.loc.x.saturating_sub(old.geometry.loc.x),
-        new.geometry.loc.y.saturating_sub(old.geometry.loc.y),
-    ))
+    Some((old, new))
 }
 
 #[must_use]
 fn translated(rect: Rectangle, dx: i32, dy: i32) -> Rectangle {
     Rectangle::new(Point::new(rect.loc.x.saturating_add(dx), rect.loc.y.saturating_add(dy)), rect.size)
+}
+
+#[must_use]
+fn followed(rect: Rectangle, old: &OutputInfo, new: &OutputInfo) -> Rectangle {
+    let moved = translated(
+        rect,
+        new.geometry.loc.x.saturating_sub(old.geometry.loc.x),
+        new.geometry.loc.y.saturating_sub(old.geometry.loc.y),
+    );
+    if old.geometry.size == new.geometry.size { moved } else { keep_reachable(moved, new.work_area) }
+}
+
+#[must_use]
+fn centered_geometry(work_area: Rectangle, content_size: Size, insets: Insets, index_on_ws: usize) -> Rectangle {
+    let frame_size = content_size.grow(insets);
+
+    let step = i32::try_from(index_on_ws % 8).unwrap_or(0);
+    let offset = step * CASCADE_STEP;
+    let x = work_area
+        .loc
+        .x
+        .saturating_add(work_area.size.width.saturating_sub(frame_size.width) / 2)
+        .saturating_add(offset);
+    let y = work_area
+        .loc
+        .y
+        .saturating_add(work_area.size.height.saturating_sub(frame_size.height) / 2)
+        .saturating_add(offset);
+
+    keep_reachable(Rectangle::new(Point::new(x, y), frame_size), work_area)
 }
 
 pub(crate) const MOVE_MIN_VISIBLE_WIDTH: i32 = 64;
@@ -150,6 +178,7 @@ pub struct Layout {
     policy: NewWindowPolicy,
     overview_active: bool,
     placement_anchor: Option<Point>,
+    anchors: HashMap<WindowId, Point>,
     fixed: Option<usize>,
 }
 
@@ -173,6 +202,7 @@ impl Layout {
             policy: NewWindowPolicy::NewWorkspace,
             overview_active: false,
             placement_anchor: None,
+            anchors: HashMap::new(),
             fixed: None,
         }
     }
@@ -183,7 +213,12 @@ impl Layout {
 
     #[must_use]
     pub(crate) fn placement_work_area(&self) -> Rectangle {
-        self.placement_anchor.map_or_else(|| self.primary_output_work_area(), |anchor| self.work_area_at(anchor))
+        self.work_area_near(self.placement_anchor)
+    }
+
+    #[must_use]
+    fn work_area_near(&self, anchor: Option<Point>) -> Rectangle {
+        anchor.map_or_else(|| self.primary_output_work_area(), |anchor| self.work_area_at(anchor))
     }
 
     #[must_use]
@@ -214,7 +249,7 @@ impl Layout {
     fn output_for_window(&self, w: WindowId) -> Option<&OutputInfo> {
         let state = self.windows.get(&w)?;
         if !state.is_placed {
-            return self.placement_anchor.and_then(|anchor| self.output_at(anchor));
+            return self.anchors.get(&w).and_then(|&anchor| self.output_at(anchor));
         }
         let centre = state.geometry.center();
         self.output_at(centre).or_else(|| self.outputs.iter().find(|output| output.geometry.overlaps(state.geometry)))
@@ -287,8 +322,12 @@ impl Layout {
                 state.workspace_id = into;
             }
         }
+        let carried = last.focused.filter(|_| into != self.active);
         if let Some(target) = self.workspace_mut(into) {
             target.windows.extend(last.windows.iter().copied());
+            if carried.is_some() {
+                target.focused = carried;
+            }
         }
         if self.active == last.id {
             self.recent.retain(|&seen| seen != into);
@@ -427,17 +466,17 @@ impl Layout {
         let mut homes = HashMap::new();
         for state in self.windows.values_mut() {
             if state.is_placed
-                && let Some((home, dx, dy)) = origin_shift(&self.outputs, incoming, state.geometry)
+                && let Some((old, new)) = home_change(&self.outputs, incoming, state.geometry)
             {
                 if state.fullscreen || state.maximized {
-                    homes.insert(state.id, home);
+                    homes.insert(state.id, old.id);
                 }
-                state.geometry = translated(state.geometry, dx, dy);
+                state.geometry = followed(state.geometry, old, new);
             }
             if let Some(saved) = state.saved_geometry
-                && let Some((_, dx, dy)) = origin_shift(&self.outputs, incoming, saved)
+                && let Some((old, new)) = home_change(&self.outputs, incoming, saved)
             {
-                state.saved_geometry = Some(translated(saved, dx, dy));
+                state.saved_geometry = Some(followed(saved, old, new));
             }
         }
         homes
@@ -602,10 +641,13 @@ impl Layout {
         let is_placed = !size.is_empty();
         let index_on_ws = self.workspace(ws_id).map_or(0, |ws| ws.windows.len());
         let geometry = if is_placed {
-            self.calculate_centered_geometry(size, Insets::NONE, index_on_ws)
+            centered_geometry(self.placement_work_area(), size, Insets::NONE, index_on_ws)
         } else {
             Rectangle::new(Point::ZERO, size)
         };
+        if let Some(anchor) = self.placement_anchor {
+            self.anchors.insert(w, anchor);
+        }
         self.windows.insert(
             w,
             WindowState {
@@ -771,10 +813,11 @@ impl Layout {
         let index_on_ws =
             self.workspace(state.workspace_id).and_then(|ws| ws.windows.iter().position(|&id| id == w)).unwrap_or(0);
 
+        let area = self.work_area_near(self.anchors.get(&w).copied());
         let geometry = state
             .parent
             .and_then(|parent| self.centered_over_parent(parent, size, insets))
-            .unwrap_or_else(|| self.calculate_centered_geometry(size, insets, index_on_ws));
+            .unwrap_or_else(|| centered_geometry(area, size, insets, index_on_ws));
         if let Some(state) = self.windows.get_mut(&w) {
             state.geometry = geometry;
             state.is_placed = true;
@@ -811,6 +854,7 @@ impl Layout {
         let Some(state) = self.windows.remove(&w) else {
             return false;
         };
+        self.anchors.remove(&w);
 
         self.detach(w, state.workspace_id);
         let active_changed = self.remove_workspace_if_empty(state.workspace_id);
@@ -863,37 +907,21 @@ impl Layout {
         if state.maximized || state.fullscreen || !state.is_placed {
             return None;
         }
-        let area = self.work_area_at(anchor);
-        let settled = keep_grip_reachable(state.geometry, state.insets.top, area);
+        let grip = state.insets.top;
+        if self
+            .outputs
+            .iter()
+            .any(|output| keep_grip_reachable(state.geometry, grip, output.work_area) == state.geometry)
+        {
+            return None;
+        }
+        let settled = keep_grip_reachable(state.geometry, grip, self.work_area_at(anchor));
         (settled != state.geometry).then_some(settled)
     }
 
-    #[must_use]
-    pub(crate) fn calculate_centered_geometry(
-        &self, content_size: Size, insets: Insets, index_on_ws: usize,
-    ) -> Rectangle {
-        let work_area = self.placement_work_area();
-        let frame_size = content_size.grow(insets);
-
-        let step = i32::try_from(index_on_ws % 8).unwrap_or(0);
-        let offset = step * CASCADE_STEP;
-        let x = work_area
-            .loc
-            .x
-            .saturating_add(work_area.size.width.saturating_sub(frame_size.width) / 2)
-            .saturating_add(offset);
-        let y = work_area
-            .loc
-            .y
-            .saturating_add(work_area.size.height.saturating_sub(frame_size.height) / 2)
-            .saturating_add(offset);
-
-        keep_reachable(Rectangle::new(Point::new(x, y), frame_size), work_area)
-    }
-
-    fn grip_settlement(&self, frame: Rectangle, grip_height: i32) -> Option<Rectangle> {
+    fn grip_settlement(&self, frame: Rectangle, grip_height: i32, orphans: &mut usize) -> Option<Rectangle> {
         if frame.size.is_empty()
-            || self.outputs.iter().any(|output| keep_grip_reachable(frame, grip_height, output.geometry) == frame)
+            || self.outputs.iter().any(|output| keep_grip_reachable(frame, grip_height, output.work_area) == frame)
         {
             return None;
         }
@@ -902,19 +930,25 @@ impl Layout {
             .iter()
             .filter(|output| output.geometry.overlaps(frame))
             .max_by_key(|output| overlap_area(output.geometry, frame));
-        Some(match host {
-            Some(output) => keep_grip_reachable(frame, grip_height, output.work_area),
-            None => self.calculate_centered_geometry(frame.size, Insets::NONE, 0),
-        })
+        if let Some(output) = host {
+            return Some(keep_grip_reachable(frame, grip_height, output.work_area));
+        }
+        let index = *orphans;
+        *orphans += 1;
+        Some(centered_geometry(self.placement_work_area(), frame.size, Insets::NONE, index))
     }
 
     fn rescue_offscreen_windows(&mut self, homes: &HashMap<WindowId, OutputId>) {
-        let settled: Vec<(WindowId, Option<Rectangle>, Option<Rectangle>)> = self
-            .windows
-            .values()
+        let mut ids: Vec<WindowId> = self.windows.keys().copied().collect();
+        ids.sort_unstable();
+        let mut orphans = 0;
+        let settled: Vec<(WindowId, Option<Rectangle>, Option<Rectangle>)> = ids
+            .iter()
+            .filter_map(|id| self.windows.get(id))
             .map(|state| {
-                let frame = state.is_placed.then(|| self.grip_settlement(state.geometry, state.insets.top)).flatten();
-                let saved = state.saved_geometry.and_then(|saved| self.grip_settlement(saved, state.insets.top));
+                let grip = state.insets.top;
+                let frame = state.is_placed.then(|| self.grip_settlement(state.geometry, grip, &mut orphans)).flatten();
+                let saved = state.saved_geometry.and_then(|saved| self.grip_settlement(saved, grip, &mut orphans));
                 (state.id, frame, saved)
             })
             .collect();

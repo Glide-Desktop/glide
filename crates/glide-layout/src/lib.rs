@@ -1111,4 +1111,100 @@ mod tests {
         layout.set_window_insets(w, Insets { top: 48, ..Insets::NONE });
         assert_eq!(geometry(&layout, w), rect(0, 40, 1920, 1088));
     }
+
+    #[test]
+    fn a_window_stays_on_its_output_when_that_output_shrinks_under_it() {
+        let big = output(OutputId::next(), rect(0, 0, 3840, 2160));
+        let right = output(OutputId::next(), rect(3840, 0, 1920, 1080));
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[big.clone(), right.clone()]);
+        let floating = WindowId::next();
+        layout.add_window(floating, SIZE);
+        layout.set_window_geometry(floating, rect(3000, 1500, 800, 600));
+        let maximized = WindowId::next();
+        layout.add_window(maximized, SIZE);
+        layout.set_window_geometry(maximized, rect(2900, 1400, 800, 600));
+        assert!(layout.set_maximized(maximized, true));
+
+        let scaled = OutputInfo { geometry: rect(0, 0, 1920, 1080), work_area: rect(0, 40, 1920, 1040), ..big };
+        let moved = OutputInfo { geometry: rect(1920, 0, 1920, 1080), work_area: rect(1920, 0, 1920, 1080), ..right };
+        layout.outputs_changed(&[scaled.clone(), moved]);
+
+        assert_eq!(geometry(&layout, floating), rect(1120, 480, 800, 600), "not carried onto the neighbour");
+        assert_eq!(geometry(&layout, maximized), scaled.work_area);
+        assert_eq!(state(&layout, maximized).saved_geometry, Some(rect(1120, 480, 800, 600)));
+    }
+
+    #[test]
+    fn a_window_whose_titlebar_is_reachable_on_another_output_does_not_jump_after_a_move() {
+        let lower =
+            OutputInfo { id: OutputId::next(), geometry: rect(0, 0, 1920, 1080), work_area: rect(0, 40, 1920, 1040) };
+        let upper = output(OutputId::next(), rect(0, -1080, 1920, 1080));
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[lower, upper]);
+        let w = WindowId::next();
+        layout.add_window(w, SIZE);
+        layout.set_window_insets(w, titlebar_insets());
+        layout.set_window_geometry(w, rect(100, -300, 800, 632));
+        assert_eq!(layout.settled_after_move(w, Point::new(500, 10)), None);
+        layout.set_window_geometry(w, rect(100, 10, 800, 632));
+        assert_eq!(layout.settled_after_move(w, Point::new(500, 20)), Some(rect(100, 40, 800, 632)));
+    }
+
+    #[test]
+    fn a_window_placed_late_opens_where_the_pointer_was_when_it_was_created() {
+        let outputs = two_outputs();
+        let mut layout = Layout::new();
+        layout.outputs_changed(&outputs);
+        layout.set_placement_anchor(Point::new(2500, 700));
+        let late = WindowId::next();
+        layout.add_window(late, Size::ZERO);
+        layout.set_placement_anchor(Point::new(100, 100));
+        layout.add_window(WindowId::next(), SIZE);
+        assert_eq!(layout.output_geometry_for_window(late), outputs[1].geometry);
+        assert!(layout.update_window_size(late, SIZE));
+        assert!(outputs[1].geometry.contains(geometry(&layout, late).center()), "{:?}", geometry(&layout, late));
+    }
+
+    #[test]
+    fn windows_orphaned_by_an_unplug_cascade_instead_of_piling_up() {
+        let (lower, upper) = stacked_outputs();
+        let mut layout = Layout::new();
+        layout.outputs_changed(&[lower, upper.clone()]);
+        let ids = windows(&mut layout, 3, SIZE);
+        for (index, &id) in ids.iter().enumerate() {
+            let step = i32::try_from(index).unwrap_or(0) * 100;
+            layout.set_window_geometry(id, rect(100 + step, 300, 800, 600));
+        }
+        layout.outputs_changed(&[upper]);
+        let mut spots: Vec<Point> = ids.iter().map(|&id| geometry(&layout, id).loc).collect();
+        spots.sort_unstable_by_key(|spot| (spot.x, spot.y));
+        spots.dedup();
+        assert_eq!(spots.len(), ids.len(), "{spots:?}");
+    }
+
+    #[test]
+    fn a_titlebar_under_the_panel_is_pulled_into_the_work_area_when_outputs_change() {
+        let mut layout = with_panel();
+        let w = WindowId::next();
+        layout.add_window(w, SIZE);
+        layout.set_window_insets(w, titlebar_insets());
+        layout.set_window_geometry(w, rect(300, 10, 800, 632));
+        layout.outputs_changed(&[output_with_panel(OutputId::next())]);
+        assert_eq!(geometry(&layout, w), rect(300, 40, 800, 632));
+    }
+
+    #[test]
+    fn folding_a_workspace_into_another_keeps_the_focus_it_remembered() {
+        let mut layout = Layout::new();
+        layout.set_fixed_workspaces(Some(3));
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Index(2)));
+        let folded = windows(&mut layout, 2, SIZE);
+        layout.focus_window(folded[0]);
+        assert!(layout.raise_window(folded[1]));
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Index(0)));
+        layout.set_fixed_workspaces(Some(2));
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Index(1)));
+        assert_eq!(layout.focused_window(), Some(folded[0]), "not whichever folded window lies on top");
+    }
 }

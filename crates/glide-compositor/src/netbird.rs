@@ -145,7 +145,11 @@ impl crate::GlideState {
                 };
                 self.netbird_error(body);
             }
-            Event::Outdated => {
+            Event::Outdated(version) => {
+                if self.session.netbird.notifications_disabled {
+                    tracing::info!(%version, "the NetBird service is too old to manage; notifications are off");
+                    return;
+                }
                 let notice =
                     toast(OUTDATED_ID, t(Key::NbOutdatedTitle).to_string(), t(Key::NbOutdatedBody).to_string());
                 self.netbird_toast(notice);

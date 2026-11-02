@@ -67,7 +67,7 @@ pub enum Event {
     Extended(Result<nb::Extended, nb::Error>),
     Failed { action: Action, error: nb::Error },
     Updated(Result<nb::UpdateResult, nb::Error>),
-    Outdated,
+    Outdated(String),
 }
 
 enum Message {
@@ -107,6 +107,7 @@ pub fn start(sink: impl Fn(Event) + Send + Sync + 'static) -> Result<Handle, nb:
         connect_login: false,
         login_running: false,
         extend_running: false,
+        outdated_announced: None,
     };
     let spawned = std::thread::Builder::new().name("glide-netbird-worker".into()).spawn(move || {
         let _watch = watch;
@@ -128,6 +129,7 @@ struct Worker {
     connect_login: bool,
     login_running: bool,
     extend_running: bool,
+    outdated_announced: Option<String>,
 }
 
 impl Worker {
@@ -151,6 +153,7 @@ impl Worker {
         let state = status.state;
         let previous = self.state.replace(state);
         let revision = self.revision.replace(status.networks_revision);
+        let version = status.daemon_version.clone();
         self.emit(Event::Status(status));
         if self.connect_login {
             match state {
@@ -168,11 +171,8 @@ impl Worker {
             return;
         }
         let reconnected = previous.is_none_or(|previous| previous == State::Unavailable);
-        if reconnected {
-            self.fetch_config();
-            if matches!(self.daemon.compatible(), Ok(false)) {
-                self.emit(Event::Outdated);
-            }
+        if reconnected && self.fetch_config() != Some(true) {
+            self.check_outdated(version);
         }
         if reconnected || previous != Some(state) || revision != self.revision {
             self.fetch_networks();
@@ -182,11 +182,34 @@ impl Worker {
         }
     }
 
+    fn check_outdated(&mut self, version: String) {
+        if self.outdated_announced.as_ref() == Some(&version) {
+            return;
+        }
+        if !matches!(self.daemon.manageable(), Ok(false)) {
+            return;
+        }
+        let marker = outdated_marker();
+        let recorded = marker.as_deref().and_then(|path| std::fs::read_to_string(path).ok());
+        self.outdated_announced = Some(version.clone());
+        if recorded.as_deref() == Some(version.as_str()) {
+            return;
+        }
+        if let Some(path) = marker
+            && let Err(err) = record_outdated(&path, &version)
+        {
+            tracing::debug!("could not remember the outdated NetBird service: {err}");
+        }
+        self.emit(Event::Outdated(version));
+    }
+
     fn on_event(&self, event: &nb::Event) {
         let notice = nb::classify(event);
         match notice {
             Notice::Silent => return,
-            Notice::ConfigChanged { .. } => self.fetch_config(),
+            Notice::ConfigChanged { .. } => {
+                self.fetch_config();
+            }
             Notice::ProfileListChanged => self.fetch_profiles(),
             _ => {}
         }
@@ -248,9 +271,14 @@ impl Worker {
     }
 
     fn fetch_networks(&self) {
-        let connected = self.state.is_some_and(State::is_connected);
-        let networks = if connected { self.daemon.networks().unwrap_or_default() } else { Vec::new() };
-        self.emit(Event::Networks(networks));
+        if !self.state.is_some_and(State::is_connected) {
+            self.emit(Event::Networks(Vec::new()));
+            return;
+        }
+        match self.daemon.networks() {
+            Ok(networks) => self.emit(Event::Networks(networks)),
+            Err(err) => tracing::debug!("NetBird networks are unavailable, keeping the last list: {err}"),
+        }
     }
 
     fn fetch_profiles(&self) {
@@ -260,14 +288,22 @@ impl Worker {
         }
     }
 
-    fn fetch_config(&self) {
-        match self.daemon.config() {
-            Ok(config) => self.emit(Event::Config(Box::new(config))),
-            Err(err) => tracing::debug!("NetBird settings are unavailable: {err}"),
-        }
+    fn fetch_config(&self) -> Option<bool> {
+        let quiet = match self.daemon.config() {
+            Ok(config) => {
+                let quiet = config.disable_notifications;
+                self.emit(Event::Config(Box::new(config)));
+                Some(quiet)
+            }
+            Err(err) => {
+                tracing::debug!("NetBird settings are unavailable: {err}");
+                None
+            }
+        };
         if let Ok(features) = self.daemon.features() {
             self.emit(Event::Features(features));
         }
+        quiet
     }
 
     fn login(&mut self) {
@@ -313,6 +349,17 @@ impl Worker {
             tracing::warn!("could not start the NetBird session extension: {err}");
         }
     }
+}
+
+fn outdated_marker() -> Option<std::path::PathBuf> {
+    glide_config::state_home().map(|dir| dir.join("glide").join("netbird-outdated"))
+}
+
+fn record_outdated(path: &std::path::Path, version: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, version)
 }
 
 #[derive(Default)]
@@ -439,6 +486,17 @@ mod tests {
             session.first_sighting(&index.to_string());
         }
         assert!(session.first_sighting("a"), "the memory is bounded");
+    }
+
+    #[test]
+    fn the_outdated_service_is_remembered_by_version() {
+        let dir = std::env::temp_dir().join(format!("glide-netbird-outdated-{}", std::process::id()));
+        let path = dir.join("glide").join("netbird-outdated");
+        record_outdated(&path, "0.30.1").expect("recorded");
+        assert_eq!(std::fs::read_to_string(&path).ok().as_deref(), Some("0.30.1"));
+        record_outdated(&path, "0.31.0").expect("replaced");
+        assert_eq!(std::fs::read_to_string(&path).ok().as_deref(), Some("0.31.0"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

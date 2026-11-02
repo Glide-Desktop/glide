@@ -60,12 +60,23 @@ where
     }
 }
 
+const SOCKETS: [&str; 2] = [DEFAULT_SOCKET, "/run/netbird.sock"];
+
+static ADDRESS_WARNING: std::sync::Once = std::sync::Once::new();
+
 #[must_use]
 pub fn socket_path() -> PathBuf {
-    std::env::var("NB_DAEMON_ADDR")
-        .ok()
-        .and_then(|address| address.strip_prefix("unix://").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET))
+    if let Ok(address) = std::env::var("NB_DAEMON_ADDR")
+        && !address.is_empty()
+    {
+        if let Some(path) = address.strip_prefix("unix://") {
+            return PathBuf::from(path);
+        }
+        ADDRESS_WARNING.call_once(|| {
+            tracing::warn!("NB_DAEMON_ADDR={address} is not a unix:// address; looking for the NetBird socket instead");
+        });
+    }
+    PathBuf::from(SOCKETS.into_iter().find(|path| Path::new(path).exists()).unwrap_or(DEFAULT_SOCKET))
 }
 
 use glide_config::on_path;
@@ -80,7 +91,32 @@ pub fn current_user() -> String {
     ["USER", "LOGNAME"]
         .into_iter()
         .find_map(|key| std::env::var(key).ok().filter(|name| !name.is_empty()))
+        .or_else(account_name)
         .unwrap_or_default()
+}
+
+fn account_name() -> Option<String> {
+    let mut buffer = vec![0 as libc::c_char; 4096];
+    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: every pointer refers to live, correctly sized storage owned by this frame: `entry` for the record,
+    // `buffer` (with its real length) for the strings it points into, and `found` for the result.
+    let status = unsafe {
+        libc::getpwuid_r(libc::getuid(), entry.as_mut_ptr(), buffer.as_mut_ptr(), buffer.len(), &raw mut found)
+    };
+    if status != 0 || found.is_null() {
+        return None;
+    }
+    // SAFETY: a zero status with a non-null `found` means `entry` was filled in and `pw_name`, when non-null, points
+    // to a NUL-terminated string inside `buffer`, which outlives this copy.
+    let name = unsafe {
+        let name = (*found).pw_name;
+        if name.is_null() {
+            return None;
+        }
+        std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned()
+    };
+    non_empty(name)
 }
 
 fn non_empty(text: String) -> Option<String> {
@@ -160,6 +196,16 @@ impl Daemon {
         match self.call(CALL, |mut client| async move { client.wails_ui_ready(pb::WailsUiReadyRequest {}).await }) {
             Ok(_) => Ok(true),
             Err(Error::Daemon { code: tonic::Code::Unimplemented, .. }) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    pub fn manageable(&self) -> Result<bool, Error> {
+        let probe = self
+            .call(CALL, |mut client| async move { client.get_active_profile(pb::GetActiveProfileRequest {}).await });
+        match probe {
+            Err(Error::Daemon { code: tonic::Code::Unimplemented, .. }) => Ok(false),
+            Ok(_) | Err(Error::Daemon { .. } | Error::PrivilegeRequired { .. }) => Ok(true),
             Err(err) => Err(err),
         }
     }
@@ -459,12 +505,12 @@ const SUBSCRIBE_WAIT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatusFeed {
+enum FeedMode {
     Stream,
     Poll,
 }
 
-impl StatusFeed {
+impl FeedMode {
     fn after_failure(self, error: &Error) -> Self {
         match error {
             Error::Daemon { code: tonic::Code::Unimplemented, .. } => Self::Poll,
@@ -484,7 +530,7 @@ impl StatusFeed {
 async fn watch_status(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn(Feed) + Send + Sync>) {
     let mut delay = FIRST_RETRY;
     let mut unavailable = false;
-    let mut feed = StatusFeed::Stream;
+    let mut feed = FeedMode::Stream;
     let mut last_polled: Option<Status> = None;
     let report = |error: &Error, unavailable: &mut bool| {
         if error.is_unavailable() && !*unavailable {
@@ -496,7 +542,7 @@ async fn watch_status(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn
         let request = pb::StatusRequest { get_full_peer_status: true, ..pb::StatusRequest::default() };
         let before = feed;
         let failure = match feed {
-            StatusFeed::Stream => match tokio::time::timeout(SUBSCRIBE_WAIT, client.subscribe_status(request)).await {
+            FeedMode::Stream => match tokio::time::timeout(SUBSCRIBE_WAIT, client.subscribe_status(request)).await {
                 Err(_) => Some(Error::Timeout),
                 Ok(Err(status)) => Some(Error::from_status(&status)),
                 Ok(Ok(response)) => {
@@ -514,7 +560,7 @@ async fn watch_status(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn
                     }
                 }
             },
-            StatusFeed::Poll => match tokio::time::timeout(CALL, client.status(request)).await {
+            FeedMode::Poll => match tokio::time::timeout(CALL, client.status(request)).await {
                 Err(_) => Some(Error::Timeout),
                 Ok(Err(status)) => Some(Error::from_status(&status)),
                 Ok(Ok(response)) => {
@@ -534,11 +580,11 @@ async fn watch_status(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn
             feed = feed.after_failure(error);
             last_polled = None;
         }
-        if before == StatusFeed::Stream && feed == StatusFeed::Poll {
+        if before == FeedMode::Stream && feed == FeedMode::Poll {
             continue;
         }
         tokio::time::sleep(feed.pause(delay)).await;
-        if feed == StatusFeed::Stream {
+        if feed == FeedMode::Stream {
             delay = (delay * 2).min(LAST_RETRY);
         }
     }
@@ -567,23 +613,79 @@ async fn backfill(
     }
 }
 
+async fn poll_events(client: &mut DaemonServiceClient<Channel>) -> Result<Vec<Event>, Error> {
+    match tokio::time::timeout(CALL, client.get_events(pb::GetEventsRequest {})).await {
+        Err(_) => return Err(Error::Timeout),
+        Ok(Ok(response)) => return Ok(response.into_inner().events.into_iter().map(Event::from).collect()),
+        Ok(Err(status)) if status.code() != tonic::Code::Unimplemented => return Err(Error::from_status(&status)),
+        Ok(Err(_)) => {}
+    }
+    let request = pb::StatusRequest { get_full_peer_status: true, ..pb::StatusRequest::default() };
+    match tokio::time::timeout(CALL, client.status(request)).await {
+        Err(_) => Err(Error::Timeout),
+        Ok(Ok(response)) => Ok(Status::from(response.into_inner()).events),
+        Ok(Err(status)) => Err(Error::from_status(&status)),
+    }
+}
+
 async fn watch_events(mut client: DaemonServiceClient<Channel>, sink: Arc<dyn Fn(Feed) + Send + Sync>) {
     let mut delay = FIRST_RETRY;
     let mut outage: Option<SystemTime> = None;
+    let mut feed = FeedMode::Stream;
     loop {
-        if let Some(since) = outage {
-            outage = backfill(&mut client, &sink, since).await;
-        }
-        if let Ok(response) = client.subscribe_events(pb::SubscribeRequest {}).await {
-            let mut stream = response.into_inner();
-            while let Ok(Some(event)) = stream.message().await {
-                delay = FIRST_RETRY;
-                sink(Feed::Event(Event::from(event)));
+        let before = feed;
+        let failure = match feed {
+            FeedMode::Stream => {
+                if let Some(since) = outage {
+                    outage = backfill(&mut client, &sink, since).await;
+                }
+                match client.subscribe_events(pb::SubscribeRequest {}).await {
+                    Err(status) => Some(Error::from_status(&status)),
+                    Ok(response) => {
+                        let mut stream = response.into_inner();
+                        loop {
+                            match stream.message().await {
+                                Ok(Some(event)) => {
+                                    delay = FIRST_RETRY;
+                                    sink(Feed::Event(Event::from(event)));
+                                }
+                                Ok(None) => break None,
+                                Err(status) => break Some(Error::from_status(&status)),
+                            }
+                        }
+                    }
+                }
             }
+            FeedMode::Poll => {
+                let since = *outage.get_or_insert_with(SystemTime::now);
+                match poll_events(&mut client).await {
+                    Ok(events) => {
+                        let fresh = missed_since(events, since);
+                        if let Some(latest) = fresh.last().and_then(|event| event.timestamp) {
+                            outage = Some(latest);
+                        }
+                        for event in fresh {
+                            sink(Feed::Event(event));
+                        }
+                        None
+                    }
+                    Err(error) => Some(error),
+                }
+            }
+        };
+        if let Some(error) = &failure {
+            feed = feed.after_failure(error);
         }
-        outage.get_or_insert_with(SystemTime::now);
-        tokio::time::sleep(delay).await;
-        delay = (delay * 2).min(LAST_RETRY);
+        if feed == FeedMode::Stream {
+            outage.get_or_insert_with(SystemTime::now);
+        }
+        if before == FeedMode::Stream && feed == FeedMode::Poll {
+            continue;
+        }
+        tokio::time::sleep(feed.pause(delay)).await;
+        if feed == FeedMode::Stream {
+            delay = (delay * 2).min(LAST_RETRY);
+        }
     }
 }
 
@@ -599,6 +701,16 @@ mod tests {
     #[test]
     fn calls_from_a_plain_thread_report_a_missing_daemon() {
         assert!(missing().status().is_err());
+    }
+
+    #[test]
+    fn an_absent_daemon_is_not_reported_as_too_old_to_manage() {
+        assert!(missing().manageable().is_err());
+    }
+
+    #[test]
+    fn the_account_name_is_found_without_the_environment() {
+        assert!(account_name().is_some_and(|name| !name.is_empty()));
     }
 
     #[test]
@@ -622,29 +734,29 @@ mod tests {
 
     #[test]
     fn a_status_stream_the_daemon_does_not_implement_switches_to_polling_at_once() {
-        assert_eq!(StatusFeed::Stream.after_failure(&daemon_error(tonic::Code::Unimplemented)), StatusFeed::Poll);
-        assert_eq!(StatusFeed::Poll.after_failure(&daemon_error(tonic::Code::Unimplemented)), StatusFeed::Poll);
+        assert_eq!(FeedMode::Stream.after_failure(&daemon_error(tonic::Code::Unimplemented)), FeedMode::Poll);
+        assert_eq!(FeedMode::Poll.after_failure(&daemon_error(tonic::Code::Unimplemented)), FeedMode::Poll);
     }
 
     #[test]
     fn polling_hands_back_to_the_stream_when_the_daemon_goes_away_because_it_may_come_back_newer() {
-        assert_eq!(StatusFeed::Poll.after_failure(&Error::Unavailable), StatusFeed::Stream);
-        assert_eq!(StatusFeed::Stream.after_failure(&Error::Unavailable), StatusFeed::Stream);
+        assert_eq!(FeedMode::Poll.after_failure(&Error::Unavailable), FeedMode::Stream);
+        assert_eq!(FeedMode::Stream.after_failure(&Error::Unavailable), FeedMode::Stream);
     }
 
     #[test]
     fn other_failures_keep_the_mode_they_happened_in() {
         for error in [Error::Timeout, Error::Cancelled, daemon_error(tonic::Code::Internal)] {
-            assert_eq!(StatusFeed::Stream.after_failure(&error), StatusFeed::Stream, "{error:?}");
-            assert_eq!(StatusFeed::Poll.after_failure(&error), StatusFeed::Poll, "{error:?}");
+            assert_eq!(FeedMode::Stream.after_failure(&error), FeedMode::Stream, "{error:?}");
+            assert_eq!(FeedMode::Poll.after_failure(&error), FeedMode::Poll, "{error:?}");
         }
     }
 
     #[test]
     fn polling_waits_a_fixed_interval_while_the_stream_backs_off() {
-        assert_eq!(StatusFeed::Poll.pause(LAST_RETRY), POLL_INTERVAL);
-        assert_eq!(StatusFeed::Poll.pause(FIRST_RETRY), POLL_INTERVAL);
-        assert_eq!(StatusFeed::Stream.pause(Duration::from_secs(4)), Duration::from_secs(4));
+        assert_eq!(FeedMode::Poll.pause(LAST_RETRY), POLL_INTERVAL);
+        assert_eq!(FeedMode::Poll.pause(FIRST_RETRY), POLL_INTERVAL);
+        assert_eq!(FeedMode::Stream.pause(Duration::from_secs(4)), Duration::from_secs(4));
     }
 
     fn stamped(id: &str, stamp: Option<SystemTime>) -> Event {
