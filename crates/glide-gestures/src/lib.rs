@@ -165,6 +165,10 @@ impl VelocityTracker {
         self.velocity(|sample| sample.delta_y)
     }
 
+    pub fn rest_until(&mut self, now: Instant) {
+        self.push(now, 0.0, 0.0);
+    }
+
     pub fn reset(&mut self) {
         self.samples.clear();
     }
@@ -304,6 +308,16 @@ pub fn app_switch_offset(accum_dx: f64) -> i32 {
     (accum_dx / APP_STEP).round() as i32
 }
 
+#[must_use]
+pub fn app_switch_index(accum_dx: f64, entries: usize) -> usize {
+    usize::try_from(app_switch_offset(accum_dx)).unwrap_or(0).min(entries.saturating_sub(1))
+}
+
+#[must_use]
+pub fn app_switch_commits(accum_dx: f64) -> bool {
+    app_switch_index(accum_dx, usize::MAX) > 0
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowSwipe {
     Maximize,
@@ -426,6 +440,51 @@ pub fn decide_pinch(scale: f64, cancelled: bool) -> Option<PinchAction> {
 }
 
 #[derive(Debug)]
+pub struct PinchTracker {
+    scale: f64,
+    motion: TouchpadGestureTracker,
+}
+
+impl Default for PinchTracker {
+    fn default() -> Self {
+        Self { scale: 1.0, motion: TouchpadGestureTracker::new(SHELL_DESKTOP) }
+    }
+}
+
+impl PinchTracker {
+    pub fn update(&mut self, event_micros: u64, scale: f64) {
+        let now = self.motion.instant_for(event_micros);
+        let before = self.progress();
+        self.scale = scale;
+        self.motion.velocity.push(now, self.progress() - before, 0.0);
+    }
+
+    pub fn finish(&mut self, event_micros: u64) {
+        self.motion.finish(event_micros);
+    }
+
+    #[must_use]
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    #[must_use]
+    pub fn progress(&self) -> f64 {
+        pinch_progress(self.scale)
+    }
+
+    #[must_use]
+    pub fn velocity(&self) -> f64 {
+        self.motion.velocity.velocity_x()
+    }
+
+    #[must_use]
+    pub fn decide(&self, cancelled: bool) -> Option<PinchAction> {
+        decide_pinch(self.scale, cancelled)
+    }
+}
+
+#[derive(Debug)]
 pub struct TouchpadGestureTracker {
     pub kind: GestureKind,
     pub role: SwipeRole,
@@ -473,6 +532,11 @@ impl TouchpadGestureTracker {
     pub fn instant_for(&mut self, event_micros: u64) -> Instant {
         let (base_micros, base) = *self.epoch.get_or_insert((event_micros, Instant::now()));
         base + Duration::from_micros(event_micros.saturating_sub(base_micros))
+    }
+
+    pub fn finish(&mut self, event_micros: u64) {
+        let now = self.instant_for(event_micros);
+        self.velocity.rest_until(now);
     }
 
     pub fn update(&mut self, now: Instant, dx: f64, dy: f64) {
@@ -659,6 +723,10 @@ impl Practice {
         self.sample(GesturePhase::Update, action, progress, false)
     }
 
+    pub fn finish(&mut self, event_micros: u64) {
+        self.tracker.finish(event_micros);
+    }
+
     #[must_use]
     pub fn end(&self, cancelled: bool, config: &GestureConfig) -> GestureSample {
         let (action, progress) = self.reading(config);
@@ -686,7 +754,7 @@ impl Practice {
             (glide_ipc::GestureKind::Swipe, GestureAction::OpenLauncher) => {
                 tracker.shell_target(false) >= SHELL_LAUNCHER
             }
-            (glide_ipc::GestureKind::Swipe, GestureAction::SwitchApp) => app_switch_offset(tracker.accum_dx) != 0,
+            (glide_ipc::GestureKind::Swipe, GestureAction::SwitchApp) => app_switch_commits(tracker.accum_dx),
             (glide_ipc::GestureKind::Swipe, GestureAction::MaximizeWindow | GestureAction::MinimizeWindow) => {
                 decide_window_swipe(tracker.accum_dy, tracker.overview_velocity(), false, false).is_some()
             }
@@ -1245,6 +1313,51 @@ mod tests {
         state.update(800.0);
         assert!(is_at_boundary(0, 3, state.raw_delta_x));
         assert!(state.effective_x() < 0.25 * sw && state.current_progress().abs() < 0.25);
+    }
+
+    #[test]
+    fn fingers_that_rest_before_lifting_release_without_the_old_flick_speed() {
+        let flick = |rest_micros: u64| {
+            let mut tracker = TouchpadGestureTracker::new(SHELL_DESKTOP);
+            for step in 0..5u64 {
+                let now = tracker.instant_for(1_000_000 + step * 10_000);
+                tracker.update(now, -30.0, 0.0);
+            }
+            tracker.finish(1_040_000 + rest_micros);
+            tracker.velocity.velocity_x()
+        };
+        let lifted = flick(0);
+        let paused = flick(30_000);
+        let rested = flick(200_000);
+        assert!(lifted < -2000.0, "a straight lift keeps the flick, got {lifted}");
+        assert!(paused > lifted && paused < 0.0, "a short pause slows it, got {paused}");
+        assert_eq!(rested, 0.0, "a rest longer than the window leaves no speed");
+    }
+
+    #[test]
+    fn a_pinch_release_carries_the_speed_of_the_fingers() {
+        let mut pinch = PinchTracker::default();
+        for step in 0..5u32 {
+            pinch.update(2_000_000 + u64::from(step) * 10_000, 1.0 - 0.05 * f64::from(step + 1));
+        }
+        assert_eq!(pinch.decide(false), Some(PinchAction::Launcher));
+        assert!(pinch.velocity() > 5.0, "closing fingers open the launcher faster, got {}", pinch.velocity());
+        pinch.finish(2_400_000);
+        assert_eq!(pinch.velocity(), 0.0);
+        assert!((pinch.scale() - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_leftward_app_swipe_stays_on_the_current_app_in_practice_and_for_real() {
+        let config = GestureConfig::default();
+        let left = practise_swipe(4, &config, -2.0 * APP_STEP, 0.0);
+        assert_eq!(left.action, GestureAction::SwitchApp);
+        assert!(!left.committed, "the compositor clamps a leftward swipe to the current app");
+        assert_eq!(app_switch_index(-2.0 * APP_STEP, 5), 0);
+        assert_eq!(app_switch_index(2.0 * APP_STEP, 5), 2);
+        assert_eq!(app_switch_index(9.0 * APP_STEP, 3), 2);
+        assert_eq!(app_switch_index(1.0 * APP_STEP, 0), 0);
+        assert!(app_switch_commits(APP_STEP) && !app_switch_commits(-APP_STEP));
     }
 
     #[test]

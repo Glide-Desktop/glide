@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 glide-config = { path = "../glide-config" }
 anyhow.workspace = true
+base64 = "0.22"
 tracing.workspace = true
 zbus.workspace = true
 ureq = "3"

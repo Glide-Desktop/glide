@@ -1,14 +1,19 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::mpsc,
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+use base64::Engine as _;
 
 pub const ART_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const CACHE_LIMIT: usize = 128;
 const ATTEMPT_LIMIT: usize = 512;
+const RETRY_AFTER: Duration = Duration::from_mins(1);
+const RESTART_AFTER: Duration = Duration::from_secs(30);
+const MAX_HOPS: usize = 4;
 
 fn authority(url: &str) -> Option<(String, u16)> {
     let (scheme, rest) = url.trim().split_once("://")?;
@@ -99,55 +104,136 @@ pub(crate) fn cached_art_path(dir: &Path, url: &str) -> PathBuf {
     dir.join(format!("{:016x}", fnv1a(url.trim())))
 }
 
+#[must_use]
+pub(crate) fn is_inline_art(url: &str) -> bool {
+    url.trim().get(..5).is_some_and(|head| head.eq_ignore_ascii_case("data:"))
+}
+
+fn inline_art(url: &str) -> Option<Vec<u8>> {
+    let url = url.trim();
+    let rest = url.get(5..).filter(|_| is_inline_art(url))?;
+    let (header, payload) = rest.split_once(',')?;
+    let mut parts = header.split(';');
+    let mime = parts.next()?.trim();
+    if !mime.get(..6).is_some_and(|head| head.eq_ignore_ascii_case("image/")) {
+        return None;
+    }
+    if !parts.any(|part| part.trim().eq_ignore_ascii_case("base64")) {
+        return None;
+    }
+    if payload.len() as u64 > ART_MAX_BYTES / 3 * 4 + 8 {
+        return None;
+    }
+    let payload: String = payload.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let engine = base64::engine::GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        base64::engine::GeneralPurposeConfig::new()
+            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
+    );
+    let bytes = engine.decode(payload).ok()?;
+    (!bytes.is_empty() && bytes.len() as u64 <= ART_MAX_BYTES).then_some(bytes)
+}
+
+fn store(dir: &Path, target: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let partial = target.with_extension("part");
+    std::fs::write(&partial, bytes)?;
+    std::fs::rename(&partial, target)
+}
+
+fn spawn_fetcher(dir: &Path) -> Option<mpsc::SyncSender<String>> {
+    let dir = dir.to_path_buf();
+    let (sender, inbox) = mpsc::sync_channel::<String>(1);
+    std::thread::Builder::new()
+        .name("glide-art".to_string())
+        .spawn(move || run_fetcher(&dir, &inbox))
+        .map_err(|err| tracing::warn!(?err, "could not start the cover-art fetcher"))
+        .ok()
+        .map(|_| sender)
+}
+
 pub(crate) struct ArtFetcher {
     dir: Option<PathBuf>,
     requests: Option<mpsc::SyncSender<String>>,
-    attempted: HashSet<String>,
+    attempted: HashMap<String, Instant>,
+    spawned: Instant,
 }
 
 impl ArtFetcher {
     #[must_use]
     pub fn start() -> Self {
         let dir = art_cache_dir();
-        let requests = dir.clone().and_then(|dir| {
-            let (sender, inbox) = mpsc::sync_channel::<String>(1);
-            std::thread::Builder::new()
-                .name("glide-art".to_string())
-                .spawn(move || run_fetcher(&dir, &inbox))
-                .map_err(|err| tracing::warn!(?err, "could not start the cover-art fetcher"))
-                .ok()
-                .map(|_| sender)
-        });
-        Self { dir, requests, attempted: HashSet::new() }
+        let requests = dir.as_deref().and_then(spawn_fetcher);
+        Self { dir, requests, attempted: HashMap::new(), spawned: Instant::now() }
     }
 
     #[cfg(test)]
     fn detached(dir: PathBuf) -> (Self, mpsc::Receiver<String>) {
         let (sender, inbox) = mpsc::sync_channel(1);
-        (Self { dir: Some(dir), requests: Some(sender), attempted: HashSet::new() }, inbox)
+        (Self { dir: Some(dir), requests: Some(sender), attempted: HashMap::new(), spawned: Instant::now() }, inbox)
     }
 
-    pub fn resolve(&mut self, url: &str) -> Option<String> {
-        if !is_remote_art(url) || local_host(url) {
-            return None;
+    fn sender(&mut self) -> Option<&mpsc::SyncSender<String>> {
+        if self.requests.is_none() && self.spawned.elapsed() >= RESTART_AFTER {
+            self.spawned = Instant::now();
+            self.requests = self.dir.as_deref().and_then(spawn_fetcher);
         }
-        let dir = self.dir.as_ref()?;
-        let path = cached_art_path(dir, url);
-        if path.is_file() {
-            return Some(glide_config::uri::file_uri(&path));
-        }
+        self.requests.as_ref()
+    }
+
+    fn recently_tried(&mut self, url: &str) -> bool {
         if self.attempted.len() >= ATTEMPT_LIMIT {
             self.attempted.clear();
         }
-        if self.attempted.insert(url.trim().to_string())
-            && let Some(requests) = self.requests.as_ref()
-        {
-            match requests.try_send(url.trim().to_string()) {
-                Ok(()) => {}
-                Err(mpsc::TrySendError::Full(url)) => {
-                    self.attempted.remove(&url);
-                }
-                Err(mpsc::TrySendError::Disconnected(_)) => self.requests = None,
+        if self.attempted.get(url).is_some_and(|at| at.elapsed() < RETRY_AFTER) {
+            return true;
+        }
+        self.attempted.insert(url.to_string(), Instant::now());
+        false
+    }
+
+    fn resolve_inline(&mut self, url: &str) -> Option<String> {
+        let path = cached_art_path(self.dir.as_ref()?, url);
+        if path.is_file() {
+            return Some(glide_config::uri::file_uri(&path));
+        }
+        if self.recently_tried(url) {
+            return None;
+        }
+        let bytes = inline_art(url)?;
+        let dir = self.dir.as_ref()?;
+        if let Err(err) = store(dir, &path, &bytes) {
+            tracing::debug!(%err, "failed to cache inline cover art");
+            return None;
+        }
+        prune(dir, CACHE_LIMIT);
+        Some(glide_config::uri::file_uri(&path))
+    }
+
+    pub fn resolve(&mut self, url: &str) -> Option<String> {
+        let url = url.trim();
+        if is_inline_art(url) {
+            return self.resolve_inline(url);
+        }
+        if !is_remote_art(url) || local_host(url) {
+            return None;
+        }
+        let path = cached_art_path(self.dir.as_ref()?, url);
+        if path.is_file() {
+            return Some(glide_config::uri::file_uri(&path));
+        }
+        if self.recently_tried(url) {
+            return None;
+        }
+        match self.sender().map(|requests| requests.try_send(url.to_string())) {
+            Some(Ok(())) => {}
+            Some(Err(mpsc::TrySendError::Full(_))) | None => {
+                self.attempted.remove(url);
+            }
+            Some(Err(mpsc::TrySendError::Disconnected(_))) => {
+                tracing::debug!("the cover-art fetcher stopped; it is started again later");
+                self.requests = None;
+                self.attempted.remove(url);
             }
         }
         None
@@ -182,16 +268,52 @@ fn run_fetcher(dir: &Path, inbox: &mpsc::Receiver<String>) {
     }
 }
 
+fn next_hop(current: &str, location: &str) -> Option<String> {
+    let location = location.trim();
+    if is_remote_art(location) {
+        return Some(location.to_string());
+    }
+    let (scheme, rest) = current.trim().split_once("://")?;
+    if let Some(elsewhere) = location.strip_prefix("//") {
+        return Some(format!("{scheme}://{elsewhere}"));
+    }
+    if location.starts_with('/') {
+        let authority = rest.split(['/', '?', '#']).next()?;
+        return Some(format!("{scheme}://{authority}{location}"));
+    }
+    None
+}
+
+fn image_content(content_type: Option<&str>) -> bool {
+    let Some(content_type) = content_type else { return true };
+    let mime = content_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+    mime.starts_with("image/") || mime == "application/octet-stream" || mime == "binary/octet-stream"
+}
+
 fn download(agent: &ureq::Agent, url: &str, dir: &Path, target: &Path) -> anyhow::Result<()> {
-    anyhow::ensure!(!resolves_locally(url), "cover art that points into the local network is not fetched");
-    let mut response = agent.get(url).call()?;
-    let bytes = response.body_mut().with_config().limit(ART_MAX_BYTES).read_to_vec()?;
-    anyhow::ensure!(!bytes.is_empty(), "empty response body");
-    std::fs::create_dir_all(dir)?;
-    let partial = target.with_extension("part");
-    std::fs::write(&partial, &bytes)?;
-    std::fs::rename(&partial, target)?;
-    Ok(())
+    let mut current = url.to_string();
+    for _ in 0..=MAX_HOPS {
+        anyhow::ensure!(
+            is_remote_art(&current) && !local_host(&current) && !resolves_locally(&current),
+            "cover art that points into the local network is not fetched"
+        );
+        let mut response = agent.get(&current).call()?;
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response.headers().get("location").and_then(|value| value.to_str().ok()).unwrap_or("");
+            current =
+                next_hop(&current, location).ok_or_else(|| anyhow::anyhow!("redirect without a usable target"))?;
+            continue;
+        }
+        anyhow::ensure!(status.is_success(), "the server answered {status}");
+        let content_type = response.headers().get("content-type").and_then(|value| value.to_str().ok());
+        anyhow::ensure!(image_content(content_type), "the response is not an image");
+        let bytes = response.body_mut().with_config().limit(ART_MAX_BYTES).read_to_vec()?;
+        anyhow::ensure!(!bytes.is_empty(), "empty response body");
+        store(dir, target, &bytes)?;
+        return Ok(());
+    }
+    anyhow::bail!("too many redirects")
 }
 
 fn prune(dir: &Path, keep: usize) {
@@ -299,6 +421,72 @@ mod tests {
         fetcher.localise(&mut local);
         assert_eq!(local, "file:///tmp/x.png");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_cover_is_asked_for_again_after_a_while() {
+        let dir = scratch("retry");
+        let (mut fetcher, inbox) = ArtFetcher::detached(dir.clone());
+        let url = "https://example.com/flaky.jpg";
+        assert_eq!(fetcher.resolve(url), None);
+        assert_eq!(inbox.try_recv().unwrap(), url);
+        assert_eq!(fetcher.resolve(url), None);
+        assert!(inbox.try_recv().is_err(), "not again straight away");
+        let long_ago = Instant::now().checked_sub(RETRY_AFTER * 2).expect("monotonic clock");
+        fetcher.attempted.insert(url.to_string(), long_ago);
+        assert_eq!(fetcher.resolve(url), None);
+        assert_eq!(inbox.try_recv().unwrap(), url);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_stopped_fetcher_is_started_again_only_after_a_pause() {
+        let dir = scratch("restart");
+        let (mut fetcher, inbox) = ArtFetcher::detached(dir.clone());
+        drop(inbox);
+        assert_eq!(fetcher.resolve("https://example.com/a.jpg"), None);
+        assert!(fetcher.requests.is_none());
+        assert!(fetcher.sender().is_none(), "no restart loop right after a failure");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn redirects_are_followed_only_to_web_addresses() {
+        let from = "https://cdn.example.com/a/b.jpg?x=1";
+        assert_eq!(next_hop(from, "https://img.example.org/c.jpg").as_deref(), Some("https://img.example.org/c.jpg"));
+        assert_eq!(next_hop(from, "//img.example.org/c.jpg").as_deref(), Some("https://img.example.org/c.jpg"));
+        assert_eq!(next_hop(from, "/c.jpg").as_deref(), Some("https://cdn.example.com/c.jpg"));
+        assert_eq!(next_hop(from, "file:///etc/passwd"), None);
+        assert_eq!(next_hop(from, "c.jpg"), None);
+        assert_eq!(next_hop(from, ""), None);
+        assert!(local_host(&next_hop(from, "http://127.0.0.1/x").unwrap()), "each hop is checked again");
+    }
+
+    #[test]
+    fn only_image_responses_are_cached() {
+        assert!(image_content(Some("image/jpeg")));
+        assert!(image_content(Some("Image/PNG; charset=binary")));
+        assert!(image_content(Some("application/octet-stream")));
+        assert!(image_content(None));
+        assert!(!image_content(Some("text/html; charset=utf-8")));
+    }
+
+    #[test]
+    fn an_inline_cover_is_decoded_into_the_cache() {
+        let dir = scratch("inline");
+        let (mut fetcher, inbox) = ArtFetcher::detached(dir.clone());
+        let url = "data:image/png;base64,iVBORw0K\nGgo=";
+        let local = fetcher.resolve(url).expect("decoded");
+        let path = crate::local_art_path(&local).expect("a local file");
+        assert_eq!(std::fs::read(path).unwrap(), b"\x89PNG\r\n\x1a\n");
+        assert!(inbox.try_recv().is_err(), "nothing is downloaded");
+        assert_eq!(fetcher.resolve(url), Some(local));
+        assert_eq!(inline_art("data:image/png;base64,iVBORw0KGgo").as_deref(), Some(&b"\x89PNG\r\n\x1a\n"[..]));
+        assert_eq!(inline_art("data:text/plain;base64,aGk="), None);
+        assert_eq!(inline_art("data:image/svg+xml,<svg/>"), None);
+        assert_eq!(inline_art("data:image/png;base64,!!!"), None);
+        assert_eq!(fetcher.resolve("data:image/png;base64,"), None);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

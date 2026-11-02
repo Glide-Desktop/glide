@@ -28,6 +28,7 @@ impl Playback {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent MPRIS capability flags (CanGoNext, CanGoPrevious, CanSeek, CanControl)
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Track {
     pub bus: String,
@@ -43,6 +44,8 @@ pub struct Track {
     pub status: Playback,
     pub can_go_next: bool,
     pub can_go_previous: bool,
+    pub can_seek: bool,
+    pub can_control: bool,
 }
 
 impl Track {
@@ -95,15 +98,44 @@ pub(crate) fn is_player_bus(name: &str) -> bool {
     name.starts_with(BUS_PREFIX) && name.len() > BUS_PREFIX.len()
 }
 
-fn bus_head(name: &str) -> &str {
-    let tail = name.strip_prefix(BUS_PREFIX).unwrap_or(name);
-    let tail = tail.split('.').next().unwrap_or(tail);
-    tail.split_once("instance").map_or(tail, |(head, _)| head)
+fn bus_tail(name: &str) -> &str {
+    name.strip_prefix(BUS_PREFIX).unwrap_or(name)
+}
+
+fn bus_head(name: &str) -> String {
+    bus_tail(name)
+        .split('.')
+        .map(|segment| segment.split_once("instance").map_or(segment, |(head, _)| head))
+        .filter(|segment| !segment.trim_matches(['-', '_']).is_empty())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn bus_is_one_of(name: &str, heads: &[&str]) -> bool {
+    let tail = bus_tail(name);
+    heads.iter().any(|head| tail == *head || tail.strip_prefix(head).is_some_and(|rest| rest.starts_with('.')))
+}
+
+#[must_use]
+pub(crate) fn is_mirror_bus(name: &str) -> bool {
+    bus_is_one_of(name, &["playerctld", "plasma-browser-integration"])
+}
+
+#[must_use]
+pub(crate) fn is_relay_bus(name: &str) -> bool {
+    is_mirror_bus(name) || bus_is_one_of(name, &["kdeconnect"])
+}
+
+#[must_use]
+pub(crate) fn identity_or_bus(identity: &str, bus: &str) -> String {
+    let identity = identity.trim();
+    if identity.is_empty() { identity_from_bus(bus) } else { identity.to_string() }
 }
 
 #[must_use]
 pub(crate) fn identity_from_bus(name: &str) -> String {
-    let tail = bus_head(name).trim_matches('-');
+    let head = bus_head(name);
+    let tail = head.rsplit('.').next().unwrap_or_default().trim_matches('-');
     if tail.is_empty() {
         return name.to_string();
     }
@@ -124,7 +156,8 @@ pub fn player_icon_candidates(bus: &str, desktop_entry: &str) -> Vec<String> {
         }
     };
     push(desktop_entry.trim_end_matches(".desktop"));
-    let head = bus_head(bus).trim_matches(['-', '_']);
+    let head = bus_head(bus);
+    let head = head.trim_matches(['-', '_']);
     push(&head.to_lowercase());
     push(head);
     out
@@ -144,6 +177,9 @@ pub(crate) fn better_candidate(current: Option<&Track>, candidate: &Track) -> bo
         return true;
     }
     match (current.status, candidate.status) {
+        (current_status, candidate_status) if current_status == candidate_status => {
+            candidate.can_control && !current.can_control
+        }
         (Playback::Playing, _) => false,
         (_, Playback::Playing) => true,
         (_, _) => !current.status.is_active() && candidate.status.is_active(),
@@ -175,6 +211,52 @@ mod tests {
     #[test]
     fn an_instance_suffix_is_stripped_from_the_identity() {
         assert_eq!(identity_from_bus("org.mpris.MediaPlayer2.chromium.instance1234"), "Chromium");
+    }
+
+    #[test]
+    fn a_reverse_dns_bus_name_is_named_after_its_last_part_unless_the_player_names_itself() {
+        assert_eq!(identity_from_bus("org.mpris.MediaPlayer2.io.bassi.Amberol"), "Amberol");
+        assert_eq!(identity_from_bus("org.mpris.MediaPlayer2.firefox.instance_1_23"), "Firefox");
+        assert_eq!(
+            identity_or_bus("  Mozilla Firefox ", "org.mpris.MediaPlayer2.firefox.instance_1_23"),
+            "Mozilla Firefox"
+        );
+        assert_eq!(identity_or_bus(" ", "org.mpris.MediaPlayer2.io.bassi.Amberol"), "Amberol");
+        assert_eq!(
+            player_icon_candidates("org.mpris.MediaPlayer2.io.bassi.Amberol", ""),
+            vec!["io.bassi.amberol".to_string(), "io.bassi.Amberol".to_string()]
+        );
+    }
+
+    #[test]
+    fn relays_and_remote_players_are_told_apart_from_local_ones() {
+        for relay in [
+            "org.mpris.MediaPlayer2.playerctld",
+            "org.mpris.MediaPlayer2.plasma-browser-integration",
+            "org.mpris.MediaPlayer2.kdeconnect.mpris_000001",
+            "org.mpris.MediaPlayer2.kdeconnect",
+        ] {
+            assert!(is_relay_bus(relay), "{relay}");
+        }
+        for local in [
+            "org.mpris.MediaPlayer2.spotify",
+            "org.mpris.MediaPlayer2.firefox.instance_1_23",
+            "org.mpris.MediaPlayer2.kdeconnectish",
+            "org.mpris.MediaPlayer2.playerctldaemon",
+        ] {
+            assert!(!is_relay_bus(local), "{local}");
+        }
+        assert!(is_mirror_bus("org.mpris.MediaPlayer2.playerctld"));
+        assert!(!is_mirror_bus("org.mpris.MediaPlayer2.kdeconnect.mpris_000001"), "phone music is still shown");
+    }
+
+    #[test]
+    fn a_controllable_player_wins_over_one_in_the_same_state_that_is_not() {
+        let blind = Track { can_control: false, ..player("a", Playback::Playing) };
+        let able = Track { can_control: true, ..player("b", Playback::Playing) };
+        assert!(better_candidate(Some(&blind), &able));
+        assert!(!better_candidate(Some(&able), &blind));
+        assert!(!better_candidate(Some(&able), &Track { bus: "c".into(), ..able.clone() }));
     }
 
     #[test]
