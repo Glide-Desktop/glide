@@ -1,17 +1,67 @@
 use std::ffi::OsStr;
+use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use glide_app::chooser::{FLAG, Filter, Mode, REQUEST_ENV, Request, Response};
+use glide_app::chooser::{CANCEL_EXIT, FLAG, Filter, Mode, REQUEST_ENV, Request, Response};
 use zbus::object_server::ObjectServer;
 use zbus::zvariant::{DeserializeDict, OwnedObjectPath, SerializeDict, Type};
 
 const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.glide";
+const FRONTEND: &str = "org.freedesktop.portal.Desktop";
 const PATH: &str = "/org/freedesktop/portal/desktop";
 const SUCCESS: u32 = 0;
 const CANCELLED: u32 = 1;
 const FAILED: u32 = 2;
+const IDLE_EXIT: Duration = Duration::from_mins(5);
+const IDLE_CHECK: Duration = Duration::from_secs(20);
+
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+static LAST_CALL: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn touch() {
+    if let Ok(mut last) = LAST_CALL.lock() {
+        *last = Some(Instant::now());
+    }
+}
+
+fn idle() -> bool {
+    IN_FLIGHT.load(Ordering::SeqCst) == 0
+        && LAST_CALL.lock().is_ok_and(|last| last.is_none_or(|at| at.elapsed() >= IDLE_EXIT))
+}
+
+struct Busy;
+
+impl Busy {
+    fn start() -> Self {
+        IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+        touch();
+        Self
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        touch();
+        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+async fn from_frontend(header: &zbus::message::Header<'_>, connection: &zbus::Connection) -> bool {
+    let Some(sender) = header.sender() else {
+        return false;
+    };
+    let Ok(proxy) = zbus::fdo::DBusProxy::new(connection).await else {
+        return false;
+    };
+    let frontend = zbus::names::WellKnownName::from_static_str_unchecked(FRONTEND);
+    proxy.get_name_owner(frontend.into()).await.is_ok_and(|owner| owner.as_str() == sender.as_str())
+}
 
 type PortalFilter = (String, Vec<(u32, String)>);
 
@@ -61,7 +111,8 @@ fn request(mode: Mode, parent_window: String, title: String, options: Options) -
         .current_folder
         .as_deref()
         .and_then(path_bytes)
-        .or_else(|| current_file.as_deref().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf));
+        .or_else(|| current_file.as_deref().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf))
+        .filter(|folder| folder.to_str().is_some());
     let current_name = options.current_name.or_else(|| {
         current_file.as_deref().and_then(std::path::Path::file_name).map(|name| name.to_string_lossy().into_owned())
     });
@@ -107,6 +158,8 @@ fn files_binary() -> PathBuf {
 
 struct PortalRequest {
     process: Option<std::os::fd::OwnedFd>,
+    pid: libc::pid_t,
+    reaped: Arc<Mutex<bool>>,
 }
 
 fn pidfd(pid: u32) -> Option<std::os::fd::OwnedFd> {
@@ -135,8 +188,54 @@ impl PortalRequest {
                     0,
                 );
             }
+            return;
+        }
+        let reaped = self.reaped.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*reaped && self.pid > 0 {
+            // SAFETY: kill(2) on the chooser this request started; the lock keeps it from being reaped meanwhile,
+            // so the pid still names that process (alive or a zombie) and cannot have been reused.
+            unsafe {
+                libc::kill(self.pid, libc::SIGTERM);
+            }
         }
     }
+}
+
+fn wait_unreaped(pid: libc::pid_t) {
+    loop {
+        // SAFETY: siginfo_t is plain data, for which all zero bytes are a valid value.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let Ok(id) = libc::id_t::try_from(pid) else {
+            return;
+        };
+        // SAFETY: waitid(2) with WNOWAIT on our own child waits for it to exit and leaves it unreaped; `info` outlives
+        // the call.
+        let status = unsafe { libc::waitid(libc::P_PID, id, &raw mut info, libc::WEXITED | libc::WNOWAIT) };
+        if status == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return;
+        }
+    }
+}
+
+fn collect(mut child: std::process::Child, reaped: &Mutex<bool>) -> std::io::Result<(ExitStatus, Vec<u8>)> {
+    let mut stdout = Vec::new();
+    if let Some(mut pipe) = child.stdout.take()
+        && pipe.read_to_end(&mut stdout).is_err()
+    {
+        stdout.clear();
+    }
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        wait_unreaped(pid);
+    }
+    let mut reaped = reaped.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    *reaped = true;
+    let status = child.wait()?;
+    drop(reaped);
+    Ok((status, stdout))
+}
+
+fn chooser_code(status: ExitStatus) -> u32 {
+    if status.code() == Some(CANCEL_EXIT) || status.signal() == Some(libc::SIGTERM) { CANCELLED } else { FAILED }
 }
 
 async fn blocking<T: Send + 'static>(name: &str, work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -151,9 +250,12 @@ async fn blocking<T: Send + 'static>(name: &str, work: impl FnOnce() -> T + Send
 }
 
 async fn run(server: &ObjectServer, handle: OwnedObjectPath, request: Request) -> (u32, Results) {
+    let Some(json) = request.to_json() else {
+        return (FAILED, Results::default());
+    };
     let spawned = Command::new(files_binary())
         .arg(FLAG)
-        .env(REQUEST_ENV, request.to_json())
+        .env(REQUEST_ENV, json)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -162,14 +264,19 @@ async fn run(server: &ObjectServer, handle: OwnedObjectPath, request: Request) -
         return (FAILED, Results::default());
     };
     let pid = child.id();
-    let registered = matches!(server.at(handle.clone(), PortalRequest { process: pidfd(pid) }).await, Ok(true));
+    let reaped = Arc::new(Mutex::new(false));
+    let portal_request =
+        PortalRequest { process: pidfd(pid), pid: libc::pid_t::try_from(pid).unwrap_or(0), reaped: reaped.clone() };
+    let registered = matches!(server.at(handle.clone(), portal_request).await, Ok(true));
     if !registered {
         let _ = child.kill();
     }
-    let output = blocking("glide-portal-wait", move || child.wait_with_output()).await;
+    let waiting = reaped.clone();
+    let output = blocking("glide-portal-wait", move || collect(child, &waiting)).await;
     if output.is_none()
         && let Ok(pid) = i32::try_from(pid)
     {
+        *reaped.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         // SAFETY: kill(2) and waitpid(2) on the chooser this request started, whose `Child` was dropped unreaped
         // when its waiting thread could not start.
         unsafe {
@@ -183,23 +290,18 @@ async fn run(server: &ObjectServer, handle: OwnedObjectPath, request: Request) -
         return (FAILED, Results::default());
     }
     match output {
-        Some(Ok(output)) if output.status.success() => {
-            match Response::parse(&String::from_utf8_lossy(&output.stdout)) {
-                Some(response) => (
-                    SUCCESS,
-                    Results {
-                        uris: response.uris,
-                        current_filter: response
-                            .filter
-                            .and_then(|index| request.filters.get(index))
-                            .map(Filter::to_portal),
-                        choices: (!response.choices.is_empty()).then_some(response.choices),
-                    },
-                ),
-                None => (CANCELLED, Results::default()),
-            }
-        }
-        Some(Ok(_)) => (CANCELLED, Results::default()),
+        Some(Ok((status, stdout))) if status.success() => match Response::parse(&String::from_utf8_lossy(&stdout)) {
+            Some(response) => (
+                SUCCESS,
+                Results {
+                    uris: response.uris,
+                    current_filter: response.filter.and_then(|index| request.filters.get(index)).map(Filter::to_portal),
+                    choices: (!response.choices.is_empty()).then_some(response.choices),
+                },
+            ),
+            None => (FAILED, Results::default()),
+        },
+        Some(Ok((status, _))) => (chooser_code(status), Results::default()),
         _ => (FAILED, Results::default()),
     }
 }
@@ -212,25 +314,40 @@ struct FileChooser;
 impl FileChooser {
     async fn open_file(
         &self, handle: OwnedObjectPath, app_id: String, parent_window: String, title: String, options: Options,
-        #[zbus(object_server)] server: &ObjectServer,
+        #[zbus(object_server)] server: &ObjectServer, #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
     ) -> (u32, Results) {
+        let _busy = Busy::start();
         drop(app_id);
+        if !from_frontend(&header, connection).await {
+            return (FAILED, Results::default());
+        }
         run(server, handle, request(Mode::Open, parent_window, title, options)).await
     }
 
     async fn save_file(
         &self, handle: OwnedObjectPath, app_id: String, parent_window: String, title: String, options: Options,
-        #[zbus(object_server)] server: &ObjectServer,
+        #[zbus(object_server)] server: &ObjectServer, #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
     ) -> (u32, Results) {
+        let _busy = Busy::start();
         drop(app_id);
+        if !from_frontend(&header, connection).await {
+            return (FAILED, Results::default());
+        }
         run(server, handle, request(Mode::Save, parent_window, title, options)).await
     }
 
     async fn save_files(
         &self, handle: OwnedObjectPath, app_id: String, parent_window: String, title: String, options: Options,
-        #[zbus(object_server)] server: &ObjectServer,
+        #[zbus(object_server)] server: &ObjectServer, #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
     ) -> (u32, Results) {
+        let _busy = Busy::start();
         drop(app_id);
+        if !from_frontend(&header, connection).await {
+            return (FAILED, Results::default());
+        }
         run(server, handle, request(Mode::SaveFiles, parent_window, title, options)).await
     }
 
@@ -282,8 +399,13 @@ struct Screenshot;
 impl Screenshot {
     async fn screenshot(
         &self, handle: OwnedObjectPath, app_id: String, parent_window: String, options: ScreenshotOptions,
+        #[zbus(header)] header: zbus::message::Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
     ) -> (u32, ScreenshotResults) {
+        let _busy = Busy::start();
         drop((handle, app_id, parent_window, options.modal));
+        if !from_frontend(&header, connection).await {
+            return (FAILED, ScreenshotResults::default());
+        }
         let (request, timeout) = if options.interactive.unwrap_or(false) {
             (glide_ipc::Request::ScreenshotArea, PICK_TIMEOUT)
         } else {
@@ -301,8 +423,13 @@ impl Screenshot {
     async fn pick_color(
         &self, handle: OwnedObjectPath, app_id: String, parent_window: String,
         options: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+        #[zbus(header)] header: zbus::message::Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
     ) -> (u32, ColorResults) {
+        let _busy = Busy::start();
         drop((handle, app_id, parent_window, options));
+        if !from_frontend(&header, connection).await {
+            return (FAILED, ColorResults::default());
+        }
         match ask(glide_ipc::Request::PickColor, PICK_TIMEOUT).await {
             Some(glide_ipc::Response::Color { red, green, blue }) => {
                 (SUCCESS, ColorResults { color: Some((red, green, blue)) })
@@ -322,10 +449,16 @@ fn serve(builder: zbus::blocking::connection::Builder<'_>) -> zbus::Result<zbus:
 }
 
 fn main() -> zbus::Result<()> {
-    let _connection = serve(zbus::blocking::connection::Builder::session()?)?;
-    loop {
-        std::thread::park();
+    let connection = serve(zbus::blocking::connection::Builder::session()?)?;
+    touch();
+    while !idle() {
+        std::thread::sleep(IDLE_CHECK);
     }
+    let _ = connection.release_name(BUS_NAME);
+    while IN_FLIGHT.load(Ordering::SeqCst) > 0 {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -403,8 +536,12 @@ mod tests {
 
         let builder = zbus::blocking::connection::Builder::address(bus.1.as_str()).expect("address");
         let portal = serve(builder).expect("serve");
-        let client =
-            zbus::blocking::connection::Builder::address(bus.1.as_str()).expect("address").build().expect("client");
+        let client = zbus::blocking::connection::Builder::address(bus.1.as_str())
+            .expect("address")
+            .name(FRONTEND)
+            .expect("frontend name")
+            .build()
+            .expect("client");
         let filters: Vec<PortalFilter> = vec![("Text".into(), vec![(0, "*.txt".into())])];
         let options = std::collections::HashMap::from([
             ("filters", zbus::zvariant::Value::from(filters)),
@@ -430,7 +567,8 @@ mod tests {
         let choices: Vec<(String, String)> =
             results["choices"].try_clone().expect("clone").try_into().expect("choices");
         assert_eq!(choices, [("encoding".to_string(), "latin1".to_string())]);
-        assert!(portal.object_server().at(handle.clone(), PortalRequest { process: None }).unwrap());
+        let stale = PortalRequest { process: None, pid: 0, reaped: Arc::default() };
+        assert!(portal.object_server().at(handle.clone(), stale).unwrap());
         let reply = client
             .call_method(
                 Some(BUS_NAME),
@@ -451,6 +589,83 @@ mod tests {
         assert_eq!(code, FAILED);
         assert!(portal.object_server().interface::<_, PortalRequest>(handle).is_ok());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_the_portal_frontend_may_call_the_backend() {
+        let Some(bus) = private_bus() else {
+            return;
+        };
+        let builder = zbus::blocking::connection::Builder::address(bus.1.as_str()).expect("address");
+        let portal = serve(builder).expect("serve");
+        let intruder =
+            zbus::blocking::connection::Builder::address(bus.1.as_str()).expect("address").build().expect("client");
+        let handle =
+            zbus::zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1_2/t").expect("path");
+        let empty = std::collections::HashMap::<String, zbus::zvariant::Value<'_>>::new();
+        for (interface, method) in [
+            ("org.freedesktop.impl.portal.Screenshot", "Screenshot"),
+            ("org.freedesktop.impl.portal.Screenshot", "PickColor"),
+        ] {
+            let reply = intruder
+                .call_method(Some(BUS_NAME), PATH, Some(interface), method, &(handle.clone(), "app", "", &empty))
+                .expect("reply");
+            let (code, results): (u32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>) =
+                reply.body().deserialize().expect("body");
+            assert_eq!((code, results.len()), (FAILED, 0), "{method} from a stranger must be refused");
+        }
+        let reply = intruder
+            .call_method(
+                Some(BUS_NAME),
+                PATH,
+                Some("org.freedesktop.impl.portal.FileChooser"),
+                "OpenFile",
+                &(handle, "app", "", "Pick", &empty),
+            )
+            .expect("reply");
+        let (code, _): (u32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>) =
+            reply.body().deserialize().expect("body");
+        assert_eq!(code, FAILED, "a stranger must not open a chooser");
+
+        let frontend = zbus::blocking::connection::Builder::address(bus.1.as_str())
+            .expect("address")
+            .name(FRONTEND)
+            .expect("frontend name")
+            .build()
+            .expect("frontend");
+        let call_from = |connection: &zbus::blocking::Connection| {
+            let sender = connection.unique_name().expect("unique name").to_owned();
+            let message = zbus::message::Message::method_call(PATH, "Screenshot")
+                .expect("call")
+                .sender(sender)
+                .expect("sender")
+                .build(&())
+                .expect("message");
+            zbus::block_on(from_frontend(&message.header(), portal.inner()))
+        };
+        assert!(call_from(&frontend), "the owner of {FRONTEND} passes");
+        assert!(!call_from(&intruder), "anyone else is refused");
+    }
+
+    #[test]
+    fn a_folder_that_is_not_utf8_is_left_out_of_the_chooser_request() {
+        let options = Options {
+            current_folder: Some(b"/tmp/\xff\0".to_vec()),
+            current_name: Some("a.txt".into()),
+            ..Options::default()
+        };
+        let request = request(Mode::Save, String::new(), String::new(), options);
+        assert_eq!(request.current_folder, None);
+        assert!(request.to_json().is_some(), "the rest of the request still reaches the chooser");
+    }
+
+    #[test]
+    fn only_the_choosers_own_cancel_counts_as_cancelled() {
+        assert_eq!(chooser_code(ExitStatus::from_raw(CANCEL_EXIT << 8)), CANCELLED);
+        assert_eq!(chooser_code(ExitStatus::from_raw(libc::SIGTERM)), CANCELLED);
+        assert_eq!(chooser_code(ExitStatus::from_raw(glide_app::chooser::FAILURE_EXIT << 8)), FAILED);
+        assert_eq!(chooser_code(ExitStatus::from_raw(101 << 8)), FAILED);
+        assert_eq!(chooser_code(ExitStatus::from_raw(libc::SIGSEGV)), FAILED);
     }
 
     #[test]

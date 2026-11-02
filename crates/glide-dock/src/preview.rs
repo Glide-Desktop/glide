@@ -151,7 +151,7 @@ pub struct Preview {
 impl Preview {
     #[must_use]
     pub fn new(index: usize, app_id: String, windows: Vec<PreviewWindow>) -> Self {
-        let mut reveal = glide_ui::Reveal::closed();
+        let mut reveal = glide_ui::Reveal::closed().with_ease(ease_out);
         reveal.open(t2());
         Self {
             index,
@@ -235,7 +235,7 @@ impl Preview {
     }
 
     fn progress(&self) -> f64 {
-        self.reveal.progress(t2(), ease_out).clamp(0.0, 1.0)
+        self.reveal.value(t2()).clamp(0.0, 1.0)
     }
 
     pub fn clear_rasters(&mut self) {

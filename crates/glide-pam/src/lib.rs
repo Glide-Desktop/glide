@@ -46,7 +46,12 @@ fn account_named(name: &str) -> Option<Account> {
     // SAFETY: wanted, entry, buffer and found outlive the call, and buffer.len() is the length handed over.
     let status =
         unsafe { libc::getpwnam_r(wanted.as_ptr(), &raw mut entry, buffer.as_mut_ptr(), buffer.len(), &raw mut found) };
-    (status == 0 && !found.is_null()).then(|| Account { name: name.to_string(), uid: entry.pw_uid, gid: entry.pw_gid })
+    if status != 0 || found.is_null() || entry.pw_name.is_null() {
+        return None;
+    }
+    // SAFETY: on success pw_name points at a NUL-terminated string inside buffer, which is still alive.
+    let canonical = unsafe { CStr::from_ptr(entry.pw_name) }.to_str().ok()?.to_string();
+    Some(Account { name: canonical, uid: entry.pw_uid, gid: entry.pw_gid })
 }
 
 fn user(pamh: *mut PamHandle) -> Option<Account> {
@@ -286,7 +291,7 @@ mod tests {
             let name = unsafe { CStr::from_ptr((*entry).pw_name) }.to_string_lossy().into_owned();
             (name, me.uid)
         };
-        assert_eq!(account_named(&name).map(|account| account.uid), Some(uid));
+        assert_eq!(account_named(&name).map(|account| (account.name, account.uid)), Some((name.clone(), uid)));
         assert_eq!(account_named("no-such-user-glide"), None);
     }
 }

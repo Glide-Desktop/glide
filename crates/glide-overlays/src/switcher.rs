@@ -249,7 +249,7 @@ impl Switcher {
             trigger,
             selected,
             created: Instant::now(),
-            reveal: glide_ui::Reveal::closed(),
+            reveal: glide_ui::Reveal::closed().with_ease(glide_theme::motion::ease_out),
             highlight,
             swap: glide_ui::Tween::at(1.0),
             closing: false,
@@ -409,7 +409,7 @@ impl Switcher {
 
     #[must_use]
     pub fn openness(&self) -> f64 {
-        self.reveal.progress(glide_theme::motion::t2(), |t| glide_theme::motion::E_OUT.ease_f64(t)).clamp(0.0, 1.0)
+        self.reveal.value(glide_theme::motion::t2()).clamp(0.0, 1.0)
     }
 
     #[must_use]

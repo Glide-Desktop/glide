@@ -37,10 +37,18 @@ impl Lang {
 
     #[must_use]
     pub fn from_env_or(fallback: Self) -> Self {
-        LOCALE_VARS
+        let [lc_all, lc_messages, lang] = LOCALE_VARS.map(|key| std::env::var(key).ok());
+        Self::from_locale_vars_or([lc_all.as_deref(), lc_messages.as_deref(), lang.as_deref()], fallback)
+    }
+
+    #[must_use]
+    pub fn from_locale_vars_or(values: [Option<&str>; 3], fallback: Self) -> Self {
+        values
             .into_iter()
-            .filter_map(|key| std::env::var(key).ok())
-            .find_map(|value| Self::naming(&value))
+            .flatten()
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .and_then(Self::naming)
             .unwrap_or(fallback)
     }
 
@@ -349,6 +357,16 @@ mod tests {
         assert_eq!(pick(Some("C"), None, Some("uk_UA.UTF-8")), Lang::En);
         assert_eq!(pick(Some(" "), Some("uk_UA"), Some("en_GB")), Lang::Uk);
         assert_eq!(pick(None, Some("de_DE"), Some("uk_UA")), Lang::En);
+    }
+
+    #[test]
+    fn with_a_fallback_the_first_set_variable_still_decides_and_other_languages_fall_back() {
+        let pick = |values| Lang::from_locale_vars_or(values, Lang::Uk);
+        assert_eq!(pick([Some("C"), None, Some("en_US.UTF-8")]), Lang::Uk);
+        assert_eq!(Lang::from_locale_vars_or([Some("C"), None, Some("uk_UA.UTF-8")], Lang::En), Lang::En);
+        assert_eq!(pick([Some(""), Some("en_GB"), Some("uk_UA")]), Lang::En);
+        assert_eq!(pick([None, None, Some("de_DE")]), Lang::Uk);
+        assert_eq!(pick([None, None, None]), Lang::Uk);
     }
 
     #[test]

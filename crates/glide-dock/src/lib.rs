@@ -131,8 +131,8 @@ const MENU_RISE: i32 = 6;
 const MENU_SCALE_FROM: f64 = 0.94;
 const PRESS_RADIUS: f32 = glide_theme::shape::R3;
 
-fn reveal_progress(reveal: &glide_ui::Reveal, duration: Duration) -> f64 {
-    if reveal.is_open() { reveal.progress(duration, ease_out) } else { reveal.progress(duration, ease_io) }
+fn popup_reveal() -> glide_ui::Reveal {
+    glide_ui::Reveal::closed().with_eases(ease_out, ease_io)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -716,7 +716,7 @@ impl Dock {
             rasters: Rasters::default(),
             shell_backdrop_key: (None, 0),
             menu: None,
-            menu_reveal: glide_ui::Reveal::closed(),
+            menu_reveal: popup_reveal(),
             menu_rows: HashMap::new(),
             drag: None,
             slides: HashMap::new(),
@@ -727,7 +727,7 @@ impl Dock {
             press_layers: HashMap::new(),
             run_alphas: HashMap::new(),
             tooltip: None,
-            tooltip_reveal: glide_ui::Reveal::closed(),
+            tooltip_reveal: popup_reveal(),
             raster_rev: raster_revision(&config.theme),
             autohide: config.autohide,
             hide: AutohideFade::shown(),
@@ -1387,7 +1387,7 @@ impl Dock {
         let rect = glide_shell::popup_menu::place_above(tile, area, entries.len());
         let heading = self.menu_title(index);
         if self.menu.as_ref().is_some_and(|menu| menu.index != index) {
-            self.menu_reveal = glide_ui::Reveal::closed();
+            self.menu_reveal = popup_reveal();
             self.menu_rows.clear();
         }
         self.menu = Some(DockMenu { index, entries, rect, hovered: None, title: heading });
@@ -2203,7 +2203,7 @@ fn push_tooltip<R: ShellRenderer>(
     let Some(tooltip) = dock.tooltip.clone() else {
         return;
     };
-    let progress = reveal_progress(&dock.tooltip_reveal, t1());
+    let progress = dock.tooltip_reveal.value(t1());
     if progress <= 0.0 {
         return;
     }
@@ -2306,7 +2306,7 @@ fn push_menu<R: ShellRenderer>(dock: &mut Dock, frame: &mut Frame<'_, R>) {
     let Some(menu) = dock.menu.clone() else {
         return;
     };
-    let progress = reveal_progress(&dock.menu_reveal, t2());
+    let progress = dock.menu_reveal.value(t2());
     if progress <= 0.0 {
         return;
     }

@@ -27,7 +27,8 @@ pub struct Reveal {
     from: f64,
     started: Instant,
     duration: Duration,
-    ease: Ease,
+    opening: Ease,
+    closing: Ease,
 }
 
 impl Default for Reveal {
@@ -38,7 +39,14 @@ impl Default for Reveal {
 
 impl Reveal {
     fn at_rest(phase: Phase, from: f64) -> Self {
-        Self { phase, from, started: Instant::now(), duration: Duration::ZERO, ease: linear_ease }
+        Self {
+            phase,
+            from,
+            started: Instant::now(),
+            duration: Duration::ZERO,
+            opening: linear_ease,
+            closing: linear_ease,
+        }
     }
 
     #[must_use]
@@ -52,18 +60,24 @@ impl Reveal {
     }
 
     #[must_use]
-    pub fn with_ease(mut self, ease: Ease) -> Self {
-        self.ease = ease;
+    pub fn with_ease(self, ease: Ease) -> Self {
+        self.with_eases(ease, ease)
+    }
+
+    #[must_use]
+    pub fn with_eases(mut self, opening: Ease, closing: Ease) -> Self {
+        self.opening = opening;
+        self.closing = closing;
         self
     }
 
     #[must_use]
     pub fn value(&self, duration: Duration) -> f64 {
-        self.progress(duration, self.ease)
+        let ease = if self.phase == Phase::Closing { self.closing } else { self.opening };
+        self.progress(duration, ease)
     }
 
-    #[must_use]
-    pub fn progress(&self, duration: Duration, ease: impl Fn(f64) -> f64) -> f64 {
+    fn progress(&self, duration: Duration, ease: impl Fn(f64) -> f64) -> f64 {
         match self.phase {
             Phase::Open => 1.0,
             Phase::Closed => 0.0,
@@ -240,6 +254,44 @@ mod tests {
         assert!(r.open(long));
         let reopened = r.value(long);
         assert!((after - reopened).abs() < 0.05, "second reversal must not jump: {after} vs {reopened}");
+    }
+
+    fn ease_out_cubic(t: f64) -> f64 {
+        1.0 - (1.0 - t).powi(3)
+    }
+
+    fn ease_in_cubic(t: f64) -> f64 {
+        t.powi(3)
+    }
+
+    #[test]
+    fn reversing_an_eased_reveal_continues_from_the_eased_value_it_drew() {
+        let long = Duration::from_secs(1);
+        let mut r = Reveal::closed().with_ease(ease_out_cubic);
+        r.open(long);
+        std::thread::sleep(Duration::from_millis(150));
+        let before = r.value(long);
+        assert!(before > r.linear(long) + 0.1, "the eased curve runs ahead of linear: {before}");
+        assert!(r.close(long));
+        let after = r.value(long);
+        assert!((before - after).abs() < 0.05, "reversal must continue from the drawn value: {before} vs {after}");
+    }
+
+    #[test]
+    fn separate_opening_and_closing_eases_reverse_without_a_jump_both_ways() {
+        let long = Duration::from_secs(1);
+        let mut r = Reveal::closed().with_eases(ease_out_cubic, ease_in_cubic);
+        r.open(long);
+        std::thread::sleep(Duration::from_millis(150));
+        let before = r.value(long);
+        assert!(r.close(long));
+        let closing = r.value(long);
+        assert!((before - closing).abs() < 0.05, "open → close must not jump: {before} vs {closing}");
+        std::thread::sleep(Duration::from_millis(150));
+        let mid = r.value(long);
+        assert!(r.open(long));
+        let reopened = r.value(long);
+        assert!((mid - reopened).abs() < 0.05, "close → open must not jump: {mid} vs {reopened}");
     }
 
     #[test]

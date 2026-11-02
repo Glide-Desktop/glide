@@ -19,13 +19,14 @@ pub fn is_glide_terminal(command: &str) -> bool {
 
 pub fn open_terminal_tab(directory: &Path, argv: &[String], token: &str) -> zbus::Result<()> {
     let connection = zbus::blocking::Connection::session()?;
-    let directory = directory.to_string_lossy();
+    let directory =
+        if directory.is_absolute() { file_uri(directory) } else { directory.to_string_lossy().into_owned() };
     connection.call_method(
         Some(TERMINAL_BUS),
         TERMINAL_PATH,
         Some(TERMINAL_INTERFACE),
         "OpenTab",
-        &(directory.as_ref(), argv, token),
+        &(directory.as_str(), argv, token),
     )?;
     Ok(())
 }

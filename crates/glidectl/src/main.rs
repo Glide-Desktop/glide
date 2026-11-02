@@ -1,5 +1,5 @@
 use std::{
-    io::{BufReader, Write},
+    io::{BufReader, ErrorKind, Write},
     os::unix::net::UnixStream,
     path::PathBuf,
     time::Duration,
@@ -37,43 +37,81 @@ pub fn parse_cli_args(args: &[String]) -> anyhow::Result<CliArgs> {
     Ok(CliArgs { json_output, subcommand_args })
 }
 
-fn main() -> anyhow::Result<()> {
-    let Some(args) = std::env::args_os().map(|arg| arg.into_string().ok()).collect::<Option<Vec<String>>>() else {
-        eprintln!("glidectl: arguments must be valid UTF-8");
-        std::process::exit(1);
-    };
-    let cli = match parse_cli_args(&args) {
-        Ok(c) => c,
-        Err(_) => {
-            eprintln!("{USAGE}");
-            std::process::exit(1);
+fn main() {
+    let code = match run() {
+        Ok(code) => code,
+        Err(error) if broken_pipe(&error) => 0,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            1
         }
     };
+    std::process::exit(code);
+}
+
+fn broken_pipe(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == ErrorKind::BrokenPipe))
+}
+
+fn run() -> anyhow::Result<i32> {
+    let Some(args) = std::env::args_os().map(|arg| arg.into_string().ok()).collect::<Option<Vec<String>>>() else {
+        eprintln!("glidectl: arguments must be valid UTF-8");
+        return Ok(1);
+    };
+    let Ok(cli) = parse_cli_args(&args) else {
+        eprintln!("{USAGE}");
+        return Ok(1);
+    };
+    let mut out = std::io::stdout().lock();
+
+    if is_help(&cli.subcommand_args[0]) {
+        write!(out, "{USAGE}")?;
+        return Ok(0);
+    }
 
     if cli.subcommand_args[0] == "tokens" {
-        println!("{}", tokens(&cli.subcommand_args[1..])?);
-        return Ok(());
+        writeln!(out, "{}", tokens(&cli.subcommand_args[1..])?)?;
+        return Ok(0);
     }
 
     let request = parse_args(&cli.subcommand_args)?;
     let socket_path = find_socket_path()?;
 
     if matches!(request, Request::Subscribe) {
-        return run_subscribe(&socket_path, cli.json_output);
+        run_subscribe(&mut out, &socket_path, cli.json_output)?;
+        return Ok(0);
     }
 
     let (_, response) = exchange(&socket_path, &request)?;
 
     if cli.json_output {
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        writeln!(out, "{}", serde_json::to_string_pretty(&response)?)?;
     } else {
-        print_response(&response);
+        print_response(&mut out, &response)?;
     }
+    out.flush()?;
 
-    if is_failure(&response) {
-        std::process::exit(1);
+    Ok(i32::from(is_failure(&response)))
+}
+
+#[must_use]
+pub fn is_help(word: &str) -> bool {
+    matches!(word, "-h" | "--help" | "help")
+}
+
+#[must_use]
+pub fn printable(text: &str) -> String {
+    let mut shown = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            shown.extend(c.escape_default());
+        } else {
+            shown.push(c);
+        }
     }
-    Ok(())
+    shown
 }
 
 pub fn tokens(args: &[String]) -> anyhow::Result<String> {
@@ -116,7 +154,7 @@ fn exchange(socket_path: &PathBuf, request: &Request) -> anyhow::Result<(BufRead
     Ok((reader, serde_json::from_str(&line)?))
 }
 
-fn run_subscribe(socket_path: &PathBuf, json_output: bool) -> anyhow::Result<()> {
+fn run_subscribe(out: &mut impl Write, socket_path: &PathBuf, json_output: bool) -> anyhow::Result<()> {
     let (mut reader, response) = exchange(socket_path, &Request::Subscribe)?;
     if !matches!(response, Response::Subscribed) {
         anyhow::bail!("subscribe request was not accepted: {response:?}");
@@ -146,10 +184,11 @@ fn run_subscribe(socket_path: &PathBuf, json_output: bool) -> anyhow::Result<()>
         };
 
         if json_output {
-            println!("{}", serde_json::to_string(&event)?);
+            writeln!(out, "{}", serde_json::to_string(&event)?)?;
         } else {
-            println!("{}", format_event(&event));
+            writeln!(out, "{}", format_event(&event))?;
         }
+        out.flush()?;
     }
 }
 
@@ -163,7 +202,7 @@ fn format_event(event: &Event) -> String {
         Event::FocusChanged { id: None } => "focus changed: none".to_string(),
         Event::WorkspaceChanged { id } => format!("workspace changed: {id}"),
         Event::OutputChanged => "output changed".to_string(),
-        Event::LayoutChanged { index, name } => format!("layout changed: {index} ({name})"),
+        Event::LayoutChanged { index, name } => format!("layout changed: {index} ({})", printable(name)),
         Event::Gesture { sample } => format!(
             "gesture: {:?} {:?} {} fingers ({:.0}, {:.0}) {:?}",
             sample.kind, sample.phase, sample.fingers, sample.dx, sample.dy, sample.action
@@ -171,12 +210,13 @@ fn format_event(event: &Event) -> String {
     }
 }
 
-const USAGE: &str = r#"glidectl — CLI controller for Glide Wayland compositor
+const USAGE: &str = r"glidectl — CLI controller for Glide Wayland compositor
 
 USAGE:
     glidectl [OPTIONS] <COMMAND>
 
 COMMANDS:
+    help                       Show this help
     ping                       Check connection to compositor
     quit                       Stop compositor
     workspace list             List all workspaces
@@ -198,7 +238,7 @@ COMMANDS:
 
 OPTIONS:
     --json                     Output response as raw JSON
-"#;
+";
 
 fn find_socket_path() -> anyhow::Result<PathBuf> {
     glide_ipc::client::socket_path().filter(|path| path.exists()).ok_or_else(|| {
@@ -248,7 +288,7 @@ fn parse_args(args: &[String]) -> anyhow::Result<Request> {
             _ => anyhow::bail!("Usage: glidectl dpms <on|off>"),
         },
         "layout" => match args.get(1).map(String::as_str) {
-            Some("next") | Some("cycle") => Ok(Request::CycleLayout),
+            Some("next" | "cycle") => Ok(Request::CycleLayout),
             Some("get") | None => Ok(Request::GetLayout),
             _ => anyhow::bail!("Usage: glidectl layout <get|next>"),
         },
@@ -299,68 +339,80 @@ fn parse_workspace_target(s: &str) -> anyhow::Result<WorkspaceTarget> {
     }
 }
 
-fn print_response(response: &Response) {
+fn print_response(out: &mut impl Write, response: &Response) -> std::io::Result<()> {
     match response {
-        Response::Ok => println!("OK"),
-        Response::Pong => println!("PONG"),
-        Response::Error { message } => eprintln!("Error: {message}"),
-        Response::Subscribed => println!("Subscribed"),
+        Response::Ok => writeln!(out, "OK")?,
+        Response::Pong => writeln!(out, "PONG")?,
+        Response::Error { message } => eprintln!("Error: {}", printable(message)),
+        Response::Subscribed => writeln!(out, "Subscribed")?,
         Response::Unknown => {
-            eprintln!("Error: the compositor sent a response this glidectl does not understand")
+            eprintln!("Error: the compositor sent a response this glidectl does not understand");
         }
-        Response::Layout { index, name } => println!("{index} {name}"),
-        Response::NightLight { on } => println!("{}", if *on { "on" } else { "off" }),
-        Response::ActivationToken { token } => println!("{token}"),
-        Response::Screenshot { path } => println!("{path}"),
-        Response::Color { red, green, blue } => println!("{red:.4} {green:.4} {blue:.4}"),
+        Response::Layout { index, name } => writeln!(out, "{index} {}", printable(name))?,
+        Response::NightLight { on } => writeln!(out, "{}", if *on { "on" } else { "off" })?,
+        Response::ActivationToken { token } => writeln!(out, "{token}")?,
+        Response::Screenshot { path } => writeln!(out, "{path}")?,
+        Response::Color { red, green, blue } => writeln!(out, "{red:.4} {green:.4} {blue:.4}")?,
         Response::QrCodes { codes } => {
             for code in codes {
-                println!("{}", code.expose());
+                writeln!(out, "{}", code.expose())?;
             }
         }
         Response::IdleInhibitors { apps, caffeine } => {
             for app in apps {
-                println!("{app}");
+                writeln!(out, "{}", printable(app))?;
             }
             if *caffeine {
-                println!("caffeine");
+                writeln!(out, "caffeine")?;
             }
         }
         Response::Outputs { list } => {
-            println!("{:<12} {:<28} {:<22} {:<7} {:<12}", "NAME", "MODEL", "MODE", "SCALE", "POSITION");
-            println!("{}", "-".repeat(84));
+            writeln!(out, "{:<12} {:<28} {:<22} {:<7} {:<12}", "NAME", "MODEL", "MODE", "SCALE", "POSITION")?;
+            writeln!(out, "{}", "-".repeat(84))?;
             for o in list {
-                let model = format!("{} {}", o.make, o.model);
+                let model = printable(&format!("{} {}", o.make, o.model));
                 let mode = format!("{}x{}@{:.2}", o.width, o.height, f64::from(o.refresh_mhz) / 1000.0);
-                println!("{:<12} {:<28} {:<22} {:<7} {},{}", o.name, model.trim(), mode, o.scale, o.x, o.y);
+                writeln!(
+                    out,
+                    "{:<12} {:<28} {:<22} {:<7} {},{}",
+                    printable(&o.name),
+                    model.trim(),
+                    mode,
+                    o.scale,
+                    o.x,
+                    o.y
+                )?;
             }
         }
         Response::Workspaces { list } => {
-            println!("{:<5} {:<10} {:<8} {:<10}", "INDEX", "ID", "ACTIVE", "WINDOWS");
-            println!("{}", "-".repeat(35));
+            writeln!(out, "{:<5} {:<10} {:<8} {:<10}", "INDEX", "ID", "ACTIVE", "WINDOWS")?;
+            writeln!(out, "{}", "-".repeat(35))?;
             for ws in list {
-                println!("{:<5} {:<10} {:<8} {:<10}", ws.index + 1, ws.id, star(ws.active), ws.window_count);
+                writeln!(out, "{:<5} {:<10} {:<8} {:<10}", ws.index + 1, ws.id, star(ws.active), ws.window_count)?;
             }
         }
         Response::Windows { list } => {
-            println!(
+            writeln!(
+                out,
                 "{:<6} {:<15} {:<10} {:<25} {:<8} {:<9}",
                 "ID", "APP_ID", "WS_INDEX", "TITLE", "FOCUSED", "MINIMIZED"
-            );
-            println!("{}", "-".repeat(78));
+            )?;
+            writeln!(out, "{}", "-".repeat(78))?;
             for w in list {
-                println!(
+                writeln!(
+                    out,
                     "{:<6} {:<15} {:<10} {:<25} {:<8} {:<9}",
                     w.id,
-                    w.app_id.as_deref().unwrap_or("<unknown>"),
+                    w.app_id.as_deref().map_or_else(|| "<unknown>".to_string(), printable),
                     w.workspace_index + 1,
-                    w.title.as_deref().unwrap_or("<untitled>"),
+                    w.title.as_deref().map_or_else(|| "<untitled>".to_string(), printable),
                     star(w.focused),
                     star(w.minimized)
-                );
+                )?;
             }
         }
     }
+    Ok(())
 }
 
 fn star(on: bool) -> &'static str {
@@ -472,6 +524,42 @@ mod tests {
         let sheet = tokens(&words(&["teal", "light"])).unwrap();
         assert!(sheet.contains("\"appearance\":\"light\"") && sheet.contains("\"accent\":\"teal\""));
         assert!(tokens(&words(&["mauve"])).is_err());
+    }
+
+    #[test]
+    fn client_strings_in_tables_cannot_carry_terminal_escapes() {
+        assert_eq!(printable("Firefox"), "Firefox");
+        assert_eq!(printable("évite — ok"), "évite — ok");
+        assert_eq!(printable("x\u{1b}]0;pwned\u{7}\ny"), r"x\u{1b}]0;pwned\u{7}\ny");
+        let windows = Response::Windows {
+            list: vec![glide_ipc::WindowInfo {
+                id: 1,
+                app_id: Some("app\rid".into()),
+                title: Some("evil\u{1b}[2J".into()),
+                workspace_index: 0,
+                focused: false,
+                minimized: false,
+            }],
+        };
+        let mut out = Vec::new();
+        print_response(&mut out, &windows).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.chars().any(|c| c.is_control() && c != '\n'), "{text:?}");
+    }
+
+    #[test]
+    fn a_closed_pipe_is_a_quiet_exit() {
+        let error = anyhow::Error::from(std::io::Error::from(ErrorKind::BrokenPipe));
+        assert!(broken_pipe(&error));
+        assert!(!broken_pipe(&anyhow::anyhow!("socket not found")));
+    }
+
+    #[test]
+    fn help_is_a_command_of_its_own() {
+        for word in ["help", "--help", "-h"] {
+            assert!(is_help(&cli(&["glidectl", word]).subcommand_args[0]));
+        }
+        assert!(USAGE.contains("\n    help "));
     }
 
     #[test]

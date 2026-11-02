@@ -93,7 +93,8 @@ impl QuickMenu {
         Vec::new()
     }
 
-    fn about_to_show(&self, _id: i32) -> bool {
+    fn about_to_show(&self, id: i32) -> bool {
+        let _ = id;
         false
     }
 

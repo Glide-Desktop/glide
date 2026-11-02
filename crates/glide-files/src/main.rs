@@ -11,7 +11,7 @@ fn main() -> iced::Result {
     if choosing {
         let Some(request) = glide_files::chooser::Request::from_env() else {
             eprintln!("glide-files: --chooser needs a request in ${}", glide_app::chooser::REQUEST_ENV);
-            std::process::exit(2);
+            std::process::exit(glide_app::chooser::FAILURE_EXIT);
         };
         glide_files::chooser::install(request);
     } else {
@@ -26,8 +26,14 @@ fn main() -> iced::Result {
         .min_size(720.0, 480.0)
         .chrome(glide_sdk::Chrome::Own);
     let ran = glide_sdk::run::<App>(settings);
-    if choosing && !glide_files::chooser::accepted() {
-        std::process::exit(1);
+    if choosing {
+        std::process::exit(if glide_files::chooser::accepted() {
+            0
+        } else if ran.is_ok() {
+            glide_app::chooser::CANCEL_EXIT
+        } else {
+            glide_app::chooser::FAILURE_EXIT
+        });
     }
     ran
 }

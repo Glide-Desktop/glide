@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 pub const REQUEST_ENV: &str = "GLIDE_CHOOSER_REQUEST";
 pub const FLAG: &str = "--chooser";
+pub const CANCEL_EXIT: i32 = 1;
+pub const FAILURE_EXIT: i32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -132,8 +134,8 @@ impl Request {
     }
 
     #[must_use]
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
+    pub fn to_json(&self) -> Option<String> {
+        serde_json::to_string(self).ok()
     }
 
     #[must_use]
@@ -168,10 +170,18 @@ mod tests {
             parent: Some("wayland:abc".into()),
             ..Request::default()
         };
-        let back: Request = serde_json::from_str(&request.to_json()).expect("json");
+        let back: Request = serde_json::from_str(&request.to_json().expect("serialisable")).expect("json");
         assert_eq!(back, request);
         assert_eq!(back.wayland_parent(), Some("abc"));
         assert_eq!(back.filters[0].to_portal(), ("Images".into(), vec![(0, "*.png".into()), (1, "image/jpeg".into())]));
+    }
+
+    #[test]
+    fn a_folder_that_is_not_utf8_cannot_be_sent_and_says_so() {
+        use std::os::unix::ffi::OsStrExt;
+        let folder = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/\xff"));
+        let request = Request { current_folder: Some(folder), ..Request::default() };
+        assert_eq!(request.to_json(), None);
     }
 
     #[test]

@@ -165,7 +165,7 @@ pub struct SnapPreview {
 impl SnapPreview {
     #[must_use]
     pub fn new(zone: SnapZone, rect: Rectangle<i32, Logical>) -> Self {
-        let mut reveal = glide_ui::Reveal::closed();
+        let mut reveal = glide_ui::Reveal::closed().with_ease(glide_theme::motion::ease_out);
         reveal.open(glide_theme::motion::t2());
         Self { zone, rect, reveal, from: rect, glide: glide_ui::Tween::at(1.0), buffer: None }
     }
@@ -218,7 +218,7 @@ impl SnapPreview {
 
     #[must_use]
     pub fn alpha(&self) -> f32 {
-        let progress = self.reveal.progress(glide_theme::motion::t2(), glide_theme::motion::ease_out);
+        let progress = self.reveal.value(glide_theme::motion::t2());
         ((progress / 0.4).min(1.0)).clamp(0.0, 1.0) as f32
     }
 

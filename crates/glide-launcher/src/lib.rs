@@ -652,8 +652,7 @@ struct LauncherMenu {
 
 impl LauncherMenu {
     fn progress(&self) -> f64 {
-        let ease: fn(f64) -> f64 = if self.reveal.is_open() { ease_out } else { ease_io };
-        self.reveal.progress(menu_anim(), ease)
+        self.reveal.value(menu_anim())
     }
 }
 
@@ -750,7 +749,7 @@ impl Launcher {
         let rect = crate::popup_menu::place_above(anchor, area, items.len());
         let mut reveal = match self.menu.take() {
             Some(menu) if menu.result == result && menu.rect == rect => menu.reveal,
-            _ => glide_ui::Reveal::closed(),
+            _ => glide_ui::Reveal::closed().with_eases(ease_out, ease_io),
         };
         reveal.open(menu_anim());
         self.menu = Some(LauncherMenu { result, title, items, rect, hovered: None, reveal });

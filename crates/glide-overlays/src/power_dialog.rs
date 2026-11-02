@@ -452,7 +452,7 @@ impl PowerDialog {
 
     #[must_use]
     pub fn openness(&self) -> f64 {
-        self.reveal.progress(self.duration(), ease).clamp(0.0, 1.0)
+        self.reveal.value(self.duration()).clamp(0.0, 1.0)
     }
 
     fn arm_level(&self) -> f64 {

@@ -10,6 +10,9 @@ repository.workspace = true
 name = "glidectl"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 glide-ipc = { path = "../glide-ipc" }
 glide-theme = { path = "../glide-theme" }

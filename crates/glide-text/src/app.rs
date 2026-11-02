@@ -180,7 +180,7 @@ pub struct Menu {
 
 impl Menu {
     fn new(kind: MenuKind, at: Point, selected: Option<usize>) -> Self {
-        let mut reveal = Reveal::closed().with_ease(motion::ease_out);
+        let mut reveal = Reveal::closed().with_eases(motion::ease_out, motion::ease_io);
         reveal.open(motion::t2());
         Self { kind, at, selected, reveal }
     }
@@ -1376,7 +1376,6 @@ impl App {
 
     fn dismiss_menu(&mut self) {
         if let Some(menu) = &mut self.menu {
-            menu.reveal = menu.reveal.with_ease(motion::ease_io);
             menu.reveal.close(motion::t2());
         }
     }
@@ -1830,7 +1829,7 @@ impl App {
     }
 
     fn show(&mut self, kind: DialogKind) -> Task<Message> {
-        let mut reveal = Reveal::closed().with_ease(motion::ease_out);
+        let mut reveal = Reveal::closed().with_eases(motion::ease_out, motion::ease_io);
         reveal.open(motion::t2());
         self.dialog = Some(Dialog { kind, reveal });
         Task::none()
@@ -1838,7 +1837,6 @@ impl App {
 
     fn hide_dialog(&mut self) {
         if let Some(mut dialog) = self.dialog.take() {
-            dialog.reveal = dialog.reveal.with_ease(motion::ease_io);
             dialog.reveal.close(motion::t2());
             self.closing = Some(dialog);
         }

@@ -58,14 +58,41 @@ SEARCHDIR=/usr/share/gnome-shell/search-providers
 AUTOSTARTDIR=/etc/xdg/autostart
 PAMDIR=/etc/pam.d
 PAM_MODULE=pam_glide_keychain.so
-PAM_MODULEDIR=/usr/lib/security
-for dir in /usr/lib/security /usr/lib64/security /usr/lib/x86_64-linux-gnu/security /lib/x86_64-linux-gnu/security \
-    /usr/lib/aarch64-linux-gnu/security /lib/aarch64-linux-gnu/security /lib/security; do
-    if [ -e "$dir/pam_unix.so" ]; then
-        PAM_MODULEDIR="$dir"
-        break
-    fi
+PAM_DIRS="/usr/lib/security /usr/lib64/security /lib/security /lib64/security"
+for triplet in x86_64-linux-gnu aarch64-linux-gnu arm-linux-gnueabihf riscv64-linux-gnu powerpc64le-linux-gnu \
+    s390x-linux-gnu i386-linux-gnu; do
+    PAM_DIRS="$PAM_DIRS /usr/lib/$triplet/security /lib/$triplet/security"
 done
+
+if [ -z "$FROM" ]; then
+    if [ -x "$ROOT/bin/glide" ]; then
+        FROM="$ROOT/bin"
+    else
+        FROM="$ROOT/target/release"
+    fi
+fi
+
+# ELF class and machine, so a 64-bit module never lands in the 32-bit PAM
+# directory of a multilib system (Fedora and openSUSE keep both).
+elf_id() {
+    [ -r "$1" ] || return 1
+    printf '%s %s\n' "$(od -An -tu1 -j4 -N1 "$1")" "$(od -An -tu1 -j18 -N2 "$1")" | tr -s ' \t' '  '
+}
+
+pam_module_dir() {
+    wanted="$(elf_id "$FROM/libpam_glide_keychain.so" || elf_id /bin/sh || true)"
+    first=""
+    for dir in $PAM_DIRS; do
+        [ -e "$dir/pam_unix.so" ] || continue
+        [ -n "$first" ] || first="$dir"
+        if [ -n "$wanted" ] && [ "$(elf_id "$dir/pam_unix.so")" = "$wanted" ]; then
+            echo "$dir"
+            return
+        fi
+    done
+    echo "${first:-/usr/lib/security}"
+}
+PAM_MODULEDIR="$(pam_module_dir)"
 # The leading "-" lets PAM skip the line silently when the module is gone.
 PAM_LINES="greetd:-auth optional $PAM_MODULE
 greetd:-session optional $PAM_MODULE
@@ -89,11 +116,20 @@ pam_lines() {
     action="$1"
     echo "$PAM_LINES" | while IFS=: read -r service line; do
         file="$DESTDIR$PAMDIR/$service"
-        [ -f "$file" ] || continue
+        if [ ! -f "$file" ]; then
+            if [ "$action" = add ]; then
+                echo "warning: $file not found; \"$line\" was not added, so $service will not use $PAM_MODULE" >&2
+            fi
+            continue
+        fi
         if [ "$action" = add ]; then
             if ! grep -qxF -- "$line" "$file"; then
                 printf '%s\n' "$line" >> "$file"
-                echo "added \"$line\" to $file"
+                if grep -qxF -- "$line" "$file"; then
+                    echo "added \"$line\" to $file"
+                else
+                    echo "warning: could not add \"$line\" to $file" >&2
+                fi
             fi
         elif grep -qxF -- "$line" "$file"; then
             grep -vxF -- "$line" "$file" > "$file.glide-tmp"
@@ -117,6 +153,12 @@ if [ "$UNINSTALL" -eq 1 ]; then
             echo "removed $DESTDIR$f"
         fi
     done
+    for dir in $PAM_DIRS; do
+        if [ -e "$DESTDIR$dir/$PAM_MODULE" ]; then
+            rm -f "$DESTDIR$dir/$PAM_MODULE"
+            echo "removed $DESTDIR$dir/$PAM_MODULE"
+        fi
+    done
     if [ -f "$DESTDIR/etc/greetd/config.toml.orig" ]; then
         mv -f "$DESTDIR/etc/greetd/config.toml.orig" "$DESTDIR/etc/greetd/config.toml"
         echo "restored $DESTDIR/etc/greetd/config.toml from backup"
@@ -134,13 +176,6 @@ if [ "$UNINSTALL" -eq 1 ]; then
     exit 0
 fi
 
-if [ -z "$FROM" ]; then
-    if [ -x "$ROOT/bin/glide" ]; then
-        FROM="$ROOT/bin"
-    else
-        FROM="$ROOT/target/release"
-    fi
-fi
 for bin in $BINARIES libpam_glide_keychain.so; do
     if [ ! -e "$FROM/$bin" ]; then
         echo "error: $FROM/$bin not found. Build first with: scripts/build.sh" >&2

@@ -5,12 +5,12 @@ pub struct HoverAnimation<T> {
     target: Option<T>,
     started: Option<Instant>,
     rise_from: f64,
-    outgoing: Option<(T, Instant, f64)>,
+    outgoing: Vec<(T, Instant, f64)>,
 }
 
 impl<T> Default for HoverAnimation<T> {
     fn default() -> Self {
-        Self { target: None, started: None, rise_from: 0.0, outgoing: None }
+        Self { target: None, started: None, rise_from: 0.0, outgoing: Vec::new() }
     }
 }
 
@@ -29,7 +29,7 @@ impl<T: Copy + PartialEq> HoverAnimation<T> {
         self.target = target;
         self.started = target.map(|_| Instant::now());
         self.rise_from = 0.0;
-        self.outgoing = None;
+        self.outgoing.clear();
         true
     }
 
@@ -38,15 +38,13 @@ impl<T: Copy + PartialEq> HoverAnimation<T> {
             return false;
         }
         let now = Instant::now();
-        let resumed = match (target, self.outgoing) {
-            (Some(next), Some((item, _, _))) if item == next => self.level(next, duration),
-            _ => 0.0,
-        };
+        let resumed = target.map_or(0.0, |next| self.level(next, duration));
         if let Some(old) = self.target {
-            self.outgoing = Some((old, now, self.level(old, duration)));
-        } else if target.is_some_and(|next| self.outgoing.is_some_and(|(item, _, _)| item == next)) {
-            self.outgoing = None;
+            let from = self.level(old, duration);
+            self.outgoing.push((old, now, from));
         }
+        self.outgoing
+            .retain(|&(item, left, from)| Some(item) != target && from > 0.0 && fraction(left, duration) < 1.0);
         self.target = target;
         self.started = target.map(|_| now);
         self.rise_from = resumed;
@@ -71,16 +69,16 @@ impl<T: Copy + PartialEq> HoverAnimation<T> {
         if self.target == Some(item) {
             return self.progress(duration);
         }
-        match self.outgoing {
-            Some((old, left, from)) if old == item => from * (1.0 - fraction(left, duration)),
-            _ => 0.0,
-        }
+        self.outgoing
+            .iter()
+            .find(|(old, _, _)| *old == item)
+            .map_or(0.0, |&(_, left, from)| from * (1.0 - fraction(left, duration)))
     }
 
     #[must_use]
     pub fn is_animating(&self, duration: Duration) -> bool {
         let rising = self.target.is_some() && self.progress(duration) < 1.0;
-        let falling = self.outgoing.is_some_and(|(_, left, from)| from > 0.0 && fraction(left, duration) < 1.0);
+        let falling = self.outgoing.iter().any(|&(_, left, from)| from > 0.0 && fraction(left, duration) < 1.0);
         rising || falling
     }
 }
@@ -166,6 +164,17 @@ mod tests {
         a.set_with(None, SHORT);
         a.set_with(Some(2), SHORT);
         assert!(a.level(1, SHORT) > 0.5, "the target left before the gap keeps fading out");
+    }
+
+    #[test]
+    fn sweeping_across_several_targets_keeps_every_earlier_one_fading() {
+        let mut a = settled_on_one();
+        a.set_with(Some(2), D);
+        a.set_with(Some(3), D);
+        assert!(a.level(1, D) > 0.5, "the first target must not pop out when a third one is entered");
+        a.set_with(Some(1), D);
+        assert!(a.level(1, D) > 0.5, "returning to a fading target resumes it");
+        assert!(a.is_animating(D));
     }
 
     #[test]

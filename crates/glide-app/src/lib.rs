@@ -63,21 +63,17 @@ pub fn look_changes() -> UnboundedReceiver<Look> {
     let (sender, receiver) = unbounded();
     let spawned = std::thread::Builder::new().name("glide-shell-look".into()).spawn(move || {
         let mut backoff = RETRY;
-        let mut connection = None;
         while !sender.is_closed() {
-            if connection.is_none() {
-                connection = zbus::blocking::Connection::session()
-                    .inspect_err(|err| tracing::debug!("no session bus for the Glide shell look: {err}"))
-                    .ok();
+            let started = std::time::Instant::now();
+            match zbus::blocking::Connection::session() {
+                Ok(connection) => match follow(&connection, &sender) {
+                    Ok(()) => return,
+                    Err(err) => tracing::debug!("stopped following the Glide shell look: {err}"),
+                },
+                Err(err) => tracing::debug!("no session bus for the Glide shell look: {err}"),
             }
-            if let Some(bus) = connection.as_ref() {
-                match follow(bus, &sender) {
-                    Ok(()) => backoff = RETRY,
-                    Err(err) => {
-                        tracing::debug!("the Glide shell service is unavailable: {err}");
-                        connection = None;
-                    }
-                }
+            if started.elapsed() >= MAX_RETRY {
+                backoff = RETRY;
             }
             std::thread::sleep(backoff);
             backoff = (backoff * 2).min(MAX_RETRY);
@@ -89,31 +85,108 @@ pub fn look_changes() -> UnboundedReceiver<Look> {
     receiver
 }
 
-fn follow(connection: &zbus::blocking::Connection, sender: &UnboundedSender<Look>) -> zbus::Result<()> {
-    let properties =
-        zbus::blocking::fdo::PropertiesProxy::builder(connection).destination(BUS_NAME)?.path(PATH)?.build()?;
-    let interface = zbus::names::InterfaceName::try_from(INTERFACE)?;
-    let changes = properties.receive_properties_changed()?;
-    let mut last = None;
-    let mut publish = |all: HashMap<String, OwnedValue>| {
-        let look = Look::from_properties(&all);
-        if look.is_some() && look != last {
-            last.clone_from(&look);
-            if let Some(look) = look {
-                return sender.unbounded_send(look).is_ok();
+const DBUS: &str = "org.freedesktop.DBus";
+const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+
+pub(crate) fn owner_rule(name: &str) -> zbus::Result<zbus::MatchRule<'_>> {
+    Ok(zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender(DBUS)?
+        .interface(DBUS)?
+        .member("NameOwnerChanged")?
+        .arg(0, name)?
+        .build())
+}
+
+pub(crate) fn owner_change(message: &zbus::Message) -> Option<(String, bool)> {
+    let header = message.header();
+    let from_bus = header.sender().is_some_and(|sender| sender.as_str() == DBUS);
+    let member = header.member().is_some_and(|member| member.as_str() == "NameOwnerChanged");
+    if header.message_type() != zbus::message::Type::Signal || !from_bus || !member {
+        return None;
+    }
+    let (name, _, owner) = message.body().deserialize::<(String, String, String)>().ok()?;
+    Some((name, !owner.is_empty()))
+}
+
+struct Follower<'a> {
+    properties: zbus::blocking::fdo::PropertiesProxy<'a>,
+    interface: zbus::names::InterfaceName<'a>,
+    sender: &'a UnboundedSender<Look>,
+    last: Option<Look>,
+}
+
+impl Follower<'_> {
+    fn refresh(&mut self) -> bool {
+        let all = match self.properties.get_all(self.interface.clone()) {
+            Ok(all) => all,
+            Err(err) => {
+                tracing::debug!("cannot read the Glide shell look: {err}");
+                return true;
             }
+        };
+        let look = Look::from_properties(&all);
+        if look.is_none() || look == self.last {
+            return true;
         }
-        true
+        self.last.clone_from(&look);
+        look.is_none_or(|look| self.sender.unbounded_send(look).is_ok())
+    }
+}
+
+fn changed_properties(message: &zbus::Message) -> bool {
+    let header = message.header();
+    header.message_type() == zbus::message::Type::Signal
+        && header.path().is_some_and(|path| path.as_str() == PATH)
+        && header.interface().is_some_and(|interface| interface.as_str() == PROPERTIES)
+        && header.member().is_some_and(|member| member.as_str() == "PropertiesChanged")
+        && message
+            .body()
+            .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
+            .is_ok_and(|(interface, _, _)| interface == INTERFACE)
+}
+
+fn follow(connection: &zbus::blocking::Connection, sender: &UnboundedSender<Look>) -> zbus::Result<()> {
+    let messages = zbus::blocking::MessageIterator::from(connection);
+    let dbus = zbus::blocking::fdo::DBusProxy::new(connection)?;
+    dbus.add_match_rule(owner_rule(BUS_NAME)?)?;
+    dbus.add_match_rule(
+        zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender(BUS_NAME)?
+            .path(PATH)?
+            .interface(PROPERTIES)?
+            .member("PropertiesChanged")?
+            .arg(0, INTERFACE)?
+            .build(),
+    )?;
+    let mut follower = Follower {
+        properties: zbus::blocking::fdo::PropertiesProxy::builder(connection)
+            .destination(BUS_NAME)?
+            .path(PATH)?
+            .build()?,
+        interface: zbus::names::InterfaceName::try_from(INTERFACE)?,
+        sender,
+        last: None,
     };
-    if !publish(properties.get_all(interface.clone())?) {
+    if dbus.name_has_owner(zbus::names::BusName::try_from(BUS_NAME)?)? && !follower.refresh() {
         return Ok(());
     }
-    for _ in changes {
-        if !publish(properties.get_all(interface.clone())?) {
+    for message in messages {
+        let message = message?;
+        let alive = match owner_change(&message) {
+            Some((name, true)) if name == BUS_NAME => follower.refresh(),
+            Some((name, false)) if name == BUS_NAME => {
+                follower.last = None;
+                true
+            }
+            _ => !changed_properties(&message) || follower.refresh(),
+        };
+        if !alive || sender.is_closed() {
             return Ok(());
         }
     }
-    Ok(())
+    Err(zbus::Error::Failure("the session bus connection closed".into()))
 }
 
 #[cfg(test)]
@@ -122,7 +195,7 @@ mod tests {
     use zbus::zvariant::Value;
 
     fn owned(value: Value<'_>) -> OwnedValue {
-        value.try_to_owned().expect("plain values are owned")
+        OwnedValue::try_from(value).expect("plain values are owned")
     }
 
     #[test]

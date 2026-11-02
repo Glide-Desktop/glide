@@ -11,6 +11,7 @@ use zbus::zvariant::{OwnedValue, Structure, StructureBuilder, Value};
 pub const PATH: &str = "/MenuBar";
 const INTERFACE: &str = "com.canonical.dbusmenu";
 const MANAGER: &str = "org_kde_kwin_appmenu_manager";
+const CONSUMERS: [&str; 3] = [crate::BUS_NAME, "org.kde.kappmenu", "com.canonical.AppMenu.Registrar"];
 
 type Layout = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 
@@ -73,11 +74,28 @@ struct Node {
     action: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Key {
+    parent: i32,
+    kind: u8,
+    label: String,
+    ordinal: usize,
+}
+
 #[derive(Debug, Default)]
 struct Tree {
     menu: Vec<Entry>,
-    nodes: Vec<Node>,
+    nodes: HashMap<i32, Node>,
+    ids: HashMap<Key, i32>,
+    next: i32,
     revision: u32,
+}
+
+struct Build {
+    old: HashMap<Key, i32>,
+    ids: HashMap<Key, i32>,
+    nodes: HashMap<i32, Node>,
+    next: i32,
 }
 
 fn owned<'a>(value: impl Into<Value<'a>>) -> Option<OwnedValue> {
@@ -112,59 +130,28 @@ impl Tree {
         if menu == self.menu && !self.nodes.is_empty() {
             return false;
         }
-        let mut nodes = vec![Node::default()];
+        let mut build = Build {
+            old: std::mem::take(&mut self.ids),
+            ids: HashMap::new(),
+            nodes: HashMap::new(),
+            next: self.next.max(1),
+        };
+        let mut root = Node::default();
         if let Some(display) = owned("submenu") {
-            nodes[0].properties.insert("children-display".into(), display);
+            root.properties.insert("children-display".into(), display);
         }
-        let children = Self::add(&mut nodes, &menu, true);
-        nodes[0].children = children;
-        self.nodes = nodes;
+        root.children = build.add(0, &menu, true);
+        build.nodes.insert(0, root);
+        self.nodes = build.nodes;
+        self.ids = build.ids;
+        self.next = build.next;
         self.menu = menu;
         self.revision = self.revision.wrapping_add(1);
         true
     }
 
-    fn add(nodes: &mut Vec<Node>, entries: &[Entry], parent_enabled: bool) -> Vec<i32> {
-        let mut ids = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let id = nodes.len();
-            nodes.push(Node::default());
-            let mut properties = HashMap::new();
-            let mut insert = |key: &str, value: Option<OwnedValue>| {
-                if let Some(value) = value {
-                    properties.insert(key.to_string(), value);
-                }
-            };
-            match entry {
-                Entry::Separator => insert("type", owned("separator")),
-                Entry::Action { id: action, label, enabled, check, shortcut } => {
-                    insert("label", owned(escape_mnemonics(label)));
-                    insert("enabled", owned(*enabled));
-                    if let Some(on) = check {
-                        insert("toggle-type", owned("checkmark"));
-                        insert("toggle-state", owned(i32::from(*on)));
-                    }
-                    if let Some(chord) = shortcut.as_deref().and_then(shortcut_chord) {
-                        insert("shortcut", owned(vec![chord]));
-                    }
-                    nodes[id].action = (*enabled && parent_enabled).then_some(*action);
-                }
-                Entry::Submenu { label, enabled, children } => {
-                    insert("label", owned(escape_mnemonics(label)));
-                    insert("enabled", owned(*enabled));
-                    insert("children-display", owned("submenu"));
-                    let children = Self::add(nodes, children, *enabled && parent_enabled);
-                    nodes[id].children = children;
-                }
-            }
-            nodes[id].properties = properties;
-            ids.push(i32::try_from(id).unwrap_or(i32::MAX));
-        }
-        ids
-    }
-
     fn node(&self, id: i32) -> Option<&Node> {
-        self.nodes.get(usize::try_from(id).ok()?)
+        self.nodes.get(&id)
     }
 
     fn properties(&self, id: i32) -> HashMap<String, OwnedValue> {
@@ -195,6 +182,65 @@ impl Tree {
     }
 }
 
+impl Build {
+    fn id(&mut self, key: Key) -> i32 {
+        let id = self.old.remove(&key).unwrap_or_else(|| {
+            let fresh = self.next;
+            self.next = self.next.checked_add(1).unwrap_or(1);
+            fresh
+        });
+        self.ids.insert(key, id);
+        id
+    }
+
+    fn add(&mut self, parent: i32, entries: &[Entry], parent_enabled: bool) -> Vec<i32> {
+        let mut ids = Vec::with_capacity(entries.len());
+        let mut seen: HashMap<(u8, &str), usize> = HashMap::new();
+        for entry in entries {
+            let (kind, label) = match entry {
+                Entry::Separator => (0, ""),
+                Entry::Action { label, .. } => (1, label.as_str()),
+                Entry::Submenu { label, .. } => (2, label.as_str()),
+            };
+            let ordinal = seen.entry((kind, label)).or_default();
+            let id = self.id(Key { parent, kind, label: label.to_string(), ordinal: *ordinal });
+            *ordinal += 1;
+            let mut node = Node::default();
+            let mut properties = HashMap::new();
+            let mut insert = |key: &str, value: Option<OwnedValue>| {
+                if let Some(value) = value {
+                    properties.insert(key.to_string(), value);
+                }
+            };
+            match entry {
+                Entry::Separator => insert("type", owned("separator")),
+                Entry::Action { id: action, label, enabled, check, shortcut } => {
+                    insert("label", owned(escape_mnemonics(label)));
+                    insert("enabled", owned(*enabled));
+                    if let Some(on) = check {
+                        insert("toggle-type", owned("checkmark"));
+                        insert("toggle-state", owned(i32::from(*on)));
+                    }
+                    if let Some(chord) = shortcut.as_deref().and_then(shortcut_chord) {
+                        insert("shortcut", owned(vec![chord]));
+                    }
+                    node.action = (*enabled && parent_enabled).then_some(*action);
+                }
+                Entry::Submenu { label, enabled, children } => {
+                    insert("label", owned(escape_mnemonics(label)));
+                    insert("enabled", owned(*enabled));
+                    insert("children-display", owned("submenu"));
+                    node.children = self.add(id, children, *enabled && parent_enabled);
+                }
+            }
+            node.properties = properties;
+            self.nodes.insert(id, node);
+            ids.push(id);
+        }
+        ids
+    }
+}
+
 struct Server {
     tree: Arc<Mutex<Tree>>,
     events: UnboundedSender<Event>,
@@ -207,7 +253,7 @@ impl Server {
 }
 
 // Signatures are fixed by com.canonical.dbusmenu.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::unused_self)]
 #[zbus::interface(name = "com.canonical.dbusmenu")]
 impl Server {
     fn get_layout(&self, parent_id: i32, recursion_depth: i32, property_names: Vec<String>) -> (u32, Layout) {
@@ -249,7 +295,8 @@ impl Server {
         Vec::new()
     }
 
-    fn about_to_show(&self, _id: i32) -> bool {
+    fn about_to_show(&self, id: i32) -> bool {
+        let _ = id;
         false
     }
 
@@ -298,17 +345,89 @@ impl Publisher {
     }
 }
 
-struct Registration {
+#[derive(Debug, Default, Clone, Copy)]
+struct Visibility {
+    global: bool,
+    consumer: bool,
+    sent: Option<bool>,
+}
+
+impl Visibility {
+    fn settle(&mut self) -> Option<bool> {
+        let shown = self.global && self.consumer;
+        (self.sent != Some(shown)).then(|| {
+            self.sent = Some(shown);
+            shown
+        })
+    }
+}
+
+#[derive(Clone)]
+struct Shown {
+    visibility: Arc<Mutex<Visibility>>,
     events: UnboundedSender<Event>,
+}
+
+impl Shown {
+    fn update(&self, change: impl FnOnce(&mut Visibility)) {
+        let mut visibility = self.visibility.lock().unwrap_or_else(PoisonError::into_inner);
+        change(&mut visibility);
+        if let Some(shown) = visibility.settle() {
+            let _ = self.events.unbounded_send(Event::Shown(shown));
+        }
+    }
+}
+
+fn watch_consumers(connection: &zbus::blocking::Connection, shown: &Shown) -> zbus::Result<()> {
+    let messages = zbus::blocking::MessageIterator::from(connection);
+    let dbus = zbus::blocking::fdo::DBusProxy::new(connection)?;
+    let mut owned = Vec::new();
+    for name in CONSUMERS {
+        dbus.add_match_rule(crate::owner_rule(name)?)?;
+        if dbus.name_has_owner(zbus::names::BusName::try_from(name)?)? {
+            owned.push(name);
+        }
+    }
+    shown.update(|visibility| visibility.consumer = !owned.is_empty());
+    for message in messages {
+        if shown.events.is_closed() {
+            return Ok(());
+        }
+        let Some((name, has_owner)) = crate::owner_change(&message?) else { continue };
+        let Some(name) = CONSUMERS.into_iter().find(|known| *known == name) else { continue };
+        owned.retain(|known| *known != name);
+        if has_owner {
+            owned.push(name);
+        }
+        shown.update(|visibility| visibility.consumer = !owned.is_empty());
+    }
+    Ok(())
+}
+
+struct Registration {
+    shown: Shown,
     surface: wl_surface::WlSurface,
     bus: String,
     manager: Option<(u32, org_kde_kwin_appmenu_manager::OrgKdeKwinAppmenuManager)>,
     menu: Option<org_kde_kwin_appmenu::OrgKdeKwinAppmenu>,
 }
 
+impl Registration {
+    fn release(&mut self) {
+        if let Some(menu) = self.menu.take() {
+            menu.release();
+        }
+        if let Some((_, manager)) = self.manager.take()
+            && manager.version() >= 2
+        {
+            manager.release();
+        }
+    }
+}
+
 impl Dispatch<wl_registry::WlRegistry, ()> for Registration {
     fn event(
-        state: &mut Self, registry: &wl_registry::WlRegistry, event: wl_registry::Event, _: &(), _: &Connection,
+        state: &mut Self, registry: &wl_registry::WlRegistry, event: wl_registry::Event, (): &(), _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
         match event {
@@ -321,16 +440,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Registration {
                 menu.set_address(state.bus.clone(), PATH.to_string());
                 state.manager = Some((name, manager));
                 state.menu = Some(menu);
-                let _ = state.events.unbounded_send(Event::Shown(true));
+                state.shown.update(|visibility| visibility.global = true);
             }
             wl_registry::Event::GlobalRemove { name }
                 if state.manager.as_ref().is_some_and(|(known, _)| *known == name) =>
             {
-                if let Some(menu) = state.menu.take() {
-                    menu.release();
-                }
-                state.manager = None;
-                let _ = state.events.unbounded_send(Event::Shown(false));
+                state.release();
+                state.shown.update(|visibility| visibility.global = false);
             }
             _ => {}
         }
@@ -340,7 +456,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Registration {
 wayland_client::delegate_noop!(Registration: ignore org_kde_kwin_appmenu_manager::OrgKdeKwinAppmenuManager);
 wayland_client::delegate_noop!(Registration: ignore org_kde_kwin_appmenu::OrgKdeKwinAppmenu);
 
-fn register(handles: Handles, bus: String, events: UnboundedSender<Event>) -> Result<(), String> {
+fn register(handles: Handles, bus: String, shown: Shown) -> Result<(), String> {
     if handles.display == 0 || handles.surface == 0 {
         return Err("no wayland window".into());
     }
@@ -355,10 +471,15 @@ fn register(handles: Handles, bus: String, events: UnboundedSender<Event>) -> Re
     let mut queue = connection.new_event_queue();
     let qh = queue.handle();
     connection.display().get_registry(&qh, ());
-    let mut state = Registration { events, surface, bus, manager: None, menu: None };
+    let mut state = Registration { shown, surface, bus, manager: None, menu: None };
     loop {
-        queue.blocking_dispatch(&mut state).map_err(|error| error.to_string())?;
-        if state.events.is_closed() {
+        if let Err(error) = queue.blocking_dispatch(&mut state) {
+            state.release();
+            return Err(error.to_string());
+        }
+        if state.shown.events.is_closed() {
+            state.release();
+            let _ = connection.flush();
             return Ok(());
         }
     }
@@ -369,12 +490,19 @@ fn serve(handles: Handles, events: &UnboundedSender<Event>) -> zbus::Result<()> 
     let server = Server { tree: Arc::clone(&tree), events: events.clone() };
     let connection = zbus::blocking::connection::Builder::session()?.serve_at(PATH, server)?.build()?;
     let bus = connection.unique_name().map(ToString::to_string).unwrap_or_default();
-    let _ = events.unbounded_send(Event::Ready(Publisher { tree, connection }));
-    let events = events.clone();
+    let _ = events.unbounded_send(Event::Ready(Publisher { tree, connection: connection.clone() }));
+    let shown = Shown { visibility: Arc::default(), events: events.clone() };
+    let consumers = shown.clone();
+    let _ = std::thread::Builder::new().name("glide-menubar-consumers".into()).spawn(move || {
+        if let Err(error) = watch_consumers(&connection, &consumers) {
+            tracing::debug!("cannot tell whether a global menu is shown, assuming one is: {error}");
+            consumers.update(|visibility| visibility.consumer = true);
+        }
+    });
     let _ = std::thread::Builder::new().name("glide-menubar-wayland".into()).spawn(move || {
-        if let Err(error) = register(handles, bus, events.clone()) {
+        if let Err(error) = register(handles, bus, shown.clone()) {
             tracing::debug!("menu bar not registered with the shell: {error}");
-            let _ = events.unbounded_send(Event::Shown(false));
+            shown.update(|visibility| visibility.global = false);
         }
     });
     Ok(())
@@ -510,6 +638,51 @@ mod tests {
         server.event(4, "clicked".into(), data(), 0);
         assert!(matches!(receiver.try_recv(), Ok(Event::Activated(7))));
         assert!(receiver.try_recv().is_err(), "submenus and hovers send nothing");
+    }
+
+    #[test]
+    fn a_click_from_a_stale_layout_runs_the_item_it_named_or_nothing() {
+        let action =
+            |id, label: &str| Entry::Action { id, label: label.into(), enabled: true, check: None, shortcut: None };
+        let file = |children| Entry::Submenu { label: "File".into(), enabled: true, children };
+        let (sender, mut receiver) = unbounded();
+        let tree = Arc::new(Mutex::new(Tree::default()));
+        tree.lock().expect("lock").rebuild(vec![file(vec![action(0, "Save"), action(1, "Close")])]);
+        let (save, close) = (2, 3);
+        assert_eq!(label_of(&tree.lock().expect("lock"), save), "Save");
+        tree.lock().expect("lock").rebuild(vec![file(vec![action(0, "New"), action(1, "Save"), action(2, "Quit")])]);
+        {
+            let tree = tree.lock().expect("lock");
+            assert_eq!(label_of(&tree, save), "Save", "an item keeps its id when others are inserted before it");
+            assert!(tree.node(close).is_none(), "a removed item's id is never handed to another");
+            let fresh: Vec<i32> = tree.node(1).expect("File").children.clone();
+            assert_eq!(fresh.len(), 3);
+            assert!(fresh.iter().all(|id| *id != close));
+        }
+        let server = Server { tree, events: sender };
+        let data = || Value::from(0_i32).try_to_owned().expect("owned");
+        server.event(save, "clicked".into(), data(), 0);
+        server.event(close, "clicked".into(), data(), 0);
+        assert!(matches!(receiver.try_recv(), Ok(Event::Activated(1))), "Save now has action 1");
+        assert!(receiver.try_recv().is_err(), "the click on the removed Close is dropped");
+    }
+
+    #[test]
+    fn the_menu_counts_as_shown_only_with_the_global_and_a_consumer() {
+        let (sender, mut receiver) = unbounded();
+        let shown = Shown { visibility: Arc::default(), events: sender };
+        let next = |receiver: &mut UnboundedReceiver<Event>| match receiver.try_recv() {
+            Ok(Event::Shown(on)) => Some(on),
+            _ => None,
+        };
+        shown.update(|visibility| visibility.global = true);
+        assert_eq!(next(&mut receiver), Some(false), "a compositor that only advertises the global shows nothing");
+        shown.update(|visibility| visibility.consumer = true);
+        assert_eq!(next(&mut receiver), Some(true));
+        shown.update(|visibility| visibility.global = true);
+        assert_eq!(next(&mut receiver), None, "an unchanged state sends nothing");
+        shown.update(|visibility| visibility.consumer = false);
+        assert_eq!(next(&mut receiver), Some(false));
     }
 
     #[test]

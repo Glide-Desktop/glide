@@ -95,9 +95,12 @@ fn files_app(ask: &Ask) -> Chosen {
         current_folder: ask.folder.clone(),
         ..Request::default()
     };
+    let Some(json) = request.to_json() else {
+        return Chosen::Failed("the folder name is not valid UTF-8".into());
+    };
     let output = std::process::Command::new("glide-files")
         .arg(glide_app::chooser::FLAG)
-        .env(glide_app::chooser::REQUEST_ENV, request.to_json())
+        .env(glide_app::chooser::REQUEST_ENV, json)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output();
