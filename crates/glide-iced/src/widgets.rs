@@ -26,8 +26,10 @@ enum Decoration {
 struct FieldColors {
     background: Color,
     border: Color,
+    hover: Color,
     accent: Color,
     ring: Color,
+    tinted: bool,
 }
 
 struct Decorated<'a, Message> {
@@ -72,8 +74,10 @@ pub fn field<'a, Message: 'a>(child: impl Into<Element<'a, Message>>, paint: &Pa
         decoration: Decoration::Field(FieldColors {
             background: paint.view_bg(),
             border: paint.line_2(),
+            hover: paint.fill_3(),
             accent: paint.acc_bg(),
             ring: paint.acc_ring(),
+            tinted: false,
         }),
     })
 }
@@ -84,8 +88,10 @@ pub fn search_field<'a, Message: 'a>(child: impl Into<Element<'a, Message>>, pai
         decoration: Decoration::Field(FieldColors {
             background: paint.fill_1(),
             border: Color::TRANSPARENT,
+            hover: paint.fill_3(),
             accent: paint.acc_bg(),
             ring: paint.acc_ring(),
+            tinted: false,
         }),
     })
 }
@@ -95,7 +101,14 @@ pub fn tinted_field<'a, Message: 'a>(
 ) -> Element<'a, Message> {
     Element::new(Decorated {
         child: child.into(),
-        decoration: Decoration::Field(FieldColors { background: paint.view_bg(), border: accent, accent, ring }),
+        decoration: Decoration::Field(FieldColors {
+            background: paint.view_bg(),
+            border: accent,
+            hover: accent,
+            accent,
+            ring,
+            tinted: true,
+        }),
     })
 }
 
@@ -139,14 +152,21 @@ fn color(from: Color, to: Color, amount: f32) -> Color {
 }
 
 fn blend(from: &control::Style, to: &control::Style, amount: f32) -> control::Style {
-    let background = |style: &control::Style| match style.background {
-        Some(Background::Color(color)) => color,
-        _ => Color::TRANSPARENT,
-    };
     let mix = |from: f32, to: f32| from + (to - from) * amount;
     let nearest = if amount < 0.5 { from } else { to };
+    let background = match (from.background, to.background) {
+        (None, None) => None,
+        (Some(Background::Gradient(_)), _) | (_, Some(Background::Gradient(_))) => nearest.background,
+        (start, end) => {
+            let solid = |background: Option<Background>| match background {
+                Some(Background::Color(color)) => color,
+                _ => Color::TRANSPARENT,
+            };
+            Some(Background::Color(color(solid(start), solid(end), amount)))
+        }
+    };
     control::Style {
-        background: Some(Background::Color(color(background(from), background(to), amount))),
+        background,
         text_color: color(from.text_color, to.text_color, amount),
         border: Border {
             color: color(from.border.color, to.border.color, amount),
@@ -216,8 +236,13 @@ impl<Message> Widget<Message, Theme, Renderer> for Decorated<'_, Message> {
             shell,
             viewport,
         );
+        let field = match self.decoration {
+            Decoration::Field(_) => true,
+            Decoration::Button(_) | Decoration::Layer(_) => false,
+            Decoration::Scale(_) | Decoration::Lift { .. } | Decoration::Shadow(..) => return,
+        };
         let mut focused = Focus::default();
-        if matches!(self.decoration, Decoration::Field(_)) {
+        if field {
             self.child.as_widget_mut().operate(&mut tree.children[0], layout, renderer, &mut focused);
         }
         let state = tree.state.downcast_mut::<State>();
@@ -227,6 +252,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Decorated<'_, Message> {
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 if hover
+                    && !field
                     && (!matches!(self.decoration, Decoration::Button(_))
                         || self.child.as_widget().mouse_interaction(
                             &tree.children[0],
@@ -271,11 +297,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Decorated<'_, Message> {
             Decoration::Field(colors) => {
                 let bounds = layout.bounds();
                 let focus = state.focus.value(motion::t1(), motion::ease_io) as f32;
+                let hover = state.hover.value(motion::t1(), motion::ease_io) as f32;
                 renderer.fill_quad(
                     Quad {
                         bounds: bounds.expand(glide_theme::component::FIELD_HALO),
                         border: Border {
-                            color: colors.ring.scale_alpha(focus),
+                            color: colors.ring.scale_alpha(if colors.tinted { 1.0 } else { focus }),
                             width: glide_theme::component::FIELD_HALO,
                             radius: (R2 + glide_theme::component::FIELD_HALO).into(),
                         },
@@ -287,7 +314,7 @@ impl<Message> Widget<Message, Theme, Renderer> for Decorated<'_, Message> {
                     Quad {
                         bounds,
                         border: Border {
-                            color: color(colors.border, colors.accent, focus),
+                            color: color(color(colors.border, colors.hover, hover), colors.accent, focus),
                             width: 1.0,
                             radius: R2.into(),
                         },
@@ -398,6 +425,52 @@ mod tests {
         let halfway = blend(&rest, &pressed, 0.5).shadow;
         assert_eq!(halfway.blur_radius, 5.0);
         assert_eq!(halfway.offset, Vector::new(0.0, 2.5));
+    }
+
+    #[test]
+    fn gradient_backgrounds_survive_the_state_blend() {
+        let gradient = Background::Gradient(iced::Gradient::Linear(iced::gradient::Linear::new(0.0)));
+        let rest = control::Style { background: Some(gradient), ..control::Style::default() };
+        let hovered = control::Style { background: Some(Background::Color(Color::WHITE)), ..rest };
+        assert_eq!(blend(&rest, &hovered, 0.2).background, Some(gradient));
+        assert_eq!(blend(&rest, &hovered, 0.8).background, Some(Background::Color(Color::WHITE)));
+        let plain = control::Style { background: None, ..rest };
+        assert_eq!(blend(&plain, &plain, 0.5).background, None);
+    }
+
+    fn field_quads(view: Element<'_, ()>) -> Vec<Quad> {
+        let mut view = view;
+        let mut tree = Tree::new(&view);
+        let mut renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
+        renderer.reset(Rectangle::with_size(Size::new(500.0, 500.0)));
+        let node = view.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(500.0, 500.0)),
+        );
+        view.as_widget().draw(
+            &tree,
+            &mut renderer,
+            &Theme::Dark,
+            &renderer::Style { text_color: Color::BLACK },
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &Rectangle::with_size(Size::new(500.0, 500.0)),
+        );
+        let Renderer::Secondary(mut renderer) = renderer else { unreachable!() };
+        renderer.layers().iter().flat_map(|layer| &layer.quads).map(|(quad, _)| *quad).collect()
+    }
+
+    #[test]
+    fn validated_fields_keep_their_ring_while_plain_fields_wait_for_focus() {
+        let paint = Paint::default();
+        let space = || iced::widget::Space::new().width(80).height(30);
+        let ring = |quads: &[Quad]| quads.first().map(|quad| quad.border.color.a).expect("ring quad");
+        let tinted = field_quads(tinted_field(space(), &paint, paint.danger(), paint.danger_soft()));
+        assert_eq!(ring(&tinted), paint.danger_soft().a);
+        let (border, danger) = (tinted[1].border.color, paint.danger());
+        assert!([border.r - danger.r, border.g - danger.g, border.b - danger.b].iter().all(|d| d.abs() < 1e-3));
+        assert_eq!(ring(&field_quads(field(space(), &paint))), 0.0);
     }
 
     #[test]

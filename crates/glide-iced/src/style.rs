@@ -175,6 +175,7 @@ pub fn flat(background: Color, text_color: Color, radius: impl Into<Radius>) -> 
 pub fn action(paint: &Paint, tone: Tone, status: button::Status) -> button::Style {
     let active = matches!(status, button::Status::Hovered | button::Status::Pressed);
     match tone {
+        Tone::Neutral if status == button::Status::Disabled => flat(paint.fill_1(), paint.fg_4(), R2),
         _ if status == button::Status::Disabled => flat(Color::TRANSPARENT, paint.fg_4(), R2),
         Tone::Neutral => flat(paint.layered(paint.fill_1(), status), paint.fg_1(), R2),
         Tone::Ghost => {
@@ -194,7 +195,8 @@ pub fn menu_item(paint: &Paint, status: button::Status) -> button::Style {
 #[must_use]
 pub fn window_control(paint: &Paint, status: button::Status) -> button::Style {
     match status {
-        button::Status::Hovered | button::Status::Pressed => flat(paint.danger(), Color::WHITE, R2),
+        button::Status::Hovered => flat(paint.danger(), Color::WHITE, R2),
+        button::Status::Pressed => flat(paint.layer(paint.danger(), ST_PRESS), Color::WHITE, R2),
         _ => flat(paint.fill_1(), paint.fg_2(), R2),
     }
 }
@@ -202,7 +204,8 @@ pub fn window_control(paint: &Paint, status: button::Status) -> button::Style {
 #[must_use]
 pub fn maximize_control(paint: &Paint, status: button::Status) -> button::Style {
     match status {
-        button::Status::Hovered | button::Status::Pressed => flat(paint.acc_bg(), paint.acc_fg(), R2),
+        button::Status::Hovered => flat(paint.acc_bg(), paint.acc_fg(), R2),
+        button::Status::Pressed => flat(paint.layer(paint.acc_bg(), ST_PRESS), paint.acc_fg(), R2),
         _ => flat(paint.fill_1(), paint.fg_2(), R2),
     }
 }
@@ -258,6 +261,19 @@ mod tests {
                 assert_ne!(line, paint.bar_bg());
             }
         }
+    }
+
+    #[test]
+    fn window_controls_darken_further_when_pressed_and_disabled_neutral_buttons_keep_their_fill() {
+        let paint = Paint::default();
+        for control in [window_control, maximize_control] {
+            assert_ne!(control(&paint, button::Status::Hovered), control(&paint, button::Status::Pressed));
+        }
+        let disabled = action(&paint, Tone::Neutral, button::Status::Disabled);
+        assert_eq!(disabled.background, Some(Background::Color(paint.fill_1())));
+        assert_eq!(disabled.text_color, paint.fg_4());
+        let ghost = action(&paint, Tone::Ghost, button::Status::Disabled);
+        assert_eq!(ghost.background, Some(Background::Color(Color::TRANSPARENT)));
     }
 
     #[test]

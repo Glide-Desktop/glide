@@ -45,7 +45,7 @@ enum Kind {
 
 const SCALE: i32 = 4;
 const ICONS: usize = Icon::Phone as usize + 1;
-type Cache = Vec<((Kind, u16, [u8; 4]), iced::widget::image::Handle)>;
+type Cache = Vec<((Kind, u16, [u8; 3]), iced::widget::image::Handle)>;
 type Masks = Vec<((Kind, u16), std::sync::Arc<Vec<u8>>)>;
 
 static HANDLES: [std::sync::OnceLock<iced::widget::svg::Handle>; ICONS] = [const { std::sync::OnceLock::new() }; ICONS];
@@ -179,27 +179,29 @@ fn cached_mask(kind: Kind, side: u16) -> std::sync::Arc<Vec<u8>> {
     fresh
 }
 
+fn quantised(color: Color) -> [u8; 3] {
+    [color.r, color.g, color.b].map(|channel| ((channel.clamp(0.0, 1.0) * 63.0).round() * 255.0 / 63.0).round() as u8)
+}
+
 fn image(kind: Kind, side: f32, color: Color) -> iced::widget::image::Handle {
     static CACHE: std::sync::Mutex<Cache> = std::sync::Mutex::new(Vec::new());
     let side = side.ceil().clamp(1.0, 256.0) as u16;
-    let rgba = [color.r, color.g, color.b, color.a].map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8);
+    let rgb = quantised(color);
     let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(index) = cache.iter().position(|(key, _)| *key == (kind, side, rgba)) {
+    if let Some(index) = cache.iter().position(|(key, _)| *key == (kind, side, rgb)) {
         let entry = cache.remove(index);
         let handle = entry.1.clone();
         cache.push(entry);
         return handle;
     }
-    let bytes: Vec<u8> = cached_mask(kind, side)
-        .chunks_exact(4)
-        .flat_map(|pixel| [rgba[0], rgba[1], rgba[2], ((u16::from(pixel[3]) * u16::from(rgba[3]) + 127) / 255) as u8])
-        .collect();
+    let bytes: Vec<u8> =
+        cached_mask(kind, side).chunks_exact(4).flat_map(|pixel| [rgb[0], rgb[1], rgb[2], pixel[3]]).collect();
     let pixels = u32::from(side) * SCALE as u32;
     let handle = iced::widget::image::Handle::from_rgba(pixels, pixels, bytes);
     if cache.len() >= 128 {
         cache.remove(0);
     }
-    cache.push(((kind, side, rgba), handle.clone()));
+    cache.push(((kind, side, rgb), handle.clone()));
     handle
 }
 
@@ -224,8 +226,12 @@ impl<Message> Widget<Message, Theme, Renderer> for Glyph {
         &self, _: &Tree, renderer: &mut Renderer, _: &Theme, style: &renderer::Style, layout: Layout<'_>,
         _: mouse::Cursor, viewport: &Rectangle,
     ) {
+        let tint = self.tint.unwrap_or(style.text_color);
         renderer.draw_image(
-            iced::advanced::image::Image::new(image(self.kind, self.side, self.tint.unwrap_or(style.text_color))),
+            iced::advanced::image::Image {
+                opacity: tint.a.clamp(0.0, 1.0),
+                ..iced::advanced::image::Image::new(image(self.kind, self.side, tint))
+            },
             layout.bounds(),
             *viewport,
         );
@@ -255,6 +261,16 @@ mod tests {
             assert_eq!(mask(kind, side as u16), expected);
         }
         assert_ne!(mask(Kind::Maximize, 28), mask(Kind::Restore, 28));
+    }
+
+    #[test]
+    fn a_fading_tint_reuses_one_raster_and_close_colours_share_it() {
+        let tint = Color::from_rgb(0.2, 0.4, 0.6);
+        let first = image(Kind::Close, 12.0, tint);
+        assert_eq!(image(Kind::Close, 12.0, tint.scale_alpha(0.3)).id(), first.id());
+        assert_eq!(image(Kind::Close, 12.0, Color::from_rgb(0.201, 0.401, 0.599)).id(), first.id());
+        assert_eq!(quantised(Color::WHITE), [255; 3]);
+        assert_eq!(quantised(Color::BLACK), [0; 3]);
     }
 
     #[test]

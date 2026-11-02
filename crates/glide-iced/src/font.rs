@@ -34,8 +34,8 @@ pub fn use_ui_family(requested: Option<&str>) -> String {
             changed = true;
         }
     }
-    if changed {
-        REVISION.fetch_add(1, Ordering::Release);
+    if changed && REVISION.fetch_add(1, Ordering::AcqRel) > 0 {
+        system.load_font(std::borrow::Cow::Owned(Vec::new()));
     }
     family
 }
