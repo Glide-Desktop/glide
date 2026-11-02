@@ -96,17 +96,28 @@ pub fn battery_health(cells: &[BatteryCell]) -> BatteryHealth {
 }
 
 #[must_use]
+pub fn battery_state(status: &str, on_line: Option<bool>) -> BatteryState {
+    match status {
+        "Charging" => BatteryState::Charging,
+        "Discharging" => BatteryState::Discharging,
+        "Full" => BatteryState::Full,
+        "Not charging" => BatteryState::NotCharging,
+        _ if on_line == Some(false) => BatteryState::Discharging,
+        _ => BatteryState::NotCharging,
+    }
+}
+
+#[must_use]
 pub fn parse_battery_cell(text: &str) -> Option<BatteryCell> {
+    parse_battery_cell_on(text, None)
+}
+
+#[must_use]
+pub fn parse_battery_cell_on(text: &str, on_line: Option<bool>) -> Option<BatteryCell> {
     if uevent_value(text, "POWER_SUPPLY_SCOPE").is_some_and(|scope| scope == "Device") {
         return None;
     }
-    let pct = uevent_value(text, "POWER_SUPPLY_CAPACITY")?.parse::<u8>().ok()?.min(100);
-    let state = match uevent_value(text, "POWER_SUPPLY_STATUS").unwrap_or_default() {
-        "Charging" => BatteryState::Charging,
-        "Full" => BatteryState::Full,
-        "Not charging" => BatteryState::NotCharging,
-        _ => BatteryState::Discharging,
-    };
+    let state = battery_state(uevent_value(text, "POWER_SUPPLY_STATUS").unwrap_or_default(), on_line);
     let (energy_units, now, full, rate) =
         match (uevent_number(text, "POWER_SUPPLY_ENERGY_NOW"), uevent_number(text, "POWER_SUPPLY_ENERGY_FULL")) {
             (Some(now), Some(full)) => (true, now, full, uevent_rate(text, "POWER_SUPPLY_POWER_NOW").unwrap_or(0.0)),
@@ -117,6 +128,11 @@ pub fn parse_battery_cell(text: &str) -> Option<BatteryCell> {
                 uevent_rate(text, "POWER_SUPPLY_CURRENT_NOW").unwrap_or(0.0),
             ),
         };
+    let pct = match uevent_value(text, "POWER_SUPPLY_CAPACITY") {
+        Some(capacity) => capacity.parse::<u8>().ok()?.min(100),
+        None if full > 0.0 => (now / full * 100.0).round().clamp(0.0, 100.0) as u8,
+        None => return None,
+    };
     let design_key = if energy_units { "POWER_SUPPLY_ENERGY_FULL_DESIGN" } else { "POWER_SUPPLY_CHARGE_FULL_DESIGN" };
     let design = uevent_number(text, design_key).unwrap_or(0.0);
     let cycles = uevent_value(text, "POWER_SUPPLY_CYCLE_COUNT").and_then(|n| n.parse::<u32>().ok()).filter(|n| *n > 0);
@@ -224,7 +240,33 @@ pub fn parse_power_profile(text: &str) -> Option<PowerProfile> {
 
 #[must_use]
 pub fn read_battery() -> Option<BatteryInfo> {
-    let entries = fs::read_dir(Path::new("/sys/class/power_supply")).ok()?;
+    read_battery_in(Path::new("/sys/class/power_supply"))
+}
+
+#[must_use]
+pub fn line_power(root: &Path) -> Option<bool> {
+    let mut found = None;
+    for entry in fs::read_dir(root).ok()?.flatten() {
+        let path = entry.path();
+        let kind = fs::read_to_string(path.join("type")).unwrap_or_default();
+        if !matches!(kind.trim(), "Mains" | "USB" | "USB_C" | "USB_PD" | "USB_PD_DRP" | "Wireless") {
+            continue;
+        }
+        let Ok(online) = fs::read_to_string(path.join("online")) else {
+            continue;
+        };
+        if online.trim() == "1" {
+            return Some(true);
+        }
+        found = Some(false);
+    }
+    found
+}
+
+#[must_use]
+pub fn read_battery_in(root: &Path) -> Option<BatteryInfo> {
+    let entries = fs::read_dir(root).ok()?;
+    let mut on_line = None;
     let mut cells = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -233,7 +275,17 @@ pub fn read_battery() -> Option<BatteryInfo> {
         if !is_bat {
             continue;
         }
-        if let Some(cell) = fs::read_to_string(path.join("uevent")).ok().as_deref().and_then(parse_battery_cell) {
+        let Ok(text) = fs::read_to_string(path.join("uevent")) else {
+            continue;
+        };
+        let known = matches!(
+            uevent_value(&text, "POWER_SUPPLY_STATUS"),
+            Some("Charging" | "Discharging" | "Full" | "Not charging")
+        );
+        if !known && on_line.is_none() {
+            on_line = Some(line_power(root));
+        }
+        if let Some(cell) = parse_battery_cell_on(&text, on_line.flatten()) {
             cells.push(cell);
         }
     }
@@ -404,9 +456,62 @@ mod tests {
     }
 
     #[test]
-    fn peripheral_batteries_and_missing_capacity_are_ignored() {
+    fn peripheral_batteries_and_batteries_without_any_level_are_ignored() {
         let mouse = format!("{DISCHARGING}POWER_SUPPLY_SCOPE=Device\n");
         assert_eq!(parse_battery_uevent(&mouse), None);
         assert_eq!(parse_battery_uevent("POWER_SUPPLY_STATUS=Charging\n"), None);
+        assert_eq!(parse_battery_uevent("POWER_SUPPLY_STATUS=Charging\nPOWER_SUPPLY_CAPACITY=x\n"), None);
+    }
+
+    #[test]
+    fn a_battery_without_a_capacity_line_takes_its_level_from_the_counters() {
+        let energy = DISCHARGING.replace("POWER_SUPPLY_CAPACITY=50\n", "");
+        assert_eq!(parse_battery_uevent(&energy).map(|info| info.pct), Some(50));
+        let charge = "POWER_SUPPLY_STATUS=Discharging\nPOWER_SUPPLY_CHARGE_NOW=1000000\n\
+            POWER_SUPPLY_CHARGE_FULL=4000000\n";
+        assert_eq!(parse_battery_uevent(charge).map(|info| info.pct), Some(25));
+        let empty_full = "POWER_SUPPLY_STATUS=Discharging\nPOWER_SUPPLY_ENERGY_NOW=0\nPOWER_SUPPLY_ENERGY_FULL=0\n";
+        assert_eq!(parse_battery_uevent(empty_full), None);
+    }
+
+    #[test]
+    fn an_unknown_status_is_not_charging_unless_every_charger_is_offline() {
+        let unknown = DISCHARGING.replace("Discharging", "Unknown");
+        assert_eq!(parse_battery_uevent(&unknown).unwrap().state, BatteryState::NotCharging);
+        assert_eq!(parse_battery_uevent(&unknown).unwrap().minutes, None, "no low-battery estimate on AC");
+        let unlisted = DISCHARGING.replace("Discharging", "Weird");
+        assert_eq!(parse_battery_uevent(&unlisted).unwrap().state, BatteryState::NotCharging);
+        assert_eq!(battery_state("Unknown", Some(true)), BatteryState::NotCharging);
+        assert_eq!(battery_state("Unknown", Some(false)), BatteryState::Discharging);
+        assert_eq!(battery_state("Discharging", Some(true)), BatteryState::Discharging);
+        assert_eq!(battery_state("", None), BatteryState::NotCharging);
+    }
+
+    fn supply(root: &Path, name: &str, files: &[(&str, &str)]) {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).expect("scratch supply");
+        for (file, value) in files {
+            fs::write(dir.join(file), value).expect("supply file");
+        }
+    }
+
+    #[test]
+    fn the_charger_decides_an_unknown_status_when_the_tree_is_read() {
+        let root = std::env::temp_dir().join(format!("glide-power-supply-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let unknown = DISCHARGING.replace("Discharging", "Unknown");
+        supply(&root, "BAT0", &[("type", "Battery\n"), ("uevent", &unknown)]);
+        assert_eq!(line_power(&root), None);
+        assert_eq!(read_battery_in(&root).unwrap().state, BatteryState::NotCharging, "no charger listed");
+
+        supply(&root, "AC", &[("type", "Mains\n"), ("online", "0\n")]);
+        supply(&root, "ucsi-source-psy-USBC000:001", &[("type", "USB\n"), ("online", "0\n")]);
+        assert_eq!(line_power(&root), Some(false));
+        assert_eq!(read_battery_in(&root).unwrap().state, BatteryState::Discharging, "unplugged");
+
+        supply(&root, "ucsi-source-psy-USBC000:001", &[("online", "1\n")]);
+        assert_eq!(line_power(&root), Some(true));
+        assert_eq!(read_battery_in(&root).unwrap().state, BatteryState::NotCharging, "a USB-C charger is in");
+        fs::remove_dir_all(&root).expect("cleanup");
     }
 }

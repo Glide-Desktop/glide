@@ -214,10 +214,31 @@ fn write_qtct(dir: &Path, name: &str, colors: &str, family: &str, icon_theme: Op
 
 const QT_GNOME_BUTTON_LAYOUT: &str = "3";
 
+fn unset_or(text: &str, section: &str, key: &str, ours: impl Fn(&str) -> bool) -> bool {
+    ini_value(text, section, key).is_none_or(|value| value.is_empty() || ours(value))
+}
+
+#[must_use]
+pub fn is_glide_qt_font(value: &str, points: u32) -> bool {
+    let sample = export::qt_font("", points);
+    let tail = sample.trim_start_matches('"').trim_end_matches('"');
+    let value = value.trim_matches('"');
+    value.ends_with(tail) && value.len() > tail.len()
+}
+
 #[must_use]
 pub fn qtct_conf(current: &str, scheme: &str, family: &str, icon_theme: Option<&str>, kvantum: bool) -> String {
-    let mut text = set_ini(current, "Appearance", "color_scheme_path", scheme);
-    text = set_ini(&text, "Appearance", "custom_palette", "true");
+    let file_name = Path::new(scheme).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let palette_in_use = ini_value(current, "Appearance", "custom_palette") == Some("true");
+    let owned = !palette_in_use
+        || unset_or(current, "Appearance", "color_scheme_path", |path| {
+            path == scheme || Path::new(path).file_name().is_some_and(|name| name.to_string_lossy() == file_name)
+        });
+    let mut text = current.to_string();
+    if owned {
+        text = set_ini(&text, "Appearance", "color_scheme_path", scheme);
+        text = set_ini(&text, "Appearance", "custom_palette", "true");
+    }
     let style = ini_value(&text, "Appearance", "style").unwrap_or_default().to_string();
     let wanted = if kvantum { "kvantum" } else { "Fusion" };
     if matches!(style.as_str(), "" | "Fusion" | "kvantum") && style != wanted {
@@ -226,26 +247,39 @@ pub fn qtct_conf(current: &str, scheme: &str, family: &str, icon_theme: Option<&
     if matches!(ini_value(&text, "Appearance", "standard_dialogs"), None | Some("" | "default")) {
         text = set_ini(&text, "Appearance", "standard_dialogs", "xdgdesktopportal");
     }
-    if let Some(icons) = icon_theme {
+    if let Some(icons) = icon_theme
+        && (owned || unset_or(&text, "Appearance", "icon_theme", |_| false))
+    {
         text = set_ini(&text, "Appearance", "icon_theme", icons);
     }
     if ini_value(&text, "Interface", "buttonbox_layout").is_none() {
         text = set_ini(&text, "Interface", "buttonbox_layout", QT_GNOME_BUTTON_LAYOUT);
     }
-    set_ini(&text, "Fonts", "general", &export::qt_font(family, QT_FONT_POINTS))
+    if owned || unset_or(&text, "Fonts", "general", |font| is_glide_qt_font(font, QT_FONT_POINTS)) {
+        text = set_ini(&text, "Fonts", "general", &export::qt_font(family, QT_FONT_POINTS));
+    }
+    text
 }
 
-fn write_kde(config: &Path, data: &Path, tokens: &Tokens, family: &str, icon_theme: Option<&str>) {
-    let scheme = export::kde_color_scheme(tokens, KDE_SCHEME);
-    write(&data.join("color-schemes").join(format!("{KDE_SCHEME}.colors")), &scheme);
-    let globals_path = config.join("kdeglobals");
-    let Some(mut globals) = user_file(&globals_path) else { return };
+#[must_use]
+pub fn replaces_kde_scheme(globals: &str) -> bool {
+    unset_or(globals, "General", "ColorScheme", |scheme| scheme == KDE_SCHEME || scheme.starts_with("Breeze"))
+}
+
+#[must_use]
+pub fn kde_globals(current: &str, scheme: &str, family: &str, icon_theme: Option<&str>) -> Option<String> {
+    if !replaces_kde_scheme(current) {
+        return None;
+    }
+    let mut globals = current.to_string();
     let mut section = String::new();
     for line in scheme.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             section = trimmed[1..trimmed.len() - 1].to_string();
-        } else if let Some((key, value)) = trimmed.split_once('=') {
+        } else if let Some((key, value)) = trimmed.split_once('=')
+            && !(section == "General" && key == "Name")
+        {
             globals = set_ini(&globals, &section, key, value);
         }
     }
@@ -253,7 +287,19 @@ fn write_kde(config: &Path, data: &Path, tokens: &Tokens, family: &str, icon_the
     if let Some(icons) = icon_theme {
         globals = set_ini(&globals, "Icons", "Theme", icons);
     }
-    write(&globals_path, &globals);
+    Some(globals)
+}
+
+fn write_kde(config: &Path, data: &Path, tokens: &Tokens, family: &str, icon_theme: Option<&str>) {
+    let scheme = export::kde_color_scheme(tokens, KDE_SCHEME);
+    write(&data.join("color-schemes").join(format!("{KDE_SCHEME}.colors")), &scheme);
+    let globals_path = config.join("kdeglobals");
+    let Some(current) = user_file(&globals_path) else { return };
+    if let Some(globals) = kde_globals(&current, &scheme, family, icon_theme) {
+        write(&globals_path, &globals);
+    } else {
+        tracing::debug!("kdeglobals names another colour scheme; leaving it alone");
+    }
 }
 
 fn share_with_flatpak(data: &Path) {
@@ -411,6 +457,48 @@ mod tests {
         assert_eq!(ini_value(&kept, "Appearance", "style"), Some("Breeze"));
         assert_eq!(ini_value(&kept, "Interface", "buttonbox_layout"), Some("2"));
         assert_eq!(ini_value(&kept, "Appearance", "icon_theme"), None);
+    }
+
+    #[test]
+    fn a_qtct_palette_font_and_icons_the_user_chose_survive_an_apply() {
+        let scheme = "/home/me/.config/qt6ct/colors/Glide.conf";
+        let font = export::qt_font("Inter", QT_FONT_POINTS);
+        let fresh = qtct_conf("", scheme, "Inter", Some("Papirus"), false);
+        assert_eq!(ini_value(&fresh, "Appearance", "color_scheme_path"), Some(scheme));
+        assert_eq!(ini_value(&fresh, "Appearance", "custom_palette"), Some("true"));
+        assert_eq!(ini_value(&fresh, "Appearance", "icon_theme"), Some("Papirus"));
+        assert_eq!(ini_value(&fresh, "Fonts", "general"), Some(font.as_str()));
+        let again = qtct_conf(&fresh, scheme, "Noto Sans", Some("Colloid"), false);
+        assert_eq!(ini_value(&again, "Appearance", "icon_theme"), Some("Colloid"), "ours, so it follows Glide");
+        assert_eq!(ini_value(&again, "Fonts", "general"), Some(export::qt_font("Noto Sans", 11).as_str()));
+
+        let theirs = "[Appearance]\ncolor_scheme_path=/usr/share/qt6ct/colors/darker.conf\ncustom_palette=true\n\
+                      icon_theme=breeze\n\n[Fonts]\ngeneral=\"Fira Sans,10,-1,5,50,0,0,0,0,0\"\n";
+        let kept = qtct_conf(theirs, scheme, "Inter", Some("Papirus"), false);
+        assert_eq!(ini_value(&kept, "Appearance", "color_scheme_path"), Some("/usr/share/qt6ct/colors/darker.conf"));
+        assert_eq!(ini_value(&kept, "Appearance", "icon_theme"), Some("breeze"));
+        assert_eq!(ini_value(&kept, "Fonts", "general"), Some("\"Fira Sans,10,-1,5,50,0,0,0,0,0\""));
+
+        let inactive = theirs.replace("custom_palette=true", "custom_palette=false");
+        let adopted = qtct_conf(&inactive, scheme, "Inter", None, false);
+        assert_eq!(ini_value(&adopted, "Appearance", "color_scheme_path"), Some(scheme), "an unused palette is free");
+        assert!(is_glide_qt_font(&font, QT_FONT_POINTS) && !is_glide_qt_font("\"Fira Sans,10\"", QT_FONT_POINTS));
+    }
+
+    #[test]
+    fn a_plasma_users_colour_scheme_keeps_kdeglobals_untouched() {
+        let scheme = "[Colors:Window]\nBackgroundNormal=1,2,3\n\n[General]\nColorScheme=Glide\nName=Glide\n";
+        let fresh = kde_globals("", scheme, "Inter", Some("Papirus")).expect("nothing chosen yet");
+        assert_eq!(ini_value(&fresh, "General", "ColorScheme"), Some("Glide"));
+        assert_eq!(ini_value(&fresh, "General", "Name"), None, "the scheme's own name is not a kdeglobals key");
+        assert_eq!(ini_value(&fresh, "Icons", "Theme"), Some("Papirus"));
+        assert!(kde_globals(&fresh, scheme, "Inter", None).is_some(), "Glide's own scheme is refreshed");
+        for stock in ["BreezeLight", "BreezeDark", "BreezeClassic"] {
+            let globals = format!("[General]\nColorScheme={stock}\n");
+            assert!(kde_globals(&globals, scheme, "Inter", None).is_some(), "{stock}");
+        }
+        let plasma = "[General]\nColorScheme=Nordic\nfont=Noto Sans,10\n\n[Icons]\nTheme=breeze-dark\n";
+        assert_eq!(kde_globals(plasma, scheme, "Inter", Some("Papirus")), None);
     }
 
     #[test]

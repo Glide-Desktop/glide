@@ -282,6 +282,7 @@ pub struct Catalog {
     pub search: String,
     pub password: String,
     pub revealed: bool,
+    pub secret_revealed: bool,
     pub code: String,
     pub version: usize,
     pub filter: usize,
@@ -331,6 +332,7 @@ pub enum Message {
     ClearSearch,
     Password(String),
     Reveal,
+    RevealSecret,
     Code(String),
     Version(usize),
     Filter(usize),
@@ -533,6 +535,7 @@ impl Catalog {
             search: String::new(),
             password: "glide".into(),
             revealed: false,
+            secret_revealed: false,
             code: String::from("482"),
             version: 1,
             filter: 1,
@@ -609,6 +612,7 @@ impl App for Catalog {
             Message::ClearSearch => self.search.clear(),
             Message::Password(password) => self.password = password,
             Message::Reveal => self.revealed = !self.revealed,
+            Message::RevealSecret => self.secret_revealed = !self.secret_revealed,
             Message::Code(code) => self.code = code,
             Message::Version(index) => self.version = index,
             Message::Filter(index) => self.filter = index,
@@ -1050,6 +1054,16 @@ mod tests {
         harness.send(Event::Look(shell_look(Appearance::Light, moved)));
         assert_eq!(harness.shell().previewing(), Some((Appearance::Dark, moved)));
         assert_eq!(harness.shell().paint().tokens.appearance, Appearance::Dark);
+    }
+
+    #[test]
+    fn revealing_the_secret_field_leaves_the_password_field_masked() {
+        let mut harness = bench();
+        harness.message(Message::RevealSecret);
+        assert!(harness.app().secret_revealed && !harness.app().revealed);
+        harness.message(Message::Reveal);
+        harness.message(Message::RevealSecret);
+        assert!(harness.app().revealed && !harness.app().secret_revealed);
     }
 
     #[test]

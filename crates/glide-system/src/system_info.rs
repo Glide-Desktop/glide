@@ -52,7 +52,7 @@ fn refresh(status: &mut SystemStatus, topics: Topics, privacy: &mut PrivacySourc
         status.keyboard_brightness = read_keyboard_backlight(Path::new("/sys/class/leds"));
     }
     if topics.contains(Topics::POWER) {
-        status.power_profile = poll_stdout("powerprofilesctl", &["get"]).and_then(|text| parse_power_profile(&text));
+        status.power_profile = read_power_profile();
     }
     if topics.intersects(Topics::POWER | Topics::BATTERY)
         && let Some(battery) = status.battery.as_mut()
@@ -62,16 +62,23 @@ fn refresh(status: &mut SystemStatus, topics: Topics, privacy: &mut PrivacySourc
     if topics.contains(Topics::RADIOS) {
         status.airplane = airplane_from(&read_radios(Path::new("/sys/class/rfkill")));
     }
-    if topics.contains(Topics::NETWORK) {
-        (status.wifi_available, status.ethernet_available, status.ethernet_connected) =
-            read_network_devices(Path::new("/sys/class/net"));
-        (status.wifi_enabled, status.wifi_level, status.wifi_ssid) = read_wifi();
-        status.vpn_active = read_vpn_active();
+    if topics.intersects(Topics::NETWORK | Topics::RADIOS) {
+        let rfkill = read_radios(Path::new(RFKILL));
+        let devices = read_network_devices(Path::new(NET));
+        status.wifi_available = devices.wifi || has_radio(&rfkill, "wlan");
+        status.ethernet_available = devices.ethernet;
+        status.ethernet_connected = devices.ethernet_connected;
+        if topics.contains(Topics::NETWORK) {
+            (status.wifi_enabled, status.wifi_level, status.wifi_ssid) = read_wifi(&devices.wireless);
+            status.vpn_active = read_vpn_active();
+        }
     }
     if topics.intersects(Topics::BLUETOOTH | Topics::RADIOS) {
-        status.bluetooth_available = bluetooth_available(Path::new("/sys/class/bluetooth"));
-        status.bluetooth_on = status.bluetooth_available && read_bluetooth();
-        status.bluetooth_connected = status.bluetooth_on && read_bluetooth_connected();
+        status.bluetooth_available =
+            bluetooth_available(Path::new("/sys/class/bluetooth"), &read_radios(Path::new(RFKILL)));
+        let bluez = read_bluez();
+        status.bluetooth_on = status.bluetooth_available && read_bluetooth(bluez);
+        status.bluetooth_connected = status.bluetooth_on && bluez.is_some_and(|bluez| bluez.connected);
     }
     if topics.intersects(Topics::PRIVACY | Topics::CAMERA) {
         status.privacy = privacy.refresh(topics, pipewire);
@@ -89,10 +96,92 @@ fn poll_stdout(program: &str, args: &[&str]) -> Option<String> {
         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+const RFKILL: &str = "/sys/class/rfkill";
+const NET: &str = "/sys/class/net";
+const BUS_TIMEOUT: Duration = Duration::from_secs(2);
+const POWER_PROFILE_SERVICES: [(&str, &str); 2] = [
+    ("net.hadess.PowerProfiles", "/net/hadess/PowerProfiles"),
+    ("org.freedesktop.UPower.PowerProfiles", "/org/freedesktop/UPower/PowerProfiles"),
+];
+
+static SYSTEM_BUS: Mutex<Option<zbus::blocking::Connection>> = Mutex::new(None);
+
+fn system_bus() -> Option<zbus::blocking::Connection> {
+    let mut cached = SYSTEM_BUS.lock().unwrap_or_else(PoisonError::into_inner);
+    if cached.is_none() {
+        *cached = zbus::blocking::connection::Builder::system()
+            .map(|builder| builder.method_timeout(BUS_TIMEOUT))
+            .and_then(zbus::blocking::connection::Builder::build)
+            .inspect_err(|err| tracing::debug!("the system bus is unavailable: {err}"))
+            .ok();
+    }
+    cached.clone()
+}
+
+fn forget_system_bus(err: &zbus::Error) {
+    if matches!(err, zbus::Error::InputOutput(_) | zbus::Error::InvalidReply) {
+        *SYSTEM_BUS.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+}
+
+fn properties<'a>(
+    bus: &zbus::blocking::Connection, service: &'a str, path: &'a str,
+) -> zbus::Result<zbus::blocking::fdo::PropertiesProxy<'a>> {
+    zbus::blocking::fdo::PropertiesProxy::builder(bus).destination(service)?.path(path)?.build()
+}
+
+fn bus_power_profile() -> Option<PowerProfile> {
+    let bus = system_bus()?;
+    POWER_PROFILE_SERVICES.iter().find_map(|(service, path)| {
+        let interface = zbus::names::InterfaceName::try_from(*service).ok()?;
+        let value = properties(&bus, service, path)
+            .and_then(|proxy| proxy.get(interface, "ActiveProfile").map_err(zbus::Error::from))
+            .inspect_err(forget_system_bus)
+            .ok()?;
+        parse_power_profile(&String::try_from(value).ok()?)
+    })
+}
+
+fn read_power_profile() -> Option<PowerProfile> {
+    bus_power_profile()
+        .or_else(|| poll_stdout("powerprofilesctl", &["get"]).and_then(|text| parse_power_profile(&text)))
+}
+
+fn bus_set_power_profile(profile: PowerProfile) -> bool {
+    let Some(bus) = system_bus() else {
+        return false;
+    };
+    POWER_PROFILE_SERVICES.iter().any(|(service, path)| {
+        let Ok(interface) = zbus::names::InterfaceName::try_from(*service) else {
+            return false;
+        };
+        let value = zbus::zvariant::Value::from(profile.key());
+        properties(&bus, service, path)
+            .and_then(|proxy| proxy.set(interface, "ActiveProfile", value).map_err(zbus::Error::from))
+            .inspect_err(forget_system_bus)
+            .is_ok()
+    })
+}
+
 pub fn set_power_profile(profile: PowerProfile) {
-    if let Err(err) = crate::spawn_shell_command(&format!("powerprofilesctl set {}", profile.key())) {
+    let spawned = std::thread::Builder::new().name("glide-power-profile".to_string()).spawn(move || {
+        if bus_set_power_profile(profile) {
+            return;
+        }
+        let set = crate::spawn::run_with_timeout("powerprofilesctl", &["set", profile.key()], CONTROL_TIMEOUT);
+        if !set.is_some_and(|output| output.status.success()) {
+            tracing::warn!(profile = profile.key(), "the power profile could not be changed");
+            poke(Topics::POWER);
+        }
+    });
+    if let Err(err) = spawned {
         tracing::warn!("power profile change failed to start: {err}");
     }
+}
+
+#[must_use]
+pub fn has_radio(radios: &[(String, bool)], kind: &str) -> bool {
+    radios.iter().any(|(radio, _)| radio == kind)
 }
 
 #[must_use]
@@ -128,13 +217,38 @@ pub fn set_airplane(on: bool) {
     }
 }
 
-#[must_use]
-pub fn parse_connected_devices(text: &str) -> bool {
-    text.lines().any(|line| line.trim_start().starts_with("Device "))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bluez {
+    pub powered: Option<bool>,
+    pub connected: bool,
 }
 
-fn read_bluetooth_connected() -> bool {
-    poll_stdout("bluetoothctl", &["devices", "Connected"]).is_some_and(|text| parse_connected_devices(&text))
+#[must_use]
+pub fn bluez_from(objects: &zbus::fdo::ManagedObjects) -> Bluez {
+    fn flag<'a>(
+        objects: &'a zbus::fdo::ManagedObjects, interface: &'a str, key: &'a str,
+    ) -> impl Iterator<Item = bool> + 'a {
+        objects
+            .values()
+            .filter_map(move |interfaces| interfaces.iter().find(|(name, _)| name.as_str() == interface))
+            .filter_map(move |(_, properties)| bool::try_from(properties.get(key)?).ok())
+    }
+    let flag = |interface, key| flag(objects, interface, key);
+    let powered = flag("org.bluez.Adapter1", "Powered").reduce(|any, on| any || on);
+    let connected = flag("org.bluez.Device1", "Connected").any(|on| on);
+    Bluez { powered, connected }
+}
+
+fn read_bluez() -> Option<Bluez> {
+    let bus = system_bus()?;
+    let objects = zbus::blocking::fdo::ObjectManagerProxy::builder(&bus)
+        .destination("org.bluez")
+        .and_then(|builder| builder.path("/"))
+        .and_then(zbus::blocking::proxy::Builder::build)
+        .and_then(|proxy| proxy.get_managed_objects().map_err(zbus::Error::from))
+        .inspect_err(forget_system_bus)
+        .ok()?;
+    Some(bluez_from(&objects))
 }
 
 #[must_use]
@@ -256,9 +370,48 @@ pub fn privacy_from<'a>(objects: impl IntoIterator<Item = &'a serde_json::Value>
     privacy
 }
 
+pub const VIDEO4LINUX: &str = "/sys/class/video4linux";
+pub const UDEV_DATA: &str = "/run/udev/data";
+
+#[must_use]
+pub fn captures_video(udev_data: &str) -> Option<bool> {
+    let capabilities = udev_data.lines().find_map(|line| line.trim().strip_prefix("E:ID_V4L_CAPABILITIES="))?;
+    let has = |token: &str| capabilities.split(':').any(|part| part == token);
+    Some(has("capture") && !has("video_output"))
+}
+
+#[must_use]
+pub fn is_camera_node(video4linux: &Path, udev: &Path, name: &str) -> bool {
+    let Some(number) = fs::read_to_string(video4linux.join(name).join("dev")).ok() else {
+        return true;
+    };
+    fs::read_to_string(udev.join(format!("c{}", number.trim())))
+        .ok()
+        .and_then(|data| captures_video(&data))
+        .unwrap_or(true)
+}
+
+#[must_use]
+pub fn camera_nodes(video4linux: &Path, udev: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(video4linux) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("video") && is_camera_node(video4linux, udev, name))
+        .collect();
+    names.sort();
+    names
+}
+
 fn camera_openers() -> Vec<String> {
-    let has_camera = fs::read_dir("/sys/class/video4linux").is_ok_and(|mut devices| devices.next().is_some());
-    let Some(processes) = has_camera.then(|| fs::read_dir("/proc").ok()).flatten() else {
+    let cameras: std::collections::HashSet<std::path::PathBuf> =
+        camera_nodes(Path::new(VIDEO4LINUX), Path::new(UDEV_DATA))
+            .iter()
+            .map(|name| Path::new("/dev").join(name))
+            .collect();
+    let Some(processes) = (!cameras.is_empty()).then(|| fs::read_dir("/proc").ok()).flatten() else {
         return Vec::new();
     };
     let mut names = Vec::new();
@@ -270,9 +423,7 @@ fn camera_openers() -> Vec<String> {
         let Ok(fds) = fs::read_dir(path.join("fd")) else {
             continue;
         };
-        let opened = fds
-            .flatten()
-            .any(|fd| fs::read_link(fd.path()).is_ok_and(|target| target.to_string_lossy().starts_with("/dev/video")));
+        let opened = fds.flatten().any(|fd| fs::read_link(fd.path()).is_ok_and(|target| cameras.contains(&target)));
         if opened {
             let comm = fs::read_to_string(path.join("comm")).unwrap_or_default();
             names.push(comm.trim().to_string());
@@ -325,7 +476,7 @@ pub fn wifi_summary(radio: Option<bool>, level: u8, ssid: Option<String>) -> (bo
         (Some(false), _) => (false, 0, WifiLine::Label(Key::Off)),
         (_, Some(ssid)) => (true, level.max(1), WifiLine::Network(ssid)),
         (Some(true), None) => (true, 0, WifiLine::Label(Key::NotConnected)),
-        (None, None) if level > 0 => (true, level, WifiLine::Network(String::new())),
+        (None, None) if level > 0 => (true, level, WifiLine::Label(Key::Connected)),
         (None, None) => (false, 0, WifiLine::Label(Key::NotConnected)),
     }
 }
@@ -347,29 +498,91 @@ pub fn parse_active_ssid(text: &str) -> Option<String> {
         .map(|ssid| ssid.replace("\\:", ":").replace("\\\\", "\\"))
 }
 
-fn read_network_devices(path: &Path) -> (bool, bool, bool) {
-    let mut wifi = false;
-    let mut ethernet = false;
-    let mut connected = false;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let interface = entry.path();
-            if interface.join("wireless").exists() || interface.join("phy80211").exists() {
-                wifi = true;
-            } else if interface.join("device").exists()
-                && fs::read_to_string(interface.join("type")).is_ok_and(|kind| kind.trim() == "1")
-            {
-                ethernet = true;
-                connected |= fs::read_to_string(interface.join("carrier")).is_ok_and(|carrier| carrier.trim() == "1");
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetworkDevices {
+    pub wifi: bool,
+    pub wireless: Vec<String>,
+    pub ethernet: bool,
+    pub ethernet_connected: bool,
+}
+
+const NOT_WIRED: [&str; 4] = ["qmi_wwan", "cdc_mbim", "huawei_cdc_ncm", "thunderbolt-net"];
+
+#[must_use]
+pub fn is_wired_uplink(interface: &Path) -> bool {
+    let device = interface.join("device");
+    if !device.exists() || !fs::read_to_string(interface.join("type")).is_ok_and(|kind| kind.trim() == "1") {
+        return false;
+    }
+    let modem = [interface.join("uevent"), device.join("uevent")].iter().any(|uevent| {
+        fs::read_to_string(uevent).is_ok_and(|text| text.lines().any(|line| line.trim() == "DEVTYPE=wwan"))
+    });
+    let driver = fs::read_link(device.join("driver"))
+        .ok()
+        .and_then(|driver| driver.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    !modem && !NOT_WIRED.contains(&driver.as_str())
+}
+
+#[must_use]
+pub fn read_network_devices(path: &Path) -> NetworkDevices {
+    let mut devices = NetworkDevices::default();
+    let Ok(entries) = fs::read_dir(path) else {
+        return devices;
+    };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(fs::DirEntry::file_name);
+    for entry in entries {
+        let interface = entry.path();
+        if interface.join("wireless").exists() || interface.join("phy80211").exists() {
+            devices.wifi = true;
+            devices.wireless.push(entry.file_name().to_string_lossy().into_owned());
+        } else if is_wired_uplink(&interface) {
+            devices.ethernet = true;
+            devices.ethernet_connected |=
+                fs::read_to_string(interface.join("carrier")).is_ok_and(|carrier| carrier.trim() == "1");
+        }
+    }
+    devices
+}
+
+#[must_use]
+pub fn parse_iw_ssid(text: &str) -> Option<String> {
+    let escaped = text.lines().find_map(|line| line.trim().strip_prefix("SSID: "))?;
+    let mut bytes = Vec::with_capacity(escaped.len());
+    let raw = escaped.as_bytes();
+    let mut index = 0;
+    while index < raw.len() {
+        let hex = raw.get(index + 2..index + 4).and_then(|hex| std::str::from_utf8(hex).ok());
+        match (raw[index], raw.get(index + 1), hex.and_then(|hex| u8::from_str_radix(hex, 16).ok())) {
+            (b'\\', Some(b'x'), Some(byte)) => {
+                bytes.push(byte);
+                index += 4;
+            }
+            (byte, _, _) => {
+                bytes.push(byte);
+                index += 1;
             }
         }
     }
-    (wifi, ethernet, connected)
+    let ssid = String::from_utf8_lossy(&bytes).into_owned();
+    (!ssid.is_empty()).then_some(ssid)
 }
 
-fn read_wifi() -> (bool, u8, String) {
+fn iw_ssid(wireless: &[String]) -> Option<String> {
+    if !glide_config::on_path("iw") {
+        return None;
+    }
+    wireless.iter().find_map(|interface| parse_iw_ssid(&poll_stdout("iw", &["dev", interface, "link"])?))
+}
+
+fn read_wifi(wireless: &[String]) -> (bool, u8, String) {
     let radio = read_wifi_radio();
-    let ssid = if radio == Some(false) { None } else { fetch_active_ssid() };
+    let ssid = match radio {
+        Some(false) => None,
+        Some(true) => fetch_active_ssid(),
+        None => iw_ssid(wireless),
+    };
     let (enabled, level, line) = wifi_summary(radio, read_wifi_level(), ssid);
     let text = match line {
         WifiLine::Network(ssid) => ssid,
@@ -526,10 +739,30 @@ impl Backlight {
     }
 }
 
+#[must_use]
+pub fn backlight_panel_rank(backlight: &Path) -> u8 {
+    let Ok(connector) = fs::canonicalize(backlight.join("device")) else {
+        return 1;
+    };
+    let name = connector.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let Some((_, port)) = name.split_once('-').filter(|(card, _)| card.starts_with("card")) else {
+        return 1;
+    };
+    let internal = ["eDP", "LVDS", "DSI"].iter().any(|kind| port.starts_with(kind));
+    let read = |file: &str| fs::read_to_string(connector.join(file)).unwrap_or_default().trim().to_string();
+    let lit = read("status") == "connected" && read("enabled") != "disabled";
+    if internal && lit { 0 } else { 2 }
+}
+
 fn read_backlight() -> Option<Backlight> {
-    let entries = fs::read_dir(Path::new("/sys/class/backlight")).ok()?;
-    let mut found: Vec<(u8, Backlight)> = entries
+    read_backlight_in(Path::new("/sys/class/backlight"))
+}
+
+fn read_backlight_in(root: &Path) -> Option<Backlight> {
+    let entries = fs::read_dir(root).ok()?;
+    let mut found: Vec<((u8, u8), Backlight)> = entries
         .flatten()
+        .filter(|entry| !entry.file_name().to_string_lossy().starts_with("ddcci"))
         .filter_map(|entry| {
             let path = entry.path();
             let read = |file: &str| fs::read_to_string(path.join(file)).ok().and_then(|s| s.trim().parse::<u64>().ok());
@@ -537,7 +770,7 @@ fn read_backlight() -> Option<Backlight> {
             let current = read("brightness")?;
             let rank = fs::read_to_string(path.join("type")).map_or(3, |kind| backlight_type_rank(&kind));
             let name = entry.file_name().to_string_lossy().into_owned();
-            Some((rank, Backlight { name, current, max }))
+            Some(((rank, backlight_panel_rank(&path)), Backlight { name, current, max }))
         })
         .collect();
     found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
@@ -545,11 +778,16 @@ fn read_backlight() -> Option<Backlight> {
 }
 
 #[must_use]
+pub fn is_keyboard_backlight(name: &str) -> bool {
+    name.contains("kbd_backlight")
+}
+
+#[must_use]
 pub fn read_keyboard_backlight(leds: &Path) -> Option<u8> {
     let mut entries: Vec<_> = fs::read_dir(leds)
         .ok()?
         .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().ends_with("::kbd_backlight"))
+        .filter(|entry| is_keyboard_backlight(&entry.file_name().to_string_lossy()))
         .map(|entry| entry.path())
         .collect();
     entries.sort();
@@ -594,18 +832,24 @@ fn rfkill_bluetooth_unblocked() -> bool {
     found_bt
 }
 
-fn bluetooth_available(path: &Path) -> bool {
-    fs::read_dir(path).is_ok_and(|mut adapters| adapters.next().is_some())
+#[must_use]
+pub fn bluetooth_available(adapters: &Path, radios: &[(String, bool)]) -> bool {
+    fs::read_dir(adapters).is_ok_and(|mut adapters| adapters.next().is_some()) || has_radio(radios, "bluetooth")
 }
 
-fn read_bluetooth() -> bool {
+fn read_bluetooth(bluez: Option<Bluez>) -> bool {
+    if let Some(powered) = bluez.and_then(|bluez| bluez.powered) {
+        return powered;
+    }
     bluetooth_on(poll_stdout("bluetoothctl", &["show"]).as_deref(), rfkill_bluetooth_unblocked)
 }
 
 pub const FAST_INTERVAL: Duration = Duration::from_secs(1);
 pub const SLOW_INTERVAL: Duration = Duration::from_secs(6);
 pub const BATTERY_DRIFT: Duration = Duration::from_secs(30);
+pub const BACKLIGHT_DRIFT: Duration = Duration::from_secs(31);
 pub const NETWORK_SPACING: Duration = Duration::from_secs(1);
+pub const BATTERY_SPACING: Duration = Duration::from_secs(2);
 const POKE_SETTLE: Duration = Duration::from_millis(120);
 const TOPIC_SLOTS: usize = 16;
 
@@ -621,7 +865,11 @@ const fn slot(topic: Topics) -> usize {
 impl Schedule {
     fn interval(topic: Topics, hooked: Topics) -> Option<Duration> {
         if hooked.contains(topic) {
-            (topic == Topics::BATTERY).then_some(BATTERY_DRIFT)
+            match topic {
+                Topics::BATTERY => Some(BATTERY_DRIFT),
+                Topics::BACKLIGHT => Some(BACKLIGHT_DRIFT),
+                _ => None,
+            }
         } else if Topics::FAST.contains(topic) {
             Some(FAST_INTERVAL)
         } else {
@@ -630,7 +878,11 @@ impl Schedule {
     }
 
     fn spacing(topic: Topics) -> Duration {
-        if topic == Topics::NETWORK { NETWORK_SPACING } else { Duration::ZERO }
+        match topic {
+            Topics::NETWORK => NETWORK_SPACING,
+            Topics::BATTERY => BATTERY_SPACING,
+            _ => Duration::ZERO,
+        }
     }
 
     fn due(&self, hooked: Topics, now: Instant) -> Topics {
@@ -804,12 +1056,13 @@ pub fn set_wifi(on: bool) {
     let _ = run("nmcli", &["radio", "wifi", if on { "on" } else { "off" }]);
 }
 
+pub const BLUETOOTH_ON: &str = "rfkill unblock bluetooth; i=0; \
+    while [ $i -lt 25 ] && ! timeout 1 bluetoothctl list 2>/dev/null | grep -q '^Controller'; do \
+    sleep 0.2; i=$((i+1)); done; timeout 10 bluetoothctl power on";
+pub const BLUETOOTH_OFF: &str = "timeout 10 bluetoothctl power off; rfkill block bluetooth";
+
 pub fn set_bluetooth(on: bool) {
-    let command = if on {
-        "rfkill unblock bluetooth; sleep 0.5; timeout 10 bluetoothctl power on"
-    } else {
-        "timeout 10 bluetoothctl power off; rfkill block bluetooth"
-    };
+    let command = if on { BLUETOOTH_ON } else { BLUETOOTH_OFF };
     if let Err(err) = crate::spawn_shell_command(command) {
         tracing::warn!("bluetooth toggle failed to start: {err}");
     }
@@ -950,14 +1203,10 @@ fn request_control(control: Control, value: u8) {
     }
 }
 
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
+
 fn run_blocking(program: &str, args: &[&str]) -> bool {
-    Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    crate::spawn::run_with_timeout(program, args, CONTROL_TIMEOUT).is_some_and(|output| output.status.success())
 }
 
 fn run_blocking_or(primary: (&str, &[&str]), fallback: (&str, &[&str])) {
@@ -1428,9 +1677,6 @@ mod tests {
         assert!(parse_vpn_active("wireguard:activated\n"));
         assert!(!parse_vpn_active("vpn:activating\n802-3-ethernet:activated\n"));
         assert!(!parse_vpn_active(""));
-        assert!(parse_connected_devices("Device 00:11:22:33:44:55 WH-1000XM4\n"));
-        assert!(!parse_connected_devices(""));
-        assert!(!parse_connected_devices("No default controller available\n"));
     }
 
     #[test]
@@ -1439,7 +1685,20 @@ mod tests {
         assert_eq!(wifi_summary(Some(true), 0, None), (true, 0, WifiLine::Label(Key::NotConnected)));
         assert_eq!(wifi_summary(Some(false), 3, None), (false, 0, WifiLine::Label(Key::Off)));
         assert_eq!(wifi_summary(Some(true), 0, Some("Home".into())), (true, 1, WifiLine::Network("Home".into())));
-        assert_eq!(wifi_summary(None, 3, None), (true, 3, WifiLine::Network(String::new())));
+        assert_eq!(
+            wifi_summary(None, 3, None),
+            (true, 3, WifiLine::Label(Key::Connected)),
+            "without NetworkManager a live link still reads as connected, never as an empty name"
+        );
+        assert_eq!(wifi_summary(None, 3, Some("Home".into())), (true, 3, WifiLine::Network("Home".into())));
+    }
+
+    #[test]
+    fn iw_link_output_names_the_network_and_unescapes_its_bytes() {
+        let link = "Connected to aa:bb:cc:dd:ee:ff (on wlan0)\n\tSSID: Caf\\xc3\\xa9 Wi-Fi\n\tfreq: 5180\n";
+        assert_eq!(parse_iw_ssid(link).as_deref(), Some("Café Wi-Fi"));
+        assert_eq!(parse_iw_ssid("\tSSID: \\x20edge\\\n").as_deref(), Some(" edge\\"));
+        assert_eq!(parse_iw_ssid("Not connected.\n"), None);
     }
 
     const PW_DUMP: &str = r#"[
@@ -1509,6 +1768,11 @@ mod tests {
         let hooked = Topics::all();
         assert_eq!(schedule.due(hooked, start + SLOW_INTERVAL), Topics::empty(), "hooks replace the polling");
         assert_eq!(schedule.due(hooked, start + BATTERY_DRIFT), Topics::BATTERY, "the estimate drifts without events");
+        assert_eq!(
+            schedule.due(hooked, start + BACKLIGHT_DRIFT),
+            Topics::BATTERY | Topics::BACKLIGHT,
+            "firmware hotkeys change the backlight without a uevent"
+        );
         assert_eq!(schedule.next(hooked, Topics::empty()), Some(start + BATTERY_DRIFT));
         let some = Topics::AUDIO | Topics::PRIVACY;
         assert_eq!(schedule.due(some, start + FAST_INTERVAL), Topics::FAST - Topics::AUDIO);
@@ -1524,6 +1788,16 @@ mod tests {
         assert_eq!(schedule.held(dirty, soon), Topics::NETWORK, "other topics are never held back");
         assert_eq!(schedule.held(dirty, start + NETWORK_SPACING), Topics::empty());
         assert_eq!(schedule.next(Topics::all(), Topics::NETWORK), Some(start + NETWORK_SPACING));
+    }
+
+    #[test]
+    fn a_charging_battery_that_floods_uevents_is_read_at_most_every_two_seconds() {
+        let start = Instant::now();
+        let mut schedule = Schedule::default();
+        schedule.done(Topics::BATTERY, start);
+        assert_eq!(schedule.held(Topics::BATTERY, start + NETWORK_SPACING), Topics::BATTERY);
+        assert_eq!(schedule.held(Topics::BATTERY, start + BATTERY_SPACING), Topics::empty());
+        assert_eq!(schedule.next(Topics::all(), Topics::BATTERY), Some(start + BATTERY_SPACING));
     }
 
     fn appearance() -> DesktopAppearance {
@@ -1622,5 +1896,168 @@ mod tests {
         assert_eq!(read_keyboard_backlight(&leds), None, "a caps lock led is not a backlight");
         fs::remove_dir_all(&leds).expect("cleanup");
         assert_eq!(read_keyboard_backlight(&leds), None);
+    }
+
+    #[test]
+    fn rgb_and_numbered_keyboard_backlights_count_too() {
+        for name in ["tpacpi::kbd_backlight", "rgb:kbd_backlight", "asus::kbd_backlight_1", "dell::kbd_backlight"] {
+            assert!(is_keyboard_backlight(name), "{name}");
+        }
+        assert!(!is_keyboard_backlight("input3::capslock"));
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("glide-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("scratch root");
+        root
+    }
+
+    fn files(dir: &Path, entries: &[(&str, &str)]) {
+        fs::create_dir_all(dir).expect("scratch dir");
+        for (file, value) in entries {
+            fs::write(dir.join(file), value).expect("scratch file");
+        }
+    }
+
+    #[test]
+    fn a_soft_blocked_adapter_that_left_sysfs_keeps_the_bluetooth_tile() {
+        let root = scratch("bluetooth");
+        let adapters = root.join("bluetooth");
+        fs::create_dir_all(&adapters).expect("adapters");
+        let radio = |kind: &str| (kind.to_string(), true);
+        assert!(!bluetooth_available(&adapters, &[radio("wlan")]));
+        assert!(bluetooth_available(&adapters, &[radio("wlan"), radio("bluetooth")]), "tpacpi_bluetooth_sw");
+        fs::create_dir_all(adapters.join("hci0")).expect("hci0");
+        assert!(bluetooth_available(&adapters, &[]));
+        assert!(bluetooth_available(&root.join("missing"), &[radio("bluetooth")]));
+        fs::remove_dir_all(&root).expect("cleanup");
+        assert!(has_radio(&[radio("wlan")], "wlan") && !has_radio(&[], "wlan"));
+    }
+
+    #[test]
+    fn turning_bluetooth_on_waits_for_the_adapter_instead_of_a_fixed_pause() {
+        assert!(!BLUETOOTH_ON.contains("sleep 0.5"));
+        let wait = BLUETOOTH_ON.find("bluetoothctl list").expect("polls for a controller");
+        let power = BLUETOOTH_ON.find("bluetoothctl power on").expect("powers on");
+        assert!(BLUETOOTH_ON.find("rfkill unblock").is_some_and(|unblock| unblock < wait) && wait < power);
+        let status = Command::new("sh").arg("-n").arg("-c").arg(BLUETOOTH_ON).status().expect("sh");
+        assert!(status.success(), "the command parses as POSIX sh");
+    }
+
+    #[test]
+    fn bluez_objects_tell_the_adapter_power_and_any_connected_device() {
+        use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+        type Interfaces =
+            std::collections::HashMap<zbus::names::OwnedInterfaceName, std::collections::HashMap<String, OwnedValue>>;
+        fn object(interface: &str, key: &str, on: bool) -> Interfaces {
+            let properties = std::collections::HashMap::from([(key.to_string(), OwnedValue::from(on))]);
+            Interfaces::from([(zbus::names::OwnedInterfaceName::try_from(interface).expect("name"), properties)])
+        }
+        let path = |path: &str| OwnedObjectPath::try_from(path).expect("path");
+        let mut objects = zbus::fdo::ManagedObjects::new();
+        assert_eq!(bluez_from(&objects), Bluez { powered: None, connected: false });
+        objects.insert(path("/org/bluez/hci0"), object("org.bluez.Adapter1", "Powered", true));
+        objects.insert(path("/org/bluez/hci0/dev_AA"), object("org.bluez.Device1", "Connected", false));
+        assert_eq!(bluez_from(&objects), Bluez { powered: Some(true), connected: false });
+        objects.insert(path("/org/bluez/hci0/dev_BB"), object("org.bluez.Device1", "Connected", true));
+        objects.insert(path("/org/bluez/hci0"), object("org.bluez.Adapter1", "Powered", false));
+        assert_eq!(bluez_from(&objects), Bluez { powered: Some(false), connected: true });
+    }
+
+    #[test]
+    fn only_capture_nodes_are_cameras_and_codecs_or_metadata_nodes_are_not() {
+        assert_eq!(captures_video("E:ID_V4L_VERSION=2\nE:ID_V4L_CAPABILITIES=:capture:\n"), Some(true));
+        assert_eq!(captures_video("E:ID_V4L_CAPABILITIES=:\n"), Some(false), "a UVC metadata node");
+        assert_eq!(captures_video("E:ID_V4L_CAPABILITIES=:capture:video_output:\n"), Some(false), "an m2m codec");
+        assert_eq!(captures_video("E:ID_V4L_CAPABILITIES=:video_output:\n"), Some(false));
+        assert_eq!(captures_video("E:ID_V4L_VERSION=2\n"), None);
+
+        let root = scratch("v4l");
+        let (sys, udev) = (root.join("video4linux"), root.join("udev"));
+        fs::create_dir_all(&udev).expect("udev");
+        for (name, number, caps) in
+            [("video0", "81:0", Some(":capture:")), ("video1", "81:1", Some(":")), ("video2", "81:4", None)]
+        {
+            files(&sys.join(name), &[("dev", &format!("{number}\n"))]);
+            if let Some(caps) = caps {
+                fs::write(udev.join(format!("c{number}")), format!("E:ID_V4L_CAPABILITIES={caps}\n")).expect("db");
+            }
+        }
+        files(&sys.join("video10"), &[("dev", "81:10\n")]);
+        fs::write(udev.join("c81:10"), "E:ID_V4L_CAPABILITIES=:capture:video_output:\n").expect("db");
+        assert_eq!(
+            camera_nodes(&sys, &udev),
+            ["video0", "video2"],
+            "without a udev entry a node is still taken for a camera"
+        );
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn usb_adapters_and_tethering_are_wired_but_modems_and_thunderbolt_links_are_not() {
+        let root = scratch("net");
+        let drivers = root.join("drivers");
+        let interface = |name: &str, driver: &str, devtype: Option<&str>, carrier: &str| {
+            let dir = root.join("net").join(name);
+            files(&dir, &[("type", "1\n"), ("carrier", carrier)]);
+            fs::create_dir_all(dir.join("device")).expect("device");
+            fs::create_dir_all(drivers.join(driver)).expect("driver");
+            std::os::unix::fs::symlink(drivers.join(driver), dir.join("device").join("driver")).expect("link");
+            if let Some(devtype) = devtype {
+                fs::write(dir.join("uevent"), format!("INTERFACE={name}\nDEVTYPE={devtype}\n")).expect("uevent");
+            }
+        };
+        interface("wwan0", "cdc_ncm", Some("wwan"), "1\n");
+        interface("wwp0s20", "qmi_wwan", None, "1\n");
+        interface("thunderbolt0", "thunderbolt-net", None, "1\n");
+        files(&root.join("net").join("lo"), &[("type", "772\n"), ("carrier", "1\n")]);
+        files(&root.join("net").join("wlan0").join("wireless"), &[]);
+        let net = root.join("net");
+        let modems_only = read_network_devices(&net);
+        assert!(!modems_only.ethernet && !modems_only.ethernet_connected);
+        assert_eq!(modems_only.wireless, ["wlan0"]);
+        assert!(modems_only.wifi);
+
+        interface("enx001122", "cdc_ether", None, "0\n");
+        interface("usb0", "rndis_host", None, "1\n");
+        let wired = read_network_devices(&net);
+        assert!(wired.ethernet && wired.ethernet_connected, "a USB adapter and phone tethering count as wired");
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn the_lit_internal_panel_wins_a_tie_and_external_monitors_never_do() {
+        let root = scratch("backlight");
+        let drm = root.join("drm");
+        let class = root.join("backlight");
+        let panel = |name: &str, kind: &str, connector: Option<(&str, &str, &str)>| {
+            let dir = class.join(name);
+            files(&dir, &[("type", kind), ("max_brightness", "100"), ("brightness", "40")]);
+            if let Some((port, status, enabled)) = connector {
+                let target = drm.join(port);
+                files(&target, &[("status", status), ("enabled", enabled)]);
+                std::os::unix::fs::symlink(&target, dir.join("device")).expect("device link");
+            }
+        };
+        panel("ddcci5", "raw\n", None);
+        panel("amdgpu_bl0", "raw\n", Some(("card0-eDP-1", "disconnected\n", "disabled\n")));
+        panel("amdgpu_bl1", "raw\n", Some(("card1-eDP-1", "connected\n", "enabled\n")));
+        assert_eq!(read_backlight_in(&class).map(|light| light.name).as_deref(), Some("amdgpu_bl1"));
+        assert_eq!(backlight_panel_rank(&class.join("amdgpu_bl0")), 2);
+        assert_eq!(backlight_panel_rank(&class.join("ddcci5")), 1, "no connector to judge by");
+
+        fs::remove_dir_all(class.join("amdgpu_bl1")).expect("cleanup");
+        panel("intel_backlight", "raw\n", Some(("card1-HDMI-A-1", "connected\n", "enabled\n")));
+        panel("nvidia_0", "raw\n", None);
+        assert_eq!(
+            read_backlight_in(&class).map(|light| light.name).as_deref(),
+            Some("nvidia_0"),
+            "an unknown parent beats a dark or external one"
+        );
+        panel("acpi_video0", "firmware\n", None);
+        assert_eq!(read_backlight_in(&class).map(|light| light.name).as_deref(), Some("acpi_video0"));
+        fs::remove_dir_all(&root).expect("cleanup");
+        assert!(read_backlight_in(&class).is_none());
     }
 }

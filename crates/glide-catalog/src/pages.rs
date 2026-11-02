@@ -5,7 +5,7 @@ use glide_sdk::iced::widget::{Column, Row, Space, column, container, mouse_area,
 use glide_sdk::iced::{Alignment, Color, Element, Fill, Padding, Vector};
 use glide_sdk::prelude::*;
 use glide_sdk::system::{Osd, QuickSettings, Urgency};
-use glide_sdk::theme::{Accent, R2, R3, TextStyle};
+use glide_sdk::theme::{Accent, R1, R2, R3, R4, TextStyle};
 use glide_sdk::widget::{self as ui, Check, Severity, Size, SwitchSize, Validity, mock};
 
 use crate::{
@@ -1120,8 +1120,8 @@ fn secrets<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
     let secret = "c7#Vq2!mWx9tLp4Rz8";
     let field = column![
         ui::secret_field(paint, secret)
-            .revealed(catalog.revealed)
-            .on_reveal(Message::Reveal, shell.t("Показати", "Show"), shell.t("Сховати", "Hide"))
+            .revealed(catalog.secret_revealed)
+            .on_reveal(Message::RevealSecret, shell.t("Показати", "Show"), shell.t("Сховати", "Hide"))
             .on_copy(Message::Said(shell.t("Скопійовано", "Copied")), shell.t("Скопіювати", "Copy")),
         ui::password_text(paint, secret, ui::SECRET),
     ]
@@ -1354,7 +1354,7 @@ fn typography(shell: &Shell<Message>) -> Element<'_, Message> {
             .collect(),
     );
     let radii = wrap(
-        [("R1", 4.0), ("R2", R2), ("R3", R3), ("R4", 18.0)]
+        [("R1", R1), ("R2", R2), ("R3", R3), ("R4", R4)]
             .iter()
             .map(|&(name, radius)| {
                 column![

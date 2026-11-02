@@ -34,7 +34,8 @@ const PIPEWIRE_TRACKED: [&str; 2] = ["PipeWire:Interface:Node", "PipeWire:Interf
 
 pub fn start() {
     watch_child("glide-hook-pactl", Topics::AUDIO, &["pactl", "subscribe"], read_pactl);
-    watch_child("glide-hook-pipewire", Topics::PRIVACY, &["pw-dump", "--monitor", "--no-colors"], read_pipewire);
+    let pipewire = if glide_config::on_path("pactl") { Topics::PRIVACY } else { Topics::PRIVACY | Topics::AUDIO };
+    watch_child("glide-hook-pipewire", pipewire, &["pw-dump", "--monitor"], read_pipewire);
     watch_kernel();
     watch_system_bus();
     watch_session_bus();
@@ -67,7 +68,7 @@ fn keep_running(name: &str, mut body: impl FnMut() -> End + Send + 'static) {
     }
 }
 
-fn watch_child(name: &str, topics: Topics, argv: &'static [&'static str], read: fn(ChildStdout)) {
+fn watch_child(name: &str, topics: Topics, argv: &'static [&'static str], read: fn(ChildStdout, Topics)) {
     keep_running(name, move || {
         let mut command = Command::new(argv[0]);
         command.args(&argv[1..]).env("LC_ALL", "C").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -93,7 +94,7 @@ fn watch_child(name: &str, topics: Topics, argv: &'static [&'static str], read: 
         let started = Instant::now();
         if let Some(stdout) = child.stdout.take() {
             system_info::hook(topics);
-            read(stdout);
+            read(stdout, topics);
             system_info::unhook(topics);
         }
         let _ = child.kill();
@@ -112,7 +113,7 @@ pub fn touches_levels(line: &str) -> bool {
     [" on sink #", " on source #", " on server", " on card #"].into_iter().any(|kind| line.contains(kind))
 }
 
-fn read_pactl(stdout: ChildStdout) {
+fn read_pactl(stdout: ChildStdout, _: Topics) {
     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
         if touches_levels(&line) {
             system_info::poke(Topics::AUDIO);
@@ -157,11 +158,42 @@ impl Graph {
     }
 }
 
-fn read_pipewire(stdout: ChildStdout) {
+#[must_use]
+pub fn touches_audio_levels(update: &serde_json::Value) -> bool {
+    let Some(objects) = update.as_array() else {
+        return false;
+    };
+    objects.iter().any(|object| {
+        let info = object.get("info");
+        let changed = |field: &str| {
+            info.and_then(|info| info.get("change-mask"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|mask| mask.iter().any(|item| item.as_str() == Some(field)))
+        };
+        let class = info
+            .and_then(|info| info.get("props"))
+            .and_then(|props| props.get("media.class"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        match object.get("type").and_then(serde_json::Value::as_str).unwrap_or_default() {
+            "PipeWire:Interface:Metadata" => true,
+            "PipeWire:Interface:Device" => changed("params"),
+            "PipeWire:Interface:Node" => {
+                matches!(class, "Audio/Sink" | "Audio/Source") && (changed("params") || changed("props"))
+            }
+            _ => false,
+        }
+    })
+}
+
+fn read_pipewire(stdout: ChildStdout, topics: Topics) {
     let mut graph = Graph::default();
     let mut shown: Option<Privacy> = None;
     let updates = serde_json::Deserializer::from_reader(BufReader::new(stdout)).into_iter::<serde_json::Value>();
     for update in updates.map_while(Result::ok) {
+        if topics.contains(Topics::AUDIO) && shown.is_some() && touches_audio_levels(&update) {
+            system_info::poke(Topics::AUDIO);
+        }
         if !graph.apply(update) && shown.is_some() {
             continue;
         }
@@ -220,7 +252,7 @@ pub fn keyboard_backlight_files(leds: &Path) -> Vec<PathBuf> {
     };
     let mut files: Vec<PathBuf> = entries
         .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().ends_with("::kbd_backlight"))
+        .filter(|entry| system_info::is_keyboard_backlight(&entry.file_name().to_string_lossy()))
         .flat_map(|entry| ["brightness", "brightness_hw_changed"].map(|file| entry.path().join(file)))
         .filter(|path| path.exists())
         .collect();
@@ -246,8 +278,13 @@ impl Watches {
             let _ = inotify::remove_watch(&self.fd, wd);
         }
         let camera = inotify::WatchFlags::OPEN | inotify::WatchFlags::CLOSE_WRITE | inotify::WatchFlags::CLOSE_NOWRITE;
+        let video4linux = Path::new(system_info::VIDEO4LINUX);
+        let udev = Path::new(system_info::UDEV_DATA);
         for node in video_nodes(Path::new("/dev")) {
-            self.add(&node, camera, Topics::CAMERA);
+            let name = node.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            if system_info::is_camera_node(video4linux, udev, &name) {
+                self.add(&node, camera, Topics::CAMERA);
+            }
         }
         for file in keyboard_backlight_files(Path::new("/sys/class/leds")) {
             self.add(&file, inotify::WatchFlags::MODIFY, Topics::BACKLIGHT);
@@ -582,6 +619,23 @@ mod tests {
     }
 
     #[test]
+    fn without_pactl_volume_and_default_device_changes_in_pipewire_reread_the_levels() {
+        let sink = |mask: &[&str]| {
+            serde_json::json!([{"id": 50, "type": "PipeWire:Interface:Node",
+                "info": {"change-mask": mask, "state": "running", "props": {"media.class": "Audio/Sink"}}}])
+        };
+        assert!(touches_audio_levels(&sink(&["params"])), "a volume change rewrites the node's Props");
+        assert!(!touches_audio_levels(&sink(&["state"])), "playback starting is not a level change");
+        let device = serde_json::json!([{"id": 40, "type": "PipeWire:Interface:Device",
+            "info": {"change-mask": ["params"], "props": {"media.class": "Audio/Device"}}}]);
+        assert!(touches_audio_levels(&device), "hardware routes keep their volume on the device");
+        let default = serde_json::json!([{"id": 33, "type": "PipeWire:Interface:Metadata", "props": {}}]);
+        assert!(touches_audio_levels(&default), "the default sink lives in metadata");
+        assert!(!touches_audio_levels(&serde_json::json!([node(61, "Stream/Input/Video", "running", "obs")])));
+        assert!(!touches_audio_levels(&serde_json::json!({"not": "an update"})));
+    }
+
+    #[test]
     fn kernel_subsystems_map_to_the_topics_they_change() {
         assert_eq!(subsystem_topics("power_supply"), Topics::BATTERY);
         assert_eq!(subsystem_topics("backlight"), Topics::BACKLIGHT);
@@ -605,14 +659,15 @@ mod tests {
         assert_eq!(video_nodes(&dev), [dev.join("video0"), dev.join("video12")]);
 
         let leds = root.join("leds");
-        for name in ["input3::capslock", "tpacpi::kbd_backlight"] {
+        for name in ["input3::capslock", "tpacpi::kbd_backlight", "rgb:kbd_backlight"] {
             std::fs::create_dir_all(leds.join(name)).expect("led");
             std::fs::write(leds.join(name).join("brightness"), "1").expect("brightness");
         }
         let backlight = leds.join("tpacpi::kbd_backlight");
-        assert_eq!(keyboard_backlight_files(&leds), [backlight.join("brightness")]);
+        let rgb = leds.join("rgb:kbd_backlight");
+        assert_eq!(keyboard_backlight_files(&leds), [rgb.join("brightness"), backlight.join("brightness")]);
         std::fs::write(backlight.join("brightness_hw_changed"), "1").expect("hw");
-        assert_eq!(keyboard_backlight_files(&leds).len(), 2, "firmware changes are reported there");
+        assert_eq!(keyboard_backlight_files(&leds).len(), 3, "firmware changes are reported there");
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
 

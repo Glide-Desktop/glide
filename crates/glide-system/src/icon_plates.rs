@@ -128,11 +128,29 @@ pub fn build(source: &Path, theme: &str, dest_root: &Path) -> io::Result<Outcome
     }
     fs::write(partial.join("index.theme"), plates::index_theme(theme))?;
     fs::write(partial.join(plates::STAMP), &stamp)?;
-    if dest.exists() {
-        fs::remove_dir_all(&dest)?;
-    }
-    fs::rename(&partial, &dest)?;
+    swap_in(&partial, &dest)?;
     Ok(Outcome::Rebuilt { darkened: darkened.len(), kept })
+}
+
+pub fn swap_in(partial: &Path, dest: &Path) -> io::Result<()> {
+    let name = dest.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let old = dest.with_file_name(format!(".{name}.old"));
+    if old.exists() {
+        fs::remove_dir_all(&old)?;
+    }
+    if dest.exists() {
+        fs::rename(dest, &old)?;
+    }
+    if let Err(err) = fs::rename(partial, dest) {
+        if old.exists() {
+            let _ = fs::rename(&old, dest);
+        }
+        return Err(err);
+    }
+    if old.exists() {
+        fs::remove_dir_all(&old)?;
+    }
+    Ok(())
 }
 
 fn seconds(path: &Path) -> u64 {
@@ -271,6 +289,29 @@ mod tests {
         assert_eq!(glide_theme::plates::prefer("Colloid-Dark".into(), &roots), "Glide-Colloid-Dark");
         assert_eq!(build(&root.join("Colloid-Dark"), "Colloid-Dark", &root).expect("again"), Outcome::Unchanged);
         assert!(!root.join(".Glide-Colloid-Dark.partial").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rebuild_replaces_the_theme_without_a_moment_where_it_is_missing() {
+        let root = std::env::temp_dir().join(format!("glide-icon-swap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (partial, dest) = (root.join(".Theme.partial"), root.join("Theme"));
+        fs::create_dir_all(&partial).expect("partial");
+        fs::write(partial.join("index.theme"), "new").expect("new");
+        swap_in(&partial, &dest).expect("first build has nothing to move aside");
+        assert_eq!(fs::read_to_string(dest.join("index.theme")).expect("built"), "new");
+
+        fs::create_dir_all(&partial).expect("partial");
+        fs::write(partial.join("index.theme"), "newer").expect("newer");
+        fs::create_dir_all(root.join(".Theme.old")).expect("leftover from a crash");
+        swap_in(&partial, &dest).expect("swapped");
+        assert_eq!(fs::read_to_string(dest.join("index.theme")).expect("swapped"), "newer");
+        assert!(!partial.exists() && !root.join(".Theme.old").exists());
+
+        let missing = swap_in(&root.join(".Gone.partial"), &dest);
+        assert!(missing.is_err());
+        assert_eq!(fs::read_to_string(dest.join("index.theme")).expect("put back"), "newer");
         let _ = fs::remove_dir_all(&root);
     }
 }
