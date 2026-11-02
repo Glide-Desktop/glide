@@ -21,6 +21,7 @@ const SETTLE: Duration = Duration::from_millis(1500);
 const STREAMING_GRACE: Duration = Duration::from_secs(3);
 const LOCAL_EDIT: Duration = Duration::from_millis(1500);
 const SINK_DEBOUNCE: Duration = Duration::from_millis(200);
+const UNPLUG_CONFIRM: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Output {
@@ -164,6 +165,7 @@ pub struct Outputs {
     pub default: String,
     pub on_headphones: BTreeSet<String>,
     pub plugged: BTreeSet<String>,
+    pub sinks: usize,
 }
 
 fn headphone_port(port: &serde_json::Value) -> bool {
@@ -178,11 +180,11 @@ fn available(port: &serde_json::Value) -> bool {
 }
 
 #[must_use]
-pub fn read_outputs(json: &str, default: &str) -> Outputs {
-    let mut outputs = Outputs { default: default.to_string(), ..Outputs::default() };
-    let Ok(serde_json::Value::Array(sinks)) = serde_json::from_str::<serde_json::Value>(json) else {
-        return outputs;
+pub fn read_outputs(json: &str, default: &str) -> Option<Outputs> {
+    let serde_json::Value::Array(sinks) = serde_json::from_str::<serde_json::Value>(json).ok()? else {
+        return None;
     };
+    let mut outputs = Outputs { default: default.to_string(), sinks: sinks.len(), ..Outputs::default() };
     for sink in &sinks {
         let name = sink.get("name").and_then(serde_json::Value::as_str).unwrap_or_default();
         if name.is_empty() || name.starts_with("bluez_") {
@@ -200,12 +202,14 @@ pub fn read_outputs(json: &str, default: &str) -> Outputs {
             outputs.on_headphones.insert(name.to_string());
         }
     }
-    outputs
+    Some(outputs)
 }
 
 #[must_use]
 pub fn unplugged(previous: &Outputs, current: &Outputs) -> bool {
-    previous.on_headphones.contains(&previous.default) && !current.plugged.contains(&previous.default)
+    current.sinks > 0
+        && previous.on_headphones.contains(&previous.default)
+        && !current.plugged.contains(&previous.default)
 }
 
 fn transport_facts(properties: &HashMap<String, OwnedValue>) -> (String, String) {
@@ -383,9 +387,41 @@ fn pactl(args: &[&str]) -> Option<String> {
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn snapshot() -> Outputs {
-    let default = pactl(&["get-default-sink"]).map(|name| name.trim().to_string()).unwrap_or_default();
-    pactl(&["--format=json", "list", "sinks"]).map_or_else(Outputs::default, |json| read_outputs(&json, &default))
+fn snapshot() -> Option<Outputs> {
+    let default = pactl(&["get-default-sink"])?.trim().to_string();
+    read_outputs(&pactl(&["--format=json", "list", "sinks"])?, &default)
+}
+
+#[derive(Debug, Default)]
+pub struct JackWatch {
+    previous: Option<Outputs>,
+}
+
+impl JackWatch {
+    pub fn observe(&mut self, mut read: impl FnMut() -> Option<Outputs>, wait: impl FnOnce()) -> bool {
+        let Some(current) = read() else {
+            return false;
+        };
+        let Some(previous) = self.previous.take().filter(|previous| unplugged(previous, &current)) else {
+            self.previous = Some(current);
+            return false;
+        };
+        wait();
+        let Some(again) = read() else {
+            self.previous = Some(previous);
+            return false;
+        };
+        let gone = unplugged(&previous, &again);
+        if gone {
+            tracing::info!(
+                sink = previous.default,
+                still_listed = again.sinks,
+                "the default output lost its headphones and stayed that way"
+            );
+        }
+        self.previous = Some(again);
+        gone
+    }
 }
 
 #[must_use]
@@ -393,7 +429,7 @@ pub fn touches_outputs(line: &str) -> bool {
     line.contains(" on sink #") || line.contains(" on card #") || line.contains(" on server")
 }
 
-fn watch_jack(sink: impl Fn(Event) + Send + 'static) -> anyhow::Result<()> {
+fn subscribe() -> std::io::Result<mpsc::Receiver<()>> {
     let mut child = Command::new("pactl")
         .arg("subscribe")
         .env("LC_ALL", "C")
@@ -401,9 +437,9 @@ fn watch_jack(sink: impl Fn(Event) + Send + 'static) -> anyhow::Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("pactl subscribe has no output"))?;
+    let stdout = child.stdout.take().ok_or_else(|| std::io::Error::other("pactl subscribe has no output"))?;
     let (lines, inbox) = mpsc::channel::<()>();
-    std::thread::Builder::new().name("glide-headset-pactl".into()).spawn(move || {
+    let reader = std::thread::Builder::new().name("glide-headset-pactl".into()).spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             if touches_outputs(&line) && lines.send(()).is_err() {
                 break;
@@ -411,18 +447,38 @@ fn watch_jack(sink: impl Fn(Event) + Send + 'static) -> anyhow::Result<()> {
         }
         let _ = child.kill();
         let _ = child.wait();
-    })?;
-    std::thread::Builder::new().name("glide-headset-jack".into()).spawn(move || {
-        let mut previous = snapshot();
-        while inbox.recv().is_ok() {
-            while inbox.recv_timeout(SINK_DEBOUNCE).is_ok() {}
-            let current = snapshot();
-            if unplugged(&previous, &current) {
-                sink(Event::Unplugged(Output::Jack));
-            }
-            previous = current;
+    });
+    reader.map(|_| inbox)
+}
+
+fn follow_jack(inbox: &mpsc::Receiver<()>, sink: &impl Fn(Event)) {
+    let mut watch = JackWatch::default();
+    watch.observe(snapshot, || {});
+    while inbox.recv().is_ok() {
+        while inbox.recv_timeout(SINK_DEBOUNCE).is_ok() {}
+        if watch.observe(snapshot, || std::thread::sleep(UNPLUG_CONFIRM)) {
+            sink(Event::Unplugged(Output::Jack));
         }
-        tracing::info!("pactl subscribe ended; headphone unplugging is no longer watched");
+    }
+}
+
+fn watch_jack(sink: impl Fn(Event) + Send + 'static) -> anyhow::Result<()> {
+    std::thread::Builder::new().name("glide-headset-jack".into()).spawn(move || {
+        let mut delay = Duration::ZERO;
+        loop {
+            let started = Instant::now();
+            match subscribe() {
+                Ok(inbox) => follow_jack(&inbox, &sink),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::info!("pactl is not installed; headphone unplugging is not watched");
+                    return;
+                }
+                Err(err) => tracing::debug!("pactl subscribe did not start: {err}"),
+            }
+            delay = glide_system::status_hooks::next_delay(delay, started.elapsed());
+            tracing::info!("pactl subscribe ended; watching headphones again in {delay:?}");
+            std::thread::sleep(delay);
+        }
     })?;
     Ok(())
 }
@@ -682,28 +738,73 @@ mod tests {
         )
     }
 
+    fn outputs(headphones: &str, active: &str, default: &str) -> Outputs {
+        read_outputs(&sinks(headphones, active), default).expect("a sink list")
+    }
+
+    const ONLY_BLUETOOTH: &str = r#"[{"name":"bluez_output.AA.1","active_port":"headset-output","ports":[]}]"#;
+
     #[test]
     fn pulling_the_jack_out_of_the_default_output_is_an_unplug() {
-        let plugged = read_outputs(&sinks("available", "[Out] Headphones"), "alsa_output.analog");
+        let plugged = outputs("available", "[Out] Headphones", "alsa_output.analog");
         assert!(
             plugged.on_headphones.contains("alsa_output.analog")
                 && !plugged.on_headphones.contains("bluez_output.AA.1")
         );
-        let pulled = read_outputs(&sinks("not available", "[Out] Speaker"), "alsa_output.analog");
+        let pulled = outputs("not available", "[Out] Speaker", "alsa_output.analog");
         assert!(unplugged(&plugged, &pulled));
-        let gone = read_outputs("[]", "");
+        let gone = read_outputs(ONLY_BLUETOOTH, "bluez_output.AA.1").expect("a sink list");
         assert!(unplugged(&plugged, &gone), "a USB headset or a UCM sink can vanish with its jack");
     }
 
     #[test]
     fn switching_ports_by_hand_or_playing_elsewhere_is_not_an_unplug() {
-        let plugged = read_outputs(&sinks("available", "[Out] Headphones"), "alsa_output.analog");
-        let switched = read_outputs(&sinks("available", "[Out] Speaker"), "alsa_output.analog");
+        let plugged = outputs("available", "[Out] Headphones", "alsa_output.analog");
+        let switched = outputs("available", "[Out] Speaker", "alsa_output.analog");
         assert!(!unplugged(&plugged, &switched), "the headphones are still in");
-        let elsewhere = read_outputs(&sinks("available", "[Out] Headphones"), "alsa_output.hdmi");
-        let pulled = read_outputs(&sinks("not available", "[Out] Speaker"), "alsa_output.hdmi");
+        let elsewhere = outputs("available", "[Out] Headphones", "alsa_output.hdmi");
+        let pulled = outputs("not available", "[Out] Speaker", "alsa_output.hdmi");
         assert!(!unplugged(&elsewhere, &pulled), "music on another output keeps playing");
-        assert_eq!(read_outputs("not json", "x"), Outputs { default: "x".into(), ..Outputs::default() });
+        assert_eq!(read_outputs("not json", "x"), None, "an unreadable list says nothing");
+        let empty = read_outputs("[]", "auto_null").expect("an empty list");
+        assert!(!unplugged(&plugged, &empty), "no sinks at all is the sound server restarting");
+    }
+
+    fn reads(answers: Vec<Option<Outputs>>) -> impl FnMut() -> Option<Outputs> {
+        let mut answers = answers.into_iter();
+        move || answers.next().flatten()
+    }
+
+    #[test]
+    fn a_failed_read_never_pauses_and_keeps_the_last_good_one() {
+        let plugged = outputs("available", "[Out] Headphones", "alsa_output.analog");
+        let mut watch = JackWatch::default();
+        assert!(!watch.observe(reads(vec![Some(plugged)]), || {}));
+        assert!(!watch.observe(reads(vec![None]), || panic!("nothing to confirm")));
+        let pulled = outputs("not available", "[Out] Speaker", "alsa_output.analog");
+        assert!(watch.observe(reads(vec![Some(pulled.clone()), Some(pulled)]), || {}));
+    }
+
+    #[test]
+    fn a_sink_that_comes_back_within_the_confirmation_is_not_an_unplug() {
+        let plugged = outputs("available", "[Out] Headphones", "alsa_output.analog");
+        let rebuilt = read_outputs(ONLY_BLUETOOTH, "bluez_output.AA.1").expect("a sink list");
+        let mut watch = JackWatch::default();
+        watch.observe(reads(vec![Some(plugged.clone())]), || {});
+        let mut waited = false;
+        assert!(!watch.observe(reads(vec![Some(rebuilt), Some(plugged)]), || waited = true));
+        assert!(waited, "a candidate unplug is read again before anything is paused");
+        let flapped = outputs("not available", "[Out] Speaker", "alsa_output.analog");
+        assert!(!watch.observe(reads(vec![Some(flapped), None]), || {}), "an unreadable recheck pauses nothing");
+        let pulled = outputs("not available", "[Out] Speaker", "alsa_output.analog");
+        assert!(watch.observe(reads(vec![Some(pulled.clone()), Some(pulled)]), || {}), "the jack is still out");
+    }
+
+    #[test]
+    fn a_fresh_watch_never_pauses_on_its_first_reading() {
+        let pulled = outputs("not available", "[Out] Speaker", "alsa_output.analog");
+        let mut watch = JackWatch::default();
+        assert!(!watch.observe(reads(vec![Some(pulled)]), || panic!("nothing to compare with")));
     }
 
     #[test]

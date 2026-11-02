@@ -251,7 +251,7 @@ if [ -z "$DESTDIR" ]; then
 fi
 
 missing=""
-TOOLS="xwayland-satellite wpctl brightnessctl playerctl nmcli bluetoothctl udisksctl"
+TOOLS="xwayland-satellite wpctl pactl brightnessctl nmcli bluetoothctl udisksctl"
 if [ "$INSTALL_DM" -eq 1 ]; then
     TOOLS="$TOOLS greetd"
 fi
@@ -259,6 +259,8 @@ for tool in $TOOLS; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 [ -x /usr/lib/xdg-desktop-portal ] || [ -x /usr/libexec/xdg-desktop-portal ] || missing="$missing xdg-desktop-portal"
+[ -x /usr/lib/rtkit-daemon ] || [ -x /usr/libexec/rtkit-daemon ] || [ -x /usr/lib/rtkit/rtkit-daemon ] ||
+    missing="$missing rtkit"
 
 qt_plugin() {
     for root in /usr/lib/qt6/plugins /usr/lib64/qt6/plugins /usr/lib/x86_64-linux-gnu/qt6/plugins \
@@ -286,7 +288,8 @@ if [ -n "$missing" ]; then
     echo "Optional runtime tools not found:$missing"
     echo "  xwayland-satellite   X11 apps"
     echo "  xdg-desktop-portal(-gtk, -wlr), pipewire, wireplumber   file dialogs, screen sharing"
-    echo "  wpctl (wireplumber), brightnessctl, playerctl   volume, brightness and media keys"
+    echo "  wpctl (wireplumber), pactl (libpulse), brightnessctl   volume, sound devices, brightness"
+    echo "  rtkit   realtime priority for PipeWire; without it sound crackles and drops under load"
     echo "  nmcli (NetworkManager), bluetoothctl (bluez)   Wi-Fi and Bluetooth in quick settings"
     echo "  udisksctl (udisks2)   removable drives in Glide Files"
 fi

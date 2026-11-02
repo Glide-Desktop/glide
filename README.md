@@ -39,7 +39,8 @@ distribution when something is missing.
 | `libpam` with `/etc/pam.d/glide-lock` (installed by `scripts/install.sh`) | the built-in lock screen (Super+L, power menu, idle); without PAM it cannot be unlocked |
 | `gnome-keyring` (or another `org.freedesktop.secrets` provider) | saved passwords for browsers, mail and sync clients; add `pam_gnome_keyring.so` to your greeter's PAM service so the keyring unlocks at login |
 | `fcitx5` or `ibus` | input methods (CJK, Indic); started from `/etc/xdg/autostart` |
-| `brightnessctl`, `playerctl` | brightness and media keys |
+| `brightnessctl` | brightness keys |
+| `pactl` (libpulse), `rtkit` | sound devices and headphone unplugging; realtime priority for PipeWire |
 | `NetworkManager`, `bluez`, `power-profiles-daemon` | Wi-Fi, Bluetooth and power mode in quick settings |
 | `polkit` (with `polkit-agent-helper-1`) | administrator password prompts; Glide is its own polkit agent and asks in the status island (`[general] polkit-agent = false` turns it off, and then another agent has to be started through `[general] autostart`) |
 | Colloid icon theme (`colloid-icon-theme-git` on the AUR, or `./install.sh -t all` from [vinceliuice/Colloid-icon-theme](https://github.com/vinceliuice/Colloid-icon-theme)) | the default icon set: the variant that matches the appearance and accent (`Colloid-Teal-Dark`, …) is picked unless `[dock] icon-theme` names another |

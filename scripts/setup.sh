@@ -14,10 +14,14 @@ if ! command -v pacman >/dev/null 2>&1; then
     exit 1
 fi
 
-packages='base-devel git pkgconf seatd systemd-libs libinput mesa libxkbcommon libdisplay-info gstreamer gst-plugins-base-libs pam pipewire pipewire-pulse wireplumber libpulse libcanberra sound-theme-freedesktop networkmanager bluez bluez-utils brightnessctl udisks2 ntfs-3g ntfsprogs gvfs-mtp gvfs-gphoto2 ffmpegthumbnailer polkit power-profiles-daemon python-gobject xdg-user-dirs xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav gst-plugin-pipewire gst-plugin-va xorg-xwayland xwayland-satellite libayatana-appindicator papirus-icon-theme qt5ct qt6ct kvantum kvantum-qt5 ttf-jetbrains-mono noto-fonts noto-fonts-cjk noto-fonts-emoji'
+packages='base-devel git pkgconf seatd systemd-libs libinput mesa libxkbcommon libdisplay-info gstreamer gst-plugins-base-libs pam pipewire pipewire-audio pipewire-alsa pipewire-pulse wireplumber rtkit upower libpulse libcanberra sound-theme-freedesktop networkmanager bluez bluez-utils brightnessctl udisks2 ntfs-3g ntfsprogs gvfs-mtp gvfs-gphoto2 ffmpegthumbnailer polkit power-profiles-daemon python-gobject xdg-user-dirs xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-wlr gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav gst-plugin-pipewire gst-plugin-va xorg-xwayland xwayland-satellite libayatana-appindicator papirus-icon-theme qt5ct qt6ct kvantum kvantum-qt5 ttf-jetbrains-mono noto-fonts noto-fonts-cjk noto-fonts-emoji'
 for arg in "$@"; do
     case "$arg" in --dm|--with-dm) packages="$packages greetd" ;; esac
 done
+if pacman -Q pulseaudio >/dev/null 2>&1; then
+    echo "PulseAudio is installed. Glide expects PipeWire with pipewire-pulse in its place;"
+    echo "pacman will ask to replace pulseaudio when pipewire-pulse is installed."
+fi
 missing=''
 for package in $packages; do
     if ! pacman -Q "$package" >/dev/null 2>&1; then
