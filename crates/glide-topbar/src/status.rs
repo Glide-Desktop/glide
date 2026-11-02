@@ -284,6 +284,7 @@ impl Topbar {
             Slot::Headset => {
                 self.headset().map_or(CONTROL_W, |headset| super::headset_view::applet_width(painter, headset))
             }
+            Slot::Phone => self.phone().map_or(CONTROL_W, |phone| super::phone_view::applet_width(painter, phone)),
             Slot::Passwords => super::passwords_view::APPLET_W,
             _ => CONTROL_W,
         }
@@ -293,7 +294,11 @@ impl Topbar {
         &self, painter: &crate::paint::Painter, mut right: i32, y: i32,
         slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
     ) -> i32 {
-        let order = cluster_order(self.indicators.reserved_count() > 0, self.headset().is_some());
+        let mut order = cluster_order(self.indicators.reserved_count() > 0, self.headset().is_some());
+        if self.phone().is_some() {
+            let insert_at = if self.headset().is_some() { 2 } else { 1 };
+            order.insert(insert_at, Slot::Phone);
+        }
         for (index, slot) in order.into_iter().enumerate() {
             if index > 0 {
                 right -= ITEM_GAP;
@@ -329,6 +334,7 @@ struct ClusterPaint<'a> {
     levels: [f64; 3],
     reserved: [bool; 3],
     headset: Option<&'a crate::headset::Headset>,
+    phone: Option<&'a crate::phone::PhoneState>,
     passwords: &'a super::passwords_view::Applet,
 }
 
@@ -376,6 +382,7 @@ pub(super) fn push_cluster<R>(
         levels,
         reserved: topbar.indicators.reserved,
         headset: topbar.headsets.last(),
+        phone: topbar.phone.as_ref(),
         passwords: &topbar.passwords,
     };
     let local: Vec<(Slot, i32, i32)> =
@@ -413,6 +420,7 @@ const fn opens(slot: Slot) -> Option<OpenPopup> {
         Slot::Status => Some(OpenPopup::QuickSettings),
         Slot::Privacy => Some(OpenPopup::Privacy),
         Slot::Headset => Some(OpenPopup::Headset),
+        Slot::Phone => Some(OpenPopup::Phone),
         Slot::Passwords => Some(OpenPopup::Passwords),
         _ => None,
     }
@@ -465,6 +473,11 @@ fn draw_cluster(
             Slot::Headset => {
                 if let Some(headset) = ctx.headset {
                     super::headset_view::draw_applet(&mut c, ctx.painter, ctx.theme, headset, x, fg);
+                }
+            }
+            Slot::Phone => {
+                if let Some(phone) = ctx.phone {
+                    super::phone_view::draw_applet(&mut c, ctx.painter, ctx.theme, phone, x, fg);
                 }
             }
             Slot::Passwords => super::passwords_view::draw_applet(&mut c, ctx.theme, ctx.passwords, x, fg),

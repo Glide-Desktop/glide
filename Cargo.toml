@@ -25,6 +25,7 @@ members = [
     "crates/glide-paint",
     "crates/glide-pam",
     "crates/glide-passwords",
+    "crates/glide-phone",
     "crates/glide-portal",
     "crates/glide-sdk",
     "crates/glide-services",

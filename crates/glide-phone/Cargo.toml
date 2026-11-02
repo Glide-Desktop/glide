@@ -1,0 +1,37 @@
+[package]
+name = "glide-phone"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+futures-util = "0.3"
+glide-config = { path = "../glide-config" }
+glide-notify = { path = "../glide-notify" }
+glide-paint = { path = "../glide-paint" }
+glide-sdk = { path = "../glide-sdk" }
+glide-shell = { path = "../glide-shell" }
+glide-theme = { path = "../glide-theme" }
+libc = "0.2"
+rcgen = "0.13"
+ring = "0.17"
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pki-types = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util", "process", "signal"] }
+tokio-rustls = "0.26"
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true }
+zbus.workspace = true
+
+[dev-dependencies]
+glide-services = { path = "../glide-services", features = ["test-bus"] }
+
+[lints]
+workspace = true

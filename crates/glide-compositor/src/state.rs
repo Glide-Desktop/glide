@@ -369,6 +369,7 @@ pub struct GlideState {
 
 #[derive(Default)]
 pub struct SessionServices {
+    pub presenter: Option<((f64, f64), std::time::Instant, smithay::output::Output)>,
     pub logind: Option<crate::logind::Handle>,
     pub screensaver: Option<crate::screensaver::Handle>,
     pub shell_bus: Option<crate::shell_bus::Handle>,
@@ -2033,10 +2034,8 @@ impl GlideState {
             TopbarAction::TogglePrivacy => {
                 self.topbar.toggle_popup(OpenPopup::Privacy);
             }
-            TopbarAction::ToggleHeadset
-            | TopbarAction::HeadsetUseOutput
-            | TopbarAction::HeadsetDisconnect
-            | TopbarAction::HeadsetSettings => self.run_headset_action(action),
+            action if action.for_headset() => self.run_headset_action(action),
+            action if action.for_phone() => self.run_phone_action(action),
             action if action.for_passwords() => self.run_passwords_action(action),
             TopbarAction::CalendarShift(delta) => {
                 self.topbar.shift_calendar(i32::from(delta));
@@ -3402,7 +3401,7 @@ impl GlideState {
     }
 
     pub fn record_window_move(&mut self, window: &GlideWindow, content_location: Point<i32, Logical>) {
-        if self.layout.overview_active() {
+        if self.layout.overview_active() || self.workspace_swipe.is_some() {
             return;
         }
         let Some(id) = self.window_id(window) else {

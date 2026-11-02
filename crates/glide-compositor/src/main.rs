@@ -45,6 +45,7 @@ mod otp;
 mod overview;
 mod paint;
 mod passwords_applet;
+mod phone_applet;
 mod polkit;
 mod power;
 mod privilege;
@@ -306,6 +307,7 @@ fn init_session_services(
     init_removable(event_loop);
     init_netbird(event_loop, state);
     init_headset(event_loop);
+    init_phone(event_loop);
     init_keychain(event_loop, state);
     init_cast(event_loop, state);
     state.welcome_if_first_run();
@@ -375,6 +377,15 @@ fn init_headset(event_loop: &mut EventLoop<'static, GlideState>) {
     if watch(event_loop, receiver, "the headset channel", GlideState::handle_headset) {
         let send = std::sync::Arc::new(send);
         headset::start(move |event| send(event));
+    }
+}
+
+fn init_phone(event_loop: &mut EventLoop<'static, GlideState>) {
+    let (send, receiver) = sink::<Option<glide_topbar::phone::PhoneState>>("a phone state update");
+    let (presenter, events) = sink::<phone_applet::PresenterEvent>("a presenter update");
+    watch(event_loop, events, "the presenter channel", GlideState::handle_presenter);
+    if watch(event_loop, receiver, "the phone channel", GlideState::handle_phone) {
+        phone_applet::start(send, presenter);
     }
 }
 

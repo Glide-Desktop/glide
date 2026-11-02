@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Glide Phone Daemon
+Name[uk]=Демон Glide Phone
+Comment=Background daemon for KDE Connect phone integration
+Comment[uk]=Фоновий демон для інтеграції з телефоном KDE Connect
+Exec=glide-phone --daemon
+Icon=org.kde.kdeconnect
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

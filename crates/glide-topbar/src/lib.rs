@@ -28,6 +28,7 @@ pub mod headset;
 pub mod keychain_prompt;
 pub mod netbird;
 pub mod notifications;
+pub mod phone;
 pub mod polkit;
 pub mod power;
 pub mod qs_net;
@@ -48,6 +49,7 @@ mod status;
 mod tray;
 
 mod headset_view;
+mod phone_view;
 
 mod polkit_view;
 
@@ -271,6 +273,7 @@ pub enum OpenPopup {
     AppMenu,
     Privacy,
     Headset,
+    Phone,
     Passwords,
 }
 
@@ -337,6 +340,12 @@ pub enum TopbarAction {
     HeadsetUseOutput,
     HeadsetDisconnect,
     HeadsetSettings,
+    TogglePhone,
+    PhoneRing,
+    PhoneAcceptPair,
+    PhoneRejectPair,
+    PhoneClearNotifications,
+    PhoneOpenApp,
     TogglePasswords,
     PasswordsField,
     PasswordsRow(u8),
@@ -351,6 +360,26 @@ pub enum TopbarAction {
     Tray(TrayClick),
     Polkit(crate::polkit::Control),
     Keychain(crate::keychain_prompt::Control),
+}
+
+impl TopbarAction {
+    #[must_use]
+    pub const fn for_headset(self) -> bool {
+        matches!(self, Self::ToggleHeadset | Self::HeadsetUseOutput | Self::HeadsetDisconnect | Self::HeadsetSettings)
+    }
+
+    #[must_use]
+    pub const fn for_phone(self) -> bool {
+        matches!(
+            self,
+            Self::TogglePhone
+                | Self::PhoneRing
+                | Self::PhoneAcceptPair
+                | Self::PhoneRejectPair
+                | Self::PhoneClearNotifications
+                | Self::PhoneOpenApp
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -386,6 +415,7 @@ pub enum Slot {
     NcItem(u32),
     NcItemDismiss(u32),
     QsWifi,
+    QsEthernet,
     QsBluetooth,
     QsNetbird,
     QsNightLight,
@@ -428,6 +458,12 @@ pub enum Slot {
     HeadsetOutput,
     HeadsetDisconnect,
     HeadsetSettings,
+    Phone,
+    PhoneRing,
+    PhoneAcceptPair,
+    PhoneRejectPair,
+    PhoneClearNotifs,
+    PhoneOpenApp,
     Passwords,
     PwField,
     PwRow(u8),
@@ -465,11 +501,22 @@ impl Slot {
     }
 
     const fn in_status_cluster(self) -> bool {
-        matches!(self, Self::Status | Self::Search | Self::Privacy | Self::Headset | Self::Passwords)
+        matches!(self, Self::Status | Self::Search | Self::Privacy | Self::Headset | Self::Phone | Self::Passwords)
     }
 
     const fn in_headset_popup(self) -> bool {
         matches!(self, Self::HeadsetOutput | Self::HeadsetDisconnect | Self::HeadsetSettings)
+    }
+
+    const fn in_phone_popup(self) -> bool {
+        matches!(
+            self,
+            Self::PhoneRing
+                | Self::PhoneAcceptPair
+                | Self::PhoneRejectPair
+                | Self::PhoneClearNotifs
+                | Self::PhoneOpenApp
+        )
     }
 
     #[must_use]
@@ -553,6 +600,7 @@ impl Slot {
             && !self.in_notification_center()
             && !self.in_app_menu()
             && !self.in_headset_popup()
+            && !self.in_phone_popup()
             && !self.in_passwords_popup()
     }
 
@@ -662,13 +710,19 @@ impl Slot {
             Self::QsChargeLimit => TopbarAction::QsPanel(PanelAction::ChargeLimit),
             Self::QsPromptCancel => TopbarAction::QsPanel(PanelAction::PromptCancel),
             Self::QsPromptConnect => TopbarAction::QsPanel(PanelAction::PromptSubmit),
-            Self::QsDetailSettings => TopbarAction::QsPanel(PanelAction::Settings),
+            Self::QsEthernet | Self::QsDetailSettings => TopbarAction::QsPanel(PanelAction::Settings),
             Self::Search => TopbarAction::ToggleLauncher,
             Self::Privacy => TopbarAction::TogglePrivacy,
             Self::Headset => TopbarAction::ToggleHeadset,
             Self::HeadsetOutput => TopbarAction::HeadsetUseOutput,
             Self::HeadsetDisconnect => TopbarAction::HeadsetDisconnect,
             Self::HeadsetSettings => TopbarAction::HeadsetSettings,
+            Self::Phone => TopbarAction::TogglePhone,
+            Self::PhoneRing => TopbarAction::PhoneRing,
+            Self::PhoneAcceptPair => TopbarAction::PhoneAcceptPair,
+            Self::PhoneRejectPair => TopbarAction::PhoneRejectPair,
+            Self::PhoneClearNotifs => TopbarAction::PhoneClearNotifications,
+            Self::PhoneOpenApp => TopbarAction::PhoneOpenApp,
             Self::Passwords => TopbarAction::TogglePasswords,
             Self::PwField => TopbarAction::PasswordsField,
             Self::PwRow(index) => TopbarAction::PasswordsRow(index),
@@ -810,6 +864,7 @@ pub struct Topbar {
     track_rev: u64,
     status_rev: u64,
     headsets: Vec<crate::headset::Headset>,
+    phone: Option<crate::phone::PhoneState>,
     detail_rev: u64,
     nc_rev: u64,
 
@@ -830,6 +885,7 @@ pub struct Topbar {
     qs_bg_cache: Cache<(i32, i32)>,
     qs_detail_cache: Cache<(u64, u64, Option<Slot>, Detail)>,
     headset_cache: Cache<headset_view::HeadsetKey>,
+    phone_cache: Cache<phone_view::PhoneKey>,
     passwords: passwords_view::Applet,
     passwords_menu_rect: Option<Rectangle<i32, Logical>>,
     passwords_rect: Option<Rectangle<i32, Logical>>,
@@ -933,6 +989,7 @@ impl Topbar {
         self.qs_bg_cache.clear();
         self.qs_detail_cache.clear();
         self.headset_cache.clear();
+        self.phone_cache.clear();
         self.passwords_cache.clear();
         self.passwords_menu_cache.clear();
         self.lang_menu_cache.clear();
@@ -1317,6 +1374,7 @@ impl Topbar {
         let status = &self.system_status;
         match tile {
             QsTile::Wifi => status.wifi_enabled,
+            QsTile::Ethernet => status.ethernet_connected,
             QsTile::Bluetooth => status.bluetooth_on,
             QsTile::NightLight => status.night_light_on,
             QsTile::Dnd => self.dnd,
@@ -1627,6 +1685,9 @@ impl Topbar {
             battery: self.system_status.battery_pct.is_some(),
             profile: self.system_status.power_profile.is_some(),
             netbird: self.qs_panel.netbird.installed,
+            bluetooth: self.system_status.bluetooth_available,
+            wifi: self.system_status.wifi_available,
+            ethernet: self.system_status.ethernet_available,
             armed,
             drawer: self.drawer_extent_now(),
             pills,
@@ -1717,6 +1778,25 @@ impl Topbar {
     fn headsets_changed(&mut self) {
         self.status_rev = self.status_rev.wrapping_add(1);
         self.touch();
+    }
+
+    pub fn set_phone(&mut self, phone: Option<crate::phone::PhoneState>) -> bool {
+        if self.phone == phone {
+            return false;
+        }
+        let gone = phone.is_none();
+        self.phone = phone;
+        if gone && self.open_popup == Some(OpenPopup::Phone) {
+            self.close_popup();
+        }
+        self.status_rev = self.status_rev.wrapping_add(1);
+        self.touch();
+        true
+    }
+
+    #[must_use]
+    pub const fn phone(&self) -> Option<&crate::phone::PhoneState> {
+        self.phone.as_ref()
     }
 
     #[must_use]
@@ -2156,7 +2236,8 @@ impl Topbar {
         let mut popup_rect = self
             .layout_popup(painter, (output, strip), (lang_rect, menu.anchor), &mut popup_slots)
             .or_else(|| self.layout_status_popup(&slots, output, strip.loc.y))
-            .or_else(|| self.layout_headset_popup(&slots, output, strip.loc.y, &mut popup_slots));
+            .or_else(|| self.layout_headset_popup(&slots, output, strip.loc.y, &mut popup_slots))
+            .or_else(|| self.layout_phone_popup(&slots, output, strip.loc.y, &mut popup_slots));
         if popup_rect.is_none() {
             popup_rect = self.layout_passwords_popup(&slots, output, strip.loc.y, &mut popup_slots);
         } else {
@@ -2198,7 +2279,7 @@ impl Topbar {
                 },
                 popup_slots,
             )),
-            Some(OpenPopup::Privacy | OpenPopup::Headset | OpenPopup::Passwords) | None => None,
+            Some(OpenPopup::Privacy | OpenPopup::Headset | OpenPopup::Phone | OpenPopup::Passwords) | None => None,
         }
     }
 
@@ -2338,6 +2419,7 @@ type LocalRect = Rectangle<i32, Logical>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum QsTile {
     Wifi,
+    Ethernet,
     Bluetooth,
     NightLight,
     Dnd,
@@ -2360,10 +2442,14 @@ const QS_TILES: [QsTile; 8] = [
 ];
 
 fn qs_tiles(shape: &QsShape) -> impl Iterator<Item = QsTile> {
-    QS_TILES.into_iter().chain(shape.netbird.then_some(QsTile::Netbird))
+    QS_TILES
+        .into_iter()
+        .filter(|tile| (*tile != QsTile::Bluetooth || shape.bluetooth) && (*tile != QsTile::Wifi || shape.wifi))
+        .chain(shape.ethernet.then_some(QsTile::Ethernet))
+        .chain(shape.netbird.then_some(QsTile::Netbird))
 }
 
-const QS_TILE_COUNT: usize = 9;
+const QS_TILE_COUNT: usize = 10;
 
 impl QsTile {
     const fn index(self) -> usize {
@@ -2377,12 +2463,14 @@ impl QsTile {
             Self::Screenshot => 6,
             Self::DarkTheme => 7,
             Self::Netbird => 8,
+            Self::Ethernet => 9,
         }
     }
 
     const fn slot(self) -> Slot {
         match self {
             Self::Wifi => Slot::QsWifi,
+            Self::Ethernet => Slot::QsEthernet,
             Self::Bluetooth => Slot::QsBluetooth,
             Self::Netbird => Slot::QsNetbird,
             Self::NightLight => Slot::QsNightLight,
@@ -2426,6 +2514,9 @@ struct QsShape {
     battery: bool,
     profile: bool,
     netbird: bool,
+    bluetooth: bool,
+    wifi: bool,
+    ethernet: bool,
     armed: Option<PowerAction>,
     drawer: Option<(Drawer, i32)>,
     pills: QsPills,
@@ -2698,6 +2789,7 @@ fn popup_slots(popup: OpenPopup) -> fn(Slot) -> bool {
         OpenPopup::AppMenu => Slot::in_app_menu,
         OpenPopup::Privacy => |_| false,
         OpenPopup::Headset => Slot::in_headset_popup,
+        OpenPopup::Phone => Slot::in_phone_popup,
         OpenPopup::Passwords => Slot::in_passwords_popup,
     }
 }
@@ -3941,6 +4033,7 @@ fn push_status<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>) 
     let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
     status::push_popups(topbar, renderer, painter, scale, output_scale, elements);
     headset_view::push_popup(topbar, renderer, painter, icons, scale, output_scale, elements);
+    phone_view::push_popup(topbar, renderer, painter, icons, scale, output_scale, elements);
     passwords_view::push_popup(topbar, renderer, painter, icons, scale, output_scale, elements);
     status::push_cluster(topbar, renderer, painter, icons, scale, output_scale, elements);
 }
@@ -4638,6 +4731,13 @@ fn draw_qs_tiles(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_
                 wifi_icon_name(status.wifi_level),
                 crate::paint::draw_wifi_waves_glyph_over,
             ),
+            QsTile::Ethernet => (
+                status.ethernet_connected,
+                t(Key::QsEthernet),
+                t(if status.ethernet_connected { Key::QsCableConnected } else { Key::QsCableDisconnected }),
+                "network-wired",
+                crate::paint::draw_wifi_waves_glyph_over,
+            ),
             QsTile::Bluetooth => (
                 status.bluetooth_on,
                 t(Key::Bluetooth),
@@ -4880,6 +4980,14 @@ const fn scale_or_one(scale: i32) -> i32 {
 mod tests {
     use super::*;
     use crate::raster::{buffer_from, canvas};
+
+    #[test]
+    fn bluetooth_tile_requires_an_adapter() {
+        let mut shape = QsShape::default();
+        assert!(!qs_tiles(&shape).any(|tile| tile == QsTile::Bluetooth));
+        shape.bluetooth = true;
+        assert!(qs_tiles(&shape).any(|tile| tile == QsTile::Bluetooth));
+    }
 
     fn output() -> Rectangle<i32, Logical> {
         Rectangle::new(Point::from((0, 0)), Size::from((1920, 1080)))

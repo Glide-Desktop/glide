@@ -57,6 +57,17 @@ if-session` / `unless-session`), `X-GNOME-Autostart-Phase` and
 
 ## Build and install
 
+On Arch Linux and derivatives, run `sh scripts/setup.sh`. It offers to install
+missing build and recommended runtime packages, builds Glide, then installs it
+with sudo. It offers to configure Rust when missing; Rust 1.96 or newer is required. Installer options
+such as `--dm` and `--pam` can be passed to this command. On other distributions,
+install the dependencies manually and use the commands below.
+
+For audio, PipeWire and WirePlumber must also be running in the user session.
+Glide Phone discovery needs UDP 1716 and TCP 1716–1764 allowed on the local
+network; another KDE Connect service using UDP 1716 prevents discovery. The
+setup script does not change firewall rules and asks before enabling services.
+
 ```sh
 git clone <repo> glide && cd glide
 scripts/build.sh               # as your user; never as root

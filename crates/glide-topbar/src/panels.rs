@@ -316,6 +316,8 @@ pub(super) struct DetailPanel {
     outputs: Vec<AudioOutput>,
     outputs_ready: bool,
     inputs: Option<Vec<AudioOutput>>,
+    sound_scroll: usize,
+    list_scroll: usize,
     charge: Option<ChargeLimit>,
     pending: Option<Pending>,
     failure: Option<Failure>,
@@ -571,18 +573,22 @@ fn wifi_items(column: &mut Column<'_>, panel: &DetailPanel, status: &crate::syst
     }
     let (connected, available): (Vec<usize>, Vec<usize>) =
         (0..panel.wifi.len()).partition(|index| panel.wifi[*index].connected);
-    if !connected.is_empty() && column.section(Key::QsConnectedNetwork) {
-        for index in connected {
-            push_network(column, panel, index);
+    let mut skipped = panel.list_scroll.min(panel.wifi.len().saturating_sub(1));
+    for (key, group) in [(Key::QsConnectedNetwork, connected), (Key::QsAvailableNetworks, available)] {
+        if skipped >= group.len() {
+            skipped -= group.len();
+            continue;
         }
-        column.end_group();
-    }
-    if !available.is_empty() && column.section(Key::QsAvailableNetworks) {
-        for index in available {
+        if !column.section(key) {
+            return;
+        }
+        for index in group.into_iter().skip(skipped) {
             if !push_network(column, panel, index) {
-                break;
+                return;
             }
         }
+        skipped = 0;
+        column.end_group();
     }
 }
 
@@ -595,33 +601,45 @@ fn bluetooth_items(column: &mut Column<'_>, panel: &DetailPanel, status: &crate:
     }
     let (connected, paired): (Vec<usize>, Vec<usize>) =
         (0..panel.devices.len()).partition(|index| panel.devices[*index].connected);
+    let mut skipped = panel.list_scroll.min(panel.devices.len().saturating_sub(1));
     for (key, group) in [(Key::QsConnectedDevices, connected), (Key::QsPairedDevices, paired)] {
-        if group.is_empty() || !column.section(key) {
+        if skipped >= group.len() {
+            skipped -= group.len();
             continue;
         }
-        for index in group {
+        if !column.section(key) {
+            return;
+        }
+        for index in group.into_iter().skip(skipped) {
             if !column.card(ItemKind::Device(index), row_slot(index)) {
                 return;
             }
         }
+        skipped = 0;
         column.end_group();
     }
 }
 
 fn sound_items(column: &mut Column<'_>, panel: &DetailPanel) {
+    let count = panel.outputs.len() + panel.inputs.as_ref().map_or(0, Vec::len);
+    let mut skipped = panel.sound_scroll.min(count.saturating_sub(1));
     let groups = [
         (Key::QsOutputDevice, super::Drawer::Output, Key::QsNoOutputs),
         (Key::QsInputDevice, super::Drawer::Input, Key::QsNoInputs),
     ];
     for (section, drawer, empty) in groups {
+        let devices = panel.devices(drawer);
+        if skipped >= devices.len() && !devices.is_empty() {
+            skipped -= devices.len();
+            continue;
+        }
         if !column.section(section) {
             return;
         }
-        let devices = panel.devices(drawer);
         if devices.is_empty() {
             column.message(if panel.devices_ready(drawer) { empty } else { Key::QsSearching });
         }
-        for index in 0..devices.len() {
+        for index in skipped..devices.len() {
             let (kind, slot) = match drawer {
                 super::Drawer::Output => (ItemKind::Output(index), row_slot(index)),
                 super::Drawer::Input => {
@@ -632,6 +650,7 @@ fn sound_items(column: &mut Column<'_>, panel: &DetailPanel) {
                 return;
             }
         }
+        skipped = 0;
         column.end_group();
     }
 }
@@ -710,6 +729,40 @@ const fn has_radio(detail: Detail) -> bool {
 }
 
 impl Topbar {
+    pub fn scroll_detail_list(&mut self, steps: i32) -> bool {
+        let count = match self.detail() {
+            Some(Detail::Sound) => return self.scroll_sound_devices(steps),
+            Some(Detail::Wifi) if self.qs_panel.prompt.is_none() => self.qs_panel.wifi.len(),
+            Some(Detail::Bluetooth) => self.qs_panel.devices.len(),
+            _ => return false,
+        };
+        let current = self.qs_panel.list_scroll.min(count.saturating_sub(1));
+        let next = current.saturating_add_signed(steps as isize).min(count.saturating_sub(1));
+        if next == self.qs_panel.list_scroll {
+            return false;
+        }
+        self.qs_panel.list_scroll = next;
+        self.qs_panel.bump();
+        self.touch();
+        true
+    }
+
+    pub fn scroll_sound_devices(&mut self, steps: i32) -> bool {
+        if self.detail() != Some(Detail::Sound) {
+            return false;
+        }
+        let count = self.qs_panel.outputs.len() + self.qs_panel.inputs.as_ref().map_or(0, Vec::len);
+        let current = self.qs_panel.sound_scroll.min(count.saturating_sub(1));
+        let next = current.saturating_add_signed(steps as isize).min(count.saturating_sub(1));
+        if next == self.qs_panel.sound_scroll {
+            return false;
+        }
+        self.qs_panel.sound_scroll = next;
+        self.qs_panel.bump();
+        self.touch();
+        true
+    }
+
     #[must_use]
     pub fn detail(&self) -> Option<Detail> {
         if self.open_popup == Some(OpenPopup::QuickSettings) { self.qs_panel.view } else { None }
@@ -723,6 +776,8 @@ impl Topbar {
         self.forget_power();
         self.forget_drawer();
         self.qs_panel.view = Some(detail);
+        self.qs_panel.sound_scroll = 0;
+        self.qs_panel.list_scroll = 0;
         self.qs_panel.shown = Some(detail);
         self.qs_panel.slide.retarget(1.0, motion::t2(), E_OUT);
         self.qs_panel.prompt = None;
@@ -1603,6 +1658,23 @@ mod tests {
     use super::*;
     use crate::{TopbarAction, TopbarTheme};
     use smithay::utils::Size;
+
+    #[test]
+    fn sound_scroll_reaches_inputs_after_many_outputs() {
+        let device =
+            |name: &str| AudioOutput { name: name.into(), description: name.into(), icon: "audio-card", active: false };
+        let mut panel = DetailPanel {
+            outputs: vec![device("one"), device("two"), device("three")],
+            inputs: Some(vec![device("microphone")]),
+            ..Default::default()
+        };
+        let body = local_rect(0, 0, 300, DETAIL_SECTION + SP3 + DETAIL_CARD);
+        let status = crate::system_info::SystemStatus::default();
+        assert!(!detail_items(&panel, Detail::Sound, &status, body).iter().any(|item| item.kind == ItemKind::Input(0)));
+        panel.sound_scroll = 3;
+        let items = detail_items(&panel, Detail::Sound, &status, body);
+        assert!(items.iter().any(|item| item.kind == ItemKind::Input(0)));
+    }
 
     fn output() -> Rectangle<i32, Logical> {
         Rectangle::new(Point::from((0, 0)), Size::from((1920, 1080)))

@@ -35,6 +35,7 @@ while [ $# -gt 0 ]; do
         --dm|--with-dm) INSTALL_DM=1; shift ;;
         --without-dm|--no-dm) INSTALL_DM=0; shift ;;
         --pam) INSTALL_PAM=1; shift ;;
+        --without-pam|--no-pam) INSTALL_PAM=0; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
         -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -47,11 +48,14 @@ APPDIR="$PREFIX/share/applications"
 SOUNDDIR="$PREFIX/share/glide/sounds"
 # Display managers, xdg-desktop-portal and D-Bus activation only look under
 # /usr/share, whatever the prefix, so these always go there.
+DATADIR=/usr/share
+ICONDIR="$DATADIR/icons/hicolor/scalable/apps"
 SESSIONDIR=/usr/share/wayland-sessions
 PORTALDIR=/usr/share/xdg-desktop-portal
 DBUSDIR=/usr/share/dbus-1/services
 INTERFACEDIR=/usr/share/dbus-1/interfaces
 SEARCHDIR=/usr/share/gnome-shell/search-providers
+AUTOSTARTDIR=/etc/xdg/autostart
 PAMDIR=/etc/pam.d
 PAM_MODULE=pam_glide_keychain.so
 PAM_MODULEDIR=/usr/lib/security
@@ -72,11 +76,11 @@ else
     UNITDIR="$PREFIX/lib/systemd/user"
 fi
 
-BINARIES="glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-catalog glide-portal glide-keychain"
-FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-session $BINDIR/glide-lock
-$APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-passwords.desktop $APPDIR/glide-catalog.desktop $SOUNDDIR/terminal-bell.mp3 $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
+BINARIES="glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-catalog glide-portal glide-keychain glide-phone"
+FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-phone $BINDIR/glide-session $BINDIR/glide-lock
+$APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-passwords.desktop $APPDIR/glide-catalog.desktop $APPDIR/glide-phone.desktop $AUTOSTARTDIR/glide-phone.desktop $ICONDIR/glide-phone.svg $ICONDIR/org.kde.kdeconnect.svg $SOUNDDIR/terminal-bell.mp3 $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
 $PORTALDIR/portals/glide.portal $DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service
-$DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service
+$DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service $DBUSDIR/org.glide.Phone.service
 $INTERFACEDIR/org.glide.Shell1.xml
 $SEARCHDIR/glide-files-search-provider.ini $SEARCHDIR/glide-terminal-search-provider.ini
 $UNITDIR/glide.service $UNITDIR/glide-shutdown.target $PAMDIR/glide-lock $PAM_MODULEDIR/$PAM_MODULE"
@@ -155,6 +159,9 @@ install -Dm644 "$ROOT/data/glide-terminal.desktop" "$DESTDIR$APPDIR/glide-termin
 install -Dm644 "$ROOT/data/glide-text.desktop" "$DESTDIR$APPDIR/glide-text.desktop"
 install -Dm644 "$ROOT/data/glide-passwords.desktop" "$DESTDIR$APPDIR/glide-passwords.desktop"
 install -Dm644 "$ROOT/data/glide-catalog.desktop" "$DESTDIR$APPDIR/glide-catalog.desktop"
+install -Dm644 "$ROOT/data/glide-phone.desktop" "$DESTDIR$APPDIR/glide-phone.desktop"
+install -Dm644 "$ROOT/data/glide-phone.svg" "$DESTDIR$ICONDIR/glide-phone.svg"
+install -Dm644 "$ROOT/data/glide-phone.svg" "$DESTDIR$ICONDIR/org.kde.kdeconnect.svg"
 install -Dm644 "$ROOT/data/sounds/terminal-bell.mp3" "$DESTDIR$SOUNDDIR/terminal-bell.mp3"
 install -Dm644 "$ROOT/data/glide-portals.conf" "$DESTDIR$PORTALDIR/glide-portals.conf"
 install -Dm644 "$ROOT/data/glide.portal" "$DESTDIR$PORTALDIR/portals/glide.portal"
@@ -164,10 +171,11 @@ chmod 644 "$DESTDIR$DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service"
 for name in glide-files-search-provider.ini glide-terminal-search-provider.ini; do
     install -Dm644 "$ROOT/data/$name" "$DESTDIR$SEARCHDIR/$name"
 done
-for name in org.glide.Files.service org.glide.Terminal.service; do
+for name in org.glide.Files.service org.glide.Terminal.service org.glide.Phone.service; do
     sed "s|^Exec=/usr/local/bin/|Exec=$BINDIR/|" "$ROOT/data/$name" > "$DESTDIR$DBUSDIR/$name"
     chmod 644 "$DESTDIR$DBUSDIR/$name"
 done
+install -Dm644 "$ROOT/data/glide-phone-autostart.desktop" "$DESTDIR$AUTOSTARTDIR/glide-phone.desktop"
 for name in org.glide.Shell1.xml; do
     install -Dm644 "$ROOT/data/dbus/$name" "$DESTDIR$INTERFACEDIR/$name"
 done

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Phone Link
+Name[uk]=Підключення телефону
+Comment=Sync battery, notifications and find phone with KDE Connect
+Comment[uk]=Синхронізація батареї, сповіщень та пошук телефону через KDE Connect
+Exec=glide-phone %U
+Icon=org.kde.kdeconnect
+Terminal=false
+Categories=Utility;Settings;Telephony;
+Keywords=phone;android;kdeconnect;connect;battery;notifications;телефон;батарея;сповіщення;
+StartupWMClass=glide-phone

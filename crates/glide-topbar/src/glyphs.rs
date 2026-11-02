@@ -25,6 +25,7 @@ pub(super) enum Glyph {
     Shield,
     Send,
     Headphones,
+    Phone,
 }
 
 const SPEAKER: &str = "<path d=\"M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z\"/>";
@@ -33,7 +34,7 @@ const FAR_WAVE: &str = "<path d=\"M13.8 4.6a6.4 6.4 0 010 9\"/>";
 
 impl Glyph {
     #[cfg(test)]
-    pub(super) const ALL: [Self; 21] = [
+    pub(super) const ALL: [Self; 22] = [
         Self::Bell,
         Self::Quiet,
         Self::Play,
@@ -55,6 +56,7 @@ impl Glyph {
         Self::Shield,
         Self::Send,
         Self::Headphones,
+        Self::Phone,
     ];
 
     fn body(self) -> String {
@@ -88,6 +90,9 @@ impl Glyph {
             Self::Headphones => {
                 "<path d=\"M2.8 10.5V8a5.2 5.2 0 0110.4 0v2.5\"/><path d=\"M2.8 9.6h2.2v4H3.8a1 1 0 01-1-1zM13.2 9.6H11v4h1.2a1 1 0 001-1z\"/>"
             }
+            Self::Phone => {
+                "<rect x=\"4\" y=\"1.8\" width=\"8\" height=\"12.4\" rx=\"1.8\"/><path d=\"M6.8 3.8h2.4M6.7 12h2.6\"/>"
+            }
         };
         fixed.to_string()
     }
@@ -110,6 +115,7 @@ impl Glyph {
                 Some("1.4")
             }
             Self::Moon | Self::Cup | Self::Search | Self::Shield | Self::Headphones => Some("1.5"),
+            Self::Phone => Some("1.65"),
         }
     }
 
@@ -152,6 +158,7 @@ impl Glyph {
             Self::Shield => "network-vpn",
             Self::Send => "go-up",
             Self::Headphones => "audio-headphones",
+            Self::Phone => "phone",
         }
     }
 }
@@ -161,7 +168,7 @@ const fn centred(rect: LocalRect, side: i32) -> (i32, i32) {
 }
 
 pub(super) fn glyph(c: &mut Canvas<'_>, glyph: Glyph, side: i32, rect: LocalRect, colour: Color) {
-    if !themed(c, glyph.theme_name(), side, rect, colour) {
+    if glyph == Glyph::Phone || !themed(c, glyph.theme_name(), side, rect, colour) {
         svg_glyph(c, &glyph.svg(), side, rect, colour);
     }
 }
