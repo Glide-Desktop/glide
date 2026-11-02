@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::HashMap,
     io::{ErrorKind, Read, Write},
     os::unix::{
@@ -6,10 +7,18 @@ use std::{
         net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
+    rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
 };
 
 use glide_ipc::{Event, OutputInfo, Request, Response, WindowInfo, WorkspaceInfo};
-use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction, generic::Generic};
+use smithay::reexports::calloop::{
+    EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken,
+    generic::Generic,
+    timer::{TimeoutAction, Timer},
+};
+use zeroize::Zeroizing;
 
 use crate::GlideState;
 
@@ -165,39 +174,63 @@ fn accept_pending(listener: &UnixListener, loop_handle: &LoopHandle<'static, Gli
 }
 
 const MAX_PENDING_CONNECTIONS: usize = 64;
+const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
+const READ_CHUNK: usize = 4096;
 
-static PENDING_CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static PENDING_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 
 fn register_connection(stream: UnixStream, loop_handle: &LoopHandle<'static, GlideState>) -> anyhow::Result<()> {
-    use std::sync::atomic::Ordering;
+    watch_connection(stream, loop_handle, &PENDING_CONNECTIONS, REQUEST_DEADLINE, read_request)
+}
 
-    if PENDING_CONNECTIONS.load(Ordering::Relaxed) >= MAX_PENDING_CONNECTIONS {
+fn watch_connection<S: 'static>(
+    stream: UnixStream, loop_handle: &LoopHandle<'static, S>, pending: &'static AtomicUsize, deadline: Duration,
+    mut serve: impl FnMut(&UnixStream, &mut Vec<u8>, &mut S) -> PostAction + 'static,
+) -> anyhow::Result<()> {
+    if pending.load(Ordering::Relaxed) >= MAX_PENDING_CONNECTIONS {
         anyhow::bail!("too many IPC connections are waiting for a request");
     }
     stream.set_nonblocking(true)?;
 
-    let mut buffer: Vec<u8> = Vec::new();
-    loop_handle
+    let timer: Rc<Cell<Option<RegistrationToken>>> = Rc::default();
+    let own_timer = Rc::clone(&timer);
+    let handle = loop_handle.clone();
+    let mut buffer = Zeroizing::new(Vec::with_capacity(READ_CHUNK));
+    let connection = loop_handle
         .insert_source(Generic::new(stream, Interest::READ, Mode::Level), move |_, stream, state| {
-            let action = read_request(stream, &mut buffer, state);
+            let action = serve(stream, &mut buffer, state);
             if matches!(action, PostAction::Remove) {
-                PENDING_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+                pending.fetch_sub(1, Ordering::Relaxed);
+                if let Some(token) = own_timer.take() {
+                    handle.remove(token);
+                }
             }
             Ok(action)
         })
         .map_err(|e| e.error)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    PENDING_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+    pending.fetch_add(1, Ordering::Relaxed);
 
+    let handle = loop_handle.clone();
+    let expiry = loop_handle.insert_source(Timer::from_duration(deadline), move |_, (), _| {
+        tracing::debug!("dropping an IPC connection that sent no complete request in time");
+        handle.remove(connection);
+        pending.fetch_sub(1, Ordering::Relaxed);
+        TimeoutAction::Drop
+    });
+    match expiry {
+        Ok(token) => timer.set(Some(token)),
+        Err(err) => tracing::warn!("failed to arm the IPC request deadline: {err}"),
+    }
     Ok(())
 }
 
 fn read_request(stream: &UnixStream, buffer: &mut Vec<u8>, state: &mut GlideState) -> PostAction {
-    let mut chunk = [0_u8; 4096];
+    let mut chunk = Zeroizing::new([0_u8; READ_CHUNK]);
     let mut stream = stream;
 
     loop {
-        match stream.read(&mut chunk) {
+        match stream.read(&mut chunk[..]) {
             Ok(0) => return PostAction::Remove,
             Ok(n) => {
                 buffer.extend_from_slice(&chunk[..n]);
@@ -226,9 +259,10 @@ fn read_request(stream: &UnixStream, buffer: &mut Vec<u8>, state: &mut GlideStat
 }
 
 pub fn reply(stream: &UnixStream, response: &Response) {
-    let Ok(mut json) = serde_json::to_string(response) else {
+    let Ok(json) = serde_json::to_string(response) else {
         return;
     };
+    let mut json = Zeroizing::new(json);
     json.push('\n');
     if let Err(err) = write_all_nonblocking(stream, json.as_bytes()) {
         tracing::debug!(?err, "failed to deliver a deferred IPC response");
@@ -303,10 +337,11 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
         Err(message) => Response::Error { message },
     };
 
-    let Ok(mut json) = serde_json::to_string(&response) else {
+    let Ok(json) = serde_json::to_string(&response) else {
         tracing::error!("failed to serialize an IPC response");
         return;
     };
+    let mut json = Zeroizing::new(json);
     json.push('\n');
 
     if let Err(err) = write_all_nonblocking(stream, json.as_bytes()) {
@@ -406,7 +441,7 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
             Response::IdleInhibitors { apps: state.idle_inhibitor_apps(), caffeine: state.topbar.caffeinated() }
         }
         Request::LoginPasswordChanged { password } => {
-            state.adopt_changed_login_password(password);
+            state.adopt_changed_login_password(&password);
             Response::Ok
         }
         Request::ActivationToken { .. }
@@ -542,6 +577,55 @@ mod tests {
         assert_eq!(to_layout_target(glide_ipc::WorkspaceTarget::Index(3)), glide_layout::WorkspaceTarget::Index(3));
         assert_eq!(to_layout_target(glide_ipc::WorkspaceTarget::Next), glide_layout::WorkspaceTarget::Next);
         assert_eq!(to_layout_target(glide_ipc::WorkspaceTarget::Previous), glide_layout::WorkspaceTarget::Previous);
+    }
+
+    fn dispatch_until(event_loop: &mut EventLoop<'static, ()>, done: impl Fn() -> bool, limit: Duration) {
+        let start = std::time::Instant::now();
+        while !done() && start.elapsed() < limit {
+            event_loop.dispatch(Some(Duration::from_millis(5)), &mut ()).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_connection_that_sends_no_request_loses_its_slot_at_the_deadline() {
+        static PENDING: AtomicUsize = AtomicUsize::new(0);
+        let mut event_loop = EventLoop::<'static, ()>::try_new().unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        watch_connection(server, &event_loop.handle(), &PENDING, Duration::from_millis(30), |_, _, ()| {
+            PostAction::Continue
+        })
+        .unwrap();
+        assert_eq!(PENDING.load(Ordering::Relaxed), 1);
+
+        dispatch_until(&mut event_loop, || PENDING.load(Ordering::Relaxed) == 0, Duration::from_secs(2));
+        assert_eq!(PENDING.load(Ordering::Relaxed), 0);
+        client.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        assert_eq!((&client).read(&mut [0_u8; 1]).unwrap(), 0, "the idle connection is closed");
+    }
+
+    #[test]
+    fn a_stream_that_sent_its_request_outlives_the_deadline() {
+        static PENDING: AtomicUsize = AtomicUsize::new(0);
+        let mut event_loop = EventLoop::<'static, ()>::try_new().unwrap();
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let kept: Rc<std::cell::RefCell<Option<UnixStream>>> = Rc::default();
+        let keeper = Rc::clone(&kept);
+        watch_connection(server, &event_loop.handle(), &PENDING, Duration::from_millis(30), move |stream, _, ()| {
+            *keeper.borrow_mut() = stream.try_clone().ok();
+            PostAction::Remove
+        })
+        .unwrap();
+        client.write_all(b"{\"type\":\"subscribe\"}\n").unwrap();
+
+        dispatch_until(&mut event_loop, || kept.borrow().is_some(), Duration::from_secs(2));
+        dispatch_until(&mut event_loop, || false, Duration::from_millis(80));
+        assert_eq!(PENDING.load(Ordering::Relaxed), 0, "the slot is released exactly once");
+
+        let stream = kept.borrow_mut().take().unwrap();
+        (&stream).write_all(b"event\n").unwrap();
+        let mut buf = [0_u8; 6];
+        client.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"event\n");
     }
 
     #[test]

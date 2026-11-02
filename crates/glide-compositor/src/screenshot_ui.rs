@@ -203,7 +203,7 @@ impl GlideState {
             id: NOTICE_ID,
             app_name: "Glide".to_string(),
             app_icon,
-            image_data: preview,
+            image_data: preview.map(glide_notify::Image::Rendered),
             summary: summary.to_string(),
             body,
             actions,

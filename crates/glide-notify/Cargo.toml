@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+glide-config = { path = "../glide-config" }
 serde.workspace = true
 tracing.workspace = true
 zbus.workspace = true

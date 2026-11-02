@@ -75,6 +75,58 @@ pub enum Sound {
     File(String),
 }
 
+pub const MAX_IMAGE_SIDE: u32 = 2048;
+pub const MAX_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum Image {
+    Rgba { width: u32, height: u32, pixels: Vec<u8> },
+    Rendered(Vec<u8>),
+}
+
+impl std::fmt::Debug for Image {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rgba { width, height, .. } => write!(formatter, "Image::Rgba({width}x{height})"),
+            Self::Rendered(pixels) => write!(formatter, "Image::Rendered({} bytes)", pixels.len()),
+        }
+    }
+}
+
+impl Image {
+    #[must_use]
+    pub fn from_raw(
+        width: i32, height: i32, rowstride: i32, has_alpha: bool, bits_per_sample: i32, channels: i32, data: &[u8],
+    ) -> Option<Self> {
+        let width = u32::try_from(width).ok().filter(|&side| side > 0 && side <= MAX_IMAGE_SIDE)?;
+        let height = u32::try_from(height).ok().filter(|&side| side > 0 && side <= MAX_IMAGE_SIDE)?;
+        let rowstride = usize::try_from(rowstride).ok()?;
+        let channels = match (channels, has_alpha) {
+            (4, _) => 4,
+            (3, false) => 3,
+            _ => return None,
+        };
+        if bits_per_sample != 8 {
+            return None;
+        }
+        let row = width as usize * channels;
+        let rows = height as usize;
+        let needed = rowstride.checked_mul(rows - 1)?.checked_add(row)?;
+        if rowstride < row || data.len() < needed || rows * width as usize * 4 > MAX_IMAGE_BYTES {
+            return None;
+        }
+        let mut pixels = Vec::with_capacity(rows * width as usize * 4);
+        for y in 0..rows {
+            let line = &data[y * rowstride..y * rowstride + row];
+            for pixel in line.chunks_exact(channels) {
+                let alpha = if has_alpha { pixel[3] } else { 0xff };
+                pixels.extend_from_slice(&[pixel[0], pixel[1], pixel[2], alpha]);
+            }
+        }
+        Some(Self::Rgba { width, height, pixels })
+    }
+}
+
 // Independent flags of the freedesktop notification wire format.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -84,6 +136,7 @@ pub struct Notification {
     pub app_name: String,
     pub desktop_entry: String,
     pub app_icon: String,
+    pub image_path: String,
     pub summary: String,
     pub body: String,
     pub actions: Vec<Action>,
@@ -96,7 +149,7 @@ pub struct Notification {
     pub transient: bool,
     pub timeout: Option<Duration>,
     pub sound: Sound,
-    pub image_data: Option<Vec<u8>>,
+    pub image_data: Option<Image>,
 }
 
 impl Notification {
@@ -119,6 +172,7 @@ impl Notification {
             && self.desktop_entry == other.desktop_entry
             && self.actions == other.actions
             && self.app_icon == other.app_icon
+            && self.image_path == other.image_path
             && self.has_default_action == other.has_default_action
             && self.has_settings_action == other.has_settings_action
             && self.reply == other.reply

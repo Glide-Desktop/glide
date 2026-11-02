@@ -1,7 +1,10 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
+
+use zeroize::Zeroizing;
 
 use crate::{Request, Response};
 
@@ -21,19 +24,37 @@ pub fn socket_path() -> Option<PathBuf> {
     }
 }
 
+const REQUEST_CAPACITY: usize = 4096;
+
 pub fn exchange(request: &Request, timeout: Duration) -> std::io::Result<Response> {
     let path = socket_path().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no Glide session"))?;
-    let stream = UnixStream::connect(path)?;
+    let stream = bounded(timeout, move || UnixStream::connect(path))?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
-    let mut json = serde_json::to_string(request).map_err(std::io::Error::other)?;
-    json.push('\n');
+    let mut json = Zeroizing::new(Vec::with_capacity(REQUEST_CAPACITY));
+    serde_json::to_writer(&mut *json, request).map_err(std::io::Error::other)?;
+    json.push(b'\n');
     let mut reader = BufReader::new(stream);
-    reader.get_mut().write_all(json.as_bytes())?;
+    reader.get_mut().write_all(&json)?;
     reader.get_mut().flush()?;
-    let mut line = String::new();
+    let mut line = Zeroizing::new(String::new());
     read_line(&mut reader, &mut line)?;
     serde_json::from_str(&line).map_err(std::io::Error::other)
+}
+
+fn bounded<T: Send + 'static>(
+    timeout: Duration, work: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+) -> std::io::Result<T> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new().name("glide-ipc-connect".into()).spawn(move || {
+        let _ = sender.send(work());
+    })?;
+    receiver.recv_timeout(timeout).unwrap_or_else(|err| match err {
+        RecvTimeoutError::Timeout => {
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the Glide IPC socket did not accept in time"))
+        }
+        RecvTimeoutError::Disconnected => Err(std::io::Error::other("the Glide IPC connect thread failed")),
+    })
 }
 
 pub const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
@@ -83,6 +104,29 @@ mod tests {
         assert_eq!(read_line_with_limit(&mut reader, &mut line, 4).unwrap(), 3);
         assert_eq!(line, "xy\n");
         assert_eq!(read_line_with_limit(&mut reader, &mut line, 4).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_connect_that_never_returns_times_out() {
+        let (hold, wait) = std::sync::mpsc::channel::<()>();
+        let started = std::time::Instant::now();
+        let result = bounded(Duration::from_millis(20), move || {
+            let _ = wait.recv();
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(hold);
+        assert_eq!(bounded(Duration::from_secs(5), || Ok(7)).unwrap(), 7);
+    }
+
+    #[test]
+    fn a_request_is_one_json_line_from_the_zeroizing_writer() {
+        let mut json = Zeroizing::new(Vec::with_capacity(REQUEST_CAPACITY));
+        let request = Request::LoginPasswordChanged { password: crate::keychain::Hidden::new("hunter2".into()) };
+        serde_json::to_writer(&mut *json, &request).unwrap();
+        assert_eq!(json.capacity(), REQUEST_CAPACITY, "a short request never reallocates its buffer");
+        assert_eq!(serde_json::from_slice::<Request>(&json).unwrap(), request);
     }
 
     #[test]

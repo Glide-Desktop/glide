@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use zbus::zvariant::{OwnedValue, Value};
 
-use crate::model::{Sound, Urgency};
+use crate::model::{Image, MAX_IMAGE_BYTES, Sound, Urgency};
 
 #[must_use]
 pub fn string(hints: &HashMap<String, OwnedValue>, key: &str) -> String {
@@ -11,7 +11,38 @@ pub fn string(hints: &HashMap<String, OwnedValue>, key: &str) -> String {
 
 #[must_use]
 pub fn boolean(hints: &HashMap<String, OwnedValue>, key: &str) -> bool {
-    hints.get(key).and_then(|value| bool::try_from(value.clone()).ok()).unwrap_or(false)
+    match hints.get(key).map(|value| &**value) {
+        Some(Value::Bool(flag)) => *flag,
+        Some(_) => integer(hints, key).is_some_and(|value| value != 0),
+        None => false,
+    }
+}
+
+#[must_use]
+pub fn image(hints: &HashMap<String, OwnedValue>, key: &str) -> Option<Image> {
+    let Value::Structure(structure) = &**hints.get(key)? else {
+        return None;
+    };
+    let int = |value: &Value<'_>| match value {
+        Value::I32(inner) => Some(*inner),
+        _ => None,
+    };
+    let [width, height, rowstride, Value::Bool(has_alpha), bits, channels, Value::Array(data)] = structure.fields()
+    else {
+        return None;
+    };
+    if data.len() > MAX_IMAGE_BYTES {
+        return None;
+    }
+    let bytes: Vec<u8> = data
+        .inner()
+        .iter()
+        .map(|value| match value {
+            Value::U8(byte) => Some(*byte),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    Image::from_raw(int(width)?, int(height)?, int(rowstride)?, *has_alpha, int(bits)?, int(channels)?, &bytes)
 }
 
 #[must_use]
@@ -43,7 +74,12 @@ pub fn sound(hints: &HashMap<String, OwnedValue>) -> Sound {
     let file = string(hints, "sound-file");
     let file = file.trim();
     if !file.is_empty() {
-        return Sound::File(file.strip_prefix("file://").unwrap_or(file).to_string());
+        if !file.starts_with("file://") {
+            return Sound::File(file.to_string());
+        }
+        if let Some(path) = glide_config::uri::local_path(file) {
+            return Sound::File(path.to_string_lossy().into_owned());
+        }
     }
     let name = string(hints, "sound-name");
     let name = name.trim();
@@ -97,6 +133,63 @@ mod tests {
         let hints = HashMap::new();
         assert_eq!(string(&hints, "desktop-entry"), "");
         assert!(!boolean(&hints, "transient"));
+    }
+
+    #[test]
+    fn flags_sent_as_integers_count_as_set_when_non_zero() {
+        assert!(boolean(&hint("transient", Value::I32(1)), "transient"));
+        assert!(boolean(&hint("transient", Value::U8(1)), "transient"));
+        assert!(!boolean(&hint("transient", Value::I32(0)), "transient"));
+        assert!(boolean(&hint("transient", Value::Bool(true)), "transient"));
+        assert!(!boolean(&hint("transient", Value::from("yes")), "transient"));
+    }
+
+    #[test]
+    fn sound_file_uris_are_percent_decoded_and_may_name_localhost() {
+        assert_eq!(
+            sound(&hint("sound-file", Value::from("file:///home/me/My%20Sounds/ping.oga"))),
+            Sound::File("/home/me/My Sounds/ping.oga".into())
+        );
+        assert_eq!(
+            sound(&hint("sound-file", Value::from("file://localhost/usr/share/ping.oga"))),
+            Sound::File("/usr/share/ping.oga".into())
+        );
+        assert_eq!(sound(&hint("sound-file", Value::from("/plain/ping.oga"))), Sound::File("/plain/ping.oga".into()));
+        assert_eq!(sound(&hint("sound-file", Value::from("file://server/ping.oga"))), Sound::None);
+    }
+
+    fn raw(width: i32, height: i32, rowstride: i32, alpha: bool, channels: i32, data: Vec<u8>) -> Value<'static> {
+        Value::from((width, height, rowstride, alpha, 8i32, channels, data))
+    }
+
+    #[test]
+    fn image_data_is_unpacked_honouring_the_rowstride_and_alpha() {
+        let rgb = vec![1, 2, 3, 4, 5, 6, 0, 0, 7, 8, 9, 10, 11, 12, 0, 0];
+        let unpacked = image(&hint("image-data", raw(2, 2, 8, false, 3, rgb)), "image-data");
+        assert_eq!(
+            unpacked,
+            Some(Image::Rgba {
+                width: 2,
+                height: 2,
+                pixels: vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]
+            })
+        );
+        let rgba = vec![1, 2, 3, 4];
+        let unpacked = image(&hint("image-data", raw(1, 1, 4, true, 4, rgba.clone())), "image-data");
+        assert_eq!(unpacked, Some(Image::Rgba { width: 1, height: 1, pixels: rgba }));
+    }
+
+    #[test]
+    fn malformed_or_oversized_image_data_is_refused() {
+        let refused = |value: Value<'static>| image(&hint("image-data", value), "image-data").is_none();
+        assert!(refused(raw(2, 2, 6, false, 3, vec![0; 11])), "too short for its rowstride");
+        assert!(refused(raw(2, 1, 4, false, 3, vec![0; 6])), "rowstride narrower than a row");
+        assert!(refused(raw(1, 1, 3, true, 3, vec![0; 3])), "alpha needs four channels");
+        assert!(refused(raw(-1, 1, 4, true, 4, vec![0; 4])));
+        assert!(refused(raw(0, 1, 4, true, 4, vec![0; 4])));
+        assert!(refused(raw(4096, 1, 4 * 4096, true, 4, vec![0; 4 * 4096])), "wider than the cap");
+        assert!(refused(Value::from((1i32, 1i32, 4i32, true, 16i32, 4i32, vec![0u8; 8]))), "16-bit samples");
+        assert!(refused(Value::from("not an image")));
     }
 
     #[test]

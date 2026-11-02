@@ -285,6 +285,7 @@ struct Archived {
     received_at: Instant,
     icon: Option<std::sync::Arc<Vec<u8>>>,
     read: bool,
+    reported: bool,
 }
 
 pub const LOCAL_ID_FLOOR: u32 = u32::MAX - 4096;
@@ -427,7 +428,7 @@ pub struct Notifications {
     live: Vec<Entry>,
     archive: Vec<Archived>,
     dnd: bool,
-    inhibited: bool,
+    hush: Hush,
     policy: NotificationPolicy,
     policy_applied: bool,
     scheduled_dnd: Option<bool>,
@@ -436,6 +437,92 @@ pub struct Notifications {
     banners: Banners,
     pending_glances: Vec<Glance>,
     senders: SenderLog,
+    icon_worker: Option<std::sync::mpsc::Sender<IconJob>>,
+    icon_tickets: std::collections::HashMap<u32, u64>,
+    next_icon_ticket: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Hush {
+    app_inhibitor: bool,
+    screen_shared: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IconSource {
+    Image(glide_notify::Image),
+    File(std::path::PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IconJob {
+    pub id: u32,
+    pub ticket: u64,
+    pub sources: Vec<IconSource>,
+}
+
+impl IconJob {
+    #[must_use]
+    pub fn render(&self) -> Option<Vec<u8>> {
+        self.sources.iter().find_map(render_source)
+    }
+}
+
+const ICON_BYTES: usize = (ICON_SOURCE_PX as usize) * (ICON_SOURCE_PX as usize) * 4;
+
+fn render_source(source: &IconSource) -> Option<Vec<u8>> {
+    match source {
+        IconSource::Image(glide_notify::Image::Rgba { width, height, pixels }) => {
+            let png = glide_shell::image::encode_png(*width, *height, pixels).ok()?;
+            glide_paint::render_png_rounded(&png, ICON_SOURCE_PX, 8.0)
+        }
+        IconSource::Image(glide_notify::Image::Rendered(pixels)) => {
+            (pixels.len() == ICON_BYTES).then(|| pixels.clone())
+        }
+        IconSource::File(path) => crate::icon::render(path, ICON_SOURCE_PX, None),
+    }
+}
+
+enum IconCandidate<'a> {
+    Slow(IconSource),
+    Ready(&'a [u8]),
+    Named(&'a str),
+    App(&'a str),
+}
+
+fn icon_candidates(notification: &Notification) -> Vec<IconCandidate<'_>> {
+    let mut candidates = Vec::new();
+    match &notification.image_data {
+        Some(glide_notify::Image::Rendered(pixels)) if pixels.len() == ICON_BYTES => {
+            candidates.push(IconCandidate::Ready(pixels));
+        }
+        Some(image @ glide_notify::Image::Rgba { .. }) => {
+            candidates.push(IconCandidate::Slow(IconSource::Image(image.clone())));
+        }
+        _ => {}
+    }
+    for name in [&notification.image_path, &notification.app_icon] {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if name.starts_with("file://") {
+            if let Some(path) = glide_config::uri::local_path(name) {
+                candidates.push(IconCandidate::Slow(IconSource::File(path)));
+            }
+        } else if std::path::Path::new(name).is_absolute() {
+            candidates.push(IconCandidate::Slow(IconSource::File(name.into())));
+        } else {
+            candidates.push(IconCandidate::Named(name));
+        }
+    }
+    for name in [&notification.desktop_entry, &notification.app_name] {
+        let name = name.trim();
+        if !name.is_empty() {
+            candidates.push(IconCandidate::App(name));
+        }
+    }
+    candidates
 }
 
 #[derive(Debug, Default)]
@@ -514,7 +601,7 @@ impl Notifications {
 
     #[must_use]
     pub const fn suppressed(&self) -> bool {
-        self.dnd || self.inhibited
+        self.dnd || self.hush.app_inhibitor || self.hush.screen_shared
     }
 
     pub const fn set_dnd(&mut self, on: bool) {
@@ -522,7 +609,77 @@ impl Notifications {
     }
 
     pub const fn set_inhibited(&mut self, on: bool) {
-        self.inhibited = on;
+        self.hush.app_inhibitor = on;
+    }
+
+    pub const fn set_sharing_quiet(&mut self, on: bool) {
+        self.hush.screen_shared = on;
+    }
+
+    pub fn attach_icon_worker(&mut self, worker: std::sync::mpsc::Sender<IconJob>) {
+        self.icon_worker = Some(worker);
+    }
+
+    fn icon_for(
+        &mut self, icons: &mut crate::icon::IconLoader, notification: &Notification,
+    ) -> Option<std::sync::Arc<Vec<u8>>> {
+        self.icon_tickets.remove(&notification.id);
+        let mut slow = Vec::new();
+        let mut found = None;
+        for candidate in icon_candidates(notification) {
+            let loaded = match candidate {
+                IconCandidate::Slow(source) => {
+                    slow.push(source);
+                    continue;
+                }
+                IconCandidate::Ready(pixels) => Some(pixels.to_vec()),
+                IconCandidate::Named(name) => icons.load_named(name, ICON_SOURCE_PX).map(<[u8]>::to_vec),
+                IconCandidate::App(name) => icons.load(name, ICON_SOURCE_PX).map(<[u8]>::to_vec),
+            };
+            if loaded.is_some() {
+                found = loaded;
+                break;
+            }
+        }
+        if !slow.is_empty() {
+            let ticket = self.next_icon_ticket;
+            self.next_icon_ticket = ticket.wrapping_add(1);
+            let job = IconJob { id: notification.id, ticket, sources: slow };
+            let queued = match self.icon_worker.as_ref() {
+                Some(worker) => worker.send(job).map_err(|err| err.0),
+                None => Err(job),
+            };
+            match queued {
+                Ok(()) => {
+                    self.icon_tickets.insert(notification.id, ticket);
+                }
+                Err(job) => {
+                    self.icon_worker = None;
+                    if let Some(rendered) = job.render() {
+                        found = Some(rendered);
+                    }
+                }
+            }
+        }
+        found.map(std::sync::Arc::new)
+    }
+
+    pub fn icon_ready(&mut self, id: u32, ticket: u64, icon: Option<Vec<u8>>) -> Option<std::sync::Arc<Vec<u8>>> {
+        if self.icon_tickets.get(&id) != Some(&ticket) {
+            return None;
+        }
+        self.icon_tickets.remove(&id);
+        let icon = std::sync::Arc::new(icon?);
+        for entry in self.live.iter_mut().filter(|entry| entry.notification.id == id) {
+            entry.icon = Some(icon.clone());
+        }
+        for kept in self.archive.iter_mut().filter(|kept| kept.notification.id == id) {
+            kept.icon = Some(icon.clone());
+        }
+        for glance in self.pending_glances.iter_mut().filter(|glance| glance.item.id == id) {
+            glance.item.icon = Some(icon.clone());
+        }
+        Some(icon)
     }
 
     #[must_use]
@@ -616,13 +773,29 @@ impl Notifications {
         changed
     }
 
-    fn keep(&mut self, notification: Notification, received_at: Instant, icon: Option<std::sync::Arc<Vec<u8>>>) {
+    fn keep(
+        &mut self, notification: Notification, received_at: Instant, icon: Option<std::sync::Arc<Vec<u8>>>,
+        reported: bool,
+    ) {
         if notification.transient {
+            if !reported {
+                self.notify_closed(notification.id, CloseReason::Expired);
+            }
             return;
         }
         self.archive.retain(|kept| kept.notification.id != notification.id);
-        self.archive.insert(0, Archived { notification, received_at, icon, read: false });
-        self.archive.truncate(MAX_ARCHIVED);
+        self.archive.insert(0, Archived { notification, received_at, icon, read: false, reported });
+        if self.archive.len() > MAX_ARCHIVED {
+            let dropped: Vec<u32> = self
+                .archive
+                .drain(MAX_ARCHIVED..)
+                .filter(|kept| !kept.reported)
+                .map(|kept| kept.notification.id)
+                .collect();
+            for id in dropped {
+                self.notify_closed(id, CloseReason::Expired);
+            }
+        }
     }
 
     fn keep_entry(&mut self, index: usize) {
@@ -632,7 +805,7 @@ impl Notifications {
         let notifications: Vec<Notification> =
             std::iter::once(entry.notification.clone()).chain(entry.stacked.iter().cloned()).collect();
         for notification in notifications.into_iter().rev() {
-            self.keep(notification, received_at, icon.clone());
+            self.keep(notification, received_at, icon.clone(), true);
         }
     }
 
@@ -640,6 +813,17 @@ impl Notifications {
         let before = self.archive.len();
         self.archive.retain(|kept| kept.notification.id != id);
         self.archive.len() != before
+    }
+
+    fn close_kept(&mut self, id: u32, reason: CloseReason) -> bool {
+        let Some(index) = self.archive.iter().position(|kept| kept.notification.id == id) else {
+            return false;
+        };
+        let kept = self.archive.remove(index);
+        if !kept.reported {
+            self.notify_closed(id, reason);
+        }
+        true
     }
 
     #[must_use]
@@ -800,14 +984,14 @@ impl Notifications {
     }
 
     fn glance(&mut self, icons: &mut crate::icon::IconLoader, notification: Notification, replaces: bool) {
-        let icon = load_icon(icons, &notification);
+        let icon = self.icon_for(icons, &notification);
         self.remove(notification.id, CloseReason::Expired, false);
         let item = nc_item(&notification, Duration::ZERO, icon.as_ref(), 1);
         self.pending_glances.push(Glance { item, replaces });
         if self.pending_glances.len() > MAX_GLANCES {
             self.pending_glances.remove(0);
         }
-        self.keep(notification, Instant::now(), icon);
+        self.keep(notification, Instant::now(), icon, false);
     }
 
     pub fn push(&mut self, icons: &mut crate::icon::IconLoader, notification: Notification, replaces: bool) -> bool {
@@ -817,8 +1001,8 @@ impl Notifications {
         }
         self.forget_kept(notification.id);
         if self.silences(&notification) {
-            let icon = load_icon(icons, &notification);
-            self.keep(notification, Instant::now(), icon);
+            let icon = self.icon_for(icons, &notification);
+            self.keep(notification, Instant::now(), icon, false);
             return true;
         }
         if self.banners == Banners::Island && glances(&notification) {
@@ -833,7 +1017,7 @@ impl Notifications {
 
         let id = notification.id;
         let group = if is_prompt(&notification) { String::new() } else { notification.group_key() };
-        let icon = load_icon(icons, &notification);
+        let icon = self.icon_for(icons, &notification);
         let now = Instant::now();
         let mut entry = Entry {
             notification,
@@ -915,7 +1099,11 @@ impl Notifications {
         if self.is_empty() {
             return false;
         }
-        let ids: Vec<u32> = self.active().flat_map(Entry::ids).collect();
+        let ids: Vec<u32> = self
+            .active()
+            .flat_map(Entry::ids)
+            .chain(self.archive.iter().filter(|kept| !kept.reported).map(|kept| kept.notification.id))
+            .collect();
         for id in ids {
             self.notify_closed(id, CloseReason::Dismissed);
         }
@@ -928,14 +1116,12 @@ impl Notifications {
     }
 
     pub fn dismiss(&mut self, id: u32) -> bool {
-        let removed = self.remove(id, CloseReason::Dismissed, true);
-        let forgotten = self.forget_kept(id);
-        removed || forgotten
+        self.withdraw(id, CloseReason::Dismissed)
     }
 
     pub fn withdraw(&mut self, id: u32, reason: CloseReason) -> bool {
         let removed = self.remove(id, reason, true);
-        let forgotten = self.forget_kept(id);
+        let forgotten = self.close_kept(id, reason);
         removed || forgotten
     }
 
@@ -959,7 +1145,7 @@ impl Notifications {
                 .find(|entry| entry.notification.id == id)
                 .map(|entry| (entry.notification.clone(), entry.updated_at, entry.icon.clone()));
             if let Some((notification, at, icon)) = kept {
-                self.keep(notification, at, icon);
+                self.keep(notification, at, icon, true);
             }
             changed |= self.remove(id, CloseReason::Expired, true);
         }
@@ -987,7 +1173,7 @@ impl Notifications {
         if is_local(id) {
             self.local.push(LocalEvent::Action { id, key });
         } else if let Some(handle) = self.handle.as_ref() {
-            handle.invoked(id, &key, token);
+            handle.invoked(id, &entry.notification.sender, &key, token);
         }
         if !resident {
             self.remove(id, CloseReason::Dismissed, true);
@@ -1003,7 +1189,7 @@ impl Notifications {
         }
         let head = entry.notification.id;
         if let Some(handle) = self.handle.as_ref() {
-            handle.invoked(head, glide_notify::ACTION_SETTINGS, token);
+            handle.invoked(head, &entry.notification.sender, glide_notify::ACTION_SETTINGS, token);
         }
         self.remove(head, CloseReason::Dismissed, true);
     }
@@ -1018,7 +1204,7 @@ impl Notifications {
         if let Some(handle) = self.handle.as_ref()
             && has_default
         {
-            handle.invoked(id, glide_notify::ACTION_DEFAULT, token);
+            handle.invoked(id, &entry.notification.sender, glide_notify::ACTION_DEFAULT, token);
         }
         if !resident {
             self.remove(id, CloseReason::Dismissed, true);
@@ -1032,9 +1218,9 @@ impl Notifications {
         if let Some(handle) = self.handle.as_ref()
             && kept.notification.has_default_action
         {
-            handle.invoked(id, glide_notify::ACTION_DEFAULT, token);
+            handle.invoked(id, &kept.notification.sender, glide_notify::ACTION_DEFAULT, token);
         }
-        self.forget_kept(id);
+        self.close_kept(id, CloseReason::Dismissed);
         app
     }
 
@@ -1069,37 +1255,6 @@ fn app_to_raise(notification: &Notification) -> Option<String> {
 fn visible_buttons(notification: &Notification) -> &[glide_notify::Action] {
     let count = notification.actions.len().min(MAX_BUTTONS);
     &notification.actions[..count]
-}
-
-fn load_icon(icons: &mut crate::icon::IconLoader, notification: &Notification) -> Option<std::sync::Arc<Vec<u8>>> {
-    load_icon_bytes(icons, notification).map(std::sync::Arc::new)
-}
-
-fn load_icon_bytes(icons: &mut crate::icon::IconLoader, notification: &Notification) -> Option<Vec<u8>> {
-    if let Some(bytes) = &notification.image_data {
-        if bytes.len() == (ICON_SOURCE_PX as usize) * (ICON_SOURCE_PX as usize) * 4 {
-            return Some(bytes.clone());
-        }
-        if let Some(rendered) = glide_paint::render_png_rounded(bytes, ICON_SOURCE_PX, 8.0) {
-            return Some(rendered);
-        }
-    }
-    if !notification.app_icon.trim().is_empty()
-        && let Some(bytes) = icons.load_named(&notification.app_icon, ICON_SOURCE_PX)
-    {
-        return Some(bytes.to_vec());
-    }
-    if !notification.desktop_entry.trim().is_empty()
-        && let Some(bytes) = icons.load(&notification.desktop_entry, ICON_SOURCE_PX)
-    {
-        return Some(bytes.to_vec());
-    }
-    if !notification.app_name.trim().is_empty()
-        && let Some(bytes) = icons.load(&notification.app_name, ICON_SOURCE_PX)
-    {
-        return Some(bytes.to_vec());
-    }
-    None
 }
 
 #[must_use]
@@ -1320,10 +1475,142 @@ mod tests {
             actions: vec![glide_notify::Action { key: "open".into(), label: "Open".into() }],
             ..notification(42)
         };
-        note.image_data = Some(pixel_bytes.clone());
+        note.image_data = Some(glide_notify::Image::Rendered(pixel_bytes.clone()));
         assert!(store.push(&mut icons, note, false));
         let entry = store.live.iter().find(|e| e.notification.id == 42).expect("stored");
         assert_eq!(entry.icon.as_deref().map(Vec::as_slice), Some(pixel_bytes.as_slice()));
+    }
+
+    fn avatar() -> glide_notify::Image {
+        let pixels = [200u8, 40, 40, 255].repeat(16 * 16);
+        glide_notify::Image::Rgba { width: 16, height: 16, pixels }
+    }
+
+    #[test]
+    fn raw_image_data_is_scaled_into_a_rounded_icon_buffer() {
+        let (mut store, mut icons) = store();
+        let note = Notification { image_data: Some(avatar()), timeout: None, ..repliable(7) };
+        assert!(store.push(&mut icons, note, false));
+        let icon = store.live[0].icon.clone().expect("rendered without a worker");
+        assert_eq!(icon.len(), ICON_BYTES);
+        let centre = (48 * 96 + 48) * 4;
+        assert_eq!(&icon[centre..centre + 4], &[40, 40, 200, 255], "BGRA, opaque in the middle");
+        assert_eq!(icon[3], 0, "the corner is rounded off");
+    }
+
+    #[test]
+    fn client_images_load_on_the_worker_and_a_stale_result_is_dropped() {
+        let (mut store, mut icons) = store();
+        let (worker, jobs) = std::sync::mpsc::channel();
+        store.attach_icon_worker(worker);
+        let note = Notification {
+            image_data: Some(avatar()),
+            image_path: "file:///tmp/My%20Pics/a.png".into(),
+            app_icon: "/opt/app/icon.svg".into(),
+            ..repliable(7)
+        };
+        store.push(&mut icons, note.clone(), false);
+        let first = jobs.try_recv().expect("queued");
+        assert_eq!(
+            first.sources,
+            [
+                IconSource::Image(avatar()),
+                IconSource::File("/tmp/My Pics/a.png".into()),
+                IconSource::File("/opt/app/icon.svg".into())
+            ],
+            "image-data, then image-path, then app_icon"
+        );
+        assert!(store.live[0].icon.is_none(), "nothing is read on the compositor thread");
+
+        store.push(&mut icons, Notification { body: "edited".into(), ..note }, true);
+        let second = jobs.try_recv().expect("queued again");
+        let icon = vec![1u8; ICON_BYTES];
+        assert!(store.icon_ready(7, first.ticket, Some(icon.clone())).is_none(), "superseded by the replacement");
+        assert!(store.live[0].icon.is_none());
+        assert!(store.icon_ready(7, second.ticket, Some(icon.clone())).is_some());
+        assert_eq!(store.live[0].icon.as_deref(), Some(&icon));
+        assert!(store.icon_ready(7, second.ticket, Some(icon)).is_none(), "a ticket is used once");
+    }
+
+    #[test]
+    fn a_theme_icon_name_needs_no_worker() {
+        let (mut store, mut icons) = store();
+        let (worker, jobs) = std::sync::mpsc::channel();
+        store.attach_icon_worker(worker);
+        store.push(&mut icons, Notification { app_icon: "mail-unread".into(), ..repliable(3) }, false);
+        assert!(jobs.try_recv().is_err());
+    }
+
+    const LOCAL: u32 = LOCAL_ID_FLOOR + 10;
+
+    fn closed(store: &mut Notifications) -> Vec<u32> {
+        store
+            .take_local_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                LocalEvent::Closed { id } => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_glanced_notification_reports_its_close_once_when_it_leaves_the_centre() {
+        let (mut store, mut icons) = store();
+        store.set_glances(true);
+        store.push(&mut icons, notification(LOCAL), false);
+        assert!(closed(&mut store).is_empty(), "still alive in the centre");
+        assert!(store.withdraw(LOCAL, CloseReason::Revoked));
+        assert_eq!(closed(&mut store), [LOCAL]);
+
+        store.push(&mut icons, notification(LOCAL + 1), false);
+        assert!(store.dismiss(LOCAL + 1));
+        assert_eq!(closed(&mut store), [LOCAL + 1]);
+
+        store.push(&mut icons, notification(LOCAL + 2), false);
+        store.activate(LOCAL + 2, None);
+        assert_eq!(closed(&mut store), [LOCAL + 2]);
+
+        store.push(&mut icons, notification(LOCAL + 3), false);
+        assert!(store.clear_all());
+        assert_eq!(closed(&mut store), [LOCAL + 3]);
+
+        store.push(&mut icons, Notification { transient: true, ..notification(LOCAL + 4) }, false);
+        assert_eq!(closed(&mut store), [LOCAL + 4], "a transient glance leaves no trace and says so");
+    }
+
+    #[test]
+    fn notifications_pushed_out_of_the_archive_report_their_close() {
+        let (mut store, mut icons) = store();
+        store.set_dnd(true);
+        let budget = u32::try_from(MAX_ARCHIVED).expect("fits");
+        for offset in 0..=budget {
+            store.push(&mut icons, notification(LOCAL + offset), false);
+        }
+        assert_eq!(closed(&mut store), [LOCAL]);
+    }
+
+    #[test]
+    fn an_expired_toast_reports_once_and_not_again_when_dismissed_from_the_centre() {
+        let (mut store, mut icons) = store();
+        store.push(&mut icons, Notification { timeout: Some(Duration::ZERO), ..notification(LOCAL) }, false);
+        assert!(store.tick());
+        assert_eq!(closed(&mut store), [LOCAL]);
+        assert!(store.dismiss(LOCAL));
+        assert!(closed(&mut store).is_empty());
+    }
+
+    #[test]
+    fn screen_sharing_quiet_and_an_app_inhibitor_are_independent() {
+        let (mut store, _) = store();
+        store.set_inhibited(true);
+        store.set_sharing_quiet(false);
+        assert!(store.suppressed(), "sharing ending must not lift an app's inhibition");
+        store.set_inhibited(false);
+        store.set_sharing_quiet(true);
+        assert!(store.suppressed());
+        store.set_sharing_quiet(false);
+        assert!(!store.suppressed());
     }
 
     #[test]

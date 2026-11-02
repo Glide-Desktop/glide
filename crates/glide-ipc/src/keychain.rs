@@ -161,6 +161,7 @@ pub struct Card {
     pub expiry: String,
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent flags of the keychain wire format, one JSON field each
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Summary {
     pub item: ItemRef,
@@ -267,7 +268,8 @@ pub struct Folder {
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)] // Independent flags of the keychain wire format, one JSON field each
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Send {
     pub vault: String,
     pub id: String,
@@ -282,6 +284,30 @@ pub struct Send {
     pub has_password: bool,
     pub hide_text: bool,
     pub hide_email: bool,
+}
+
+impl fmt::Debug for Send {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let link = match self.link.find('#') {
+            Some(at) => format!("{}…", &self.link[..=at]),
+            None => self.link.clone(),
+        };
+        f.debug_struct("Send")
+            .field("vault", &self.vault)
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("link", &link)
+            .field("created", &self.created)
+            .field("expires", &self.expires)
+            .field("deletion", &self.deletion)
+            .field("max_access", &self.max_access)
+            .field("access_count", &self.access_count)
+            .field("disabled", &self.disabled)
+            .field("has_password", &self.has_password)
+            .field("hide_text", &self.hide_text)
+            .field("hide_email", &self.hide_email)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -576,7 +602,10 @@ pub fn entropy_bits(password: &str) -> f64 {
     let words: Vec<&str> = password.split(['-', ' ', '_', '.']).filter(|word| !word.is_empty()).collect();
     let spelled = words.iter().filter(|word| word.chars().filter(|ch| ch.is_alphabetic()).count() >= 3).count();
     if words.len() >= 3 && spelled + 1 >= words.len() {
-        return words.len() as f64 * 12.9 + 10.0;
+        let mut distinct: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        return distinct.len() as f64 * 12.9 + 10.0;
     }
     let mut pool: f64 = 0.0;
     if chars.iter().any(char::is_ascii_lowercase) {
@@ -675,5 +704,34 @@ mod tests {
         assert_eq!(strength("sunflower-orbit-42-kettle"), 3);
         assert_eq!(strength("c7#Vq2!mWx9tLp4Rz8"), 4);
         assert_eq!(strength("aaaaaaaaaaaa"), 1, "repeats count for little");
+    }
+
+    #[test]
+    fn a_phrase_of_one_repeated_word_scores_as_one_word() {
+        assert!((entropy_bits("cat-Cat-CAT-cat") - entropy_bits("cat-cat-cat")).abs() < f64::EPSILON);
+        assert!(entropy_bits("cat-cat-cat-cat") < entropy_bits("cat-dog-sun-orb"));
+        assert_eq!(strength("cat-cat-cat-cat"), 1);
+    }
+
+    #[test]
+    fn a_send_never_prints_the_key_in_its_link() {
+        let send = Send {
+            vault: "bw".into(),
+            id: "abc".into(),
+            name: "note".into(),
+            link: "https://send.example/#/send/AccessId/SecretKey123".into(),
+            created: 0,
+            expires: None,
+            deletion: 0,
+            max_access: None,
+            access_count: 0,
+            disabled: false,
+            has_password: false,
+            hide_text: false,
+            hide_email: false,
+        };
+        let shown = format!("{send:?}");
+        assert!(!shown.contains("SecretKey123") && !shown.contains("AccessId"), "{shown}");
+        assert!(shown.contains("https://send.example/#…"), "{shown}");
     }
 }
