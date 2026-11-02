@@ -1,5 +1,5 @@
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, Write},
     os::unix::net::UnixStream,
     path::PathBuf,
     time::Duration,
@@ -112,7 +112,7 @@ fn exchange(socket_path: &PathBuf, request: &Request) -> anyhow::Result<(BufRead
     reader.get_mut().flush()?;
 
     let mut line = String::new();
-    std::io::Read::take(&mut reader, glide_ipc::client::MAX_RESPONSE_BYTES).read_line(&mut line)?;
+    glide_ipc::client::read_line(&mut reader, &mut line)?;
     Ok((reader, serde_json::from_str(&line)?))
 }
 
@@ -130,7 +130,7 @@ fn run_subscribe(socket_path: &PathBuf, json_output: bool) -> anyhow::Result<()>
     let mut line = String::new();
     loop {
         line.clear();
-        if reader.read_line(&mut line)? == 0 {
+        if glide_ipc::client::read_line(&mut reader, &mut line)? == 0 {
             if !json_output {
                 eprintln!("Connection closed by the compositor.");
             }

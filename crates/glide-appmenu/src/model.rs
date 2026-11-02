@@ -318,23 +318,31 @@ pub(crate) type DbusMenuNode = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue
 
 #[must_use]
 pub(crate) fn build_dbusmenu(root: &DbusMenuNode) -> Vec<MenuItem> {
-    build_dbusmenu_children(&root.2, 0)
+    let mut budget = MAX_ITEMS;
+    build_dbusmenu_children(&root.2, 0, &mut budget)
 }
 
-fn build_dbusmenu_children(children: &[OwnedValue], depth: usize) -> Vec<MenuItem> {
+fn build_dbusmenu_children(children: &[OwnedValue], depth: usize, budget: &mut usize) -> Vec<MenuItem> {
     if depth > MAX_DEPTH {
         return Vec::new();
     }
-    let mut out: Vec<MenuItem> = children
-        .iter()
-        .filter_map(|child| DbusMenuNode::try_from(child.clone()).ok())
-        .filter_map(|node| build_dbusmenu_node(&node, depth))
-        .collect();
+    let mut out = Vec::new();
+    for child in children {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        if let Ok(node) = DbusMenuNode::try_from(child.clone())
+            && let Some(item) = build_dbusmenu_node(&node, depth, budget)
+        {
+            out.push(item);
+        }
+    }
     tidy_separators(&mut out);
     out
 }
 
-fn build_dbusmenu_node(node: &DbusMenuNode, depth: usize) -> Option<MenuItem> {
+fn build_dbusmenu_node(node: &DbusMenuNode, depth: usize, budget: &mut usize) -> Option<MenuItem> {
     let (id, props, children) = node;
     if bool_of(props, "visible") == Some(false) {
         return None;
@@ -349,7 +357,7 @@ fn build_dbusmenu_node(node: &DbusMenuNode, depth: usize) -> Option<MenuItem> {
         Some("radio") => Toggle::Radio(toggle_state),
         _ => Toggle::None,
     };
-    let children = build_dbusmenu_children(children, depth + 1);
+    let children = build_dbusmenu_children(children, depth + 1, budget);
     let is_submenu = string_of(props, "children-display").as_deref() == Some("submenu");
     if is_submenu && children.is_empty() && label.is_empty() {
         return None;
@@ -538,5 +546,15 @@ mod tests {
         assert!(bar[0].children.is_empty());
         assert!(bar[0].is_submenu());
         assert_eq!(bar[0].activation, Activation::DbusMenu(9));
+    }
+
+    #[test]
+    fn dbusmenu_item_budget_is_shared_across_submenus() {
+        let leaf = node(2, &[("label", value("Leaf"))], Vec::new());
+        let submenu = node(1, &[("label", value("Menu"))], vec![leaf; MAX_ITEMS]);
+        let root = (0, HashMap::new(), vec![submenu.clone(), submenu]);
+        let bar = build_dbusmenu(&root);
+        assert_eq!(bar.len(), 1);
+        assert_eq!(bar[0].children.len(), MAX_ITEMS - 1);
     }
 }

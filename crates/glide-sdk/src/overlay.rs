@@ -308,7 +308,7 @@ pub fn toast_motion<'a, M: 'a>(card: impl Into<Element<'a, M>>, progress: f32, e
     const RISE: f32 = 16.0;
     const SHRINK: f32 = 0.04;
     let (drop, scale) = if entering { ((1.0 - progress) * RISE, 1.0) } else { (0.0, 1.0 - (1.0 - progress) * SHRINK) };
-    iced::widget::float(card).scale(scale).translate(move |_, _| iced::Vector::new(0.0, drop)).into()
+    glide_iced::widgets::lift(card, scale, drop)
 }
 
 #[must_use]

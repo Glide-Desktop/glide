@@ -351,6 +351,10 @@ struct Pending {
     owed: Owed,
 }
 
+fn wake_after(now: Instant, deadlines: impl IntoIterator<Item = Option<Instant>>) -> Option<Duration> {
+    deadlines.into_iter().flatten().min().map(|next| next.saturating_duration_since(now))
+}
+
 fn remember(pending: &mut Vec<Pending>, entry: Pending) {
     pending.retain(|p| p.address != entry.address);
     if pending.len() >= MAX_PENDING {
@@ -471,10 +475,7 @@ impl Worker {
     }
 
     fn next_wake(&self, now: Instant) -> Option<Duration> {
-        let pending = plan(now, self.pending.iter().map(|p| p.owed.at)).next;
-        let items = plan(now, self.items.iter().map(|t| t.owed.at)).next;
-        let next = [pending, items].into_iter().flatten().min()?;
-        Some(next.saturating_duration_since(now))
+        wake_after(now, self.pending.iter().map(|p| p.owed.at).chain(self.items.iter().map(|t| t.owed.at)))
     }
 
     fn retry_due(&mut self) {
@@ -729,7 +730,7 @@ impl Worker {
     }
 
     fn refresh_owner(&mut self, sender: &str) {
-        for index in 0..self.items.len() {
+        for index in (0..self.items.len()).rev() {
             let tracked = &self.items[index];
             if tracked.owner == sender || tracked.address.bus == sender {
                 self.refresh(index);
@@ -1091,6 +1092,16 @@ mod tests {
         assert_eq!(mixed.next, at(14));
         let all_past = plan(now, [Some(now), at(9)]);
         assert_eq!(all_past, Plan { due: vec![0, 1], next: None });
+    }
+
+    #[test]
+    fn a_retry_that_became_due_before_waiting_wakes_immediately() {
+        let now = Instant::now();
+        let earlier = now.checked_sub(Duration::from_millis(1)).expect("monotonic clock");
+        assert_eq!(wake_after(now, [Some(earlier)]), Some(Duration::ZERO));
+        assert_eq!(wake_after(now, [None, Some(now)]), Some(Duration::ZERO));
+        assert_eq!(wake_after(now, [None, Some(now + RETRY_FIRST)]), Some(RETRY_FIRST));
+        assert_eq!(wake_after(now, [None]), None);
     }
 
     #[test]

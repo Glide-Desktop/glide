@@ -86,7 +86,8 @@ impl Snapshot {
     fn sample(&self) -> (Rectangle<i32, Logical>, f32) {
         let t = self.eased();
         let Track { from, to, to_alpha, .. } = self.track;
-        (lerp_rect(from, to, t), lerp_alpha(1.0, to_alpha, t))
+        let alpha_t = if to_alpha == 0.0 { ((t - 0.6) / 0.4).clamp(0.0, 1.0) } else { t };
+        (lerp_rect(from, to, t), lerp_alpha(1.0, to_alpha, alpha_t))
     }
 }
 
@@ -124,7 +125,7 @@ impl Snapshots {
         scale: Scale<f64>, output_scale: i32,
     ) -> bool {
         let to = close_target(target_frame);
-        let track = Track::new(target_frame, to, 0.0, close_duration(), E_IO);
+        let track = Track::new(target_frame, to, 0.0, close_duration(), E_OUT);
         self.push(renderer, window, track, scale, output_scale)
     }
 
@@ -356,6 +357,16 @@ mod tests {
         #[test]
         fn closing_is_quicker_than_a_geometry_morph() {
             assert!(close_duration() < morph_duration());
+        }
+
+        #[test]
+        fn closing_alpha_drops_only_in_the_last_forty_percent() {
+            let exit_alpha = |t: f64| lerp_alpha(1.0, 0.0, ((t - 0.6) / 0.4).clamp(0.0, 1.0));
+            assert_eq!(exit_alpha(0.0), 1.0);
+            assert_eq!(exit_alpha(0.5), 1.0);
+            assert_eq!(exit_alpha(0.6), 1.0);
+            assert!((exit_alpha(0.8) - 0.5).abs() < 1e-4);
+            assert_eq!(exit_alpha(1.0), 0.0);
         }
 
         #[test]

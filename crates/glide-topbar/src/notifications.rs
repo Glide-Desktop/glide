@@ -1076,13 +1076,21 @@ fn load_icon(icons: &mut crate::icon::IconLoader, notification: &Notification) -
 }
 
 fn load_icon_bytes(icons: &mut crate::icon::IconLoader, notification: &Notification) -> Option<Vec<u8>> {
-    if !notification.desktop_entry.trim().is_empty()
-        && let Some(bytes) = icons.load(&notification.desktop_entry, ICON_SOURCE_PX)
-    {
-        return Some(bytes.to_vec());
+    if let Some(bytes) = &notification.image_data {
+        if bytes.len() == (ICON_SOURCE_PX as usize) * (ICON_SOURCE_PX as usize) * 4 {
+            return Some(bytes.clone());
+        }
+        if let Some(rendered) = glide_paint::render_png_rounded(bytes, ICON_SOURCE_PX, 8.0) {
+            return Some(rendered);
+        }
     }
     if !notification.app_icon.trim().is_empty()
         && let Some(bytes) = icons.load_named(&notification.app_icon, ICON_SOURCE_PX)
+    {
+        return Some(bytes.to_vec());
+    }
+    if !notification.desktop_entry.trim().is_empty()
+        && let Some(bytes) = icons.load(&notification.desktop_entry, ICON_SOURCE_PX)
     {
         return Some(bytes.to_vec());
     }
@@ -1302,6 +1310,20 @@ mod tests {
             assert!(store.live.iter().any(|entry| entry.owns(id)), "{id} keeps its toast");
         }
         assert!(store.take_glances().is_empty());
+    }
+
+    #[test]
+    fn image_data_in_notification_becomes_entry_icon() {
+        let (mut store, mut icons) = store();
+        let pixel_bytes = vec![0x80; (ICON_SOURCE_PX as usize) * (ICON_SOURCE_PX as usize) * 4];
+        let mut note = Notification {
+            actions: vec![glide_notify::Action { key: "open".into(), label: "Open".into() }],
+            ..notification(42)
+        };
+        note.image_data = Some(pixel_bytes.clone());
+        assert!(store.push(&mut icons, note, false));
+        let entry = store.live.iter().find(|e| e.notification.id == 42).expect("stored");
+        assert_eq!(entry.icon.as_deref().map(Vec::as_slice), Some(pixel_bytes.as_slice()));
     }
 
     #[test]

@@ -236,7 +236,6 @@ pub fn reply(stream: &UnixStream, response: &Response) {
 }
 
 fn write_all_nonblocking(mut stream: &UnixStream, mut data: &[u8]) -> std::io::Result<()> {
-    let mut retries = 0;
     while !data.is_empty() {
         match stream.write(data) {
             Ok(0) => {
@@ -244,15 +243,10 @@ fn write_all_nonblocking(mut stream: &UnixStream, mut data: &[u8]) -> std::io::R
             }
             Ok(n) => {
                 data = &data[n..];
-                retries = 0;
             }
             Err(err) if err.kind() == ErrorKind::Interrupted => {}
             Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                if retries >= 100 {
-                    return Err(err);
-                }
-                retries += 1;
-                std::thread::yield_now();
+                return Err(err);
             }
             Err(err) => return Err(err),
         }

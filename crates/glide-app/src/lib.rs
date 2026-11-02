@@ -73,7 +73,10 @@ pub fn look_changes() -> UnboundedReceiver<Look> {
             if let Some(bus) = connection.as_ref() {
                 match follow(bus, &sender) {
                     Ok(()) => backoff = RETRY,
-                    Err(err) => tracing::debug!("the Glide shell service is unavailable: {err}"),
+                    Err(err) => {
+                        tracing::debug!("the Glide shell service is unavailable: {err}");
+                        connection = None;
+                    }
                 }
             }
             std::thread::sleep(backoff);

@@ -593,8 +593,8 @@ impl Layout {
     fn centered_over_parent(&self, parent: WindowId, content_size: Size, insets: Insets) -> Option<Rectangle> {
         let host = self.windows.get(&parent).filter(|state| state.is_placed && !state.minimized)?.frame_geometry();
         let frame_size = content_size.grow(insets);
-        let x = host.loc.x + (host.size.width - frame_size.width) / 2;
-        let y = host.loc.y + (host.size.height - frame_size.height) / 2;
+        let x = host.loc.x.saturating_add(host.size.width.saturating_sub(frame_size.width) / 2);
+        let y = host.loc.y.saturating_add(host.size.height.saturating_sub(frame_size.height) / 2);
         Some(keep_reachable(Rectangle::new(Point::new(x, y), frame_size), self.work_area_for_window(parent)))
     }
 
@@ -877,8 +877,16 @@ impl Layout {
 
         let step = i32::try_from(index_on_ws % 8).unwrap_or(0);
         let offset = step * CASCADE_STEP;
-        let x = work_area.loc.x + (work_area.size.width - frame_size.width) / 2 + offset;
-        let y = work_area.loc.y + (work_area.size.height - frame_size.height) / 2 + offset;
+        let x = work_area
+            .loc
+            .x
+            .saturating_add(work_area.size.width.saturating_sub(frame_size.width) / 2)
+            .saturating_add(offset);
+        let y = work_area
+            .loc
+            .y
+            .saturating_add(work_area.size.height.saturating_sub(frame_size.height) / 2)
+            .saturating_add(offset);
 
         keep_reachable(Rectangle::new(Point::new(x, y), frame_size), work_area)
     }

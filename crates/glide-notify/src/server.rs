@@ -166,6 +166,11 @@ impl Service {
 
         let display_name = hints::string(&hint_map, "x-kde-display-appname");
         let app_name = if display_name.is_empty() { app_name } else { display_name };
+        let image_path = {
+            let p = hints::string(&hint_map, "image-path");
+            if p.is_empty() { hints::string(&hint_map, "image_path") } else { p }
+        };
+        let app_icon = if app_icon.is_empty() && !image_path.is_empty() { image_path } else { app_icon };
 
         let mut notification = Notification {
             id: replaces_id,
@@ -185,6 +190,7 @@ impl Service {
             transient: hints::boolean(&hint_map, "transient"),
             timeout: resolve_timeout(expire_timeout, urgency),
             sound: hints::sound(&hint_map),
+            image_data: None,
         };
 
         let replacing = {

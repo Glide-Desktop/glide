@@ -146,6 +146,7 @@ fn window_shadow_layers(
 
 pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<DecorationBuffer> {
     let mut state = window.try_decoration_state_mut()?;
+    let state = &mut *state;
     if !state.header.is_framed() {
         return None;
     }
@@ -189,7 +190,8 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
         let buf_h = physical_h + physical_margin * 2;
 
         if let Ok(pixels) = usize::try_from(buf_w * buf_h * 4) {
-            let mut buf = vec![0u8; pixels];
+            state.scratch_buf.clear();
+            state.scratch_buf.resize(pixels, 0u8);
 
             let shadow_layers = window_shadow_layers(&theme, is_focused, scale as f32);
             let window_radius = (if is_maximized { 0.0 } else { theme.corner_radius }) * scale as f32;
@@ -207,9 +209,10 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
                     Some(window_radius),
                 )
             });
-            if !template.compose(&mut buf, buf_w, buf_h) {
+            let buf = &mut state.scratch_buf;
+            if !template.compose(buf, buf_w, buf_h) {
                 crate::paint::draw_outset_shadow_and_border(
-                    &mut buf,
+                    buf,
                     buf_w,
                     buf_h,
                     physical_w as f32,
@@ -223,7 +226,7 @@ pub fn shadow_and_border_buffer(window: &GlideWindow, scale: i32) -> Option<Deco
             }
 
             let memory =
-                MemoryRenderBuffer::from_slice(&buf, Fourcc::Argb8888, (buf_w, buf_h), scale, Transform::Normal, None);
+                MemoryRenderBuffer::from_slice(buf, Fourcc::Argb8888, (buf_w, buf_h), scale, Transform::Normal, None);
             state.box_deco.insert(scale, BoxDecoCache { key, buf: memory });
         }
     }

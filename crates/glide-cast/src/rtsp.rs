@@ -113,6 +113,9 @@ impl Reader {
         let Some(end) = self.buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
             return if self.buffer.len() > MAX_MESSAGE { Err(ReadError::TooLarge) } else { Ok(None) };
         };
+        if end + 4 > MAX_MESSAGE {
+            return Err(ReadError::TooLarge);
+        }
         let head = String::from_utf8_lossy(&self.buffer[..end]).into_owned();
         let mut lines = head.split("\r\n");
         let start = parse_start(lines.next().unwrap_or_default())?;
@@ -124,7 +127,7 @@ impl Reader {
             .find(|(name, _)| name.eq_ignore_ascii_case("Content-Length"))
             .map_or(Ok(0), |(_, value)| value.parse::<usize>())
             .map_err(|_| ReadError::Malformed("bad Content-Length".into()))?;
-        if length > MAX_MESSAGE {
+        if length > MAX_MESSAGE - end - 4 {
             return Err(ReadError::TooLarge);
         }
         let total = end + 4 + length;
@@ -443,6 +446,16 @@ mod tests {
     fn a_runaway_header_is_refused() {
         let mut reader = Reader::default();
         reader.push(&vec![b'a'; MAX_MESSAGE + 1]);
+        assert_eq!(reader.next_message(), Err(ReadError::TooLarge));
+    }
+
+    #[test]
+    fn message_limit_includes_terminated_headers_and_body_together() {
+        let mut reader = Reader::default();
+        reader.push(format!("OPTIONS * RTSP/1.0\r\nX-Padding: {}\r\n\r\n", "a".repeat(MAX_MESSAGE)).as_bytes());
+        assert_eq!(reader.next_message(), Err(ReadError::TooLarge));
+        let mut reader = Reader::default();
+        reader.push(format!("RTSP/1.0 200 OK\r\nContent-Length: {MAX_MESSAGE}\r\n\r\n").as_bytes());
         assert_eq!(reader.next_message(), Err(ReadError::TooLarge));
     }
 

@@ -25,7 +25,9 @@ impl<T> Sender<T> {
     pub fn send(self, value: T) {
         let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         slot.value = Some(value);
-        if let Some(waker) = slot.waker.take() {
+        let waker = slot.waker.take();
+        drop(slot);
+        if let Some(waker) = waker {
             waker.wake();
         }
     }
@@ -35,7 +37,9 @@ impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         slot.closed = true;
-        if let Some(waker) = slot.waker.take() {
+        let waker = slot.waker.take();
+        drop(slot);
+        if let Some(waker) = waker {
             waker.wake();
         }
     }
@@ -115,5 +119,27 @@ mod tests {
         let (sender, receiver) = channel();
         sender.send("ready");
         assert_eq!(block_on(receiver), Some("ready"));
+    }
+
+    #[test]
+    fn wake_callbacks_run_after_the_channel_lock_is_released() {
+        struct Probe(Arc<Mutex<Slot<u8>>>);
+        impl Wake for Probe {
+            fn wake(self: Arc<Self>) {
+                assert!(self.0.try_lock().is_ok(), "a wake callback must be able to poll the receiver");
+            }
+        }
+        for send in [false, true] {
+            let (sender, mut receiver) = channel();
+            let waker = Waker::from(Arc::new(Probe(Arc::clone(&sender.0))));
+            let mut context = Context::from_waker(&waker);
+            assert!(Pin::new(&mut receiver).poll(&mut context).is_pending());
+            if send {
+                sender.send(7);
+            } else {
+                drop(sender);
+            }
+            assert_eq!(Pin::new(&mut receiver).poll(&mut context), Poll::Ready(send.then_some(7)));
+        }
     }
 }

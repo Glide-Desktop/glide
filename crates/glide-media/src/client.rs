@@ -211,12 +211,16 @@ fn list_players(connection: &zbus::blocking::Connection) -> Vec<String> {
     names.into_iter().filter(|name| is_player_bus(name.as_str())).map(|name| name.as_str().to_string()).collect()
 }
 
-fn choose(connection: &zbus::blocking::Connection) -> Option<Track> {
-    list_players(connection)
-        .iter()
-        .filter_map(|bus| read_track(connection, bus))
-        .filter(|track| track.status.is_active())
-        .fold(None, |best, track| if better_candidate(best.as_ref(), &track) { Some(track) } else { best })
+fn select_track(tracks: impl IntoIterator<Item = Track>, preferred: Option<&str>) -> Option<Track> {
+    tracks.into_iter().filter(|track| track.status.is_active()).fold(None, |best, track| {
+        let keep_current = preferred == Some(track.bus.as_str())
+            && best.as_ref().is_some_and(|best: &Track| best.status == track.status);
+        if keep_current || better_candidate(best.as_ref(), &track) { Some(track) } else { best }
+    })
+}
+
+fn choose(connection: &zbus::blocking::Connection, preferred: Option<&str>) -> Option<Track> {
+    select_track(list_players(connection).iter().filter_map(|bus| read_track(connection, bus)), preferred)
 }
 
 const SCAN_INTERVAL: Duration = Duration::from_millis(500);
@@ -255,7 +259,7 @@ fn run_worker(connection: &zbus::blocking::Connection, inbox: &mpsc::Receiver<Re
 }
 
 fn publish(connection: &zbus::blocking::Connection, last: &mut Option<Track>, art: &mut ArtFetcher, sink: &Sink) {
-    let track = choose(connection).map(|mut track| {
+    let track = choose(connection, last.as_ref().map(|track| track.bus.as_str())).map(|mut track| {
         track.desktop_entry = desktop_entry(connection, &track.bus, last.as_ref());
         art.localise(&mut track.art_url);
         track
@@ -299,6 +303,19 @@ mod tests {
         handle.seek(0.5);
         let received: Vec<Request> = inbox.try_iter().collect();
         assert_eq!(received, vec![Request::Command(Command::PlayPause), Request::Seek(0.5)]);
+    }
+
+    #[test]
+    fn selection_keeps_the_current_player_when_bus_order_changes() {
+        let current = Track { bus: "current".into(), status: Playback::Playing, ..Track::default() };
+        let other = Track { bus: "other".into(), ..current.clone() };
+        for tracks in [[current.clone(), other.clone()], [other.clone(), current.clone()]] {
+            assert_eq!(select_track(tracks, Some("current")), Some(current.clone()));
+        }
+        let paused = Track { status: Playback::Paused, ..current };
+        assert_eq!(select_track([other.clone(), paused.clone()], Some("current")), Some(other.clone()));
+        assert_eq!(select_track([paused, other.clone()], Some("current")), Some(other.clone()));
+        assert_eq!(select_track([other.clone()], Some("current")), Some(other));
     }
 
     #[test]

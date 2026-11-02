@@ -152,7 +152,7 @@ impl VelocityTracker {
         if self.samples.len() < 2 || dt < 0.015 {
             return 0.0;
         }
-        self.samples.iter().map(delta).sum::<f64>() / dt
+        self.samples.iter().skip(1).map(delta).sum::<f64>() / dt
     }
 
     #[must_use]
@@ -1065,6 +1065,19 @@ mod tests {
         assert!(vx < -500.0);
         let vp = normalized_velocity_x(vx, 1000.0);
         assert!(vp > 0.5);
+    }
+
+    #[test]
+    fn velocity_counts_only_motion_inside_the_measured_interval() {
+        let mut tracker = VelocityTracker::new(Duration::from_millis(100));
+        let start = Instant::now();
+        tracker.push(start, 1000.0, -1000.0);
+        tracker.push(start + Duration::from_millis(20), 2.0, -4.0);
+        assert!((tracker.velocity_x() - 100.0).abs() < 1e-9);
+        assert!((tracker.velocity_y() + 200.0).abs() < 1e-9);
+        tracker.push(start + Duration::from_millis(110), 9.0, -18.0);
+        assert!((tracker.velocity_x() - 100.0).abs() < 1e-9);
+        assert!((tracker.velocity_y() + 200.0).abs() < 1e-9);
     }
 
     #[test]

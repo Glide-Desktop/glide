@@ -2969,11 +2969,12 @@ impl GlideState {
         if self.screen_locked() || self.topbar_suppressed_on(output) {
             return false;
         }
-        let Some(slot) = self.topbar.slot_at(pos) else {
-            return self.topbar.contains(output, pos);
-        };
+        let slot = self.topbar.slot_at(pos);
+        if slot.is_none() && !self.topbar.contains(output, pos) {
+            return false;
+        }
         let delta = scroll_delta::<I>(event);
-        if let crate::topbar::Slot::Tray(id) = slot {
+        if let Some(crate::topbar::Slot::Tray(id)) = slot {
             self.scroll_tray(id, delta);
             return true;
         }
@@ -2981,6 +2982,26 @@ impl GlideState {
         if steps == 0 {
             return true;
         }
+        let inside_popup = self.topbar.popup_rect().is_some_and(|rect| {
+            pos.x >= f64::from(rect.loc.x)
+                && pos.y >= f64::from(rect.loc.y)
+                && pos.x < f64::from(rect.loc.x + rect.size.w)
+                && pos.y < f64::from(rect.loc.y + rect.size.h)
+        });
+        if inside_popup
+            && matches!(
+                self.topbar.detail(),
+                Some(crate::topbar::Detail::Sound | crate::topbar::Detail::Wifi | crate::topbar::Detail::Bluetooth)
+            )
+        {
+            if self.topbar.scroll_detail_list(steps) {
+                self.queue_redraw();
+            }
+            return true;
+        }
+        let Some(slot) = slot else {
+            return true;
+        };
         if matches!(slot, crate::topbar::Slot::NcItem(_) | crate::topbar::Slot::NcItemDismiss(_)) {
             if self.topbar.scroll_notifications(steps) {
                 self.queue_redraw();

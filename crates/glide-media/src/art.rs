@@ -101,7 +101,7 @@ pub(crate) fn cached_art_path(dir: &Path, url: &str) -> PathBuf {
 
 pub(crate) struct ArtFetcher {
     dir: Option<PathBuf>,
-    requests: Option<mpsc::Sender<String>>,
+    requests: Option<mpsc::SyncSender<String>>,
     attempted: HashSet<String>,
 }
 
@@ -110,7 +110,7 @@ impl ArtFetcher {
     pub fn start() -> Self {
         let dir = art_cache_dir();
         let requests = dir.clone().and_then(|dir| {
-            let (sender, inbox) = mpsc::channel::<String>();
+            let (sender, inbox) = mpsc::sync_channel::<String>(1);
             std::thread::Builder::new()
                 .name("glide-art".to_string())
                 .spawn(move || run_fetcher(&dir, &inbox))
@@ -123,7 +123,7 @@ impl ArtFetcher {
 
     #[cfg(test)]
     fn detached(dir: PathBuf) -> (Self, mpsc::Receiver<String>) {
-        let (sender, inbox) = mpsc::channel();
+        let (sender, inbox) = mpsc::sync_channel(1);
         (Self { dir: Some(dir), requests: Some(sender), attempted: HashSet::new() }, inbox)
     }
 
@@ -141,9 +141,14 @@ impl ArtFetcher {
         }
         if self.attempted.insert(url.trim().to_string())
             && let Some(requests) = self.requests.as_ref()
-            && requests.send(url.trim().to_string()).is_err()
         {
-            self.requests = None;
+            match requests.try_send(url.trim().to_string()) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(url)) => {
+                    self.attempted.remove(&url);
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => self.requests = None,
+            }
         }
         None
     }
@@ -305,5 +310,20 @@ mod tests {
         prune(&dir, 2);
         assert_eq!(std::fs::read_dir(&dir).expect("read").count(), 2);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_busy_fetcher_bounds_its_queue_and_retries_the_current_cover() {
+        let dir = scratch("busy");
+        let (mut fetcher, inbox) = ArtFetcher::detached(dir.clone());
+        let first = "https://example.com/first.jpg";
+        let current = "https://example.com/current.jpg";
+        assert_eq!(fetcher.resolve(first), None);
+        assert_eq!(fetcher.resolve(current), None);
+        assert_eq!(inbox.try_recv().unwrap(), first);
+        assert!(inbox.try_recv().is_err());
+        assert_eq!(fetcher.resolve(current), None);
+        assert_eq!(inbox.try_recv().unwrap(), current);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

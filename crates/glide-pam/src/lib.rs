@@ -132,8 +132,8 @@ impl Identity {
         };
         let saved = Self { uid, gid };
         // SAFETY: as above; an invalid id changes nothing and returns the current one.
-        let now = unsafe { libc::setfsuid(u32::MAX) } as u32;
-        (now == account.uid).then_some(saved)
+        let current = unsafe { (libc::setfsuid(u32::MAX) as u32, libc::setfsgid(u32::MAX) as u32) };
+        (current == (account.uid, account.gid)).then_some(saved)
     }
 }
 

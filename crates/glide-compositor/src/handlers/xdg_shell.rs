@@ -164,8 +164,9 @@ impl XdgShellHandler for GlideState {
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        let seat: Seat<GlideState> =
-            Seat::from_resource(&seat).expect("wl_seat resource is guaranteed live by protocol");
+        let Some(seat): Option<Seat<GlideState>> = Seat::from_resource(&seat) else {
+            return;
+        };
         let wl_surface = surface.wl_surface();
 
         if let Some(start_data) = check_grab(&seat, wl_surface, serial) {
@@ -196,8 +197,9 @@ impl XdgShellHandler for GlideState {
     fn resize_request(
         &mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial, edges: xdg_toplevel::ResizeEdge,
     ) {
-        let seat: Seat<GlideState> =
-            Seat::from_resource(&seat).expect("wl_seat resource is guaranteed live by protocol");
+        let Some(seat): Option<Seat<GlideState>> = Seat::from_resource(&seat) else {
+            return;
+        };
         let wl_surface = surface.wl_surface();
 
         if let Some(start_data) = check_grab(&seat, wl_surface, serial) {

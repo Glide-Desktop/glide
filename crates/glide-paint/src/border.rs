@@ -45,7 +45,7 @@ fn plain_stroke(width: f32) -> Stroke {
     Stroke { width, ..Stroke::default() }
 }
 
-fn rasterize_rounded_rect_alpha(
+pub(crate) fn rasterize_rounded_rect_alpha(
     canvas_w: i32, canvas_h: i32, rect_x: f32, rect_y: f32, rect_w: f32, rect_h: f32, radius: f32,
 ) -> Option<Vec<u8>> {
     let (Ok(w), Ok(h)) = (u32::try_from(canvas_w), u32::try_from(canvas_h)) else {

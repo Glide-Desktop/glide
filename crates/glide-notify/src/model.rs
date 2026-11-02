@@ -96,6 +96,7 @@ pub struct Notification {
     pub transient: bool,
     pub timeout: Option<Duration>,
     pub sound: Sound,
+    pub image_data: Option<Vec<u8>>,
 }
 
 impl Notification {
@@ -112,10 +113,22 @@ impl Notification {
     #[must_use]
     pub fn is_duplicate_of(&self, other: &Self) -> bool {
         self.summary == other.summary
+            && self.sender == other.sender
             && self.body == other.body
             && self.app_name == other.app_name
             && self.desktop_entry == other.desktop_entry
             && self.actions == other.actions
+            && self.app_icon == other.app_icon
+            && self.has_default_action == other.has_default_action
+            && self.has_settings_action == other.has_settings_action
+            && self.reply == other.reply
+            && self.urgency == other.urgency
+            && self.category == other.category
+            && self.resident == other.resident
+            && self.transient == other.transient
+            && self.timeout == other.timeout
+            && self.sound == other.sound
+            && self.image_data == other.image_data
     }
 }
 
@@ -445,5 +458,22 @@ mod tests {
         for unhonoured in ["body-hyperlinks", "x-kde-origin-name", "x-glide-progress"] {
             assert!(!advertised.iter().any(|cap| cap == unhonoured), "{unhonoured} is not shown by the shell");
         }
+    }
+
+    #[test]
+    fn distinct_senders_and_changed_behavior_are_not_duplicates() {
+        let first = Notification { sender: ":1.5".into(), summary: "Alert".into(), ..Notification::default() };
+        let mut changed = first.clone();
+        changed.sender = ":1.6".into();
+        assert!(!first.is_duplicate_of(&changed));
+        changed = first.clone();
+        changed.urgency = Urgency::Critical;
+        assert!(!first.is_duplicate_of(&changed));
+        changed = first.clone();
+        changed.has_default_action = true;
+        assert!(!first.is_duplicate_of(&changed));
+        changed = first.clone();
+        changed.timeout = Some(Duration::from_secs(1));
+        assert!(!first.is_duplicate_of(&changed));
     }
 }

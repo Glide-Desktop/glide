@@ -12,8 +12,8 @@ use std::time::Instant;
 
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::{art, pane, separator, vertical_separator};
-use iced::widget::{Stack, column, container, float, mouse_area, opaque, row};
-use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
+use iced::widget::{Stack, column, container, mouse_area, opaque, row};
+use iced::{Alignment, Color, Element, Fill, Length, Padding};
 
 use crate::app::{App, Hover, Message, Notice, NoticeAction};
 use crate::fs::FileEntry;
@@ -146,7 +146,7 @@ fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Messa
     }
     let at = drag.at;
     let (x, y) = crate::drag_icon::OFFSET;
-    container(float(ghost).scale(1.0).translate(|_, _| Vector::ZERO))
+    container(ghost)
         .padding(Padding { top: at.y + y as f32, left: at.x + x as f32, ..Padding::ZERO })
         .width(Fill)
         .height(Fill)

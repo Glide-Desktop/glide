@@ -24,7 +24,7 @@ fn process_name(pid: i32) -> Option<String> {
 impl GlideState {
     pub fn force_quit_window(&mut self, window: &GlideWindow) {
         let pid = self.window_pid(window);
-        let name = pid.and_then(process_name);
+        let name = pid.filter(|&p| p > 0).and_then(process_name);
         let own_pid = i32::try_from(std::process::id()).unwrap_or(0);
         match plan(pid, own_pid, name.as_deref()) {
             Plan::Kill(pid) => {

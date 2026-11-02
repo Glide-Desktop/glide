@@ -158,11 +158,14 @@ async fn run(server: &ObjectServer, handle: OwnedObjectPath, request: Request) -
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn();
-    let Ok(child) = spawned else {
+    let Ok(mut child) = spawned else {
         return (FAILED, Results::default());
     };
     let pid = child.id();
-    let registered = server.at(handle.clone(), PortalRequest { process: pidfd(pid) }).await.is_ok();
+    let registered = matches!(server.at(handle.clone(), PortalRequest { process: pidfd(pid) }).await, Ok(true));
+    if !registered {
+        let _ = child.kill();
+    }
     let output = blocking("glide-portal-wait", move || child.wait_with_output()).await;
     if output.is_none()
         && let Ok(pid) = i32::try_from(pid)
@@ -176,6 +179,8 @@ async fn run(server: &ObjectServer, handle: OwnedObjectPath, request: Request) -
     }
     if registered {
         let _ = server.remove::<PortalRequest, _>(&handle).await;
+    } else {
+        return (FAILED, Results::default());
     }
     match output {
         Some(Ok(output)) if output.status.success() => {
@@ -397,7 +402,7 @@ mod tests {
         unsafe { std::env::set_var("GLIDE_PORTAL_CHOOSER", &script) };
 
         let builder = zbus::blocking::connection::Builder::address(bus.1.as_str()).expect("address");
-        let _portal = serve(builder).expect("serve");
+        let portal = serve(builder).expect("serve");
         let client =
             zbus::blocking::connection::Builder::address(bus.1.as_str()).expect("address").build().expect("client");
         let filters: Vec<PortalFilter> = vec![("Text".into(), vec![(0, "*.txt".into())])];
@@ -413,7 +418,7 @@ mod tests {
                 PATH,
                 Some("org.freedesktop.impl.portal.FileChooser"),
                 "OpenFile",
-                &(handle, "app", "", "Pick", options),
+                &(handle.clone(), "app", "", "Pick", options),
             )
             .expect("reply");
         let (code, results): (u32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>) =
@@ -425,6 +430,26 @@ mod tests {
         let choices: Vec<(String, String)> =
             results["choices"].try_clone().expect("clone").try_into().expect("choices");
         assert_eq!(choices, [("encoding".to_string(), "latin1".to_string())]);
+        assert!(portal.object_server().at(handle.clone(), PortalRequest { process: None }).unwrap());
+        let reply = client
+            .call_method(
+                Some(BUS_NAME),
+                PATH,
+                Some("org.freedesktop.impl.portal.FileChooser"),
+                "OpenFile",
+                &(
+                    handle.clone(),
+                    "app",
+                    "",
+                    "Pick",
+                    std::collections::HashMap::<String, zbus::zvariant::Value<'_>>::new(),
+                ),
+            )
+            .expect("duplicate handle reply");
+        let (code, _): (u32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>) =
+            reply.body().deserialize().expect("body");
+        assert_eq!(code, FAILED);
+        assert!(portal.object_server().interface::<_, PortalRequest>(handle).is_ok());
         let _ = std::fs::remove_dir_all(dir);
     }
 

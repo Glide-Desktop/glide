@@ -117,3 +117,18 @@ fn test_outputs_changed_boundary_conditions() {
     let state_full = layout.window_state(w1).unwrap();
     assert_eq!(state_full.geometry, new_output2.geometry);
 }
+
+#[test]
+fn centering_windows_and_dialogs_near_coordinate_limits_does_not_overflow() {
+    let mut layout = Layout::new();
+    let geometry = Rectangle::from_loc_and_size(i32::MAX - 100, i32::MAX - 100, 1920, 1080);
+    layout.outputs_changed(&[OutputInfo { id: OutputId::next(), geometry, work_area: geometry }]);
+    let parent = WindowId::next();
+    layout.add_window(parent, Size::new(800, 600));
+    let dialog = WindowId::next();
+    layout.add_window_with_parent(dialog, Size::new(400, 300), parent);
+    for id in [parent, dialog] {
+        let frame = layout.window_state(id).unwrap().geometry;
+        assert!(frame.loc.x >= geometry.loc.x && frame.loc.y >= geometry.loc.y);
+    }
+}

@@ -493,6 +493,7 @@ fn present_feedback(
 
     let refresh = output
         .current_mode()
+        .filter(|m| m.refresh > 0)
         .map_or(Refresh::Unknown, |mode| Refresh::fixed(Duration::from_secs_f64(1_000.0 / f64::from(mode.refresh))));
 
     feedback.presented::<_, Monotonic>(time, refresh, u64::from(sequence), flags);
@@ -1620,15 +1621,18 @@ impl GlideState {
             prepend(&mut elements, overlay);
         }
 
-        let osd_alpha = self.session.osd.alpha(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        let osd_alpha = self.session.osd.alpha(now);
         if osd_alpha > 0.0 && primary {
             let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
             let area = crate::osd::Osd::rect(output_rect);
+            let mut location = area.loc.to_f64();
+            location.y += self.session.osd.offset_y(now);
             if let Some(buffer) = self.session.osd.buffer(&painter, &mut self.launcher_icons, &tokens, integer_scale)
                 && let Ok(element) =
                     smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
                         gles_renderer,
-                        area.loc.to_f64().to_physical(scale),
+                        location.to_physical(scale),
                         buffer,
                         Some(osd_alpha),
                         None,
@@ -1641,6 +1645,30 @@ impl GlideState {
         }
 
         let local_pointer = pointer_on_output(pointer_location, output_geometry);
+        if !locked
+            && self.greeter.is_none()
+            && let Some(((x, y), at, presenter_output)) = self.session.presenter.as_ref()
+            && *presenter_output == output
+            && at.elapsed() < std::time::Duration::from_millis(500)
+        {
+            let center = ((*x * f64::from(logical_size.0)) as i32, (*y * f64::from(logical_size.1)) as i32);
+            let dot = [(2, 0, 8, 1), (1, 1, 10, 1), (0, 2, 12, 8), (1, 10, 10, 1), (2, 11, 8, 1)].into_iter().map(
+                |(x, y, width, height)| {
+                    let rect = Rectangle::<i32, Logical>::new(
+                        (center.0 + x - 6, center.1 + y - 6).into(),
+                        (width, height).into(),
+                    );
+                    GlideRenderElements::LockBackdrop(SolidColorRenderElement::new(
+                        smithay::backend::renderer::element::Id::new(),
+                        rect.to_f64().to_physical(scale).to_i32_round(),
+                        smithay::backend::renderer::utils::CommitCounter::default(),
+                        [1.0, 0.0, 0.0, 1.0],
+                        Kind::Unspecified,
+                    ))
+                },
+            );
+            prepend(&mut elements, dot);
+        }
         let mut ordered = local_pointer.map_or_else(Vec::new, |local| {
             cursor_elements(gles_renderer, pointer_element, local, cursor_hotspot, scale)
         });
@@ -1830,9 +1858,12 @@ impl GlideState {
         let captured = self.screencopy.has_pending_for(&output).then(|| capture_frame(gles_renderer, &elements));
 
         if self.session.cast.frame_due(&output) {
-            match capture_frame(gles_renderer, &elements) {
-                Ok(pixels) => self.session.cast.push_frame(pixels),
-                Err(err) => tracing::warn!(?err, "could not capture a mirrored frame"),
+            match captured.as_ref().and_then(|res| res.as_ref().ok()).cloned() {
+                Some(pixels) => self.session.cast.push_frame(pixels),
+                None => match capture_frame(gles_renderer, &elements) {
+                    Ok(pixels) => self.session.cast.push_frame(pixels),
+                    Err(err) => tracing::warn!(?err, "could not capture a mirrored frame"),
+                },
             }
         }
         elements.drain(cursor_count..cursor_count + masks.len());
@@ -2026,6 +2057,7 @@ impl GlideState {
 
         let frame_duration = output
             .current_mode()
+            .filter(|m| m.refresh > 0)
             .map_or(Duration::from_millis(16), |mode| Duration::from_secs_f64(1_000f64 / f64::from(mode.refresh)));
 
         let token = self

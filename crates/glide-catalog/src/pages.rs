@@ -565,12 +565,11 @@ fn tasks<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Mes
     };
     let queued = ui::Task { fraction: None, current: None, ..task(false) };
     column![
-        row![
-            container(ui::task_card(paint, Icon::File, task(catalog.flipped))).width(260),
-            container(ui::task_card(paint, Icon::File, ui::Task { fraction: None, ..task(false) })).width(260),
-            container(ui::task_card(paint, Icon::Copy, summary)).width(220),
-        ]
-        .spacing(SP3),
+        wrap(vec![
+            container(ui::task_card(paint, Icon::File, task(catalog.flipped))).width(260).into(),
+            container(ui::task_card(paint, Icon::File, ui::Task { fraction: None, ..task(false) })).width(260).into(),
+            container(ui::task_card(paint, Icon::Copy, summary)).width(220).into(),
+        ]),
         ui::task_row(paint, ui::icon(Icon::Copy, 16.0, paint.fg_2()), task(false), 420.0),
         ui::task_row(paint, text("1", TextStyle::NUM).color(paint.fg_3()), queued, 420.0),
     ]

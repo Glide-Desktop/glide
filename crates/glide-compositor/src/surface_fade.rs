@@ -20,9 +20,16 @@ fn born(surface: &WlSurface) -> Instant {
     with_states(surface, |states| states.data_map.get_or_insert(|| Born(Instant::now())).0)
 }
 
+const POPUP_TRAVEL: f32 = 6.0;
+
+#[must_use]
+pub fn travel(surface: &WlSurface) -> f32 {
+    (1.0 - progress(born(surface))) * -POPUP_TRAVEL
+}
+
 #[must_use]
 pub fn alpha(surface: &WlSurface) -> f32 {
-    progress(born(surface))
+    (progress(born(surface)) / 0.4).min(1.0)
 }
 
 #[must_use]
@@ -44,5 +51,15 @@ mod tests {
         assert!(progress(now) < 0.5);
         let earlier = now.checked_sub(span() * 2).expect("the clock has run for longer than the fade");
         assert!((progress(earlier) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn travel_slides_six_pixels() {
+        let now = Instant::now();
+        if glide_theme::motion::is_disabled() {
+            return;
+        }
+        let earlier = now.checked_sub(span() * 2).expect("valid clock");
+        assert_eq!((1.0 - progress(earlier)) * -POPUP_TRAVEL, 0.0);
     }
 }

@@ -31,7 +31,7 @@ impl WlrLayerShellHandler for GlideState {
             return;
         }
 
-        if layer.can_receive_keyboard_focus() {
+        if !self.screen_locked() && layer.can_receive_keyboard_focus() {
             self.layer_focus = Some(layer);
             self.apply_keyboard_focus();
         }

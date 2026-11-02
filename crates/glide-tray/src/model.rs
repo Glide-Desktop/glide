@@ -23,7 +23,7 @@ pub struct Address {
 }
 
 fn plausible_bus(bus: &str) -> bool {
-    !bus.is_empty() && !bus.contains(char::is_whitespace) && !bus.contains('/')
+    zbus::names::BusName::try_from(bus).is_ok()
 }
 
 impl Address {
@@ -34,6 +34,7 @@ impl Address {
             return None;
         }
         if service.starts_with('/') {
+            zbus::zvariant::ObjectPath::try_from(service).ok()?;
             let bus = sender.filter(|bus| plausible_bus(bus))?;
             return Some(Self { bus: bus.to_string(), path: service.to_string() });
         }
@@ -42,6 +43,7 @@ impl Address {
             Some((bus, rest)) => (bus, format!("/{rest}")),
             None => (service, DEFAULT_ITEM_PATH.to_string()),
         };
+        zbus::zvariant::ObjectPath::try_from(path.as_str()).ok()?;
         plausible_bus(bus).then(|| Self { bus: bus.to_string(), path })
     }
 
@@ -143,6 +145,9 @@ fn overlap(start: f64, end: f64, cell: usize) -> f64 {
 
 #[must_use]
 pub fn fit_square(bgra: &[u8], width: i32, height: i32, side: i32) -> Option<Vec<u8>> {
+    if side > MAX_PIXMAP_SIDE {
+        return None;
+    }
     let w = usize::try_from(width).ok().filter(|w| *w > 0)?;
     let h = usize::try_from(height).ok().filter(|h| *h > 0)?;
     let side_px = usize::try_from(side).ok().filter(|s| *s > 0)?;
@@ -442,6 +447,10 @@ mod tests {
         assert_eq!(Address::parse("   ", Some(":1.2")), None);
         assert_eq!(Address::parse("bad name", None), None);
         assert_eq!(Address::parse("/path", Some("")), None);
+        for service in ["invalid", "org.example.App/bad-path", "org.example.App/a//b", "org.example.App/a/"] {
+            assert_eq!(Address::parse(service, None), None, "{service}");
+        }
+        assert_eq!(Address::parse("/bad-path", Some(":1.2")), None);
     }
 
     #[test]
@@ -542,6 +551,7 @@ mod tests {
         assert_eq!(out, vec![100, 100, 100, 255]);
         assert_eq!(fit_square(&bgra, 2, 2, 0), None);
         assert_eq!(fit_square(&bgra[..8], 2, 2, 1), None);
+        assert_eq!(fit_square(&bgra, 2, 2, i32::MAX), None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::process::Command;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::power::PowerAction;
@@ -77,31 +77,6 @@ pub fn parse_wifi_list(text: &str) -> Vec<WifiNetwork> {
         }
     }
     networks
-}
-
-#[must_use]
-pub fn parse_saved_wifi(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| {
-            let fields = split_terse(line);
-            let [name, kind, ..] = fields.as_slice() else {
-                return None;
-            };
-            let wireless = matches!(kind.trim(), "802-11-wireless" | "wifi");
-            (wireless && !name.is_empty()).then(|| name.clone())
-        })
-        .collect()
-}
-
-#[must_use]
-pub fn parse_wifi_device(text: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let fields = split_terse(line);
-        let [device, kind, state, ..] = fields.as_slice() else {
-            return None;
-        };
-        (kind.trim() == "wifi" && state.trim() == "connected").then(|| device.clone())
-    })
 }
 
 pub fn mark_saved(networks: &mut [WifiNetwork], saved: &[String]) {
@@ -428,6 +403,10 @@ static WIFI_SCANNING: AtomicBool = AtomicBool::new(false);
 static BLUETOOTH_SCANNING: AtomicBool = AtomicBool::new(false);
 static OUTPUTS_SCANNING: AtomicBool = AtomicBool::new(false);
 static INPUTS_SCANNING: AtomicBool = AtomicBool::new(false);
+static OUTPUTS_LOCK: Mutex<()> = Mutex::new(());
+static INPUTS_LOCK: Mutex<()> = Mutex::new(());
+static OUTPUTS_REQUEST: AtomicU64 = AtomicU64::new(0);
+static INPUTS_REQUEST: AtomicU64 = AtomicU64::new(0);
 
 pub fn install(sink: impl Fn(NetEvent) + Send + Sync + 'static) {
     if SINK.set(Box::new(sink)).is_err() {
@@ -457,9 +436,23 @@ pub fn request(request: NetRequest) {
     {
         return;
     }
+    let audio = match &request {
+        NetRequest::ScanOutputs => Some((&OUTPUTS_LOCK, None)),
+        NetRequest::ScanInputs => Some((&INPUTS_LOCK, None)),
+        NetRequest::UseOutput { .. } => {
+            Some((&OUTPUTS_LOCK, Some((&OUTPUTS_REQUEST, OUTPUTS_REQUEST.fetch_add(1, Ordering::SeqCst) + 1))))
+        }
+        NetRequest::UseInput { .. } => {
+            Some((&INPUTS_LOCK, Some((&INPUTS_REQUEST, INPUTS_REQUEST.fetch_add(1, Ordering::SeqCst) + 1))))
+        }
+        _ => None,
+    };
     tracing::debug!(?request, "quick settings network request");
     let spawned = std::thread::Builder::new().name("glide-qs-net".to_string()).spawn(move || {
-        run_request(request);
+        let _guard = audio.map(|(lock, _)| lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        if audio.and_then(|(_, generation)| generation).is_none_or(|(latest, id)| latest.load(Ordering::SeqCst) == id) {
+            run_request(request);
+        }
         if let Some(flag) = flag {
             flag.store(false, Ordering::Release);
         }
@@ -485,7 +478,7 @@ fn run_request(request: NetRequest) {
             emit(NetEvent::Wifi(scan_wifi()));
         }
         NetRequest::DisconnectWifi { ssid } => {
-            let result = disconnect_wifi();
+            let result = disconnect_wifi(&ssid);
             emit(NetEvent::WifiResult { ssid, result });
             emit(NetEvent::Wifi(scan_wifi()));
         }
@@ -574,15 +567,43 @@ fn scan_wifi() -> Vec<WifiNetwork> {
         return Vec::new();
     };
     let mut networks = parse_wifi_list(&list);
-    let saved = stdout_of("nmcli", &["-t", "-f", "NAME,TYPE", "con", "show"])
-        .map(|text| parse_saved_wifi(&text))
-        .unwrap_or_default();
+    let saved: Vec<String> = saved_wifi_profiles().into_iter().map(|(ssid, _)| ssid).collect();
     mark_saved(&mut networks, &saved);
     sort_networks(&mut networks);
     networks
 }
 
+fn saved_wifi_profiles() -> Vec<(String, String)> {
+    let Some(profiles) = stdout_of("nmcli", &["-t", "-f", "UUID,TYPE", "con", "show"]) else {
+        return Vec::new();
+    };
+    profiles
+        .lines()
+        .filter_map(|line| {
+            let fields = split_terse(line);
+            let [uuid, kind, ..] = fields.as_slice() else { return None };
+            if uuid.is_empty() || !matches!(kind.as_str(), "802-11-wireless" | "wifi") {
+                return None;
+            }
+            let ssid =
+                stdout_of("nmcli", &["--escape", "no", "-g", "802-11-wireless.ssid", "con", "show", "uuid", uuid])?;
+            let ssid = ssid.trim_end_matches(['\r', '\n']);
+            (!ssid.is_empty()).then(|| (ssid.to_string(), uuid.clone()))
+        })
+        .collect()
+}
+
 fn connect_wifi(ssid: &str, password: Option<&str>, saved: bool) -> Result<(), ConnectError> {
+    if saved && password.is_none() {
+        let uuid = saved_wifi_profiles()
+            .into_iter()
+            .find_map(|(profile_ssid, uuid)| (profile_ssid == ssid).then_some(uuid))
+            .ok_or(ConnectError::Failed)?;
+        return run_with_timeout("nmcli", &["con", "up", "uuid", &uuid], WIFI_CONNECT_TIMEOUT)
+            .filter(|output| output.status.success())
+            .map(|_| ())
+            .ok_or(ConnectError::Failed);
+    }
     let args = wifi_connect_args(ssid, password.is_some(), saved);
     let Some(output) = run_with_input("nmcli", &args, password, WIFI_CONNECT_TIMEOUT) else {
         return Err(ConnectError::Failed);
@@ -593,9 +614,17 @@ fn connect_wifi(ssid: &str, password: Option<&str>, saved: bool) -> Result<(), C
     Err(classify_wifi_failure(&String::from_utf8_lossy(&output.stderr), password.is_some()))
 }
 
-fn disconnect_wifi() -> Result<(), ConnectError> {
-    let device = stdout_of("nmcli", &["-t", "-f", "DEVICE,TYPE,STATE", "dev"])
-        .and_then(|text| parse_wifi_device(&text))
+fn wifi_device_for_ssid(text: &str, ssid: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let fields = split_terse(line);
+        let [active, name, device, ..] = fields.as_slice() else { return None };
+        (active.trim() == "*" && name == ssid && !device.is_empty()).then(|| device.clone())
+    })
+}
+
+fn disconnect_wifi(ssid: &str) -> Result<(), ConnectError> {
+    let device = stdout_of("nmcli", &["-t", "-f", "IN-USE,SSID,DEVICE", "dev", "wifi", "list", "--rescan", "no"])
+        .and_then(|text| wifi_device_for_ssid(&text, ssid))
         .ok_or(ConnectError::Failed)?;
     run_with_timeout("nmcli", &["dev", "disconnect", &device], WIFI_CONNECT_TIMEOUT)
         .filter(|output| output.status.success())
@@ -879,8 +908,7 @@ mod tests {
 
     #[test]
     fn saved_profiles_are_only_wireless_ones() {
-        let saved = parse_saved_wifi("Home:802-11-wireless\nWired:802-3-ethernet\nCafe\\: Guest:wifi\n");
-        assert_eq!(saved, ["Home", "Cafe: Guest"]);
+        let saved = vec!["Home".to_string(), "Cafe: Guest".to_string()];
         let mut networks = parse_wifi_list(" :Cafe\\: Guest:WPA2:50:x\n :Other:WPA2:50:x");
         mark_saved(&mut networks, &saved);
         assert!(networks[0].saved);
@@ -889,9 +917,9 @@ mod tests {
 
     #[test]
     fn the_connected_wifi_device_is_found_among_others() {
-        let text = "enp3s0:ethernet:connected\nwlan0:wifi:connected\nlo:loopback:unmanaged\n";
-        assert_eq!(parse_wifi_device(text).as_deref(), Some("wlan0"));
-        assert_eq!(parse_wifi_device("wlan0:wifi:disconnected"), None);
+        let text = "*:Home:wlan0\n*:Cafe\\: Guest:wlan1\n";
+        assert_eq!(wifi_device_for_ssid(text, "Cafe: Guest").as_deref(), Some("wlan1"));
+        assert_eq!(wifi_device_for_ssid(text, "Other"), None);
     }
 
     #[test]

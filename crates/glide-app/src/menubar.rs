@@ -116,7 +116,7 @@ impl Tree {
         if let Some(display) = owned("submenu") {
             nodes[0].properties.insert("children-display".into(), display);
         }
-        let children = Self::add(&mut nodes, &menu);
+        let children = Self::add(&mut nodes, &menu, true);
         nodes[0].children = children;
         self.nodes = nodes;
         self.menu = menu;
@@ -124,7 +124,7 @@ impl Tree {
         true
     }
 
-    fn add(nodes: &mut Vec<Node>, entries: &[Entry]) -> Vec<i32> {
+    fn add(nodes: &mut Vec<Node>, entries: &[Entry], parent_enabled: bool) -> Vec<i32> {
         let mut ids = Vec::with_capacity(entries.len());
         for entry in entries {
             let id = nodes.len();
@@ -147,13 +147,13 @@ impl Tree {
                     if let Some(chord) = shortcut.as_deref().and_then(shortcut_chord) {
                         insert("shortcut", owned(vec![chord]));
                     }
-                    nodes[id].action = Some(*action);
+                    nodes[id].action = (*enabled && parent_enabled).then_some(*action);
                 }
                 Entry::Submenu { label, enabled, children } => {
                     insert("label", owned(escape_mnemonics(label)));
                     insert("enabled", owned(*enabled));
                     insert("children-display", owned("submenu"));
-                    let children = Self::add(nodes, children);
+                    let children = Self::add(nodes, children, *enabled && parent_enabled);
                     nodes[id].children = children;
                 }
             }
@@ -183,7 +183,7 @@ impl Tree {
                 .map(|node| node.children.clone())
                 .unwrap_or_default()
                 .into_iter()
-                .filter_map(|child| owned(self.structure(child, depth - 1)?))
+                .filter_map(|child| owned(self.structure(child, depth.saturating_sub(1))?))
                 .collect()
         };
         (id, self.properties(id), children)
@@ -436,7 +436,7 @@ mod tests {
         let items = glide_appmenu_like(&root);
         assert_eq!(items, vec![("File".to_string(), 3), ("Help".to_string(), 0)]);
         assert_eq!(tree.node(2).and_then(|node| node.action), Some(7));
-        assert_eq!(tree.node(4).and_then(|node| node.action), Some(9));
+        assert_eq!(tree.node(4).and_then(|node| node.action), None);
         let save = tree.properties(2);
         assert!(save.contains_key("shortcut") && save.contains_key("label"));
         assert!(tree.rebuild(Vec::new()));
@@ -507,7 +507,19 @@ mod tests {
         server.event(2, "clicked".into(), data(), 0);
         server.event(1, "clicked".into(), data(), 0);
         server.event(4, "hovered".into(), data(), 0);
+        server.event(4, "clicked".into(), data(), 0);
         assert!(matches!(receiver.try_recv(), Ok(Event::Activated(7))));
         assert!(receiver.try_recv().is_err(), "submenus and hovers send nothing");
+    }
+
+    #[test]
+    fn disabled_submenus_block_descendant_actions_and_extreme_depth_does_not_overflow() {
+        let mut menu = menu();
+        let Entry::Submenu { enabled, .. } = &mut menu[0] else { unreachable!() };
+        *enabled = false;
+        let mut tree = Tree::default();
+        tree.rebuild(menu);
+        assert_eq!(tree.node(2).and_then(|node| node.action), None);
+        assert!(tree.structure(0, i32::MIN).is_some());
     }
 }

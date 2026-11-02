@@ -16,6 +16,7 @@ use super::tty::GlideRenderElements;
 pub struct Saved {
     pub path: Option<PathBuf>,
     pub png: Vec<u8>,
+    pub preview: Option<Vec<u8>>,
 }
 
 pub fn save(mut pixels: Vec<u8>, width: i32, height: i32) -> anyhow::Result<Saved> {
@@ -26,12 +27,13 @@ pub fn save(mut pixels: Vec<u8>, width: i32, height: i32) -> anyhow::Result<Save
 
 pub fn save_rgba(rgba: &[u8], width: u32, height: u32, write: bool) -> anyhow::Result<Saved> {
     let png = glide_shell::image::encode_png(width, height, rgba).context("failed to encode the screenshot")?;
+    let preview = glide_paint::render_png_rounded(&png, 96, 8.0);
     if !write {
-        return Ok(Saved { path: None, png });
+        return Ok(Saved { path: None, png, preview });
     }
     let path = screenshot_path().context("failed to determine where to save the screenshot")?;
     std::fs::write(&path, &png).with_context(|| format!("failed to write the screenshot to {}", path.display()))?;
-    Ok(Saved { path: Some(path), png })
+    Ok(Saved { path: Some(path), png, preview })
 }
 
 pub(super) fn capture_frame(

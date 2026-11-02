@@ -106,6 +106,7 @@ pub struct DecorationState {
     pub(crate) box_deco: std::collections::HashMap<i32, BoxDecoCache>,
     pub(crate) box_deco_fade: Option<BoxDecoFade>,
     pub(crate) shadow_templates: std::collections::HashMap<ShadowTemplateKey, glide_paint::OutsetShadow>,
+    pub(crate) scratch_buf: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -624,8 +625,9 @@ mod tests {
         use crate::config::Color;
         let (normal, hover_bg) = (Color([0.1, 0.1, 0.1, 0.07]), Color([0.2, 0.4, 0.8, 1.0]));
         let (fg, fg_hover) = (Color([0.9, 0.9, 0.9, 0.68]), Color([1.0; 4]));
-        let colors = |hover_t, hovered, press_t, focused| {
-            button_colors(normal, hover_bg, fg, fg_hover, hover_t, hovered, press_t, focused)
+        let colors = |hover_t, hovered, press_t, focused: bool| {
+            let focus_factor = if focused { 1.0 } else { 0.0 };
+            button_colors(normal, hover_bg, fg, fg_hover, hover_t, hovered, press_t, focus_factor)
         };
         assert_eq!(colors(0.0, false, 0.0, true), (normal, fg));
         assert_eq!(colors(1.0, true, 0.0, true), (hover_bg, fg_hover));

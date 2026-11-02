@@ -293,8 +293,27 @@ impl<E: Element> Element for Clipped<E> {
         self.inner.damage_since(scale, commit)
     }
 
-    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
-        OpaqueRegions::default()
+    fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        if self.alpha() < 1.0 {
+            return OpaqueRegions::default();
+        }
+        let inner = self.inner.opaque_regions(scale);
+        if inner.is_empty() {
+            return OpaqueRegions::default();
+        }
+        let geom = self.geometry(scale);
+        let (rect, radii) = self.clip.resolve(geom);
+        let max_r = radii.iter().copied().fold(0.0f32, f32::max).ceil() as i32;
+        let x = (rect[0].round() as i32) + geom.loc.x + max_r;
+        let y = (rect[1].round() as i32) + geom.loc.y + max_r;
+        let w = (rect[2].round() as i32) - 2 * max_r;
+        let h = (rect[3].round() as i32) - 2 * max_r;
+        if w <= 0 || h <= 0 {
+            return OpaqueRegions::default();
+        }
+        let inner_box = Rectangle::new(Point::from((x, y)), smithay::utils::Size::from((w, h)));
+        let clipped_regions: Vec<_> = inner.iter().filter_map(|r| r.intersection(inner_box)).collect();
+        OpaqueRegions::from_slice(&clipped_regions)
     }
 
     fn alpha(&self) -> f32 {
@@ -477,5 +496,13 @@ mod tests {
     #[test]
     fn an_empty_destination_never_clips() {
         assert!(!clip_applies(Transform::Normal, rect(0, 0, 0, 0)));
+    }
+
+    #[test]
+    fn inner_intersection_retains_opaque_box() {
+        let outer = rect(0, 0, 100, 100);
+        let expected = rect(10, 10, 80, 80);
+        let actual = outer.intersection(expected);
+        assert_eq!(actual, Some(expected));
     }
 }

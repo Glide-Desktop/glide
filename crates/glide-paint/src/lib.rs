@@ -698,11 +698,33 @@ fn halve_pixmap(source: &tiny_skia::Pixmap) -> Option<tiny_skia::Pixmap> {
 
 #[must_use]
 pub fn render_png(data: &[u8], side: i32) -> Option<Vec<u8>> {
+    render_png_rounded(data, side, 0.0)
+}
+
+#[must_use]
+pub fn render_png_rounded(data: &[u8], side: i32, radius: f32) -> Option<Vec<u8>> {
     let side_u32 = square_side(side)?;
     let source = halved_below_twice(wallpaper::decode_png(data)?, side_u32)?;
     let (w, h) = (source.width() as f32, source.height() as f32);
     let transform = fit_square_transform(w, h, side, true);
-    draw_bilinear(source.as_ref(), side_u32, transform).map(skia_pixmap_into_buffer_bytes)
+    let mut pixmap = draw_bilinear(source.as_ref(), side_u32, transform)?;
+    if radius > 0.0 {
+        let target = side as f32;
+        let scale = (target / w).min(target / h);
+        let (dx, dy) = ((target - w * scale) / 2.0, (target - h * scale) / 2.0);
+        let (rw, rh) = (w * scale, h * scale);
+        if let Some(mask) =
+            border::rasterize_rounded_rect_alpha(side, side, dx.round(), dy.round(), rw.round(), rh.round(), radius)
+        {
+            for (px, &m) in pixmap.data_mut().chunks_exact_mut(4).zip(mask.iter()) {
+                let cov = f32::from(m) / 255.0;
+                for c in px.iter_mut() {
+                    *c = (f32::from(*c) * cov).round() as u8;
+                }
+            }
+        }
+    }
+    Some(skia_pixmap_into_buffer_bytes(pixmap))
 }
 
 fn halved_below_twice(mut source: tiny_skia::Pixmap, side: u32) -> Option<tiny_skia::Pixmap> {
@@ -1933,6 +1955,18 @@ mod cover_tests {
             "every channel stays within its alpha"
         );
         assert!(decoded.chunks_exact(4).any(|px| px[2] > 200 && px[3] == 255));
+    }
+
+    #[test]
+    fn png_rounded_renders_with_rounded_corners() {
+        let mut pixmap = tiny_skia::Pixmap::new(32, 32).unwrap();
+        pixmap.fill(tiny_skia::Color::from_rgba8(255, 0, 0, 255));
+        let png = pixmap.encode_png().unwrap();
+        let rendered = render_png_rounded(&png, 32, 6.0).expect("renders");
+        assert_eq!(rendered.len(), 32 * 32 * 4);
+        assert_eq!(rendered[3], 0);
+        let center = (16 * 32 + 16) * 4;
+        assert_eq!(rendered[center + 3], 255);
     }
 }
 

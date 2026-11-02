@@ -80,9 +80,9 @@ impl Rectangle {
     #[must_use]
     pub const fn contains(&self, p: Point) -> bool {
         p.x >= self.loc.x
-            && p.x < self.loc.x.saturating_add(self.size.width)
+            && (p.x as i64) < self.loc.x as i64 + self.size.width as i64
             && p.y >= self.loc.y
-            && p.y < self.loc.y.saturating_add(self.size.height)
+            && (p.y as i64) < self.loc.y as i64 + self.size.height as i64
     }
 
     #[must_use]
@@ -115,9 +115,34 @@ impl Rectangle {
             return false;
         }
 
-        self.loc.x < other.loc.x.saturating_add(other.size.width)
-            && other.loc.x < self.loc.x.saturating_add(self.size.width)
-            && self.loc.y < other.loc.y.saturating_add(other.size.height)
-            && other.loc.y < self.loc.y.saturating_add(self.size.height)
+        (self.loc.x as i64) < other.loc.x as i64 + other.size.width as i64
+            && (other.loc.x as i64) < self.loc.x as i64 + self.size.width as i64
+            && (self.loc.y as i64) < other.loc.y as i64 + other.size.height as i64
+            && (other.loc.y as i64) < self.loc.y as i64 + self.size.height as i64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contains_preserves_half_open_bounds_at_coordinate_limits() {
+        let rect = Rectangle::from_loc_and_size(i32::MAX, i32::MAX, 1, 1);
+        assert!(rect.contains(Point::new(i32::MAX, i32::MAX)));
+        let rect = Rectangle::from_loc_and_size(i32::MIN, i32::MIN, 2, 2);
+        assert!(rect.contains(Point::new(i32::MIN, i32::MIN)));
+        assert!(!rect.contains(Point::new(i32::MIN + 2, i32::MIN)));
+        assert!(!Rectangle::from_loc_and_size(0, 0, 0, 1).contains(Point::ZERO));
+    }
+
+    #[test]
+    fn overlaps_preserves_intersections_at_coordinate_limits() {
+        let rect = Rectangle::from_loc_and_size(i32::MAX, i32::MAX, 1, 1);
+        assert!(rect.overlaps(rect));
+        let adjacent = Rectangle::from_loc_and_size(i32::MAX - 1, i32::MAX - 1, 1, 1);
+        assert!(!rect.overlaps(adjacent));
+        assert!(!adjacent.overlaps(rect));
+        assert!(!rect.overlaps(Rectangle::from_loc_and_size(i32::MAX, i32::MAX, 0, 1)));
     }
 }

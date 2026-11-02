@@ -212,13 +212,15 @@ impl AppDirectory {
     }
 
     pub fn resolve(&mut self, pid: i32) {
-        if pid <= 0 || !self.requested.insert(pid) {
+        if pid <= 0 || self.requested.contains(&pid) {
             return;
         }
-        if let Some(worker) = self.worker.as_ref()
-            && worker.send(pid).is_err()
-        {
-            self.worker = None;
+        if let Some(worker) = self.worker.as_ref() {
+            if worker.send(pid).is_err() {
+                self.worker = None;
+            } else {
+                self.requested.insert(pid);
+            }
         }
     }
 
@@ -360,5 +362,21 @@ mod tests {
         assert_eq!(directory.process_app(42), Some("steam"));
         directory.forget_processes_except(&HashSet::new());
         assert_eq!(directory.process_app(42), None);
+    }
+
+    #[test]
+    fn requests_made_before_a_worker_exists_can_be_retried_after_attach() {
+        let mut directory = AppDirectory::default();
+        directory.resolve(42);
+        let (tx, rx) = mpsc::channel();
+        directory.attach(tx);
+        directory.resolve(42);
+        assert_eq!(rx.try_recv().unwrap(), 42);
+        drop(rx);
+        directory.resolve(43);
+        let (tx, rx) = mpsc::channel();
+        directory.attach(tx);
+        directory.resolve(43);
+        assert_eq!(rx.try_recv().unwrap(), 43);
     }
 }

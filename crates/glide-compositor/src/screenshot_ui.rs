@@ -168,8 +168,8 @@ impl GlideState {
             crate::ipc::reply(&waiter, &answer);
         }
         let mut actions = Vec::new();
-        let (summary, body) = match result {
-            Ok(Saved { path, png }) => {
+        let (summary, body, preview) = match result {
+            Ok(Saved { path, png, preview }) => {
                 smithay::wayland::selection::data_device::set_data_device_selection(
                     &self.display_handle,
                     &self.seat,
@@ -183,21 +183,27 @@ impl GlideState {
                         glide_notify::Action { key: SHOW.into(), label: t(Key::ShotShowInFolder).into() },
                     ];
                     self.session.last_screenshot = Some(path.clone());
-                    (crate::i18n::screenshot_saved(), path.display().to_string())
+                    (crate::i18n::screenshot_saved(), path.display().to_string(), preview)
                 } else {
                     tracing::info!("screenshot copied to the clipboard");
-                    (t(Key::ShotCopied), t(Key::ShotCopiedBody).to_string())
+                    (t(Key::ShotCopied), t(Key::ShotCopiedBody).to_string(), preview)
                 }
             }
             Err(err) => {
                 tracing::error!(%err, "failed to save the screenshot");
-                (crate::i18n::screenshot_failed(), err)
+                (crate::i18n::screenshot_failed(), err, None)
             }
         };
+        let app_icon = self
+            .session
+            .last_screenshot
+            .as_ref()
+            .map_or_else(|| "applets-screenshooter".to_string(), |path| path.display().to_string());
         let notice = glide_notify::Notification {
             id: NOTICE_ID,
             app_name: "Glide".to_string(),
-            app_icon: "applets-screenshooter".to_string(),
+            app_icon,
+            image_data: preview,
             summary: summary.to_string(),
             body,
             actions,

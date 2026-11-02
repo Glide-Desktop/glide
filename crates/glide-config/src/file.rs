@@ -11,21 +11,21 @@ const BORROWED_NAME_BYTES: usize = 100;
 const DROPPED_ATTRIBUTES: &[&[u8]] = &[b"security.capability"];
 
 pub fn write_atomic(path: &Path, contents: &[u8], new_mode: u32) -> io::Result<()> {
-    let target = resolve_symlinks(path);
+    let target = resolve_symlinks(path)?;
     let mode = fs::metadata(&target).map_or(new_mode, |meta| meta.permissions().mode() & 0o7777);
     replace(&target, contents, mode, true)
 }
 
 pub fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-    replace(&resolve_symlinks(path), contents, 0o600, false)
+    replace(&resolve_symlinks(path)?, contents, 0o600, false)
 }
 
 fn replace(target: &Path, contents: &[u8], mode: u32, keep_attributes: bool) -> io::Result<()> {
     let folder = target.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
     fs::create_dir_all(folder)?;
     let temporary = temp_sibling(target);
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&temporary)?;
     let written = (|| {
-        let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&temporary)?;
         file.set_permissions(fs::Permissions::from_mode(mode))?;
         file.write_all(contents)?;
         if keep_attributes {
@@ -111,18 +111,25 @@ fn set_attribute(fd: RawFd, name: &CStr, value: &[u8]) -> bool {
     unsafe { libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(), value.len(), 0) == 0 }
 }
 
-fn resolve_symlinks(target: &Path) -> PathBuf {
+fn resolve_symlinks(target: &Path) -> io::Result<PathBuf> {
     let mut resolved = target.to_path_buf();
-    for _ in 0..40 {
-        let Ok(link) = fs::read_link(&resolved) else {
-            break;
+    for depth in 0..=40 {
+        let link = match fs::read_link(&resolved) {
+            Ok(link) => link,
+            Err(err) if matches!(err.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => {
+                return Ok(resolved);
+            }
+            Err(err) => return Err(err),
         };
+        if depth == 40 {
+            return Err(io::Error::from_raw_os_error(libc::ELOOP));
+        }
         resolved = match resolved.parent() {
             Some(parent) if link.is_relative() => parent.join(link),
             _ => link,
         };
     }
-    resolved
+    unreachable!()
 }
 
 #[cfg(test)]
@@ -253,5 +260,21 @@ mod tests {
         assert_eq!(mode(&real), 0o600);
         assert!(fs::symlink_metadata(dir.join("link.toml")).expect("link").file_type().is_symlink());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cyclic_symlinks_are_refused_without_replacing_either_link() {
+        let dir = scratch("cycle");
+        let first = dir.join("first");
+        let second = dir.join("second");
+        std::os::unix::fs::symlink("second", &first).unwrap();
+        std::os::unix::fs::symlink("first", &second).unwrap();
+        for result in [write_atomic(&first, b"new", 0o644), write_private(&first, b"secret")] {
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::ELOOP));
+        }
+        assert_eq!(fs::read_link(&first).unwrap(), Path::new("second"));
+        assert_eq!(fs::read_link(&second).unwrap(), Path::new("first"));
+        assert_eq!(names(&dir), [OsString::from("first"), OsString::from("second")]);
+        fs::remove_dir_all(dir).unwrap();
     }
 }

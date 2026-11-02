@@ -1,9 +1,11 @@
 use std::path::Path;
 
-const PROVIDED_BY_SHELL: [&str; 10] = [
+const PROVIDED_BY_SHELL: [&str; 12] = [
     "nm-applet",
     "blueman-applet",
     "netbird-ui",
+    "kdeconnectd",
+    "kdeconnect-indicator",
     "polkit-gnome-authentication-agent-1",
     "polkit-kde-authentication-agent-1",
     "polkit-mate-authentication-agent-1",

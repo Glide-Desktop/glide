@@ -118,7 +118,7 @@ pub(crate) enum DecorationAction {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn button_colors(
     normal: Color, hover_bg: Color, fg: Color, fg_hover: Color, hover_t: f32, is_hovered: bool, press_t: f32,
-    focused: bool,
+    focus_factor: f32,
 ) -> (Color, Color) {
     let (mut bg, mut fg) =
         if is_hovered { (normal.lerp(hover_bg, hover_t), fg.lerp(fg_hover, hover_t)) } else { (normal, fg) };
@@ -127,10 +127,9 @@ pub(crate) fn button_colors(
         bg = bg.state_layer(fg, glide_theme::motion::ST_PRESS * press_t);
     }
 
-    if !focused {
-        bg = bg.with_alpha(bg.0[3] * IDLE_BUTTON_OPACITY);
-        fg = fg.with_alpha(fg.0[3] * IDLE_BUTTON_OPACITY);
-    }
+    let opacity = IDLE_BUTTON_OPACITY + (1.0 - IDLE_BUTTON_OPACITY) * focus_factor.clamp(0.0, 1.0);
+    bg = bg.with_alpha(bg.0[3] * opacity);
+    fg = fg.with_alpha(fg.0[3] * opacity);
 
     (bg, fg)
 }
@@ -192,6 +191,10 @@ impl HeaderBar {
             let remaining =
                 self.focus_fade_started.map(|started| duration.saturating_sub(started.elapsed())).unwrap_or_default();
             self.focus_fade_started = Some(now.checked_sub(remaining).unwrap_or(now));
+            for buffers in self.buffers.values_mut() {
+                buffers.titlebar_key = None;
+                buffers.button_keys = [None; 2];
+            }
         }
         self.focused = focused;
         self.maximized = maximized;
@@ -638,6 +641,8 @@ impl HeaderBar {
             });
         }
 
+        let focus_factor = if self.focused { focus_fade_t } else { 1.0 - focus_fade_t };
+
         let maximize_icon: fn(&mut [u8], i32, i32, i32, Color, Color) =
             if self.maximized { Painter::draw_icon_restore } else { Painter::draw_icon_maximize };
 
@@ -667,7 +672,7 @@ impl HeaderBar {
             let is_pressed = pressed == Some(zone);
             let zone_press_t = if press_zone == Some(zone) { press_t } else { 0.0 };
             let (btn_bg, btn_fg) =
-                button_colors(normal, hover_bg, fg, fg_hover, hover_t, is_hovered, zone_press_t, self.focused);
+                button_colors(normal, hover_bg, fg, fg_hover, hover_t, is_hovered, zone_press_t, focus_factor);
             let restore = self.maximized && zone == HitZone::Maximize;
             let button_key = (button_size, bits(btn_bg), bits(btn_fg), is_pressed, restore);
             if *key != Some(button_key) {

@@ -4,6 +4,9 @@ use glide_shell::battery::{BatteryInfo, PowerProfile};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemStatus {
     pub wifi_enabled: bool,
+    pub wifi_available: bool,
+    pub ethernet_available: bool,
+    pub ethernet_connected: bool,
     pub wifi_level: u8,
     pub wifi_ssid: String,
     pub volume_pct: u8,
@@ -19,6 +22,7 @@ pub struct SystemStatus {
     pub power_profile: Option<PowerProfile>,
     pub battery_pct: Option<u8>,
     pub battery_charging: bool,
+    pub bluetooth_available: bool,
     pub bluetooth_on: bool,
     pub bluetooth_connected: bool,
     pub vpn_active: bool,
@@ -33,6 +37,9 @@ impl Default for SystemStatus {
     fn default() -> Self {
         Self {
             wifi_enabled: false,
+            wifi_available: true,
+            ethernet_available: false,
+            ethernet_connected: false,
             wifi_level: 0,
             wifi_ssid: String::new(),
             volume_pct: 50,
@@ -48,6 +55,7 @@ impl Default for SystemStatus {
             power_profile: None,
             battery_pct: None,
             battery_charging: false,
+            bluetooth_available: true,
             bluetooth_on: false,
             bluetooth_connected: false,
             vpn_active: false,

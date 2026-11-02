@@ -63,11 +63,14 @@ fn refresh(status: &mut SystemStatus, topics: Topics, privacy: &mut PrivacySourc
         status.airplane = airplane_from(&read_radios(Path::new("/sys/class/rfkill")));
     }
     if topics.contains(Topics::NETWORK) {
+        (status.wifi_available, status.ethernet_available, status.ethernet_connected) =
+            read_network_devices(Path::new("/sys/class/net"));
         (status.wifi_enabled, status.wifi_level, status.wifi_ssid) = read_wifi();
         status.vpn_active = read_vpn_active();
     }
     if topics.intersects(Topics::BLUETOOTH | Topics::RADIOS) {
-        status.bluetooth_on = read_bluetooth();
+        status.bluetooth_available = bluetooth_available(Path::new("/sys/class/bluetooth"));
+        status.bluetooth_on = status.bluetooth_available && read_bluetooth();
         status.bluetooth_connected = status.bluetooth_on && read_bluetooth_connected();
     }
     if topics.intersects(Topics::PRIVACY | Topics::CAMERA) {
@@ -344,6 +347,26 @@ pub fn parse_active_ssid(text: &str) -> Option<String> {
         .map(|ssid| ssid.replace("\\:", ":").replace("\\\\", "\\"))
 }
 
+fn read_network_devices(path: &Path) -> (bool, bool, bool) {
+    let mut wifi = false;
+    let mut ethernet = false;
+    let mut connected = false;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let interface = entry.path();
+            if interface.join("wireless").exists() || interface.join("phy80211").exists() {
+                wifi = true;
+            } else if interface.join("device").exists()
+                && fs::read_to_string(interface.join("type")).is_ok_and(|kind| kind.trim() == "1")
+            {
+                ethernet = true;
+                connected |= fs::read_to_string(interface.join("carrier")).is_ok_and(|carrier| carrier.trim() == "1");
+            }
+        }
+    }
+    (wifi, ethernet, connected)
+}
+
 fn read_wifi() -> (bool, u8, String) {
     let radio = read_wifi_radio();
     let ssid = if radio == Some(false) { None } else { fetch_active_ssid() };
@@ -571,10 +594,11 @@ fn rfkill_bluetooth_unblocked() -> bool {
     found_bt
 }
 
+fn bluetooth_available(path: &Path) -> bool {
+    fs::read_dir(path).is_ok_and(|mut adapters| adapters.next().is_some())
+}
+
 fn read_bluetooth() -> bool {
-    if fs::read_dir("/sys/class/bluetooth").map_or(true, |mut adapters| adapters.next().is_none()) {
-        return false;
-    }
     bluetooth_on(poll_stdout("bluetoothctl", &["show"]).as_deref(), rfkill_bluetooth_unblocked)
 }
 

@@ -1,6 +1,8 @@
 fn appeared(message: &zbus::Message, service: &str) -> bool {
     let header = message.header();
     let signal = header.message_type() == zbus::message::Type::Signal
+        && header.sender().is_some_and(|sender| sender.as_str() == "org.freedesktop.DBus")
+        && header.interface().is_some_and(|interface| interface.as_str() == "org.freedesktop.DBus")
         && header.member().is_some_and(|member| member.as_str() == "NameOwnerChanged");
     signal
         && message
@@ -32,4 +34,26 @@ pub fn keep_registered(
         }
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_bus_can_announce_a_service_owner() {
+        let signal = |sender: &str, interface: &str| {
+            zbus::Message::signal("/org/freedesktop/DBus", interface, "NameOwnerChanged")
+                .unwrap()
+                .sender(sender)
+                .unwrap()
+                .build(&("org.example.Service", "", ":1.7"))
+                .unwrap()
+        };
+        let bus = "org.freedesktop.DBus";
+        assert!(appeared(&signal(bus, bus), "org.example.Service"));
+        assert!(!appeared(&signal(":1.99", bus), "org.example.Service"));
+        assert!(!appeared(&signal(bus, "org.example.Forgery"), "org.example.Service"));
+        assert!(!appeared(&signal(bus, bus), "org.example.Other"));
+    }
 }

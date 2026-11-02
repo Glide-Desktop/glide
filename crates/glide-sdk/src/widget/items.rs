@@ -2,8 +2,8 @@ use glide_iced::Paint;
 use glide_iced::style::{self, R2, SP1, SP2};
 use glide_theme::TextStyle;
 use glide_theme::shape::R1;
-use iced::widget::{Space, column, container, float, stack};
-use iced::{Alignment, Border, Color, Element, Fill, Length, Padding, Rectangle, Vector};
+use iced::widget::{Space, column, container, stack};
+use iced::{Alignment, Border, Color, Element, Fill, Length, Padding, Rectangle};
 
 use super::{Glyph, icon, mix, text};
 
@@ -24,8 +24,7 @@ pub fn item_tile<'a, M: 'a>(
 ) -> Element<'a, M> {
     let paint = *paint;
     let rise = lift * LIFT;
-    let art: Element<'a, M> =
-        float(art).scale(1.0 + lift * GROWTH).translate(move |_, _| Vector::new(0.0, -rise)).into();
+    let art: Element<'a, M> = glide_iced::widgets::lift(art, 1.0 + lift * GROWTH, -rise);
     let art: Element<'a, M> = match badge {
         Some(badge) => stack![art, container(badge).align_bottom(Fill).align_left(Fill)].into(),
         None => art,

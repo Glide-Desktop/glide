@@ -42,11 +42,11 @@ fn layout_in_rows(
 ) -> Option<(Vec<OverviewSlot>, i64)> {
     let counts = distribute(windows.len(), rows);
 
-    let label_strip = (opts.label_height + opts.label_offset).max(0);
+    let label_strip = opts.label_height.checked_add(opts.label_offset)?.max(0);
 
     let rows_i32 = i32::try_from(rows).unwrap_or(i32::MAX);
-    let total_gap = opts.gap * (rows_i32 - 1);
-    let row_height = ((area.size.height - total_gap) / rows_i32) - label_strip;
+    let total_gap = opts.gap.checked_mul(rows_i32 - 1)?;
+    let row_height = (area.size.height.checked_sub(total_gap)? / rows_i32).checked_sub(label_strip)?;
     if row_height <= 0 {
         return None;
     }
@@ -59,8 +59,11 @@ fn layout_in_rows(
         index += count;
 
         let count_i32 = i32::try_from(count).unwrap_or(i32::MAX);
-        let row_gaps = opts.gap * (count_i32 - 1);
-        let width_budget = area.size.width - row_gaps;
+        let row_gaps = opts.gap.checked_mul(count_i32 - 1)?;
+        let width_budget = area.size.width.checked_sub(row_gaps)?;
+        if width_budget <= 0 {
+            return None;
+        }
 
         let mut scales: Vec<f64> = row_windows
             .iter()
@@ -92,7 +95,7 @@ fn layout_in_rows(
             })
             .collect();
 
-        let used_width: i32 = sizes.iter().map(|s| s.width).sum::<i32>() + row_gaps;
+        let used_width = sizes.iter().try_fold(row_gaps, |total, size| total.checked_add(size.width))?;
         if used_width > area.size.width {
             return None;
         }
@@ -101,8 +104,9 @@ fn layout_in_rows(
         plans.push(RowPlan { scales, sizes, height, used_width });
     }
 
-    let block_height: i32 = plans.iter().map(|plan| plan.height + label_strip).sum::<i32>() + total_gap;
-    let mut y = area.loc.y + (area.size.height - block_height) / 2;
+    let block_height =
+        plans.iter().try_fold(total_gap, |total, plan| total.checked_add(plan.height)?.checked_add(label_strip))?;
+    let mut y = area.loc.y.saturating_add((area.size.height - block_height) / 2);
 
     let mut slots = Vec::with_capacity(windows.len());
     let mut covered: i64 = 0;
@@ -112,18 +116,18 @@ fn layout_in_rows(
         let row_windows = &windows[index..index + count];
         index += count;
 
-        let mut x = area.loc.x + (area.size.width - plan.used_width) / 2;
+        let mut x = area.loc.x.saturating_add((area.size.width - plan.used_width) / 2);
 
         for ((&(id, _), &scale), &size) in row_windows.iter().zip(&plan.scales).zip(&plan.sizes) {
-            let slot_y = y + (plan.height - size.height) / 2;
+            let slot_y = y.saturating_add((plan.height - size.height) / 2);
 
             covered += i64::from(size.width) * i64::from(size.height);
             slots.push(OverviewSlot { id, target: Rectangle::new(Point::new(x, slot_y), size), scale, row });
 
-            x += size.width + opts.gap;
+            x = x.saturating_add(size.width).saturating_add(opts.gap);
         }
 
-        y += plan.height + label_strip + opts.gap;
+        y = y.saturating_add(plan.height).saturating_add(label_strip).saturating_add(opts.gap);
     }
 
     Some((slots, covered))
@@ -148,7 +152,7 @@ pub fn compute_overview_layout(
 ) -> Vec<OverviewSlot> {
     let windows: Vec<(WindowId, Size)> = windows.iter().copied().filter(|(_, size)| !size.is_empty()).collect();
 
-    if windows.is_empty() || area.size.is_empty() {
+    if windows.is_empty() || area.size.is_empty() || !opts.max_scale.is_finite() || opts.max_scale <= 0.0 {
         return Vec::new();
     }
 
@@ -157,9 +161,10 @@ pub fn compute_overview_layout(
         return Vec::new();
     }
 
+    let opts = OverviewOptions { gap: opts.gap.max(0), ..*opts };
     let mut best: Option<(Vec<OverviewSlot>, i64)> = None;
     for rows in 1..=max_rows_for(windows.len()) {
-        let Some(candidate) = layout_in_rows(&windows, area, opts, rows) else {
+        let Some(candidate) = layout_in_rows(&windows, area, &opts, rows) else {
             continue;
         };
         if best.as_ref().is_none_or(|(_, best_covered)| candidate.1 > *best_covered) {
@@ -219,6 +224,20 @@ mod tests {
         let slots = compute_overview_layout(&windows, area(), &opts());
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].id, windows[1].0);
+    }
+
+    #[test]
+    fn invalid_scales_and_overflowing_label_strips_produce_no_slots() {
+        for max_scale in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+            assert!(compute_overview_layout(&same(2), area(), &OverviewOptions { max_scale, ..opts() }).is_empty());
+        }
+        let extreme = OverviewOptions { label_height: i32::MAX, label_offset: 1, ..opts() };
+        assert!(compute_overview_layout(&same(2), area(), &extreme).is_empty());
+        assert!(compute_overview_layout(&same(2), area(), &OverviewOptions { gap: i32::MAX, ..opts() }).is_empty());
+        let negative_gap = OverviewOptions { gap: -100, ..opts() };
+        let slots = compute_overview_layout(&same(2), area(), &negative_gap);
+        assert_eq!(slots.len(), 2);
+        assert!(!slots[0].target.overlaps(slots[1].target));
     }
 
     #[test]

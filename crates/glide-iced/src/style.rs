@@ -187,8 +187,7 @@ pub fn action(paint: &Paint, tone: Tone, status: button::Status) -> button::Styl
 pub fn menu_item(paint: &Paint, status: button::Status) -> button::Style {
     match status {
         button::Status::Disabled => flat(Color::TRANSPARENT, paint.fg_4(), R2),
-        button::Status::Hovered | button::Status::Pressed => flat(paint.fill_2(), paint.fg_1(), R2),
-        button::Status::Active => flat(Color::TRANSPARENT, paint.fg_1(), R2),
+        _ => flat(paint.layered(Color::TRANSPARENT, status), paint.fg_1(), R2),
     }
 }
 
@@ -257,6 +256,19 @@ mod tests {
             for line in [paint.hairline(), paint.divider()] {
                 assert!((line.a - 1.0).abs() < f32::EPSILON);
                 assert_ne!(line, paint.bar_bg());
+            }
+        }
+    }
+
+    #[test]
+    fn menu_items_use_distinct_hover_and_press_state_layers() {
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            let paint = Paint::new(appearance, Accent::Blue);
+            for (status, opacity) in [(button::Status::Hovered, ST_HOVER), (button::Status::Pressed, ST_PRESS)] {
+                let Some(Background::Color(background)) = menu_item(&paint, status).background else {
+                    panic!("menu state must have a solid layer");
+                };
+                assert!((background.a - opacity).abs() < 1e-6);
             }
         }
     }

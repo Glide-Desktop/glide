@@ -35,10 +35,12 @@ impl PointerConstraintsHandler for GlideState {
         let origin: Point<f64, Logical> = self
             .space
             .elements()
-            .find_map(|window| (window.wl_surface().as_deref() == Some(hint_surface)).then(|| window.geometry()))
-            .unwrap_or_default()
-            .loc
-            .to_f64();
+            .find(|window| window.wl_surface().as_deref() == Some(hint_surface))
+            .and_then(|window| {
+                let loc = self.space.element_location(window)?;
+                Some(loc.to_f64() + window.geometry().loc.to_f64())
+            })
+            .unwrap_or_default();
         pointer.set_location(origin + *hint_location);
         self.cursor_position_hint = None;
     }

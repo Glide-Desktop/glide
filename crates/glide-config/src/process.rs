@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::process::{Command, Output, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -18,16 +19,29 @@ pub fn run(command: &mut Command, input: Option<&[u8]>, timeout: Duration) -> Re
         .stderr(Stdio::piped())
         .spawn()
         .map_err(Failure::Spawn)?;
-    let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
     let deadline = Instant::now() + timeout;
+    let (stdout, stderr) = (drain(child.stdout.take(), deadline), drain(child.stderr.take(), deadline));
     let stdin = child.stdin.take();
     let status = std::thread::scope(|scope| {
-        if let (Some(input), Some(mut stdin)) = (input, stdin) {
+        let writer = input.zip(stdin).map(|(mut input, mut stdin)| {
             scope.spawn(move || {
-                let _ = stdin.write_all(input);
-            });
-        }
-        loop {
+                nonblocking(&stdin).map_err(Failure::Spawn)?;
+                while !input.is_empty() {
+                    if Instant::now() >= deadline {
+                        return Err(Failure::Timeout);
+                    }
+                    match stdin.write(input) {
+                        Ok(0) => break,
+                        Ok(count) => input = &input[count..],
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(POLL_STEP),
+                        Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
+                    }
+                }
+                Ok(())
+            })
+        });
+        let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
                 Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_STEP),
@@ -37,18 +51,52 @@ pub fn run(command: &mut Command, input: Option<&[u8]>, timeout: Duration) -> Re
                     break Err(Failure::Timeout);
                 }
             }
+        };
+        if let Some(writer) = writer {
+            writer.join().unwrap_or(Err(Failure::Timeout))?;
         }
-    })?;
-    Ok(Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
+        status
+    });
+    let stdout = stdout.join().unwrap_or(Err(Failure::Timeout));
+    let stderr = stderr.join().unwrap_or(Err(Failure::Timeout));
+    Ok(Output { status: status?, stdout: stdout?, stderr: stderr? })
 }
 
-fn drain(pipe: Option<impl Read + Send + 'static>) -> JoinHandle<Vec<u8>> {
+fn nonblocking(pipe: &impl AsRawFd) -> std::io::Result<()> {
+    // SAFETY: fcntl operates on the live owned pipe descriptor without transferring ownership.
+    let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor is live and O_NONBLOCK is a valid file status flag.
+    if unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn drain(
+    pipe: Option<impl Read + AsRawFd + Send + 'static>, deadline: Instant,
+) -> JoinHandle<Result<Vec<u8>, Failure>> {
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut bytes);
+            nonblocking(&pipe).map_err(Failure::Spawn)?;
+            let mut buffer = [0; 8192];
+            loop {
+                if Instant::now() >= deadline {
+                    return Err(Failure::Timeout);
+                }
+                match pipe.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(POLL_STEP),
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(err) => return Err(Failure::Spawn(err)),
+                }
+            }
         }
-        bytes
+        Ok(bytes)
     })
 }
 
@@ -76,5 +124,26 @@ mod tests {
             .expect("head finishes before the timeout");
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 200_000);
+    }
+
+    #[test]
+    fn descendants_holding_output_pipes_cannot_outlive_the_deadline() {
+        let started = Instant::now();
+        let result = run(Command::new("sh").args(["-c", "sleep 1 &"]), None, Duration::from_millis(100));
+        assert!(matches!(result, Err(Failure::Timeout)), "{result:?}");
+        assert!(started.elapsed() < Duration::from_millis(700));
+    }
+
+    #[test]
+    fn descendants_holding_stdin_cannot_block_the_writer_after_parent_exit() {
+        let input = vec![b'x'; 1024 * 1024];
+        let started = Instant::now();
+        let result = run(
+            Command::new("sh").args(["-c", "sleep 1 <&0 >/dev/null 2>&1 &"]),
+            Some(&input),
+            Duration::from_millis(100),
+        );
+        assert!(matches!(result, Err(Failure::Timeout)), "{result:?}");
+        assert!(started.elapsed() < Duration::from_millis(700));
     }
 }

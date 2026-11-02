@@ -240,8 +240,9 @@ fn open_scale_duration() -> Duration {
     glide_theme::motion::t4()
 }
 
+#[cfg(test)]
 fn open_alpha_duration() -> Duration {
-    glide_theme::motion::t3()
+    open_scale_duration().mul_f64(glide_theme::motion::OPACITY_LEAD)
 }
 
 const OPEN_START_SCALE: f64 = 0.86;
@@ -259,8 +260,9 @@ impl OpenProgress {
             if total.is_zero() { 1.0 } else { (elapsed.as_secs_f64() / total.as_secs_f64()).clamp(0.0, 1.0) }
         };
 
-        let scale_t = glide_theme::motion::E_OUT.ease_f64(fraction(open_scale_duration()));
-        let alpha_t = glide_theme::motion::E_IO.ease_f64(fraction(open_alpha_duration()));
+        let scale_progress = fraction(open_scale_duration());
+        let scale_t = glide_theme::motion::E_OUT.ease_f64(scale_progress);
+        let alpha_t = glide_theme::motion::assist(scale_progress);
 
         let offset = Point::from((
             (f64::from(start_offset.x) * (1.0 - scale_t)).round() as i32,
@@ -421,7 +423,10 @@ impl GlideWindow {
         let surface = toplevel.wl_surface();
         let mut elements = Vec::new();
         for (popup, offset) in PopupManager::popups_for_surface(surface) {
-            let shift = (self.0.geometry().loc + offset - popup.geometry().loc).to_physical_precise_round(scale);
+            let travel = crate::surface_fade::travel(popup.wl_surface());
+            let travel_shift = Point::<i32, Logical>::from((0, travel.round() as i32)).to_physical_precise_round(scale);
+            let shift =
+                (self.0.geometry().loc + offset - popup.geometry().loc).to_physical_precise_round(scale) + travel_shift;
             let fade = crate::surface_fade::alpha(popup.wl_surface());
             elements.extend(render_elements_from_surface_tree(
                 renderer,
@@ -702,7 +707,7 @@ mod open_animation_tests {
         assert!(open_alpha_duration() < open_scale_duration());
 
         let at_alpha_end = OpenProgress::at(open_alpha_duration(), OPEN_START_SCALE, Point::from((0, 0)));
-        assert!((at_alpha_end.alpha - 1.0).abs() < 1e-6, "alpha should be done at --t-3");
+        assert!((at_alpha_end.alpha - 1.0).abs() < 1e-6, "alpha should be done within 40 % of scale motion");
         assert!(at_alpha_end.scale < 1.0, "the scale should still have ground to cover");
     }
 

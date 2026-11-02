@@ -6,12 +6,18 @@ pub(crate) fn system_time(stamp: &prost_types::Timestamp) -> Option<SystemTime> 
     }
     let seconds = u64::try_from(stamp.seconds).ok()?;
     let nanos = u32::try_from(stamp.nanos).ok()?;
+    if nanos >= 1_000_000_000 {
+        return None;
+    }
     UNIX_EPOCH.checked_add(Duration::new(seconds, nanos))
 }
 
 pub(crate) fn duration_from(duration: &prost_types::Duration) -> Option<Duration> {
     let seconds = u64::try_from(duration.seconds).ok()?;
     let nanos = u32::try_from(duration.nanos).ok()?;
+    if nanos >= 1_000_000_000 {
+        return None;
+    }
     Some(Duration::new(seconds, nanos))
 }
 
@@ -41,7 +47,11 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     let text = text.trim();
     let (date, rest) = text.split_once(['T', 't', ' '])?;
     let mut date_parts = date.splitn(3, '-');
-    let year = number(date_parts.next()?)?;
+    let year_text = date_parts.next()?;
+    if year_text.len() != 4 {
+        return None;
+    }
+    let year = number(year_text)?;
     let month = number(date_parts.next()?)?;
     let day = number(date_parts.next()?)?;
     let zone_at = rest.find(['Z', 'z', '+', '-'])?;
@@ -54,12 +64,31 @@ pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
         return None;
     }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        2 => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if day > days || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
     let offset = match zone {
         "Z" | "z" => 0,
         _ => {
             let sign = if zone.starts_with('-') { -1 } else { 1 };
             let (hours, minutes) = zone.get(1..)?.split_once(':')?;
-            sign * (number(hours)? * 3600 + number(minutes)? * 60)
+            let (hours, minutes) = (number(hours)?, number(minutes)?);
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            sign * (hours * 3600 + minutes * 60)
         }
     };
     let nanos = if fraction.is_empty() {
@@ -149,6 +178,25 @@ mod tests {
     fn protobuf_timestamps_at_or_before_the_epoch_mean_unset() {
         assert_eq!(system_time(&prost_types::Timestamp { seconds: 0, nanos: 0 }), None);
         assert_eq!(system_time(&prost_types::Timestamp { seconds: 10, nanos: 0 }), Some(at(10)));
+    }
+
+    #[test]
+    fn invalid_calendar_dates_offsets_and_long_fraction_suffixes_are_rejected() {
+        for text in [
+            "2026-02-29T00:00:00Z",
+            "2026-04-31T00:00:00Z",
+            "1900-02-29T00:00:00Z",
+            "9223372036854775807-01-01T00:00:00Z",
+            "2026-01-01T00:00:00+24:00",
+            "2026-01-01T00:00:00+00:60",
+            "2026-01-01T00:00:00+9223372036854775807:00",
+            "2026-01-01T00:00:00.123456789garbageZ",
+        ] {
+            assert_eq!(parse_rfc3339(text), None, "{text}");
+        }
+        assert!(parse_rfc3339("2024-02-29T00:00:00.123456789123Z").is_some());
+        assert_eq!(system_time(&prost_types::Timestamp { seconds: 1, nanos: 1_000_000_000 }), None);
+        assert_eq!(duration_from(&prost_types::Duration { seconds: i64::MAX, nanos: i32::MAX }), None);
     }
 
     #[test]

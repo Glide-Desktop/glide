@@ -12,6 +12,7 @@ const HEIGHT: i32 = 52;
 const BOTTOM: i32 = 160;
 const ICON: i32 = 22;
 const BAR_HEIGHT: i32 = 6;
+const TRAVEL: f64 = 6.0;
 const HOLD: Duration = Duration::from_millis(1500);
 const EXPECT: Duration = Duration::from_secs(2);
 
@@ -144,17 +145,38 @@ impl Osd {
         let fade_in = if rise.is_zero() || entering >= rise {
             1.0
         } else {
-            glide_theme::motion::ease_out(entering.as_secs_f64() / rise.as_secs_f64())
+            glide_theme::motion::assist(entering.as_secs_f64() / rise.as_secs_f64())
         };
         let leaving = now.saturating_duration_since(shown.updated).saturating_sub(rise + HOLD);
         let fade_out = if leaving.is_zero() {
-            0.0
-        } else if fall.is_zero() || leaving >= fall {
             1.0
+        } else if fall.is_zero() || leaving >= fall {
+            0.0
         } else {
-            glide_theme::motion::ease_out(leaving.as_secs_f64() / fall.as_secs_f64())
+            glide_theme::motion::assist(1.0 - (leaving.as_secs_f64() / fall.as_secs_f64()))
         };
-        (fade_in.min(1.0 - fade_out)) as f32
+        (fade_in.min(fade_out)) as f32
+    }
+
+    #[must_use]
+    pub fn offset_y(&self, now: Instant) -> f64 {
+        let Some(shown) = self.shown else {
+            return 0.0;
+        };
+        let (rise, fall) = (glide_theme::motion::t1(), glide_theme::motion::t2());
+        let entering = now.saturating_duration_since(shown.since);
+        let leaving = now.saturating_duration_since(shown.updated).saturating_sub(rise + HOLD);
+        if !leaving.is_zero() {
+            if fall.is_zero() || leaving >= fall {
+                TRAVEL
+            } else {
+                glide_theme::motion::ease_io(leaving.as_secs_f64() / fall.as_secs_f64()) * TRAVEL
+            }
+        } else if rise.is_zero() || entering >= rise {
+            0.0
+        } else {
+            (1.0 - glide_theme::motion::ease_out(entering.as_secs_f64() / rise.as_secs_f64())) * TRAVEL
+        }
     }
 
     pub fn tick(&mut self, now: Instant) -> bool {
@@ -273,6 +295,11 @@ mod tests {
         let mut osd = Osd::default();
         let now = Instant::now();
         osd.show(Reading { kind: Kind::Brightness, level: 50, on: true }, now);
+        if !glide_theme::motion::is_disabled() {
+            assert!(osd.offset_y(now) > 5.9);
+            assert!(osd.offset_y(now + glide_theme::motion::t1()) < 0.01);
+            assert!(osd.alpha(now + glide_theme::motion::t1().mul_f64(0.4)) >= 0.99);
+        }
         assert!(osd.alpha(now + glide_theme::motion::t1() + HOLD / 2) >= 0.99);
         let gone = now + glide_theme::motion::t1() + HOLD + glide_theme::motion::t2() + Duration::from_millis(10);
         assert!(osd.alpha(gone) <= 0.0);

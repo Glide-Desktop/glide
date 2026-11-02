@@ -385,6 +385,7 @@ pub enum Message {
     Osd(Osd, u32),
     Quick(QuickSettings),
     OpenLink,
+    SystemResult(bool, &'static str),
     Ignored,
 }
 
@@ -496,6 +497,9 @@ impl Catalog {
     }
 
     fn on_closed(&mut self, id: u32) {
+        if self.last == Some(id) {
+            self.last = None;
+        }
         if self.download.is_some_and(|(slot, _)| slot != 0 && slot == id) {
             self.download = None;
         }
@@ -738,18 +742,26 @@ impl App for Catalog {
                 self.dock.urgent(on);
             }
             Message::Osd(kind, level) => {
-                if system::show_osd(kind, level, true).is_err() {
-                    shell.toast(shell.t("Оболонка Glide недоступна", "The Glide shell is not running"));
-                }
+                let error = shell.t("Оболонка Glide недоступна", "The Glide shell is not running");
+                return Task::perform(async move { system::show_osd(kind, level, true).is_ok() }, move |ok| {
+                    Message::SystemResult(ok, error)
+                });
             }
             Message::Quick(view) => {
-                if system::open_quick_settings(view).is_err() {
-                    shell.toast(shell.t("Оболонка Glide недоступна", "The Glide shell is not running"));
-                }
+                let error = shell.t("Оболонка Glide недоступна", "The Glide shell is not running");
+                return Task::perform(async move { system::open_quick_settings(view).is_ok() }, move |ok| {
+                    Message::SystemResult(ok, error)
+                });
             }
             Message::OpenLink => {
-                if system::open("https://github.com", APP_ID).is_err() {
-                    shell.toast(shell.t("Не вдалося відкрити посилання", "Could not open the link"));
+                let error = shell.t("Не вдалося відкрити посилання", "Could not open the link");
+                return Task::perform(async { system::open("https://github.com", APP_ID).is_ok() }, move |ok| {
+                    Message::SystemResult(ok, error)
+                });
+            }
+            Message::SystemResult(ok, error) => {
+                if !ok {
+                    shell.toast(error);
                 }
             }
             Message::Ignored => {}
@@ -979,6 +991,16 @@ mod tests {
         assert_eq!(catalog.download, Some((9, 0.5)));
         catalog.on_closed(9);
         assert_eq!(catalog.download, None);
+    }
+
+    #[test]
+    fn a_closed_draft_no_longer_enables_replace_or_withdraw() {
+        let mut catalog = Catalog::initial(Lang::En);
+        catalog.last = Some(7);
+        catalog.on_closed(8);
+        assert_eq!(catalog.last, Some(7));
+        catalog.on_closed(7);
+        assert_eq!(catalog.last, None);
     }
 
     #[test]

@@ -32,11 +32,27 @@ pub fn exchange(request: &Request, timeout: Duration) -> std::io::Result<Respons
     reader.get_mut().write_all(json.as_bytes())?;
     reader.get_mut().flush()?;
     let mut line = String::new();
-    std::io::Read::take(&mut reader, MAX_RESPONSE_BYTES).read_line(&mut line)?;
+    read_line(&mut reader, &mut line)?;
     serde_json::from_str(&line).map_err(std::io::Error::other)
 }
 
 pub const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+
+pub fn read_line(reader: &mut impl BufRead, line: &mut String) -> std::io::Result<usize> {
+    read_line_with_limit(reader, line, MAX_RESPONSE_BYTES)
+}
+
+fn read_line_with_limit(reader: &mut impl BufRead, line: &mut String, limit: u64) -> std::io::Result<usize> {
+    line.clear();
+    let count = std::io::Read::take(reader, limit + 1).read_line(line)?;
+    if count as u64 > limit {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "IPC message exceeds size limit"));
+    }
+    if count > 0 && !line.ends_with('\n') {
+        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "incomplete IPC message"));
+    }
+    Ok(count)
+}
 
 #[must_use]
 pub fn activation_token(app_id: Option<&str>) -> Option<String> {
@@ -52,4 +68,35 @@ pub fn activation_env(app_id: Option<&str>) -> Vec<(&'static str, String)> {
     activation_token(app_id)
         .map(|token| vec![("XDG_ACTIVATION_TOKEN", token.clone()), ("DESKTOP_STARTUP_ID", token)])
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_lines_preserve_buffered_messages_and_accept_the_limit() {
+        let mut reader = BufReader::new(&b"123\nxy\n"[..]);
+        let mut line = String::from("previous");
+        assert_eq!(read_line_with_limit(&mut reader, &mut line, 4).unwrap(), 4);
+        assert_eq!(line, "123\n");
+        assert_eq!(read_line_with_limit(&mut reader, &mut line, 4).unwrap(), 3);
+        assert_eq!(line, "xy\n");
+        assert_eq!(read_line_with_limit(&mut reader, &mut line, 4).unwrap(), 0);
+    }
+
+    #[test]
+    fn oversized_and_incomplete_messages_are_rejected() {
+        let mut line = String::new();
+        let mut oversized = &b"1234\n"[..];
+        assert_eq!(
+            read_line_with_limit(&mut oversized, &mut line, 4).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        let mut incomplete = &b"{}"[..];
+        assert_eq!(
+            read_line_with_limit(&mut incomplete, &mut line, 4).unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
 }

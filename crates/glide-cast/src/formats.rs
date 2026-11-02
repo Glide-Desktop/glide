@@ -86,12 +86,18 @@ pub struct Video {
 
 #[must_use]
 pub(crate) fn choose_video(formats: &VideoFormats, preference: &[u8]) -> Option<Video> {
-    let codec =
-        formats.codecs.iter().find(|codec| codec.profile & PROFILE_CBP != 0).or_else(|| formats.codecs.first())?;
-    let bit = preference.iter().copied().find(|bit| codec.cea & (1 << bit) != 0)?;
-    let profile = if codec.profile & PROFILE_CBP != 0 { PROFILE_CBP } else { PROFILE_CHP };
-    let level = highest_bit(codec.level).unwrap_or(0x01);
-    Some(Video { mode: CEA[usize::from(bit)], profile, level })
+    preference.iter().find_map(|bit| {
+        let mode = *CEA.get(usize::from(*bit))?;
+        let supports = |codec: &&H264| codec.cea & (1 << bit) != 0 && codec.level != 0;
+        let codec = formats
+            .codecs
+            .iter()
+            .filter(supports)
+            .find(|codec| codec.profile & PROFILE_CBP != 0)
+            .or_else(|| formats.codecs.iter().filter(supports).find(|codec| codec.profile & PROFILE_CHP != 0))?;
+        let profile = if codec.profile & PROFILE_CBP != 0 { PROFILE_CBP } else { PROFILE_CHP };
+        Some(Video { mode, profile, level: highest_bit(codec.level)? })
+    })
 }
 
 fn highest_bit(byte: u8) -> Option<u8> {
@@ -194,6 +200,25 @@ mod tests {
         let video = choose_video(&formats, &SOFTWARE_PREFERENCE).unwrap();
         assert_eq!((video.mode.width, video.mode.height), (640, 480));
         assert_eq!(video.profile, PROFILE_CBP);
+    }
+
+    #[test]
+    fn negotiation_searches_all_codecs_for_the_preferred_common_mode() {
+        let formats = VideoFormats {
+            native: 0,
+            codecs: vec![
+                H264 { profile: PROFILE_CBP, level: 1, cea: 1 },
+                H264 { profile: PROFILE_CHP, level: 0x10, cea: 1 << 7 },
+            ],
+        };
+        let video = choose_video(&formats, &SOFTWARE_PREFERENCE).unwrap();
+        assert_eq!(video.mode, CEA[7]);
+        assert_eq!(video.profile, PROFILE_CHP);
+        assert_eq!(choose_video(&formats, &[255, 7]), Some(video));
+        let unsupported = VideoFormats { native: 0, codecs: vec![H264 { profile: 4, level: 1, cea: 1 }] };
+        assert_eq!(choose_video(&unsupported, &[0]), None);
+        let no_level = VideoFormats { native: 0, codecs: vec![H264 { profile: PROFILE_CBP, level: 0, cea: 1 }] };
+        assert_eq!(choose_video(&no_level, &[0]), None);
     }
 
     #[test]

@@ -379,7 +379,15 @@ impl Worker {
         let mut rounds = 0;
         while !wanted.is_empty() && rounds < Self::GTK_START_ROUNDS && subscribed.len() < Self::GTK_GROUP_LIMIT {
             rounds += 1;
-            let reply: Vec<GtkMenuReply> = proxy.call("Start", &(wanted.clone(),))?;
+            wanted.truncate(Self::GTK_GROUP_LIMIT - subscribed.len());
+            let reply: Vec<GtkMenuReply> = match proxy.call("Start", &(wanted.clone(),)) {
+                Ok(reply) => reply,
+                Err(err) => {
+                    subscribed.extend(wanted);
+                    self.end_groups(bus, menubar, &subscribed.into_iter().collect::<Vec<_>>());
+                    return Err(err);
+                }
+            };
             subscribed.extend(wanted.iter().copied());
             for (group, menu, items) in reply {
                 menus.insert((group, menu), items);

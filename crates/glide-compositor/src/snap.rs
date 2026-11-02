@@ -218,9 +218,8 @@ impl SnapPreview {
 
     #[must_use]
     pub fn alpha(&self) -> f32 {
-        let curve = if self.reveal.is_open() { glide_theme::motion::E_OUT } else { glide_theme::motion::E_IO };
-        let progress = self.reveal.progress(glide_theme::motion::t2(), |t| curve.ease_f64(t));
-        progress.clamp(0.0, 1.0) as f32
+        let progress = self.reveal.progress(glide_theme::motion::t2(), glide_theme::motion::ease_out);
+        ((progress / 0.4).min(1.0)).clamp(0.0, 1.0) as f32
     }
 
     pub fn buffer(&mut self, fill: Color, stroke: Color, scale: i32) -> Option<&MemoryRenderBuffer> {

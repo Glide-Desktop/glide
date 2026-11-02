@@ -19,6 +19,7 @@ enum Decoration {
     Layer(Rc<Cell<(f32, f32)>>),
     Field(FieldColors),
     Scale(f32),
+    Lift { scale: f32, dy: f32 },
     Shadow(Vec<iced::Shadow>, iced::border::Radius),
 }
 
@@ -72,7 +73,7 @@ pub fn field<'a, Message: 'a>(child: impl Into<Element<'a, Message>>, paint: &Pa
             background: paint.view_bg(),
             border: paint.line_2(),
             accent: paint.acc_bg(),
-            ring: crate::style::to_iced(paint.tokens.acc_ring),
+            ring: paint.acc_ring(),
         }),
     })
 }
@@ -84,7 +85,7 @@ pub fn search_field<'a, Message: 'a>(child: impl Into<Element<'a, Message>>, pai
             background: paint.fill_1(),
             border: Color::TRANSPARENT,
             accent: paint.acc_bg(),
-            ring: crate::style::to_iced(paint.tokens.acc_ring),
+            ring: paint.acc_ring(),
         }),
     })
 }
@@ -112,6 +113,10 @@ pub fn container<'a, Message: 'a>(
 
 pub fn scale<'a, Message: 'a>(child: impl Into<Element<'a, Message>>, scale: f32) -> Element<'a, Message> {
     Element::new(Decorated { child: child.into(), decoration: Decoration::Scale(scale) })
+}
+
+pub fn lift<'a, Message: 'a>(child: impl Into<Element<'a, Message>>, scale: f32, dy: f32) -> Element<'a, Message> {
+    Element::new(Decorated { child: child.into(), decoration: Decoration::Lift { scale, dy } })
 }
 
 pub fn surface<'a, Message: 'a>(
@@ -293,6 +298,20 @@ impl<Message> Widget<Message, Theme, Renderer> for Decorated<'_, Message> {
                 1.0
             }
             Decoration::Scale(scale) => *scale,
+            Decoration::Lift { scale, dy } => {
+                if (*scale - 1.0).abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
+                    self.child.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+                    return;
+                }
+                let center = layout.bounds().center();
+                let transform = Transformation::translate(center.x, center.y + dy)
+                    * Transformation::scale(*scale)
+                    * Transformation::translate(-center.x, -center.y);
+                renderer.with_transformation(transform, |renderer| {
+                    self.child.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+                });
+                return;
+            }
             Decoration::Shadow(layers, radius) => {
                 for shadow in layers {
                     renderer.fill_quad(
