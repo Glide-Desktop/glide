@@ -1,14 +1,15 @@
 use std::{
     collections::{BTreeSet, HashMap},
     sync::{Arc, mpsc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use zbus::zvariant::{OwnedValue, Signature, Value};
 
 use crate::model::{
-    ActionInfo, Activation, DBUSMENU_INTERFACE, DbusMenuNode, GTK_ACTIONS_INTERFACE, GTK_MENUS_INTERFACE, GtkMenus,
-    MenuItem, Source, build_dbusmenu, build_gtk_menu, gtk_referenced_groups,
+    ActionInfo, Activation, DBUSMENU_INTERFACE, DbusMenuNode, GTK_ACTIONS_INTERFACE, GTK_MENUS_INTERFACE, GtkActions,
+    GtkMenus, MenuItem, Source, build_dbusmenu, build_gtk_menu, gtk_action_prefixes, gtk_referenced_groups,
+    split_action,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,10 +26,12 @@ pub type Sink = Arc<dyn Fn(AppMenuEvent) + Send + Sync>;
 enum Request {
     Watch(Source),
     Unwatch(Source),
-    Activate(Source, Activation),
+    Activate(Source, Activation, Option<String>),
     Opened(Source, Activation),
+    Closed(Source, Activation),
     Changed { sender: String },
     OwnerChanged { name: String, new_owner: String },
+    Reconnected(zbus::blocking::Connection),
 }
 
 #[derive(Debug, Clone)]
@@ -52,11 +55,19 @@ impl AppMenuHandle {
     }
 
     pub fn activate(&self, source: Source, activation: Activation) {
-        self.send(Request::Activate(source, activation));
+        self.send(Request::Activate(source, activation, None));
+    }
+
+    pub fn activate_with_token(&self, source: Source, activation: Activation, token: Option<String>) {
+        self.send(Request::Activate(source, activation, token));
     }
 
     pub fn opened(&self, source: Source, activation: Activation) {
         self.send(Request::Opened(source, activation));
+    }
+
+    pub fn closed(&self, source: Source, activation: Activation) {
+        self.send(Request::Closed(source, activation));
     }
 }
 
@@ -104,17 +115,28 @@ fn collect_batch(
 
 type GtkMenuReply = (u32, u32, Vec<HashMap<String, OwnedValue>>);
 
+type Reconnect = fn() -> zbus::Result<zbus::blocking::Connection>;
+
+const RECONNECT_FIRST: Duration = Duration::from_secs(1);
+const RECONNECT_LONGEST: Duration = Duration::from_secs(30);
+pub const RETRY_DELAY: Duration = Duration::from_secs(1);
+
+fn session_connection() -> zbus::Result<zbus::blocking::Connection> {
+    zbus::blocking::connection::Builder::session()?.method_timeout(METHOD_TIMEOUT).build()
+}
+
 pub fn start(sink: Sink, own_registrar: bool) -> anyhow::Result<AppMenuHandle> {
-    let connection = zbus::blocking::connection::Builder::session()?.method_timeout(METHOD_TIMEOUT).build()?;
-    start_on(connection, sink, own_registrar)
+    launch(session_connection()?, sink, own_registrar, Some(session_connection))
 }
 
 pub fn start_on(
     connection: zbus::blocking::Connection, sink: Sink, own_registrar: bool,
 ) -> anyhow::Result<AppMenuHandle> {
-    let (tx, rx) = mpsc::channel();
+    launch(connection, sink, own_registrar, None)
+}
 
-    let bus = zbus::blocking::fdo::DBusProxy::new(&connection)?;
+fn add_signal_rules(connection: &zbus::blocking::Connection) -> zbus::Result<()> {
+    let bus = zbus::blocking::fdo::DBusProxy::new(connection)?;
     for rule in SIGNAL_RULES {
         if let Ok(rule) = zbus::MatchRule::try_from(rule)
             && let Err(err) = bus.add_match_rule(rule)
@@ -122,15 +144,33 @@ pub fn start_on(
             tracing::debug!("app menu signal match failed: {err}");
         }
     }
+    Ok(())
+}
+
+fn serve_registrar(connection: &zbus::blocking::Connection, sink: &Sink) {
+    if let Err(err) = crate::registrar::serve(connection, sink.clone()) {
+        tracing::warn!("could not own the app menu registrar: {err}");
+    }
+}
+
+fn launch(
+    connection: zbus::blocking::Connection, sink: Sink, own_registrar: bool, reconnect: Option<Reconnect>,
+) -> anyhow::Result<AppMenuHandle> {
+    let (tx, rx) = mpsc::channel();
+
+    add_signal_rules(&connection)?;
 
     {
         let connection = connection.clone();
         let tx = tx.clone();
-        std::thread::Builder::new().name("glide-appmenu-signals".into()).spawn(move || listen(&connection, &tx))?;
+        let registrar = own_registrar.then(|| sink.clone());
+        std::thread::Builder::new()
+            .name("glide-appmenu-signals".into())
+            .spawn(move || listen_forever(connection, &tx, reconnect, registrar.as_ref()))?;
     }
 
-    if own_registrar && let Err(err) = crate::registrar::serve(&connection, sink.clone()) {
-        tracing::warn!("could not own the app menu registrar: {err}");
+    if own_registrar {
+        serve_registrar(&connection, &sink);
     }
 
     std::thread::Builder::new().name("glide-appmenu".into()).spawn(move || Worker::new(connection, sink).run(&rx))?;
@@ -138,7 +178,41 @@ pub fn start_on(
     Ok(AppMenuHandle { tx })
 }
 
-fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>) {
+fn listen_forever(
+    mut connection: zbus::blocking::Connection, tx: &mpsc::Sender<Request>, reconnect: Option<Reconnect>,
+    registrar: Option<&Sink>,
+) {
+    loop {
+        if !listen(&connection, tx) {
+            return;
+        }
+        let Some(reconnect) = reconnect else {
+            tracing::warn!("app menus stop following changes: the bus connection ended");
+            return;
+        };
+        tracing::warn!("the app menu bus connection ended; reconnecting");
+        let mut delay = RECONNECT_FIRST;
+        connection = loop {
+            match reconnect().and_then(|fresh| add_signal_rules(&fresh).map(|()| fresh)) {
+                Ok(fresh) => break fresh,
+                Err(err) => {
+                    tracing::debug!("app menu bus reconnect failed, next try in {delay:?}: {err}");
+                    std::thread::sleep(delay);
+                    delay = (delay * 2).min(RECONNECT_LONGEST);
+                }
+            }
+        };
+        tracing::info!("app menus reconnected to the bus");
+        if let Some(sink) = registrar {
+            serve_registrar(&connection, sink);
+        }
+        if tx.send(Request::Reconnected(connection.clone())).is_err() {
+            return;
+        }
+    }
+}
+
+fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>) -> bool {
     for message in zbus::blocking::MessageIterator::from(connection) {
         let Ok(message) = message else {
             continue;
@@ -153,7 +227,7 @@ fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>) {
                 && let Ok((name, _old, new_owner)) = message.body().deserialize::<(String, String, String)>()
                 && tx.send(Request::OwnerChanged { name, new_owner }).is_err()
             {
-                return;
+                return false;
             }
             continue;
         }
@@ -163,11 +237,13 @@ fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>) {
             continue;
         };
         if relevant && tx.send(Request::Changed { sender }).is_err() {
-            return;
+            return false;
         }
     }
+    true
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent facts about one watched menu, not a state machine
 struct Watched {
     source: Source,
     owner: String,
@@ -175,6 +251,59 @@ struct Watched {
     primed: bool,
     delivered: bool,
     parked: bool,
+    retried: bool,
+}
+
+fn action_path<'a>(prefix: &str, menubar: &'a str, app: Option<&'a str>, window: Option<&'a str>) -> Option<&'a str> {
+    match prefix {
+        "app" => app,
+        "win" => window,
+        _ => Some(menubar),
+    }
+}
+
+fn follows(owner: &str, sender: &str) -> bool {
+    owner == sender || !owner.starts_with(':')
+}
+
+fn answered(err: &zbus::Error) -> bool {
+    matches!(err, zbus::Error::MethodError(..) | zbus::Error::FDO(_))
+}
+
+fn platform_data(token: Option<&str>) -> HashMap<String, OwnedValue> {
+    let mut platform = HashMap::new();
+    if let Some(token) = token.filter(|token| !token.is_empty())
+        && let Ok(value) = OwnedValue::try_from(Value::from(token))
+    {
+        platform.insert(String::from("desktop-startup-id"), value.clone());
+        platform.insert(String::from("activation-token"), value);
+    }
+    platform
+}
+
+fn prime_menus(proxy: &zbus::blocking::Proxy<'_>, ids: &[i32]) -> bool {
+    if ids.is_empty() {
+        return false;
+    }
+    let err = match proxy.call::<_, _, (Vec<i32>, Vec<i32>)>("AboutToShowGroup", &(ids.to_vec(),)) {
+        Ok((updated, _)) => return !updated.is_empty(),
+        Err(err) => err,
+    };
+    if !answered(&err) {
+        tracing::debug!("the menu did not answer AboutToShowGroup, so it is not primed: {err}");
+        return false;
+    }
+    let mut stale = false;
+    for id in ids {
+        match proxy.call::<_, _, bool>("AboutToShow", &(*id,)) {
+            Ok(updated) => stale |= updated,
+            Err(err) => {
+                tracing::debug!("stopped priming the menu after AboutToShow failed: {err}");
+                break;
+            }
+        }
+    }
+    stale
 }
 
 const fn needs_refresh(delivered: bool, stale: bool) -> bool {
@@ -185,26 +314,55 @@ struct Worker {
     connection: zbus::blocking::Connection,
     sink: Sink,
     watched: Vec<Watched>,
+    retries: Vec<(Instant, Source)>,
 }
 
 impl Worker {
     fn new(connection: zbus::blocking::Connection, sink: Sink) -> Self {
-        Self { connection, sink, watched: Vec::new() }
+        Self { connection, sink, watched: Vec::new(), retries: Vec::new() }
+    }
+
+    fn next_request(&mut self, rx: &mpsc::Receiver<Request>) -> Option<Request> {
+        loop {
+            let Some(due) = self.retries.iter().map(|(at, _)| *at).min() else {
+                return rx.recv().ok();
+            };
+            match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
+                Ok(request) => return Some(request),
+                Err(mpsc::RecvTimeoutError::Timeout) => self.run_due_retries(),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+
+    fn run_due_retries(&mut self) {
+        let now = Instant::now();
+        let (due, later): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.retries).into_iter().partition(|(at, _)| *at <= now);
+        self.retries = later;
+        for (_, source) in due {
+            if let Some(index) = self.live(&source)
+                && !self.watched[index].delivered
+            {
+                self.refresh(index);
+            }
+        }
     }
 
     fn run(mut self, rx: &mpsc::Receiver<Request>) {
-        while let Ok(first) = rx.recv() {
+        while let Some(first) = self.next_request(rx) {
             let (changed, pending) = collect_batch(first, rx, COALESCE, MAX_BATCH);
             for request in pending {
                 self.handle(request);
             }
             for sender in changed {
                 for index in 0..self.watched.len() {
-                    if self.watched[index].owner == sender && !self.watched[index].parked {
+                    if follows(&self.watched[index].owner, &sender) && !self.watched[index].parked {
                         self.refresh(index);
                     }
                 }
             }
+            self.run_due_retries();
         }
     }
 
@@ -212,10 +370,31 @@ impl Worker {
         match request {
             Request::Watch(source) => self.watch(source),
             Request::Unwatch(source) => self.unwatch(&source),
-            Request::Activate(source, activation) => self.activate(&source, &activation),
+            Request::Activate(source, activation, token) => self.activate(&source, &activation, token.as_deref()),
             Request::Opened(source, activation) => self.opened(&source, &activation),
+            Request::Closed(source, activation) => self.closed(&source, &activation),
             Request::OwnerChanged { name, new_owner } => self.owner_changed(&name, &new_owner),
+            Request::Reconnected(connection) => self.reconnected(connection),
             Request::Changed { .. } => {}
+        }
+    }
+
+    fn reconnected(&mut self, connection: zbus::blocking::Connection) {
+        self.connection = connection;
+        let mut index = self.watched.len();
+        while index > 0 {
+            index -= 1;
+            if self.watched[index].parked {
+                let gone = self.watched.remove(index);
+                (self.sink)(AppMenuEvent::Gone { source: gone.source });
+                continue;
+            }
+            let owner = self.owner_of(self.watched[index].source.bus());
+            let watched = &mut self.watched[index];
+            watched.owner = owner;
+            watched.groups.clear();
+            watched.primed = false;
+            self.refresh(index);
         }
     }
 
@@ -241,6 +420,7 @@ impl Worker {
             primed: false,
             delivered: false,
             parked: false,
+            retried: false,
         });
         self.refresh(self.watched.len() - 1);
     }
@@ -263,6 +443,18 @@ impl Worker {
             };
             let evicted = self.watched.remove(oldest);
             (self.sink)(AppMenuEvent::Gone { source: evicted.source });
+        }
+    }
+
+    fn closed(&self, source: &Source, activation: &Activation) {
+        let (Source::DbusMenu { bus, path }, Activation::DbusMenu(id)) = (source, activation) else {
+            return;
+        };
+        let sent = self
+            .proxy(bus, path, DBUSMENU_INTERFACE)
+            .and_then(|proxy| proxy.call_noreply("Event", &(*id, "closed", Value::from(0i32), 0u32)));
+        if let Err(err) = sent {
+            tracing::debug!("could not tell the menu it closed: {err}");
         }
     }
 
@@ -297,6 +489,7 @@ impl Worker {
             watched.owner = new_owner.to_string();
             watched.groups.clear();
             watched.primed = false;
+            watched.retried = false;
             self.refresh(index);
         }
     }
@@ -316,6 +509,9 @@ impl Worker {
 
     fn refresh(&mut self, index: usize) {
         let source = self.watched[index].source.clone();
+        if !self.watched[index].owner.starts_with(':') {
+            self.watched[index].owner = self.owner_of(source.bus());
+        }
         let result = match &source {
             Source::Gtk { bus, menubar, app, window } => {
                 let previous = std::mem::take(&mut self.watched[index].groups);
@@ -334,11 +530,19 @@ impl Worker {
                 fetched
             }
         };
-        self.watched[index].delivered = result.is_ok();
+        let watched = &mut self.watched[index];
+        watched.delivered = result.is_ok();
         match result {
-            Ok(items) => (self.sink)(AppMenuEvent::Menu { source, items }),
+            Ok(items) => {
+                watched.retried = false;
+                (self.sink)(AppMenuEvent::Menu { source, items });
+            }
             Err(err) => {
                 tracing::warn!("app menu for {source:?} is unavailable: {err}");
+                if matches!(source, Source::Gtk { .. }) && !watched.retried {
+                    watched.retried = true;
+                    self.retries.push((Instant::now() + RETRY_DELAY, source.clone()));
+                }
                 (self.sink)(AppMenuEvent::Gone { source });
             }
         }
@@ -395,16 +599,16 @@ impl Worker {
             wanted = gtk_referenced_groups(&menus).into_iter().filter(|group| !subscribed.contains(group)).collect();
         }
 
-        let mut actions: HashMap<String, ActionInfo> = HashMap::new();
-        let mut described = false;
-        for (prefix, path) in [("app", app), ("win", window)] {
-            let Some(path) = path else { continue };
-            if let Some(found) = self.describe_actions(bus, path) {
-                described = true;
-                actions.extend(found.into_iter().map(|(name, info)| (format!("{prefix}.{name}"), info)));
+        let mut actions = GtkActions::new();
+        let mut by_path: HashMap<&str, Option<HashMap<String, ActionInfo>>> = HashMap::new();
+        for prefix in gtk_action_prefixes(&menus) {
+            let Some(path) = action_path(&prefix, menubar, app, window) else { continue };
+            let found = by_path.entry(path).or_insert_with(|| self.describe_actions(bus, path));
+            if let Some(found) = found {
+                actions.insert(prefix, found.clone());
             }
         }
-        let items = build_gtk_menu(&menus, (0, 0), described.then_some(&actions));
+        let items = build_gtk_menu(&menus, (0, 0), &actions);
         Ok((items, subscribed.into_iter().collect()))
     }
 
@@ -424,15 +628,15 @@ impl Worker {
             Ok(root)
         };
         let root = layout()?;
-        let mut stale = false;
-        if prime {
-            for child in &root.2 {
-                if let Ok((id, _, _)) = DbusMenuNode::try_from(child.clone()) {
-                    let update: zbus::Result<bool> = proxy.call("AboutToShow", &(id,));
-                    stale |= update.unwrap_or(false);
-                }
-            }
-        }
+        let stale = prime && {
+            let ids: Vec<i32> = root
+                .2
+                .iter()
+                .filter_map(|child| DbusMenuNode::try_from(child.clone()).ok())
+                .map(|(id, _, _)| id)
+                .collect();
+            prime_menus(&proxy, &ids)
+        };
         let root = if stale { layout()? } else { root };
         Ok(build_dbusmenu(&root))
     }
@@ -450,21 +654,18 @@ impl Worker {
         proxy.call::<_, _, bool>("AboutToShow", &(id,)).unwrap_or(false)
     }
 
-    fn activate(&self, source: &Source, activation: &Activation) {
+    fn activate(&self, source: &Source, activation: &Activation, token: Option<&str>) {
         let result = match (source, activation) {
-            (Source::Gtk { bus, app, window, .. }, Activation::Gtk { action, target }) => {
-                let (prefix, name) = action.split_once('.').unwrap_or(("app", action));
-                let path = match prefix {
-                    "win" => window.as_deref(),
-                    _ => app.as_deref(),
-                };
-                match path {
-                    Some(path) => self.proxy(bus, path, GTK_ACTIONS_INTERFACE).and_then(|proxy| {
+            (Source::Gtk { bus, menubar, app, window }, Activation::Gtk { action, target }) => {
+                let (prefix, name) = split_action(action);
+                if let Some(path) = action_path(prefix, menubar, app.as_deref(), window.as_deref()) {
+                    self.proxy(bus, path, GTK_ACTIONS_INTERFACE).and_then(|proxy| {
                         let parameter: Vec<OwnedValue> = target.iter().cloned().collect();
-                        let platform: HashMap<String, OwnedValue> = HashMap::new();
-                        proxy.call_noreply("Activate", &(name, parameter, platform))
-                    }),
-                    None => Ok(()),
+                        proxy.call_noreply("Activate", &(name, parameter, platform_data(token)))
+                    })
+                } else {
+                    tracing::debug!("{action} has no exported action group to run it");
+                    Ok(())
                 }
             }
             (Source::DbusMenu { bus, path }, Activation::DbusMenu(id)) => self
@@ -501,6 +702,13 @@ mod tests {
         assert!(pending.is_empty());
         drop(rx);
         let _ = feeder.join();
+    }
+
+    #[test]
+    fn a_menu_whose_owner_was_never_resolved_refreshes_on_any_change_so_it_can_resolve_again() {
+        assert!(follows(":1.7", ":1.7"));
+        assert!(!follows(":1.7", ":1.8"));
+        assert!(follows("org.example.App", ":1.8"), "a well-known name never matches a unique sender");
     }
 
     #[test]

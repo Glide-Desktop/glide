@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -110,12 +110,12 @@ fn modifier_name(raw: &str) -> Option<&'static str> {
 
 fn key_name(raw: &str) -> String {
     let named = match raw.to_ascii_lowercase().as_str() {
-        "plus" => Some("+"),
-        "minus" => Some("-"),
+        "plus" | "kp_add" => Some("+"),
+        "minus" | "kp_subtract" => Some("-"),
         "equal" => Some("="),
         "comma" => Some(","),
-        "period" => Some("."),
-        "slash" => Some("/"),
+        "period" | "kp_decimal" => Some("."),
+        "slash" | "kp_divide" => Some("/"),
         "backslash" => Some("\\"),
         "semicolon" => Some(";"),
         "apostrophe" => Some("'"),
@@ -137,8 +137,34 @@ fn key_name(raw: &str) -> String {
         "down" => Some("↓"),
         "left" => Some("←"),
         "right" => Some("→"),
+        "question" => Some("?"),
+        "asterisk" | "kp_multiply" => Some("*"),
+        "numbersign" => Some("#"),
+        "exclam" => Some("!"),
+        "at" => Some("@"),
+        "dollar" => Some("$"),
+        "percent" => Some("%"),
+        "asciicircum" => Some("^"),
+        "ampersand" => Some("&"),
+        "parenleft" => Some("("),
+        "parenright" => Some(")"),
+        "underscore" => Some("_"),
+        "colon" => Some(":"),
+        "quotedbl" => Some("\""),
+        "less" => Some("<"),
+        "greater" => Some(">"),
+        "bar" => Some("|"),
+        "braceleft" => Some("{"),
+        "braceright" => Some("}"),
+        "asciitilde" => Some("~"),
         _ => None,
     };
+    if let Some(digit) = raw.strip_prefix("KP_").or_else(|| raw.strip_prefix("kp_"))
+        && digit.len() == 1
+        && digit.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return digit.to_string();
+    }
     if let Some(named) = named {
         return named.to_string();
     }
@@ -202,6 +228,37 @@ pub(crate) struct ActionInfo {
 
 pub(crate) type GtkMenus = HashMap<(u32, u32), Vec<HashMap<String, OwnedValue>>>;
 
+pub(crate) type GtkActions = HashMap<String, HashMap<String, ActionInfo>>;
+
+#[must_use]
+pub(crate) fn split_action(action: &str) -> (&str, &str) {
+    action.split_once('.').unwrap_or(("app", action))
+}
+
+#[must_use]
+pub(crate) fn gtk_action_prefixes(menus: &GtkMenus) -> BTreeSet<String> {
+    menus
+        .values()
+        .flatten()
+        .filter_map(|entry| string_of(entry, "action"))
+        .map(|action| split_action(&action).0.to_string())
+        .collect()
+}
+
+enum Described<'a> {
+    Known(&'a ActionInfo),
+    Missing,
+    Unknown,
+}
+
+fn described<'a>(actions: &'a GtkActions, action: &str) -> Described<'a> {
+    let (prefix, name) = split_action(action);
+    match actions.get(prefix) {
+        Some(group) => group.get(name).map_or(Described::Missing, Described::Known),
+        None => Described::Unknown,
+    }
+}
+
 fn gtk_toggle(action: Option<&ActionInfo>, target: Option<&OwnedValue>) -> Toggle {
     let Some(state) = action.and_then(|info| info.state.as_ref()) else {
         return Toggle::None;
@@ -214,9 +271,7 @@ fn gtk_toggle(action: Option<&ActionInfo>, target: Option<&OwnedValue>) -> Toggl
 }
 
 #[must_use]
-pub(crate) fn build_gtk_menu(
-    menus: &GtkMenus, root: (u32, u32), actions: Option<&HashMap<String, ActionInfo>>,
-) -> Vec<MenuItem> {
+pub(crate) fn build_gtk_menu(menus: &GtkMenus, root: (u32, u32), actions: &GtkActions) -> Vec<MenuItem> {
     let mut budget = MAX_ITEMS;
     build_gtk_level(menus, root, actions, &mut Vec::new(), &mut budget)
 }
@@ -224,8 +279,7 @@ pub(crate) fn build_gtk_menu(
 const MAX_ITEMS: usize = 4096;
 
 fn build_gtk_level(
-    menus: &GtkMenus, at: (u32, u32), actions: Option<&HashMap<String, ActionInfo>>, path: &mut Vec<(u32, u32)>,
-    budget: &mut usize,
+    menus: &GtkMenus, at: (u32, u32), actions: &GtkActions, path: &mut Vec<(u32, u32)>, budget: &mut usize,
 ) -> Vec<MenuItem> {
     if path.len() > MAX_DEPTH || path.contains(&at) || *budget == 0 {
         return Vec::new();
@@ -248,6 +302,11 @@ fn build_gtk_level(
             if out.last().is_some_and(|last| !last.separator) {
                 out.push(MenuItem::separator());
             }
+            if let Some(header) =
+                string_of(entry, "label").map(|label| strip_mnemonic(&label)).filter(|l| !l.is_empty())
+            {
+                out.push(MenuItem { enabled: false, ..MenuItem::action(&header, Activation::None) });
+            }
             out.extend(items);
             out.push(MenuItem::separator());
             continue;
@@ -263,11 +322,12 @@ fn build_gtk_level(
         }
 
         let action = string_of(entry, "action");
-        let info = match (&action, actions) {
-            (Some(name), Some(actions)) => actions.get(name),
+        let found = action.as_deref().map(|name| described(actions, name));
+        let info = match found {
+            Some(Described::Known(info)) => Some(info),
             _ => None,
         };
-        let missing = action.is_some() && actions.is_some() && info.is_none();
+        let missing = matches!(found, Some(Described::Missing));
         let enabled = action.is_some() && info.is_none_or(|info| info.enabled) && !missing;
         match string_of(entry, "hidden-when").as_deref() {
             Some("action-missing") if missing => continue,
@@ -444,15 +504,24 @@ mod tests {
         menus
     }
 
+    fn actions(described: &[(&str, bool, Option<OwnedValue>)]) -> GtkActions {
+        let mut actions = GtkActions::new();
+        for (action, enabled, state) in described {
+            let (prefix, name) = split_action(action);
+            actions
+                .entry(prefix.to_string())
+                .or_default()
+                .insert(name.to_string(), ActionInfo { enabled: *enabled, state: state.clone() });
+        }
+        actions
+    }
+
     #[test]
     fn gtk_sections_flatten_with_separators_and_empty_submenus_vanish() {
-        let actions: HashMap<String, ActionInfo> =
-            [("win.new", true, None), ("win.wrap", true, Some(value(true))), ("app.quit", false, None)]
-                .into_iter()
-                .map(|(name, enabled, state)| (name.to_string(), ActionInfo { enabled, state }))
-                .collect();
+        let actions =
+            actions(&[("win.new", true, None), ("win.wrap", true, Some(value(true))), ("app.quit", false, None)]);
 
-        let bar = build_gtk_menu(&sample_menus(), (0, 0), Some(&actions));
+        let bar = build_gtk_menu(&sample_menus(), (0, 0), &actions);
         assert_eq!(bar.len(), 1, "an empty submenu has nothing to open");
         let file = &bar[0];
         assert_eq!(file.label, "File");
@@ -462,6 +531,66 @@ mod tests {
         assert_eq!(file.children[0].accel.as_deref(), Some("Ctrl+N"));
         assert_eq!(file.children[1].toggle, Toggle::Check(true));
         assert!(!file.children[3].enabled, "a disabled action greys out");
+    }
+
+    #[test]
+    fn only_a_prefix_that_was_described_can_grey_out_or_hide_its_actions() {
+        let only_window = actions(&[("win.new", true, None), ("win.wrap", true, None)]);
+        let bar = build_gtk_menu(&sample_menus(), (0, 0), &only_window);
+        let labels: Vec<&str> = bar[0].children.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["New", "Word Wrap", "", "Quit", "Gone"],
+            "app.* was never described, so nothing is missing"
+        );
+        assert!(bar[0].children[3].enabled && bar[0].children[4].enabled);
+
+        let both = actions(&[("win.new", true, None), ("win.wrap", true, None), ("app.quit", true, None)]);
+        let bar = build_gtk_menu(&sample_menus(), (0, 0), &both);
+        let labels: Vec<&str> = bar[0].children.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["New", "Word Wrap", "", "Quit"], "a described app group without app.gone hides it");
+    }
+
+    #[test]
+    fn prefixes_are_collected_from_every_action_and_a_bare_name_counts_as_app() {
+        let mut menus = sample_menus();
+        menus.insert((2, 0), vec![entry(&[("label", value("Copy")), ("action", value("unity.copy"))])]);
+        menus.insert((2, 1), vec![entry(&[("label", value("Bare")), ("action", value("bare"))])]);
+        let prefixes: Vec<String> = gtk_action_prefixes(&menus).into_iter().collect();
+        assert_eq!(prefixes, ["app", "unity", "win"]);
+        assert_eq!(split_action("bare"), ("app", "bare"));
+    }
+
+    #[test]
+    fn a_labelled_section_gets_a_disabled_header_before_its_items() {
+        let mut menus = GtkMenus::new();
+        menus.insert((0, 0), vec![entry(&[("label", value("_Edit")), (":submenu", value((1u32, 0u32)))])]);
+        menus.insert(
+            (1, 0),
+            vec![
+                entry(&[("label", value("Undo")), ("action", value("app.undo"))]),
+                entry(&[("label", value("_Insert")), (":section", value((1u32, 1u32)))]),
+            ],
+        );
+        menus.insert((1, 1), vec![entry(&[("label", value("Date")), ("action", value("app.date"))])]);
+        let bar = build_gtk_menu(&menus, (0, 0), &GtkActions::new());
+        let children = &bar[0].children;
+        let labels: Vec<&str> = children.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["Undo", "", "Insert", "Date"]);
+        assert!(!children[2].enabled && !children[2].separator);
+        assert_eq!(children[2].activation, Activation::None);
+        assert!(children[3].enabled);
+    }
+
+    #[test]
+    fn punctuation_and_keypad_keysyms_read_as_their_glyphs() {
+        assert_eq!(format_gtk_accel("<Primary>question").as_deref(), Some("Ctrl+?"));
+        assert_eq!(format_gtk_accel("<Primary>asterisk").as_deref(), Some("Ctrl+*"));
+        assert_eq!(format_gtk_accel("<Shift>numbersign").as_deref(), Some("Shift+#"));
+        assert_eq!(format_gtk_accel("<Primary>KP_Add").as_deref(), Some("Ctrl++"));
+        assert_eq!(format_gtk_accel("<Primary>KP_Subtract").as_deref(), Some("Ctrl+-"));
+        assert_eq!(format_gtk_accel("<Primary>KP_0").as_deref(), Some("Ctrl+0"));
+        assert_eq!(format_gtk_accel("F11").as_deref(), Some("F11"));
     }
 
     #[test]
@@ -529,7 +658,7 @@ mod tests {
         menus.insert((1, 0), looping);
 
         let started = std::time::Instant::now();
-        let bar = build_gtk_menu(&menus, (0, 0), None);
+        let bar = build_gtk_menu(&menus, (0, 0), &GtkActions::new());
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
         assert_eq!(bar.len(), 1);
         let labels: Vec<&str> = bar[0].children.iter().map(|i| i.label.as_str()).collect();

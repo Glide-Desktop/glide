@@ -111,6 +111,33 @@ fn set_attribute(fd: RawFd, name: &CStr, value: &[u8]) -> bool {
     unsafe { libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(), value.len(), 0) == 0 }
 }
 
+pub(crate) fn locked<T>(path: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    let folder = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    fs::create_dir_all(folder)?;
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(folder.join(name))?;
+    loop {
+        // SAFETY: flock only takes an advisory lock on the live descriptor, released when `lock` is dropped.
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            break;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+    let result = work();
+    drop(lock);
+    result
+}
+
 fn resolve_symlinks(target: &Path) -> io::Result<PathBuf> {
     let mut resolved = target.to_path_buf();
     for depth in 0..=40 {

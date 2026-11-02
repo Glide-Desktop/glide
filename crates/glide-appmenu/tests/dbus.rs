@@ -64,17 +64,64 @@ struct FakeActions {
 impl FakeActions {
     fn describe_all(&self) -> HashMap<String, (bool, Signature, Vec<OwnedValue>)> {
         let mut out = HashMap::new();
-        if self.prefix == "app" {
-            out.insert("quit".to_string(), (true, Signature::Unit, Vec::new()));
-        } else {
-            out.insert("wrap".to_string(), (true, Signature::Unit, vec![owned(true)]));
+        match self.prefix {
+            "app" => out.insert("quit".to_string(), (true, Signature::Unit, Vec::new())),
+            "unity" => out.insert("copy".to_string(), (true, Signature::Unit, Vec::new())),
+            _ => out.insert("wrap".to_string(), (true, Signature::Unit, vec![owned(true)])),
+        };
+        out
+    }
+
+    fn activate(&self, name: String, _parameter: Vec<OwnedValue>, platform: HashMap<String, OwnedValue>) {
+        let mut log = self.log.lock().expect("log");
+        log.push(format!("{}.{name}", self.prefix));
+        let token = |key: &str| platform.get(key).and_then(|value| String::try_from(value.clone()).ok());
+        if let (Some(token), Some(startup)) = (token("activation-token"), token("desktop-startup-id")) {
+            log.push(format!("{}.{name} token={token} startup={startup}", self.prefix));
+        }
+    }
+}
+
+struct UnityMenus;
+
+#[zbus::interface(name = "org.gtk.Menus")]
+impl UnityMenus {
+    fn start(&self, groups: Vec<u32>) -> Vec<(u32, u32, Vec<HashMap<String, OwnedValue>>)> {
+        let mut out = Vec::new();
+        if groups.contains(&0) {
+            out.push((0, 0, vec![entry(&[("label", owned("_File")), (":submenu", owned((1u32, 0u32)))])]));
+        }
+        if groups.contains(&1) {
+            out.push((
+                1,
+                0,
+                vec![
+                    entry(&[("label", owned("_Quit")), ("action", owned("app.quit"))]),
+                    entry(&[("label", owned("_Wrap")), ("action", owned("win.wrap"))]),
+                    entry(&[("label", owned("_Copy")), ("action", owned("unity.copy"))]),
+                ],
+            ));
         }
         out
     }
 
-    fn activate(&self, name: String, _parameter: Vec<OwnedValue>, _platform: HashMap<String, OwnedValue>) {
-        self.log.lock().expect("log").push(format!("{}.{name}", self.prefix));
+    fn end(&self, _groups: Vec<u32>) {}
+}
+
+struct FlakyMenus {
+    failures: AtomicUsize,
+}
+
+#[zbus::interface(name = "org.gtk.Menus")]
+impl FlakyMenus {
+    fn start(&self, groups: Vec<u32>) -> zbus::fdo::Result<Vec<(u32, u32, Vec<HashMap<String, OwnedValue>>)>> {
+        if self.failures.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1)).is_ok() {
+            return Err(zbus::fdo::Error::Failed("the application is still starting".into()));
+        }
+        Ok(FakeMenus.start(groups))
     }
+
+    fn end(&self, _groups: Vec<u32>) {}
 }
 
 struct FakeDbusMenu {
@@ -130,6 +177,63 @@ impl HungDbusMenu {
     async fn event(&self, id: i32, event: String, _data: OwnedValue, _timestamp: u32) {
         self.log.lock().expect("log").push(format!("{id}:{event}"));
         std::future::pending::<()>().await;
+    }
+}
+
+fn wide_layout() -> (u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>)) {
+    let menus = (1..=4)
+        .map(|id| {
+            let item = node(id * 10, entry(&[("label", owned("Item"))]), Vec::new());
+            node(id, entry(&[("label", owned("_Menu")), ("children-display", owned("submenu"))]), vec![item])
+        })
+        .collect();
+    (1, (0, HashMap::new(), menus))
+}
+
+struct SlowPrimeDbusMenu {
+    log: Log,
+}
+
+#[zbus::interface(name = "com.canonical.dbusmenu")]
+impl SlowPrimeDbusMenu {
+    fn get_layout(
+        &self, _parent: i32, _depth: i32, _props: Vec<String>,
+    ) -> (u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>)) {
+        wide_layout()
+    }
+
+    async fn about_to_show(&self, id: i32) -> bool {
+        self.log.lock().expect("log").push(format!("{id}:about-to-show"));
+        std::future::pending::<bool>().await
+    }
+
+    fn event(&self, _id: i32, _event: String, _data: OwnedValue, _timestamp: u32) {}
+}
+
+struct GroupDbusMenu {
+    log: Log,
+}
+
+#[zbus::interface(name = "com.canonical.dbusmenu")]
+impl GroupDbusMenu {
+    fn get_layout(
+        &self, _parent: i32, _depth: i32, _props: Vec<String>,
+    ) -> (u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>)) {
+        wide_layout()
+    }
+
+    fn about_to_show(&self, id: i32) -> bool {
+        self.log.lock().expect("log").push(format!("{id}:about-to-show"));
+        false
+    }
+
+    fn about_to_show_group(&self, ids: Vec<i32>) -> (Vec<i32>, Vec<i32>) {
+        self.log.lock().expect("log").push(format!("group:{ids:?}"));
+        (Vec::new(), Vec::new())
+    }
+
+    fn event(&self, id: i32, event: String, _data: OwnedValue, _timestamp: u32) {
+        self.log.lock().expect("log").push(format!("{id}:{event}"));
     }
 }
 
@@ -578,4 +682,119 @@ fn a_client_that_leaves_the_bus_takes_its_registered_windows_with_it() {
     while registrations_after(&events).contains_key(&5) {
         events.push(rx.recv_timeout(Duration::from_secs(5)).expect("the window is unregistered"));
     }
+}
+
+#[test]
+fn an_undescribed_prefix_greys_nothing_and_unity_actions_run_where_the_menubar_is_exported() {
+    let bus = private_bus();
+    let server = bus.connect();
+    let log = Log::default();
+    let objects = server.object_server();
+    objects.at("/test/unity", UnityMenus).expect("menus");
+    objects.at("/test/unity", FakeActions { prefix: "unity", log: log.clone() }).expect("unity actions");
+    objects.at("/test/app", FakeActions { prefix: "app", log: log.clone() }).expect("app actions");
+    let source = Source::Gtk {
+        bus: server.unique_name().expect("unique name").to_string(),
+        menubar: "/test/unity".into(),
+        app: Some("/test/app".into()),
+        window: Some("/test/nowhere".into()),
+    };
+    let (handle, rx) = private_client(&bus, false);
+
+    handle.watch(source.clone());
+    let bar = menu_of(&rx, &source);
+    let items: Vec<(&str, bool)> = bar[0].children.iter().map(|item| (item.label.as_str(), item.enabled)).collect();
+    assert_eq!(items, [("Quit", true), ("Wrap", true), ("Copy", true)], "win.* failed to describe, app.* did not");
+
+    handle.activate(source.clone(), bar[0].children[2].activation.clone());
+    wait_for(&log, "unity.copy");
+    handle.activate_with_token(source, bar[0].children[0].activation.clone(), Some("token-1".into()));
+    wait_for(&log, "app.quit token=token-1 startup=token-1");
+}
+
+#[test]
+fn a_gtk_menubar_whose_first_start_fails_is_fetched_once_more_on_its_own() {
+    let bus = private_bus();
+    let server = bus.connect();
+    let objects = server.object_server();
+    objects.at("/test/menubar", FlakyMenus { failures: AtomicUsize::new(1) }).expect("menus");
+    objects.at("/test/app", FakeActions { prefix: "app", log: Log::default() }).expect("app actions");
+    let source = Source::Gtk {
+        bus: server.unique_name().expect("unique name").to_string(),
+        menubar: "/test/menubar".into(),
+        app: Some("/test/app".into()),
+        window: None,
+    };
+    let (handle, rx) = private_client(&bus, false);
+
+    handle.watch(source.clone());
+    gone_of(&rx, &source);
+    assert_eq!(menu_of(&rx, &source)[0].label, "File", "nothing watched it again, the worker retried by itself");
+}
+
+#[test]
+fn a_menu_that_never_answers_about_to_show_costs_one_timeout_not_one_per_top_level_menu() {
+    let bus = private_bus();
+    let server = bus.connect();
+    let log = Log::default();
+    server.object_server().at("/test/dbusmenu", SlowPrimeDbusMenu { log: log.clone() }).expect("dbusmenu");
+    let source = dbusmenu_source(&server, "/test/dbusmenu");
+    let (handle, rx) = private_client(&bus, false);
+
+    let started = Instant::now();
+    handle.watch(source.clone());
+    let bar = menu_of(&rx, &source);
+    assert_eq!(bar.len(), 4);
+    assert!(
+        started.elapsed() < glide_appmenu::METHOD_TIMEOUT + Duration::from_secs(2),
+        "priming took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(about_to_show_calls(&log), 1, "priming stops at the first call that times out");
+}
+
+#[test]
+fn a_menu_that_supports_about_to_show_group_is_primed_in_one_call() {
+    let bus = private_bus();
+    let server = bus.connect();
+    let log = Log::default();
+    server.object_server().at("/test/dbusmenu", GroupDbusMenu { log: log.clone() }).expect("dbusmenu");
+    let source = dbusmenu_source(&server, "/test/dbusmenu");
+    let (handle, rx) = private_client(&bus, false);
+
+    handle.watch(source.clone());
+    menu_of(&rx, &source);
+    assert_eq!(*log.lock().expect("log"), ["group:[1, 2, 3, 4]"]);
+}
+
+#[test]
+fn a_closed_submenu_is_reported_to_the_dbusmenu_client() {
+    let bus = private_bus();
+    let server = bus.connect();
+    let log = Log::default();
+    server.object_server().at("/test/dbusmenu", FakeDbusMenu { log: log.clone() }).expect("dbusmenu");
+    let source = dbusmenu_source(&server, "/test/dbusmenu");
+    let (handle, rx) = private_client(&bus, false);
+
+    handle.watch(source.clone());
+    menu_of(&rx, &source);
+    handle.closed(source, Activation::DbusMenu(3));
+    wait_for(&log, "3:closed");
+}
+
+#[test]
+fn the_registrar_does_not_wait_in_the_queue_behind_another_owner() {
+    let bus = private_bus();
+    let other = bus.connect();
+    other.request_name(REGISTRAR_NAME).expect("another registrar owns the name");
+    let (_handle, _rx) = private_client(&bus, true);
+    let caller = bus.connect();
+    let dbus = zbus::blocking::fdo::DBusProxy::new(&caller).expect("bus proxy");
+    let name = zbus::names::BusName::try_from(REGISTRAR_NAME).expect("a bus name");
+    let owner = dbus.get_name_owner(name).expect("the registrar has an owner");
+    assert_eq!(owner.as_str(), other.unique_name().expect("unique name").as_str());
+    let queued = dbus
+        .list_queued_owners(zbus::names::WellKnownName::try_from(REGISTRAR_NAME).expect("a well-known name"))
+        .expect("queued owners");
+    assert_eq!(queued.len(), 1, "Glide must not sit in the queue unnoticed: {queued:?}");
 }

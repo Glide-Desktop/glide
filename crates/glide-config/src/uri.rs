@@ -43,10 +43,40 @@ pub fn decode(text: &str) -> Vec<u8> {
     out
 }
 
+fn host_name() -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: the buffer is writable for its whole length, which is what gethostname is told.
+    if unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } != 0 {
+        return None;
+    }
+    let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
+    std::str::from_utf8(&buffer[..end]).ok().filter(|name| !name.is_empty()).map(str::to_string)
+}
+
 #[must_use]
 pub fn local_path(uri: &str) -> Option<PathBuf> {
-    let rest = uri.trim().strip_prefix("file://")?;
-    let path = rest.strip_prefix("localhost").unwrap_or(rest);
+    local_path_on(uri, host_name().as_deref())
+}
+
+fn local_path_on(uri: &str, host: Option<&str>) -> Option<PathBuf> {
+    let uri = uri.trim();
+    if !uri.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("file:")) {
+        return None;
+    }
+    let rest = uri.get(5..)?.split(['?', '#']).next().unwrap_or_default();
+    let path = match rest.strip_prefix("//") {
+        Some(authority) => {
+            let (name, path) = authority.split_at(authority.find('/').unwrap_or(authority.len()));
+            let local = name.is_empty()
+                || name.eq_ignore_ascii_case("localhost")
+                || host.is_some_and(|host| host.eq_ignore_ascii_case(name));
+            if !local {
+                return None;
+            }
+            path
+        }
+        None => rest,
+    };
     if !path.starts_with('/') {
         return None;
     }
@@ -74,5 +104,24 @@ mod tests {
         assert_eq!(local_path("https://example.com/a"), None);
         assert_eq!(local_path("/plain/path"), None);
         assert_eq!(local_path("file:///a%00b"), None);
+    }
+
+    #[test]
+    fn the_short_form_and_this_machines_own_host_name_name_local_files() {
+        let on = |uri: &str| local_path_on(uri, Some("laptop"));
+        assert_eq!(on("file:/etc/hosts"), Some(PathBuf::from("/etc/hosts")));
+        assert_eq!(on("file://laptop/etc/hosts"), Some(PathBuf::from("/etc/hosts")));
+        assert_eq!(on("FILE://LAPTOP/etc/hosts"), Some(PathBuf::from("/etc/hosts")));
+        assert_eq!(on("file://server/etc/hosts"), None);
+        assert_eq!(on("file:relative"), None);
+        assert_eq!(local_path_on("file://laptop/etc/hosts", None), None);
+    }
+
+    #[test]
+    fn a_query_or_fragment_is_not_part_of_the_path() {
+        let on = |uri: &str| local_path_on(uri, None);
+        assert_eq!(on("file:///tmp/a.pdf#page=2"), Some(PathBuf::from("/tmp/a.pdf")));
+        assert_eq!(on("file:///tmp/a.txt?line=4"), Some(PathBuf::from("/tmp/a.txt")));
+        assert_eq!(on("file:///tmp/a%23b%3Fc"), Some(PathBuf::from("/tmp/a#b?c")), "escaped ones stay in the name");
     }
 }

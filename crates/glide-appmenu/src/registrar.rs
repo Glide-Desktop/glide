@@ -6,7 +6,12 @@ use std::{
     },
 };
 
-use zbus::{message::Header, object_server::SignalEmitter, zvariant::OwnedObjectPath};
+use zbus::{
+    fdo::{RequestNameFlags, RequestNameReply},
+    message::Header,
+    object_server::SignalEmitter,
+    zvariant::OwnedObjectPath,
+};
 
 use crate::{
     client::{AppMenuEvent, Sink},
@@ -161,7 +166,11 @@ pub fn serve(connection: &zbus::blocking::Connection, sink: Sink) -> anyhow::Res
         connection: connection.clone(),
     };
     connection.object_server().at(REGISTRAR_PATH, registrar)?;
-    connection.request_name(REGISTRAR_NAME)?;
+    let reply = connection.request_name_with_flags(REGISTRAR_NAME, RequestNameFlags::DoNotQueue.into())?;
+    if !matches!(reply, RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) {
+        let _ = connection.object_server().remove::<Registrar, _>(REGISTRAR_PATH);
+        anyhow::bail!("{REGISTRAR_NAME} already has an owner ({reply:?}), so Glide gets no registrations");
+    }
     watch_owners(connection, windows, sink);
     Ok(())
 }

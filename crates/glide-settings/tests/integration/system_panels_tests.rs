@@ -238,7 +238,14 @@ fn shared_mime_comments_prefer_the_language() {
 fn autostart_entries_parse_and_toggle_with_hidden() {
     let text = "[Desktop Entry]\nType=Application\nName=Network\nName[uk]=Мережа\nExec=nm-applet %U\nOnlyShowIn=GNOME;XFCE;\nX-GNOME-Autostart-enabled=true\n";
     let fields = autostart::parse_fields(text);
-    let entry = autostart::build_entry("nm-applet.desktop", &fields, "uk", &[String::from("glide")], &|_| true);
+    let entry = autostart::build_entry(
+        "nm-applet.desktop",
+        &fields,
+        "uk",
+        &[String::from("glide")],
+        &|_| true,
+        autostart::Provided::ALL,
+    );
     assert_eq!(entry.name, "Мережа");
     assert_eq!(entry.exec, "nm-applet");
     assert!(entry.enabled && entry.runnable && !entry.desktop_ok && entry.replaced);
@@ -263,6 +270,7 @@ fn autostart_entries_for_applets_the_shell_replaces_do_not_count_as_starting() {
             "en",
             &[String::from("glide")],
             &|_| true,
+            autostart::Provided::ALL,
         )
     };
     for exec in ["nm-applet", "/usr/bin/blueman-applet %U", "/usr/bin/netbird-ui"] {
@@ -289,10 +297,14 @@ fn autostart_scan_prefers_user_overrides() {
     .expect("override");
     std::fs::write(user.join("mine.desktop"), "[Desktop Entry]\nType=Application\nName=Mine\nExec=missing-tool\n")
         .expect("mine");
-    let entries =
-        autostart::scan_dirs(Some(&user), std::slice::from_ref(&system), "en", &[String::from("glide")], &|program| {
-            program == "alpha"
-        });
+    let entries = autostart::scan_dirs(
+        Some(&user),
+        std::slice::from_ref(&system),
+        "en",
+        &[String::from("glide")],
+        &|program| program == "alpha",
+        autostart::Provided::ALL,
+    );
     assert_eq!(entries.len(), 2);
     let alpha = &entries[0];
     assert_eq!(alpha.name, "Alpha");

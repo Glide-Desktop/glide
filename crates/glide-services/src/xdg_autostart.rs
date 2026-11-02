@@ -43,10 +43,12 @@ pub struct Launch {
     pub entry: Entry,
 }
 
+#[derive(Clone, Copy)]
 pub struct Probe<'a> {
     pub program: &'a dyn Fn(&str) -> bool,
     pub gsetting: &'a dyn Fn(&str, &str) -> Option<bool>,
     pub config_file: &'a dyn Fn(&str) -> bool,
+    pub provided: Provided,
 }
 
 fn condition_met(condition: &str, desktops: &[String], probe: &Probe<'_>) -> bool {
@@ -69,6 +71,7 @@ fn exec_command(exec: &str) -> String {
     exec.split_whitespace().filter(|word| !(word.len() == 2 && word.starts_with('%'))).collect::<Vec<_>>().join(" ")
 }
 
+use glide_config::autostart::{Provided, is_phone_daemon, provided_by_shell};
 use glide_config::on_path;
 
 #[must_use]
@@ -119,11 +122,7 @@ pub fn parse_entry(text: &str, desktops: &[String], probe: &Probe<'_>) -> Option
         return None;
     }
     let command = exec_command(&exec?);
-    (!command.is_empty() && !glide_config::autostart::provided_by_shell(&command)).then_some(Entry {
-        command,
-        phase,
-        delay,
-    })
+    (!command.is_empty() && !provided_by_shell(&command, probe.provided)).then_some(Entry { command, phase, delay })
 }
 
 fn gsetting(schema: &str, key: &str) -> Option<bool> {
@@ -158,6 +157,7 @@ pub fn current_desktops() -> Vec<String> {
 
 #[must_use]
 pub fn launches(dirs: &[PathBuf], desktops: &[String], probe: &Probe<'_>) -> Vec<Launch> {
+    let open = Probe { provided: Provided { phone: false, ..probe.provided }, ..*probe };
     let mut seen = HashSet::new();
     let mut found = Vec::new();
     for dir in dirs {
@@ -180,18 +180,21 @@ pub fn launches(dirs: &[PathBuf], desktops: &[String], probe: &Probe<'_>) -> Vec
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            if let Some(entry) = parse_entry(&text, desktops, probe) {
+            if let Some(entry) = parse_entry(&text, desktops, &open) {
                 found.push(Launch { id, entry });
             }
         }
+    }
+    if probe.provided.phone && found.iter().any(|launch| is_phone_daemon(&launch.entry.command)) {
+        found.retain(|launch| !provided_by_shell(&launch.entry.command, probe.provided));
     }
     found.sort_by_key(|launch| launch.entry.phase);
     found
 }
 
-pub fn spawn_all() {
-    let spawned = std::thread::Builder::new().name(String::from("glide-xdg-autostart")).spawn(|| {
-        let probe = Probe { program: &on_path, gsetting: &gsetting, config_file: &config_file };
+pub fn spawn_all(provided: Provided) {
+    let spawned = std::thread::Builder::new().name(String::from("glide-xdg-autostart")).spawn(move || {
+        let probe = Probe { program: &on_path, gsetting: &gsetting, config_file: &config_file, provided };
         for launch in launches(&autostart_dirs(), &current_desktops(), &probe) {
             match crate::spawn_shell_command(&launch.entry.shell_command()) {
                 Ok(pid) => tracing::info!(id = launch.id, pid, "started autostart entry"),
@@ -214,7 +217,8 @@ mod tests {
         vec![String::from("glide")]
     }
 
-    const INSTALLED: Probe<'static> = Probe { program: &|_| true, gsetting: &|_, _| None, config_file: &|_| false };
+    const INSTALLED: Probe<'static> =
+        Probe { program: &|_| true, gsetting: &|_, _| None, config_file: &|_| false, provided: Provided::ALL };
 
     fn command(text: &str, probe: &Probe<'_>) -> Option<String> {
         parse_entry(text, &glide(), probe).map(|entry| entry.shell_command())
@@ -327,6 +331,32 @@ mod tests {
         let started: Vec<(&str, &str)> =
             found.iter().map(|launch| (launch.id.as_str(), launch.entry.command.as_str())).collect();
         assert_eq!(started, [("c.desktop", "sh -c early"), ("b.desktop", "sh -c true")], "earlier phases go first");
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[test]
+    fn kde_connect_is_skipped_only_while_the_glide_phone_daemon_starts_in_its_place() {
+        let root = std::env::temp_dir().join(format!("glide-autostart-phone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        std::fs::write(root.join("kdeconnectd.desktop"), "[Desktop Entry]\nType=Application\nExec=kdeconnectd\n")
+            .expect("kdeconnect");
+        let ids = || -> Vec<String> {
+            launches(std::slice::from_ref(&root), &glide(), &INSTALLED).into_iter().map(|launch| launch.id).collect()
+        };
+        assert_eq!(ids(), ["kdeconnectd.desktop"], "no Glide phone daemon will run");
+        std::fs::write(
+            root.join("glide-phone.desktop"),
+            "[Desktop Entry]\nType=Application\nExec=glide-phone --daemon\n",
+        )
+        .expect("phone");
+        assert_eq!(ids(), ["glide-phone.desktop"]);
+        std::fs::write(
+            root.join("glide-phone.desktop"),
+            "[Desktop Entry]\nType=Application\nExec=glide-phone --daemon\nHidden=true\n",
+        )
+        .expect("phone off");
+        assert_eq!(ids(), ["kdeconnectd.desktop"], "a disabled Glide phone daemon leaves KDE Connect alone");
         std::fs::remove_dir_all(&root).expect("cleanup");
     }
 }

@@ -69,17 +69,22 @@ impl Prefs {
         toml::from_str(text).unwrap_or_else(|_| Self::lenient(text))
     }
 
+    fn valid_pair(key: &str, value: &toml::Value) -> bool {
+        let mut single = toml::Table::new();
+        single.insert(key.to_string(), value.clone());
+        toml::Value::Table(single).try_into::<Self>().is_ok()
+    }
+
     fn lenient(text: &str) -> Self {
         let Ok(table) = text.parse::<toml::Table>() else { return Self::default() };
-        let valid: toml::Table = table
-            .into_iter()
-            .filter(|(key, value)| {
-                let mut single = toml::Table::new();
-                single.insert(key.clone(), value.clone());
-                toml::Value::Table(single).try_into::<Self>().is_ok()
-            })
-            .collect();
+        let valid: toml::Table = table.into_iter().filter(|(key, value)| Self::valid_pair(key, value)).collect();
         toml::Value::Table(valid).try_into().unwrap_or_default()
+    }
+
+    fn drops_keys(text: &str) -> bool {
+        let Ok(table) = text.parse::<toml::Table>() else { return true };
+        let known = toml::Table::try_from(Self::default()).unwrap_or_default();
+        table.iter().any(|(key, value)| !known.contains_key(key) || !Self::valid_pair(key, value))
     }
 
     #[must_use]
@@ -99,7 +104,7 @@ impl Prefs {
             std::fs::create_dir_all(dir)?;
         }
         if let Ok(old) = std::fs::read(path)
-            && std::str::from_utf8(&old).ok().and_then(|old| old.parse::<toml::Table>().ok()).is_none()
+            && std::str::from_utf8(&old).ok().is_none_or(Self::drops_keys)
         {
             let _ = std::fs::rename(path, path.with_extension("toml.broken"));
         }
@@ -112,10 +117,12 @@ impl Prefs {
     }
 
     pub fn update_at(path: &Path, change: impl FnOnce(&mut Self)) -> io::Result<Self> {
-        let mut prefs = Self::load_at(path);
-        change(&mut prefs);
-        prefs.save_at(path)?;
-        Ok(prefs)
+        crate::file::locked(path, || {
+            let mut prefs = Self::load_at(path);
+            change(&mut prefs);
+            prefs.save_at(path)?;
+            Ok(prefs)
+        })
     }
 }
 
@@ -160,6 +167,51 @@ mod tests {
 
         let on_disk = Prefs::load_at(&file);
         assert_eq!(on_disk, app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_whose_keys_would_be_dropped_on_save_is_kept_as_broken() {
+        let dir = std::env::temp_dir().join(format!("glide-passwords-prefs-broken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("passwords.toml");
+        let original = "click = 7\nclear-after = 60\n";
+        std::fs::write(&file, original).unwrap();
+
+        let prefs = Prefs::update_at(&file, |prefs| prefs.offer = false).unwrap();
+        assert_eq!((prefs.clear_after, prefs.click, prefs.offer), (60, ClickAction::Password, false));
+        assert_eq!(std::fs::read_to_string(file.with_extension("toml.broken")).unwrap(), original);
+
+        std::fs::remove_file(file.with_extension("toml.broken")).unwrap();
+        Prefs::update_at(&file, |prefs| prefs.offer = true).unwrap();
+        assert!(!file.with_extension("toml.broken").exists(), "a file Glide wrote itself loses nothing");
+
+        std::fs::write(&file, "future-switch = true\n").unwrap();
+        Prefs::update_at(&file, |prefs| prefs.offer = true).unwrap();
+        assert!(file.with_extension("toml.broken").exists(), "a key this version does not know is kept aside");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_updates_keep_every_change() {
+        let dir = std::env::temp_dir().join(format!("glide-passwords-prefs-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("passwords.toml");
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..20 {
+                    Prefs::update_at(&file, |prefs| prefs.clear_after += 1).unwrap();
+                }
+            });
+            scope.spawn(|| {
+                for _ in 0..20 {
+                    Prefs::update_at(&file, |prefs| prefs.lock_after += 1).unwrap();
+                }
+            });
+        });
+        let prefs = Prefs::load_at(&file);
+        assert_eq!((prefs.clear_after, prefs.lock_after), (30 + 20, 15 + 20));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

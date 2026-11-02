@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+pub use glide_config::autostart::Provided;
+use glide_config::autostart::{is_phone_daemon, provided_by_shell};
+
 use super::apps;
 
 pub(crate) const OVERRIDE_KEY: &str = "X-Glide-Override";
@@ -60,7 +63,9 @@ fn overridden(fields: &Fields) -> bool {
 }
 
 #[must_use]
-pub fn build_entry(id: &str, fields: &Fields, lang: &str, desktops: &[String], exists: &dyn Fn(&str) -> bool) -> Entry {
+pub fn build_entry(
+    id: &str, fields: &Fields, lang: &str, desktops: &[String], exists: &dyn Fn(&str) -> bool, provided: Provided,
+) -> Entry {
     let get = |key: &str| fields.values.get(key).cloned().unwrap_or_default();
     let localized = |key: &str| fields.values.get(&format!("{key}[{lang}]")).cloned().unwrap_or_else(|| get(key));
     let only_in = list(fields.values.get("OnlyShowIn"));
@@ -87,7 +92,7 @@ pub fn build_entry(id: &str, fields: &Fields, lang: &str, desktops: &[String], e
         desktop_ok,
         conditional: !get("AutostartCondition").is_empty(),
         runnable: fields.is_app && !exec.is_empty() && (program.is_empty() || exists(&program)),
-        replaced: glide_config::autostart::provided_by_shell(&exec),
+        replaced: provided_by_shell(&exec, provided),
         only_in,
     }
 }
@@ -130,6 +135,7 @@ fn file_id(path: &Path) -> String {
 #[must_use]
 pub fn scan_dirs(
     user: Option<&Path>, system: &[PathBuf], lang: &str, desktops: &[String], exists: &dyn Fn(&str) -> bool,
+    provided: Provided,
 ) -> Vec<Entry> {
     let mut system_paths: HashMap<String, PathBuf> = HashMap::new();
     for dir in system {
@@ -149,7 +155,7 @@ pub fn scan_dirs(
             continue;
         };
         let fields = parse_fields(&text);
-        let mut entry = build_entry(&id, &fields, lang, desktops, exists);
+        let mut entry = build_entry(&id, &fields, lang, desktops, exists, provided);
         let from_user = user.is_some_and(|dir| path.starts_with(dir));
         if from_user {
             entry.user_path = Some(path.clone());
@@ -160,7 +166,7 @@ pub fn scan_dirs(
             && let Some(system) = &entry.system_path
             && let Ok(original) = std::fs::read_to_string(system)
         {
-            let original = build_entry(&id, &parse_fields(&original), lang, desktops, exists);
+            let original = build_entry(&id, &parse_fields(&original), lang, desktops, exists, provided);
             entry.name = original.name;
             entry.comment = original.comment;
             entry.icon = original.icon;
@@ -170,13 +176,20 @@ pub fn scan_dirs(
         }
         entries.push(entry);
     }
+    let phone_runs = entries.iter().any(|entry| entry.starts() && is_phone_daemon(&entry.exec));
+    if provided.phone && !phone_runs {
+        let provided = Provided { phone: false, ..provided };
+        for entry in &mut entries {
+            entry.replaced = provided_by_shell(&entry.exec, provided);
+        }
+    }
     entries.sort_by_key(|entry| entry.name.to_lowercase());
     entries
 }
 
 #[must_use]
-pub fn scan(lang: &str) -> Vec<Entry> {
-    scan_dirs(user_dir().as_deref(), &system_dirs(), lang, &desktops(), &on_path)
+pub fn scan(lang: &str, provided: Provided) -> Vec<Entry> {
+    scan_dirs(user_dir().as_deref(), &system_dirs(), lang, &desktops(), &on_path, provided)
 }
 
 #[must_use]

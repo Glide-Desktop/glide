@@ -313,8 +313,12 @@ impl GlideState {
                 }
             }
             Owner::App(source) => {
+                if self.app_menus.handle.is_none() {
+                    return;
+                }
+                let token = matches!(activation, Activation::Gtk { .. }).then(|| self.mint_granted_token(None));
                 if let Some(handle) = &self.app_menus.handle {
-                    handle.activate(source, activation);
+                    handle.activate_with_token(source, activation, token);
                 }
             }
             Owner::None => {}

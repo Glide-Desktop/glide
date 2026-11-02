@@ -48,6 +48,20 @@ impl Permissions {
         crate::write_private(path, text.as_bytes())
     }
 
+    pub fn update(change: impl FnOnce(&mut Self)) -> io::Result<Self> {
+        let path = Self::path().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no state folder"))?;
+        Self::update_at(&path, change)
+    }
+
+    pub fn update_at(path: &Path, change: impl FnOnce(&mut Self)) -> io::Result<Self> {
+        crate::file::locked(path, || {
+            let mut permissions = Self::load_from(path)?;
+            change(&mut permissions);
+            permissions.save_to(path)?;
+            Ok(permissions)
+        })
+    }
+
     #[must_use]
     pub const fn rule(&self, access: Access) -> &Rule {
         match access {
@@ -128,6 +142,28 @@ mod tests {
         assert_eq!(Permissions::load_from(&path).unwrap(), permissions);
         let mode = std::fs::metadata(&path).unwrap().permissions();
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777, 0o600);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_updates_never_lose_each_others_answers() {
+        let dir = std::env::temp_dir().join(format!("glide-permissions-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("permissions.toml");
+        std::thread::scope(|scope| {
+            for writer in 0..2 {
+                let path = &path;
+                scope.spawn(move || {
+                    for index in 0..20 {
+                        Permissions::update_at(path, |permissions| {
+                            permissions.remember(Access::Clipboard, &format!("/bin/w{writer}-{index}"), true);
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(Permissions::load_from(&path).unwrap().clipboard.allow.len(), 40);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

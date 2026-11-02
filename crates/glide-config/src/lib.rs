@@ -65,9 +65,13 @@ pub fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
+fn absolute_entries(list: &std::ffi::OsStr) -> Vec<PathBuf> {
+    std::env::split_paths(list).filter(|path| path.is_absolute()).collect()
+}
+
 fn search_path(key: &str, default: &str) -> Vec<PathBuf> {
-    let list = std::env::var_os(key).filter(|value| !value.is_empty()).unwrap_or_else(|| default.into());
-    std::env::split_paths(&list).collect()
+    let set = std::env::var_os(key).map(|list| absolute_entries(&list)).filter(|dirs| !dirs.is_empty());
+    set.unwrap_or_else(|| absolute_entries(default.as_ref()))
 }
 
 #[must_use]
@@ -157,6 +161,13 @@ mod tests {
         assert_eq!(user_dir(Some("/xdg".into()), home.clone(), ".config"), Some(PathBuf::from("/xdg")));
         assert_eq!(user_dir(None, home, ".config"), Some(PathBuf::from("/home/me/.config")));
         assert_eq!(user_dir(None, None, ".config"), None);
+    }
+
+    #[test]
+    fn empty_and_relative_search_path_entries_are_dropped() {
+        assert_eq!(absolute_entries("/ok::relative:/usr/share".as_ref()), [PathBuf::from("/ok"), "/usr/share".into()]);
+        assert!(absolute_entries("".as_ref()).is_empty());
+        assert!(absolute_entries("relative:.".as_ref()).is_empty());
     }
 
     #[test]

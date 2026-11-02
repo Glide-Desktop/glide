@@ -87,9 +87,9 @@ pub struct Page {
     generation: Generation,
 }
 
-fn load(lang: Lang, theme: Option<&str>) -> Catalog {
+fn load(lang: Lang, theme: Option<&str>, polkit_agent: bool) -> Catalog {
     let apps = apps::installed(lang.key());
-    let entries = autostart::scan(lang.key());
+    let entries = autostart::scan(lang.key(), autostart::Provided::detect(polkit_agent));
     let icons = apps::icon_paths(
         apps.iter().map(|app| app.icon.as_str()).chain(entries.iter().map(|entry| entry.icon.as_str())),
         theme,
@@ -103,8 +103,9 @@ impl Page {
         self.lang = Some(lang);
         let theme = Some(config.icon_theme());
         self.icon_theme.clone_from(&theme);
+        let polkit_agent = config.bool_or("general", "polkit-agent", true);
         let generation = self.generation.bump();
-        Task::perform(blocking(move || load(lang, theme.as_deref())), move |catalog| {
+        Task::perform(blocking(move || load(lang, theme.as_deref(), polkit_agent)), move |catalog| {
             Msg::Loaded(generation, lang, Box::new(catalog.unwrap_or_default()))
         })
     }
@@ -182,7 +183,10 @@ impl Pane for Page {
                 }
             }
             Msg::Launch(enabled) => config.set_bool("general", "xdg-autostart", enabled),
-            Msg::PolkitAgent(enabled) => config.set_bool("general", "polkit-agent", enabled),
+            Msg::PolkitAgent(enabled) => {
+                config.set_bool("general", "polkit-agent", enabled);
+                return self.refresh(c.lang, config);
+            }
             Msg::Toggle(id, enabled) => {
                 if let Some(entry) = self.catalog.entries.iter_mut().find(|entry| entry.id == id) {
                     entry.enabled = enabled;

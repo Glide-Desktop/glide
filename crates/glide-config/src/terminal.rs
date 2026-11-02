@@ -5,7 +5,7 @@ use std::{
 
 use crate::on_path;
 
-const KNOWN: [(&str, &[&str]); 13] = [
+const KNOWN: [(&str, &[&str]); 23] = [
     ("glide-terminal", &["-e"]),
     ("xdg-terminal-exec", &[]),
     ("ptyxis", &["--"]),
@@ -18,9 +18,20 @@ const KNOWN: [(&str, &[&str]); 13] = [
     ("wezterm", &["start", "--"]),
     ("ghostty", &["-e"]),
     ("xfce4-terminal", &["-x"]),
+    ("mate-terminal", &["-x"]),
+    ("terminator", &["-x"]),
+    ("tilix", &["-x"]),
+    ("sakura", &["-x"]),
+    ("deepin-terminal", &["-x"]),
+    ("lxterminal", &["-e"]),
+    ("qterminal", &["-e"]),
+    ("urxvt", &["-e"]),
+    ("st", &["-e"]),
+    ("x-terminal-emulator", &["-e"]),
     ("xterm", &["-e"]),
 ];
-const FALLBACK: &str = "xterm";
+const DISPATCHERS: [&str; 2] = ["xdg-terminal-exec", "x-terminal-emulator"];
+const FALLBACK: &str = "glide-terminal";
 const FALLBACK_ARGS: &[&str] = &["-e"];
 
 static CONFIGURED: RwLock<Option<String>> = RwLock::new(None);
@@ -54,7 +65,7 @@ pub fn program_name(terminal: &str) -> &str {
 
 #[must_use]
 pub fn known_installed(installed: impl Fn(&str) -> bool) -> Vec<&'static str> {
-    KNOWN.iter().map(|(name, _)| *name).filter(|name| *name != "xdg-terminal-exec" && installed(name)).collect()
+    KNOWN.iter().map(|(name, _)| *name).filter(|name| !DISPATCHERS.contains(name) && installed(name)).collect()
 }
 
 #[must_use]
@@ -69,9 +80,14 @@ pub fn exec_args(terminal: &str) -> &'static [&'static str] {
 }
 
 #[must_use]
-pub fn pick(configured: Option<&str>, environment: Option<&str>, installed: impl Fn(&str) -> bool) -> String {
+pub fn find(configured: Option<&str>, environment: Option<&str>, installed: impl Fn(&str) -> bool) -> Option<String> {
     let named = usable(configured).or_else(|| usable(environment).filter(|terminal| installed(command_word(terminal))));
-    named.or_else(|| KNOWN.iter().map(|(name, _)| *name).find(|name| installed(name))).unwrap_or(FALLBACK).to_string()
+    named.or_else(|| KNOWN.iter().map(|(name, _)| *name).find(|name| installed(name))).map(str::to_string)
+}
+
+#[must_use]
+pub fn pick(configured: Option<&str>, environment: Option<&str>, installed: impl Fn(&str) -> bool) -> String {
+    find(configured, environment, installed).unwrap_or_else(|| FALLBACK.to_string())
 }
 
 #[must_use]
@@ -97,8 +113,22 @@ mod tests {
         assert_eq!(pick(None, Some("missing-term"), installed), "foot", "a stale TERMINAL is ignored");
         assert_eq!(pick(None, Some("/usr/bin/kitty --single-instance"), installed), "/usr/bin/kitty --single-instance");
         assert_eq!(pick(None, None, installed), "foot");
-        assert_eq!(pick(None, None, |_| false), "xterm");
         assert_eq!(pick(None, None, |name| name == "xdg-terminal-exec"), "xdg-terminal-exec");
+    }
+
+    #[test]
+    fn xterm_is_picked_only_when_installed_and_glides_own_terminal_is_the_last_resort() {
+        assert_eq!(pick(None, None, |name| name == "xterm"), "xterm");
+        assert_eq!(find(None, None, |_| false), None);
+        assert_eq!(pick(None, None, |_| false), "glide-terminal", "Glide ships its own terminal");
+    }
+
+    #[test]
+    fn debians_alternative_comes_after_every_named_terminal_but_before_xterm() {
+        let installed = |name: &str| ["x-terminal-emulator", "xterm"].contains(&name);
+        assert_eq!(pick(None, None, installed), "x-terminal-emulator");
+        assert_eq!(pick(None, None, |name| ["x-terminal-emulator", "tilix"].contains(&name)), "tilix");
+        assert_eq!(known_installed(installed), ["xterm"], "a dispatcher is not offered as a choice");
     }
 
     #[test]
@@ -127,5 +157,11 @@ mod tests {
         assert_eq!(wrap("xdg-terminal-exec", "htop"), "xdg-terminal-exec htop");
         assert_eq!(wrap("/usr/bin/kitty --single-instance", "htop"), "/usr/bin/kitty --single-instance htop");
         assert_eq!(wrap("some-new-terminal", "htop"), "some-new-terminal -e htop", "-e is the common convention");
+        for terminal in ["mate-terminal", "terminator", "tilix", "sakura", "deepin-terminal"] {
+            assert_eq!(wrap(terminal, "htop"), format!("{terminal} -x htop"));
+        }
+        for terminal in ["lxterminal", "qterminal", "urxvt", "st", "x-terminal-emulator"] {
+            assert_eq!(wrap(terminal, "htop"), format!("{terminal} -e htop"));
+        }
     }
 }

@@ -17,7 +17,7 @@ fn parse_entry(text: &str) -> Option<(Provider, bool)> {
             keys.insert(key.trim(), value.trim());
         }
     }
-    if keys.get("Version").is_some_and(|version| *version != "2") {
+    if keys.get("Version").and_then(|version| version.parse::<u32>().ok()).is_none_or(|version| version < 2) {
         return None;
     }
     let enabled = keys.get("DefaultDisabled").is_none_or(|value| *value != "true");
@@ -142,6 +142,17 @@ mod tests {
         let old = "[Shell Search Provider]\nDesktopId=foo.desktop\nBusName=org.foo.Search\nObjectPath=/org/foo/Search\nVersion=1\n";
         let broken = "[Shell Search Provider]\nBusName=org.foo.Search\n";
         assert_eq!(merge([old, broken, system.as_str()]).len(), 1);
+    }
+
+    #[test]
+    fn a_provider_must_declare_version_two_or_later_as_an_integer() {
+        let base =
+            "[Shell Search Provider]\nDesktopId=foo.desktop\nBusName=org.foo.Search\nObjectPath=/org/foo/Search\n";
+        assert!(parse_ini(base).is_none(), "GNOME Shell skips a file without a version");
+        assert!(parse_ini(&format!("{base}Version=two\n")).is_none());
+        assert!(parse_ini(&format!("{base}Version=1\n")).is_none());
+        assert!(parse_ini(&format!("{base}Version=2\n")).is_some());
+        assert!(parse_ini(&format!("{base}Version=3\n")).is_some());
     }
 
     #[test]
