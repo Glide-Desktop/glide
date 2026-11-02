@@ -231,15 +231,6 @@ pub(super) fn wifi_bars(level: u8) -> String {
     )
 }
 
-#[must_use]
-pub(super) fn battery_cell(pct: u8) -> String {
-    let level = f32::from(pct.min(100)) / 100.0 * 9.0;
-    format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"#000\"><path d=\"M6 1.5h4V3h1.5a1 1 0 011 1v10a1 1 0 01-1 1h-7a1 1 0 01-1-1V4a1 1 0 011-1H6z\" fill-opacity=\"0.35\"/><rect x=\"5\" y=\"{y}\" width=\"6\" height=\"{level}\" rx=\"0.5\"/></svg>",
-        y = 13.5 - level
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,9 +242,6 @@ mod tests {
         }
         for level in 0..=4 {
             assert!(crate::paint::render_svg(wifi_bars(level).as_bytes(), 24).is_some(), "{level}");
-        }
-        for pct in [0, 37, 100, 255] {
-            assert!(crate::paint::render_svg(battery_cell(pct).as_bytes(), 24).is_some(), "{pct}");
         }
     }
 

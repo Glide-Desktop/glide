@@ -1,4 +1,5 @@
-use super::glyphs::{Glyph, battery_cell, glyph, svg_glyph, themed, wifi_bars};
+use super::battery;
+use super::glyphs::{Glyph, glyph, svg_glyph, themed, wifi_bars};
 use super::{
     Anim, BUTTON_HEIGHT, BUTTON_RADIUS, Cache, Color, E_IO, E_OUT, HEIGHT, ITEM_GAP, Logical, MOTION_QUANTUM,
     MemoryRenderBuffer, MemoryRenderBufferRenderElement, OpenPopup, PAD_X, POPUP_GAP, POPUP_RADIUS, Placed, Point,
@@ -10,16 +11,18 @@ use crate::paint::TextAlign;
 use crate::raster::{Canvas, ShellRenderer, rect};
 use crate::system_info::SystemStatus;
 use glide_theme::spacing::{SP1, SP2, SP3};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 const CONTROL_W: i32 = 28;
 const BLOCK_PAD: i32 = SP2;
 const BLOCK_GAP: i32 = 6;
 const PCT_GAP: i32 = SP1;
-pub(super) const ICON: i32 = 14;
+pub(super) const ICON: i32 = 16;
 pub(super) const PCT_STYLE: glide_theme::TextStyle = glide_theme::TextStyle {
-    size_px: 11.0,
-    line_height_px: 14.0,
-    weight: 500,
+    size_px: 12.0,
+    line_height_px: 16.0,
+    weight: 550,
     tracking_em: 0.0,
     uppercase: false,
     tabular: true,
@@ -29,6 +32,7 @@ const DOT_GAP: i32 = SP1;
 const DOT_PAD: i32 = SP2;
 const DOT_SCALE_FROM: f64 = 0.4;
 const POPOVER_W: i32 = 264;
+const SHEEN_LIVE: Duration = Duration::from_millis(100);
 const MICRO_H: i32 = 20;
 const PRIVACY_ROW_H: i32 = 40;
 
@@ -62,6 +66,7 @@ impl PrivacyKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Indicator {
     Wifi,
+    Ethernet,
     Bluetooth,
     Vpn,
     Volume,
@@ -79,6 +84,22 @@ pub(super) struct Indicators {
     cluster_cache: Cache<ClusterKey>,
     privacy_cache: Cache<(u64, u64, i32)>,
     swap: ClusterSwap,
+    charge: ChargeSheen,
+}
+
+type SheenKey = (i32, i32, [u32; 4], i32);
+
+#[derive(Debug, Default)]
+struct ChargeSheen {
+    since: Option<Instant>,
+    drawn: Option<Instant>,
+    buffers: HashMap<SheenKey, MemoryRenderBuffer>,
+}
+
+impl ChargeSheen {
+    fn live(&self) -> bool {
+        self.drawn.is_some_and(|at| at.elapsed() < SHEEN_LIVE)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -95,7 +116,7 @@ impl Indicators {
     }
 
     pub(super) fn is_animating(&self) -> bool {
-        self.dots.iter().any(Anim::is_animating) || self.swap.fade.is_animating()
+        self.dots.iter().any(Anim::is_animating) || self.swap.fade.is_animating() || self.charge.live()
     }
 
     fn reserved_count(&self) -> i32 {
@@ -142,7 +163,9 @@ pub fn cluster_order(privacy_dots: bool, headset: bool) -> Vec<Slot> {
 
 #[must_use]
 pub fn block_indicators(status: &SystemStatus) -> Vec<Indicator> {
-    let mut items = vec![Indicator::Wifi];
+    let wifi_in_use = status.wifi_available && status.wifi_enabled && !status.wifi_ssid.is_empty();
+    let wired = status.ethernet_available && (status.ethernet_connected || !status.wifi_available) && !wifi_in_use;
+    let mut items = vec![if wired { Indicator::Ethernet } else { Indicator::Wifi }];
     if status.bluetooth_on {
         items.push(Indicator::Bluetooth);
     }
@@ -162,7 +185,7 @@ const fn privacy_width(dots: i32) -> i32 {
 }
 
 fn battery_width(painter: &crate::paint::Painter, pct: u8, show_pct: bool) -> i32 {
-    let mut width = ICON;
+    let mut width = battery::STRIP_W;
     if show_pct {
         width += PCT_GAP + numeric_label_width(painter, &format!("{pct}%"), &PCT_STYLE);
     }
@@ -174,7 +197,7 @@ fn indicator_width(
 ) -> i32 {
     match indicator {
         Indicator::Battery => battery_width(painter, status.battery_pct.unwrap_or(0), show_pct),
-        Indicator::Wifi | Indicator::Volume | Indicator::Bluetooth | Indicator::Vpn => ICON,
+        Indicator::Wifi | Indicator::Ethernet | Indicator::Volume | Indicator::Bluetooth | Indicator::Vpn => ICON,
     }
 }
 
@@ -413,6 +436,55 @@ pub(super) fn push_cluster<R>(
         push_placed(renderer, old, placed, scale, elements);
     }
     push_buffer(renderer, &buffer, Point::from((left, y)), scale, elements);
+    let status_left = items.iter().find(|(slot, _)| *slot == Slot::Status).map(|(_, rect)| rect.loc.x);
+    push_charge_sheen(topbar, renderer, painter, (status_left, y), (scale, output_scale), elements);
+}
+
+fn push_charge_sheen<R>(
+    topbar: &mut Topbar, renderer: &mut R, painter: &crate::paint::Painter, (left, y): (Option<i32>, i32),
+    (scale, output_scale): (Scale<f64>, i32), elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) where
+    R: ShellRenderer,
+{
+    let status = &topbar.system_status;
+    let charging = status.battery_charging && status.battery_pct.is_some_and(|pct| pct < 100);
+    let (Some(left), Some(pct), Some(cycle), true) = (left, status.battery_pct, battery::Cycle::current(), charging)
+    else {
+        topbar.indicators.charge.since = None;
+        topbar.indicators.charge.drawn = None;
+        return;
+    };
+    let now = Instant::now();
+    let charge = &mut topbar.indicators.charge;
+    let since = *charge.since.get_or_insert(now);
+    charge.drawn = Some(now);
+    let Some(x) = block_layout(painter, status, topbar.theme.battery_percentage)
+        .into_iter()
+        .find(|(indicator, _, _)| *indicator == Indicator::Battery)
+        .map(|(_, x, _)| x)
+    else {
+        return;
+    };
+    let Some(progress) = cycle.progress(now.saturating_duration_since(since)) else {
+        return;
+    };
+    let cell = battery_cell(left + x);
+    let Some(sheen) = battery::sheen(&cell, pct, progress) else {
+        return;
+    };
+    let colour = battery::sheen_colour(topbar.theme.ok);
+    let key = (sheen.size.w, sheen.size.h, colour.0.map(f32::to_bits), output_scale);
+    let buffer = match charge.buffers.entry(key) {
+        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            let Some(mut c) = Canvas::new(sheen.size.w, sheen.size.h, output_scale) else {
+                return;
+            };
+            c.fill(c.full(), colour, 1.0);
+            entry.insert(c.finish())
+        }
+    };
+    push_buffer(renderer, buffer, Point::from((sheen.loc.x, y + sheen.loc.y)), scale, elements);
 }
 
 const fn opens(slot: Slot) -> Option<OpenPopup> {
@@ -502,16 +574,10 @@ const fn speaker(muted: bool, pct: u8) -> Glyph {
     }
 }
 
-fn battery_icon_names(pct: u8, charging: bool) -> [String; 2] {
-    let level = u32::from(pct.min(100)).div_ceil(10) * 10;
-    let suffix = match (charging, level) {
-        (true, 100) => "-charged",
-        (true, _) => "-charging",
-        (false, _) => "",
-    };
-    let legacy = (u32::from(pct.min(100)) + 10) / 20 * 20;
-    let legacy_suffix = if charging { "-charging" } else { "" };
-    [format!("battery-level-{level}{suffix}"), format!("battery-{legacy:03}{legacy_suffix}")]
+const WIRED: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"#000\"><path d=\"M5.5 1.5h5a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1.75v2h4.25a1 1 0 0 1 1 1v2h1a.5.5 0 0 1 .5.5v2.5a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5V12a.5.5 0 0 1 .5-.5h1v-1.5H3.5v1.5h1a.5.5 0 0 1 .5.5v2.5a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5V12a.5.5 0 0 1 .5-.5h1v-2a1 1 0 0 1 1-1h4.25v-2H5.5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1z\"/></svg>";
+
+pub(super) fn battery_cell(x: i32) -> battery::Cell {
+    battery::Cell::new(x, (BUTTON_HEIGHT - battery::STRIP_H) / 2, battery::STRIP_W, battery::STRIP_H)
 }
 
 fn draw_indicator(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, (indicator, x, width): (Indicator, i32, i32), fg: Color) {
@@ -525,6 +591,13 @@ fn draw_indicator(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, (indicator, x, wid
             if !themed(c, name, ICON, cell, fg) {
                 let level = if status.wifi_enabled { status.wifi_level } else { 0 };
                 svg_glyph(c, &wifi_bars(level), ICON, cell, fg);
+            }
+        }
+        Indicator::Ethernet => {
+            let name = if status.ethernet_connected { "network-wired" } else { "network-wired-disconnected" };
+            if !themed(c, name, ICON, cell, fg) {
+                let ink = if status.ethernet_connected { fg } else { fg.with_alpha(fg.0[3] * 0.5) };
+                svg_glyph(c, WIRED, ICON, cell, ink);
             }
         }
         Indicator::Bluetooth => {
@@ -541,6 +614,10 @@ fn draw_indicator(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, (indicator, x, wid
     }
 }
 
+fn strip_fill(theme: &TopbarTheme, pct: u8, charging: bool, colour: Color) -> Color {
+    if charging && pct < 100 { theme.ok } else { colour }
+}
+
 fn draw_status_battery(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, x: i32, fg: Color) {
     let Some(pct) = ctx.status.battery_pct else {
         return;
@@ -548,13 +625,10 @@ fn draw_status_battery(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, x: i32, fg: C
     let charging = ctx.status.battery_charging;
     let low = !charging && pct <= ctx.theme.battery_low_pct;
     let colour = if low { ctx.theme.danger } else { fg };
-    let cell = column(x, ICON);
-    let drawn = battery_icon_names(pct, charging).iter().any(|name| themed(c, name, ICON, cell, colour));
-    if !drawn {
-        svg_glyph(c, &battery_cell(pct), ICON, cell, colour);
-    }
+    let fill = strip_fill(ctx.theme, pct, charging, colour);
+    battery::draw(c, &battery_cell(x), battery::Look { pct, charging, ink: fg, fill });
     if ctx.theme.battery_percentage {
-        let left = x + ICON + PCT_GAP;
+        let left = x + battery::STRIP_W + PCT_GAP;
         let text = format!("{pct}%");
         let width = numeric_label_width(ctx.painter, &text, &PCT_STYLE);
         c.text(ctx.painter, (left, left + width, 0, BUTTON_HEIGHT), TextAlign::Right, &text, colour, &PCT_STYLE);
@@ -717,10 +791,91 @@ mod tests {
     }
 
     #[test]
-    fn battery_names_round_up_to_the_theme_levels() {
-        assert_eq!(battery_icon_names(82, false), ["battery-level-90", "battery-080"]);
-        assert_eq!(battery_icon_names(0, true), ["battery-level-0-charging", "battery-000-charging"]);
-        assert_eq!(battery_icon_names(100, true), ["battery-level-100-charged", "battery-100-charging"]);
-        assert_eq!(battery_icon_names(200, false), ["battery-level-100", "battery-100"]);
+    #[ignore = "writes preview PNGs to $GLIDE_QS_PREVIEW"]
+    fn status_strip_preview() {
+        let Some(dir) = std::env::var_os("GLIDE_QS_PREVIEW") else {
+            return;
+        };
+        let painter = crate::paint::Painter::new(14.0, None);
+        let mut icons = crate::icon::IconLoader::default();
+        let passwords = super::super::passwords_view::Applet::default();
+        let cases = [("discharging", 64, false), ("charging", 37, true), ("low", 6, false), ("full", 100, true)];
+        for appearance in [glide_theme::Appearance::Dark, glide_theme::Appearance::Light] {
+            let theme = TopbarTheme::from_tokens(&glide_theme::Tokens::new(appearance, glide_theme::Accent::Blue));
+            for (name, pct, charging) in cases {
+                let status = SystemStatus {
+                    battery_pct: Some(pct),
+                    battery_charging: charging,
+                    wifi_enabled: true,
+                    wifi_ssid: "Home".into(),
+                    wifi_level: 3,
+                    bluetooth_on: true,
+                    ..SystemStatus::default()
+                };
+                let block = block_width(&painter, &status, true);
+                let items = [(Slot::Status, 0, block), (Slot::Search, block + 2, CONTROL_W)];
+                let width = block + 2 + CONTROL_W;
+                let ctx = ClusterPaint {
+                    painter: &painter,
+                    theme: &theme,
+                    status: &status,
+                    width,
+                    scale: 2,
+                    hovered: None,
+                    open: None,
+                    levels: [0.0; 3],
+                    reserved: [false; 3],
+                    headset: None,
+                    phone: None,
+                    passwords: &passwords,
+                };
+                let mut c = Canvas::new(width + 16, HEIGHT, 2).expect("canvas");
+                c.fill(c.full(), theme.background, 0.0);
+                let mut cluster = Canvas::new(width, BUTTON_HEIGHT, 2).expect("cluster").with_icons(Some(&mut icons));
+                for &(slot, x, w) in &items {
+                    if slot == Slot::Status {
+                        for (indicator, dx, iw) in block_layout(&painter, &status, true) {
+                            draw_indicator(&mut cluster, &ctx, (indicator, x + dx, iw), theme.muted);
+                        }
+                    } else {
+                        glyph(&mut cluster, Glyph::Search, ICON, column(x, w), theme.muted);
+                    }
+                }
+                crate::paint::blit_rect_over(
+                    &mut c.buf,
+                    c.w,
+                    c.h,
+                    &cluster.buf,
+                    width,
+                    BUTTON_HEIGHT,
+                    8,
+                    (HEIGHT - BUTTON_HEIGHT) / 2,
+                    2,
+                );
+                let (w, h) = ((c.w * c.scale) as u32, (c.h * c.scale) as u32);
+                let image = glide_shell::image::Image::from_bgra(w, h, c.buf.clone()).expect("image");
+                let file = format!("strip-{name}-{appearance:?}.png").to_ascii_lowercase();
+                std::fs::write(std::path::Path::new(&dir).join(file), image.png().expect("png")).expect("write");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wired_desktop_shows_its_cable_instead_of_an_offline_wifi() {
+        let wired = SystemStatus {
+            wifi_available: false,
+            ethernet_available: true,
+            ethernet_connected: true,
+            ..SystemStatus::default()
+        };
+        assert_eq!(block_indicators(&wired)[0], Indicator::Ethernet);
+        let unplugged = SystemStatus { ethernet_connected: false, ..wired.clone() };
+        assert_eq!(block_indicators(&unplugged)[0], Indicator::Ethernet, "no Wi-Fi card: the cable is the network");
+        let both = SystemStatus { wifi_available: true, wifi_enabled: true, ..wired.clone() };
+        assert_eq!(block_indicators(&both)[0], Indicator::Ethernet, "a laptop on a cable with Wi-Fi idle");
+        let roaming = SystemStatus { wifi_ssid: "Home".into(), ..both };
+        assert_eq!(block_indicators(&roaming)[0], Indicator::Wifi, "Wi-Fi in use wins");
+        let offline = SystemStatus { ethernet_connected: false, wifi_available: true, ..wired };
+        assert_eq!(block_indicators(&offline)[0], Indicator::Wifi);
     }
 }

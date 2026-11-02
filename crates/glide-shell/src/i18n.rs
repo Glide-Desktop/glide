@@ -328,7 +328,7 @@ glide_app::catalogue! {
     QsCableDisconnected => "Cable disconnected", "Кабель від'єднано";
     QsBluetoothSettings => "Bluetooth Settings…", "Налаштування Bluetooth…";
     QsSoundSettings => "Sound Settings…", "Налаштування звуку…";
-    QsEnterprise => "Set up in Settings", "Налаштувати в Settings";
+    QsEnterprise => "Set up in Settings", "Налаштувати в Налаштуваннях";
     QsNoOutputs => "No output devices", "Немає пристроїв виводу";
     QsWifiIsOff => "Wi-Fi is off", "Wi-Fi вимкнено";
     QsBluetoothIsOff => "Bluetooth is off", "Bluetooth вимкнено";
@@ -427,7 +427,7 @@ glide_app::catalogue! {
     GreeterToastShutDown => "Shutting down…", "Вимкнення…";
     GreeterPowerNote =>"The action runs on the second press.", "Дія спрацює з другого натискання.";
     LockNoticesOne => "{n} new notification", "{n} нове сповіщення";
-    LockNoticesFew => "{n} new notifications", "{n} нових сповіщення";
+    LockNoticesFew => "{n} new notifications", "{n} нові сповіщення";
     LockNoticesMany => "{n} new notifications", "{n} нових сповіщень";
     LockNoticesHidden => "hidden", "приховано";
     GreeterChecking => "Checking…", "Перевірка…";

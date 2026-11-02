@@ -466,6 +466,18 @@ pub fn draw_title(
 }
 
 #[must_use]
+pub fn draw_logo_title(width: i32, height: i32, open_fill: Option<Color>, scale: i32) -> Option<MemoryRenderBuffer> {
+    let mut c = Canvas::new(width, height, scale)?;
+    if let Some(fill) = open_fill {
+        c.fill(c.full(), fill, ROW_RADIUS);
+    }
+    let side = crate::APP_ICON;
+    let pixels = glide_paint::render_svg(include_bytes!("../../../data/glide.svg"), side * c.scale)?;
+    c.blit_square(&pixels, side, ((width - side) / 2, (height - side) / 2));
+    Some(c.finish())
+}
+
+#[must_use]
 pub fn step_enabled(panel: &Panel, from: Option<MenuPath>, forward: bool) -> Option<MenuPath> {
     let enabled: Vec<MenuPath> = panel.rows.iter().filter(|row| row.enabled).map(|row| row.path).collect();
     if enabled.is_empty() {
@@ -484,6 +496,20 @@ pub fn step_enabled(panel: &Panel, from: Option<MenuPath>, forward: bool) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_desktop_logo_keeps_its_colour_and_white_chevrons_at_each_scale() {
+        for scale in [1, 2, 3] {
+            let side = crate::APP_ICON * scale;
+            let pixels = glide_paint::render_svg(include_bytes!("../../../data/glide.svg"), side).expect("Glide logo");
+            assert_eq!(pixels.len(), (side * side * 4) as usize);
+            assert!(
+                pixels.chunks_exact(4).any(|pixel| pixel[3] == 255 && pixel[..3].iter().all(|channel| *channel > 180))
+            );
+            assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 255 && pixel[0] != pixel[1]));
+            assert!(draw_logo_title(40, crate::BUTTON_HEIGHT, None, scale).is_some());
+        }
+    }
 
     #[test]
     fn paths_walk_down_and_back_up() {

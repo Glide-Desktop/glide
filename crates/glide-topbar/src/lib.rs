@@ -42,6 +42,8 @@ mod island;
 
 mod glyphs;
 
+mod battery;
+
 pub use island::{ALERT_HOLD, IslandAlert};
 
 mod status;
@@ -73,7 +75,7 @@ const ITEM_GAP: i32 = 2;
 const BUTTON_RADIUS: f32 = glide_theme::shape::R2;
 const BUTTON_MIN_WIDTH: i32 = 28;
 
-const APP_ICON: i32 = 14;
+const APP_ICON: i32 = 16;
 const APP_PAD_LEFT: i32 = 5;
 const APP_PAD_RIGHT: i32 = 9;
 const APP_GAP: i32 = 7;
@@ -138,11 +140,9 @@ const QS_READOUT_W: i32 = 34;
 const QS_PILL_PAD: i32 = glide_theme::spacing::SP2;
 const QS_PILL_CHEVRON: i32 = 9;
 const QS_PILL_MAX: i32 = 175;
-const QS_BATTERY_HEAD: i32 = 40;
+const QS_BATTERY_HEAD: i32 = 48;
 const QS_SEGMENTS_H: i32 = 34;
 const QS_SEGMENT_INSET: i32 = 3;
-const QS_BATTERY_GLYPH_W: i32 = 24;
-const QS_BATTERY_GLYPH_H: i32 = 13;
 const QS_POWER_BTN: i32 = 36;
 const QS_POWER_ROW: i32 = 40;
 const QS_CONFIRM_PAD: i32 = 10;
@@ -897,7 +897,7 @@ pub struct Topbar {
     menu_bar: Vec<glide_appmenu::MenuItem>,
     menu_open: MenuPath,
     menu_panels: Vec<crate::global_menu::Panel>,
-    menu_titles: HashMap<(usize, bool, bool, i32), MemoryRenderBuffer>,
+    menu_titles: HashMap<(usize, bool, bool, bool, i32), MemoryRenderBuffer>,
     menu_rasters: HashMap<(MenuPath, Option<usize>, i32), MemoryRenderBuffer>,
     app_chip_w: i32,
 
@@ -959,7 +959,7 @@ struct MenuLayout {
 impl Topbar {
     #[must_use]
     pub fn new(theme: TopbarTheme) -> Self {
-        let mut bar = Self { theme, ..Self::default() };
+        let mut bar = Self { theme, popup_reveal: Reveal::closed().with_eases(ease_out, ease_io), ..Self::default() };
         bar.volume_anim.jump(f64::from(bar.system_status.volume_pct));
         bar.mic_anim.jump(f64::from(bar.system_status.mic_pct));
         bar.brightness_anim.jump(f64::from(bar.system_status.brightness_pct));
@@ -1362,12 +1362,7 @@ impl Topbar {
     }
 
     fn popup_progress(&self) -> f64 {
-        let duration = motion::t2();
-        if self.popup_reveal.is_open() {
-            self.popup_reveal.progress(duration, ease_out)
-        } else {
-            self.popup_reveal.progress(duration, ease_io)
-        }
+        self.popup_reveal.value(motion::t2())
     }
 
     fn tile_on(&self, tile: QsTile) -> bool {
@@ -2281,6 +2276,10 @@ impl Topbar {
             )),
             Some(OpenPopup::Privacy | OpenPopup::Headset | OpenPopup::Phone | OpenPopup::Passwords) | None => None,
         }
+    }
+
+    fn desktop_menu_logo(&self, index: usize) -> bool {
+        self.app_name.is_empty() && index == 0 && self.menu_bar.first().is_some_and(|item| item.label == "Glide")
     }
 
     fn layout_app_menu(
@@ -3644,18 +3643,28 @@ fn push_menu_titles<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_,
     for (index, rect) in titles {
         let is_open = open == Some(index);
         let lit = is_open || topbar.hovered == u16::try_from(index).ok().map(Slot::MenuTitle);
-        let key = (index, is_open, lit, output_scale);
+        let logo = topbar.desktop_menu_logo(index);
+        let key = (index, is_open, lit, logo, output_scale);
         if !topbar.menu_titles.contains_key(&key)
             && let Some(item) = topbar.menu_bar.get(index)
-            && let Some(buffer) = crate::global_menu::draw_title(
-                painter,
-                &item.label,
-                rect.size.w,
-                rect.size.h,
-                hover_colour(&topbar.theme, lit),
-                is_open.then_some(topbar.theme.open_fill),
-                output_scale,
-            )
+            && let Some(buffer) = if logo {
+                crate::global_menu::draw_logo_title(
+                    rect.size.w,
+                    rect.size.h,
+                    is_open.then_some(topbar.theme.open_fill),
+                    output_scale,
+                )
+            } else {
+                crate::global_menu::draw_title(
+                    painter,
+                    &item.label,
+                    rect.size.w,
+                    rect.size.h,
+                    hover_colour(&topbar.theme, lit),
+                    is_open.then_some(topbar.theme.open_fill),
+                    output_scale,
+                )
+            }
         {
             topbar.menu_titles.insert(key, buffer);
         }
@@ -4214,7 +4223,8 @@ const QS_LABEL: TextStyle = TextStyle { weight: 550, ..TextStyle::CAP };
 const QS_NOTE: TextStyle = TextStyle { size_px: 11.0, line_height_px: 14.0, weight: 400, ..TextStyle::CAP };
 const QS_PILL_TEXT: TextStyle = TextStyle { size_px: 11.5, line_height_px: 14.0, weight: 600, ..TextStyle::CAP };
 const QS_READOUT: TextStyle = TextStyle { size_px: 12.0, line_height_px: 16.0, weight: 500, ..TextStyle::NUM };
-const QS_BATTERY_PCT: TextStyle = TextStyle { line_height_px: 16.0, weight: 600, ..TextStyle::NUM };
+const QS_BATTERY_PCT: TextStyle = TextStyle { size_px: 16.0, line_height_px: 20.0, weight: 650, ..TextStyle::NUM };
+const QS_BATTERY_STATE: TextStyle = TextStyle { size_px: 11.5, line_height_px: 15.0, weight: 450, ..TextStyle::CAP };
 const QS_SOFT_DIM: f32 = 0.85;
 const QS_SLIDER_THUMB_HOVER: i32 = 18;
 const QS_SLIDER_THUMB_DRAG: i32 = 19;
@@ -4223,10 +4233,7 @@ const QS_SLIDER_RING_DRAG: i32 = 6;
 const QS_MUTED_FILL: f32 = 0.35;
 const QS_MUTED_THUMB: f32 = 0.7;
 const QS_THUMB_SHADOW: Color = Color([0.0, 0.0, 0.0, 0.18]);
-const QS_BATTERY_TIP_INSET: i32 = 4;
-const QS_BATTERY_TIP: i32 = 3;
-const QS_BATTERY_FILL_INSET: i32 = 3;
-const QS_BATTERY_GAP: i32 = 10;
+const QS_BATTERY_GAP: i32 = 12;
 const QS_SEGMENT_ICON: i32 = 14;
 const QS_MIC_DOT: i32 = 6;
 const QS_MIC_MUTED_DOT: f32 = 0.5;
@@ -4575,25 +4582,6 @@ fn draw_qs_header(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, geometry: &QsGe
 
 const AVATAR_GRADIENT_LIFT: f32 = glide_theme::motion::ST_DRAG;
 
-fn draw_qs_battery_glyph(c: &mut Canvas<'_>, rect: LocalRect, pct: u8, colour: Color) {
-    let shell = dimmed(colour, QS_SOFT_DIM);
-    c.stroke(rect, 1.5, R1, shell);
-    let tip_h = rect.size.h - QS_BATTERY_TIP_INSET * 2;
-    let tip = local_rect(rect.loc.x + rect.size.w + 1, rect.loc.y + QS_BATTERY_TIP_INSET, QS_BATTERY_TIP - 1, tip_h);
-    c.fill(tip, shell, 0.0);
-    let inner_w = rect.size.w - QS_BATTERY_FILL_INSET * 2;
-    let fill_w = inner_w * i32::from(pct.min(100)) / 100;
-    if fill_w > 0 {
-        let fill = local_rect(
-            rect.loc.x + QS_BATTERY_FILL_INSET,
-            rect.loc.y + QS_BATTERY_FILL_INSET,
-            fill_w,
-            rect.size.h - QS_BATTERY_FILL_INSET * 2,
-        );
-        c.fill(fill, colour, R1);
-    }
-}
-
 fn draw_qs_power_row(
     theme: &TopbarTheme, geometry: &QsGeometry, lit: Option<Slot>,
     (scale, icons): (i32, Option<&mut crate::icon::IconLoader>),
@@ -4909,28 +4897,28 @@ fn draw_qs_battery_card(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &Qs
     c.fill(card, theme.track_soft, R3);
     c.stroke(card, 1.0, R3, theme.line);
     if let (Some(head), Some(pct)) = (geometry.battery_head, status.battery_pct) {
-        let low = !status.battery_charging && pct <= theme.battery_low_pct;
+        let charging = status.battery_charging;
+        let low = !charging && pct <= theme.battery_low_pct;
         let (top, bottom) = (head.loc.y, head.loc.y + head.size.h);
-        let mut x = head.loc.x + SP2;
-        let glyph_y = top + (head.size.h - QS_BATTERY_GLYPH_H) / 2;
-        let glyph = local_rect(x, glyph_y, QS_BATTERY_GLYPH_W, QS_BATTERY_GLYPH_H);
-        draw_qs_battery_glyph(c, glyph, pct, if low { theme.danger } else { theme.ok });
-        x += QS_BATTERY_GLYPH_W + QS_BATTERY_TIP + QS_BATTERY_GAP;
-        let pct_text = format!("{pct}%");
-        let pct_w = text_w(ctx.painter, &pct_text, &QS_BATTERY_PCT);
-        c.text(ctx.painter, (x, x + pct_w, top, bottom), TextAlign::Left, &pct_text, theme.label, &QS_BATTERY_PCT);
-        x += pct_w + QS_BATTERY_GAP;
+        let x = head.loc.x + SP2;
+        let cell = battery::Cell::new(x, top + (head.size.h - battery::CARD_H) / 2, battery::CARD_W, battery::CARD_H);
+        let fill = if low { theme.danger } else { theme.ok };
+        battery::draw(c, &cell, battery::Look { pct, charging, ink: theme.label, fill });
+        let text_left = x + battery::CARD_W + QS_BATTERY_GAP;
         let chevron =
             local_rect(head.loc.x + head.size.w - SP2 - QS_CHEVRON_GLYPH - 1, top, QS_CHEVRON_GLYPH + 1, head.size.h);
-        let eta = panels::battery_head_line(status);
-        c.text(
-            ctx.painter,
-            (x, chevron.loc.x - QS_BATTERY_GAP, top, bottom),
-            TextAlign::Left,
-            &eta,
-            theme.muted,
-            &TextStyle::CAP,
-        );
+        let text_right = chevron.loc.x - SP2;
+        let lines = QS_BATTERY_PCT.line_height_px.ceil() as i32 + QS_BATTERY_STATE.line_height_px.ceil() as i32;
+        let pct_top = top + (head.size.h - lines) / 2;
+        let state_top = pct_top + QS_BATTERY_PCT.line_height_px.ceil() as i32;
+        let pct_text = format!("{pct}%");
+        let pct_colour = if low { theme.danger } else { theme.label };
+        let pct_band = (text_left, text_right, pct_top, state_top);
+        c.text(ctx.painter, pct_band, TextAlign::Left, &pct_text, pct_colour, &QS_BATTERY_PCT);
+        let state = panels::battery_head_line(status);
+        let state_band =
+            (text_left, text_right, state_top, bottom.min(state_top + QS_BATTERY_STATE.line_height_px.ceil() as i32));
+        c.text(ctx.painter, state_band, TextAlign::Left, &state, theme.muted, &QS_BATTERY_STATE);
         let hover = ctx.hovered == Some(Slot::QsBattery);
         draw_qs_chevron(c, ctx, chevron, (false, hover));
     }
@@ -5202,6 +5190,19 @@ mod tests {
             relayout(&mut bar);
             let first = bar.slot_rect(Slot::MenuTitle(0)).expect("Glide menu");
             assert_eq!(first.loc.x, PAD_X, "with no app the menus start at the edge");
+            assert!(bar.desktop_menu_logo(0));
+            assert!(!bar.desktop_menu_logo(1));
+        }
+
+        #[test]
+        fn an_active_application_keeps_its_glide_menu_title() {
+            let mut bar = topbar_with(&["US"]);
+            bar.set_app_menu(crate::global_menu::desktop_menu(false, false));
+            assert!(!bar.desktop_menu_logo(0));
+            bar.set_app(String::new(), String::new());
+            assert!(bar.desktop_menu_logo(0));
+            bar.set_app("org.glide.Test".to_string(), "Glide".to_string());
+            assert!(!bar.desktop_menu_logo(0));
         }
     }
 
@@ -6565,6 +6566,7 @@ mod tests {
         let restart = bar.slot_rect(Slot::QsPowerButton(PowerAction::Restart)).expect("restart");
         let height = bar.popup_rect().expect("popup").size.h;
         assert!(bar.arm_power(PowerAction::Restart));
+        assert!(bar.arm_anim.is_animating(), "the confirmation strip starts moving when armed");
         assert!(!bar.arm_power(PowerAction::Restart), "already armed");
         bar.layout_slots(&painter(), output());
         assert!(bar.slot_rect(Slot::QsPowerButton(PowerAction::Restart)).is_none(), "the row gives way");
@@ -6578,7 +6580,6 @@ mod tests {
             Some(TopbarAction::QsPower(PowerAction::Restart))
         );
         assert_eq!(click(&bar, Slot::QsPowerCancel), Some(TopbarAction::QsDisarmPower));
-        assert!(bar.is_animating(), "the strip fades in");
         assert!(bar.qs_escape(), "Esc disarms before it closes");
         assert_eq!(bar.armed_power(), None);
         assert!(!bar.qs_escape());
@@ -6884,6 +6885,61 @@ mod tests {
                 draw_qs_confirm(&painter, &theme, &strip, (PowerAction::Lock, None, None), (scale, None)).is_some()
             );
             assert!(draw_qs_background((QS_WIDTH, geometry.height), &theme, scale).is_some());
+        }
+    }
+
+    #[test]
+    #[ignore = "writes preview PNGs to $GLIDE_QS_PREVIEW"]
+    fn quick_settings_preview() {
+        use crate::system_info::{BatteryHealth, BatteryInfo, BatteryState};
+        let Some(dir) = std::env::var_os("GLIDE_QS_PREVIEW") else {
+            return;
+        };
+        let painter = painter();
+        let mut icons = crate::icon::IconLoader::default();
+        let cases = [
+            ("discharging", 64, BatteryState::Discharging, Some(212)),
+            ("charging", 37, BatteryState::Charging, Some(48)),
+            ("low", 6, BatteryState::Discharging, Some(14)),
+            ("full", 100, BatteryState::Full, None),
+        ];
+        for appearance in [glide_theme::Appearance::Dark, glide_theme::Appearance::Light] {
+            let theme = TopbarTheme::from_tokens(&glide_theme::Tokens::new(appearance, glide_theme::Accent::Blue));
+            for (name, pct, state, minutes) in cases {
+                let mut bar = Topbar::new(theme.clone());
+                let mut status = bar.system_status().clone();
+                status.battery_pct = Some(pct);
+                status.battery_charging = state == BatteryState::Charging;
+                status.battery = Some(BatteryInfo {
+                    pct,
+                    state,
+                    minutes,
+                    health: BatteryHealth::default(),
+                    profile: Some(PowerProfile::Balanced),
+                });
+                status.power_profile = Some(PowerProfile::Balanced);
+                status.wifi_enabled = true;
+                status.wifi_ssid = "Home".into();
+                status.wifi_level = 3;
+                bar.set_system_status(status);
+                bar.layout_slots(&painter, output());
+                let (output_label, input_label) = (bar.output_label(), bar.input_label());
+                let (_, flags, motion, _, shape) = bar.qs_main_key(&painter);
+                let geometry = qs_geometry(&shape);
+                let scale = 2;
+                let ctx = QsRenderContext { painter: &painter, theme: &theme, hovered: None };
+                let mut canvas = Canvas::popover((QS_WIDTH, geometry.height), scale, R4, theme.popover_bg, theme.line)
+                    .expect("canvas")
+                    .with_icons(Some(&mut icons));
+                let labels = (output_label.as_str(), input_label.as_str());
+                let draw =
+                    QsDraw { status: bar.system_status(), panel: &bar.qs_panel, geometry, flags, motion, labels };
+                draw_quick_settings(&mut canvas, &ctx, &draw);
+                let (w, h) = ((canvas.w * canvas.scale) as u32, (canvas.h * canvas.scale) as u32);
+                let image = glide_shell::image::Image::from_bgra(w, h, canvas.buf.clone()).expect("image");
+                let file = format!("qs-{name}-{appearance:?}.png").to_ascii_lowercase();
+                std::fs::write(std::path::Path::new(&dir).join(file), image.png().expect("png")).expect("write");
+            }
         }
     }
 
