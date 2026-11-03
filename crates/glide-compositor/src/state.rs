@@ -778,6 +778,17 @@ impl GlideState {
             self.ipc_subscribers.broadcast(&glide_ipc::Event::FocusChanged {
                 id: focused_window_id.map(glide_layout::WindowId::as_u64),
             });
+            let client = |surface: Option<&WlSurface>| {
+                surface.and_then(smithay::reexports::wayland_server::Resource::client).map(|client| client.id())
+            };
+            if client(current_focus.as_ref()) != client(target.as_ref()) {
+                let app = focused_window_id.and_then(|id| self.dock_key(id));
+                tracing::info!(
+                    app = app.as_deref().unwrap_or("-"),
+                    layer = self.layer_focus.is_some(),
+                    "keyboard focus moved to another client"
+                );
+            }
         }
 
         keyboard.set_focus(self, target, serial);

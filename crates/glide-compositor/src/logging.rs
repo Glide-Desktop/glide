@@ -6,6 +6,7 @@ use std::{
 use tracing_subscriber::EnvFilter;
 
 const SMITHAY_FILTER: &str = "smithay=info,\
+     smithay::wayland::selection=debug,\
      smithay::backend::egl=warn,\
      smithay::backend::renderer::gles=warn,\
      smithay::backend::session::libseat=info";

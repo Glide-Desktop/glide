@@ -66,6 +66,18 @@ impl TabletSeatHandler for GlideState {
 impl SelectionHandler for GlideState {
     type SelectionUserData = crate::clipboard::Owned;
 
+    fn new_selection(
+        &mut self, ty: smithay::wayland::selection::SelectionTarget,
+        source: Option<smithay::wayland::selection::SelectionSource>, _seat: Seat<Self>,
+    ) {
+        if ty != smithay::wayland::selection::SelectionTarget::Clipboard {
+            return;
+        }
+        let app = self.layout.focused_window().and_then(|id| self.dock_key(id));
+        let mimes = source.as_ref().map_or(0, |source| source.mime_types().len());
+        tracing::info!(app = app.as_deref().unwrap_or("-"), mimes, "clipboard taken by a client");
+    }
+
     fn send_selection(
         &mut self, _ty: smithay::wayland::selection::SelectionTarget, mime_type: String, fd: std::os::fd::OwnedFd,
         _seat: Seat<Self>, user_data: &Self::SelectionUserData,
