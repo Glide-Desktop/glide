@@ -1078,8 +1078,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
         middle.height(Fill),
         grow(app.status_visible(), column![rule(&paint), status_bar(app)])
     ];
-    let body = mouse_area(body).on_move(Message::Pointer);
-    let mut layers: Vec<Element<'_, Message>> = vec![body.into()];
+    let body = glide_sdk::pointer::watched(app.pointer.clone(), body, app.status_zone(), Message::Pointer);
+    let mut layers: Vec<Element<'_, Message>> = vec![body];
     if !app.edge_to_edge() {
         layers.push(resize_handles(Message::Window));
     }

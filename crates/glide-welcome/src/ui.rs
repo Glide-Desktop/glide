@@ -1899,14 +1899,14 @@ mod tests {
         let mut app = Harness::<WelcomeApp>::new("glide-welcome", Look::default(), Size::new(1120.0, 760.0));
         app.message(Message::ToggleSound);
         app.message(Message::GoTo(Step::Gestures));
-        app.send(Event::Pointer(Point::new(200.0, 200.0)));
+        app.point_at(Point::new(200.0, 200.0));
         app.message(Message::SwipeStart);
-        app.send(Event::Pointer(Point::new(170.0, 200.0)));
+        app.point_at(Point::new(170.0, 200.0));
         app.message(Message::SwipeEnd);
         assert_eq!(app.app().state.workspace, 0);
-        app.send(Event::Pointer(Point::new(200.0, 200.0)));
+        app.point_at(Point::new(200.0, 200.0));
         app.message(Message::SwipeStart);
-        app.send(Event::Pointer(Point::new(150.0, 200.0)));
+        app.point_at(Point::new(150.0, 200.0));
         app.message(Message::SwipeEnd);
         assert_eq!(app.app().state.workspace, 1);
     }
@@ -1931,15 +1931,15 @@ mod tests {
         let mut app = Harness::<WelcomeApp>::new("glide-welcome", Look::default(), Size::new(1120.0, 760.0));
         app.message(Message::ToggleSound);
         app.message(Message::GoTo(Step::Gestures));
-        app.send(Event::Pointer(Point::new(200.0, 200.0)));
+        app.point_at(Point::new(200.0, 200.0));
         app.message(Message::SwipeStart);
-        app.send(Event::Pointer(Point::new(20.0, 20.0)));
+        app.point_at(Point::new(20.0, 20.0));
         app.message(swipe_event(&IcedEvent::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))).unwrap());
         assert_eq!(app.app().state.workspace, 1);
 
         app.message(Message::SwipeStart);
         app.message(swipe_event(&IcedEvent::Window(window::Event::Unfocused)).unwrap());
-        app.send(Event::Pointer(Point::new(200.0, 200.0)));
+        app.point_at(Point::new(200.0, 200.0));
         app.message(Message::SwipeEnd);
         assert_eq!(app.app().state.workspace, 1);
         assert!(app.app().swipe_start.is_none());

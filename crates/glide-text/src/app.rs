@@ -335,7 +335,7 @@ pub struct App {
     in_flight: HashSet<u64>,
     pub recent: Vec<PathBuf>,
     modifiers: Modifiers,
-    pub pointer: Point,
+    pub pointer: glide_sdk::pointer::PointerCell,
     primary: Option<std::fs::File>,
     marked: u64,
     handles: Option<menubar::Handles>,
@@ -705,7 +705,7 @@ impl App {
             in_flight: HashSet::new(),
             recent: session.recent.clone(),
             modifiers: Modifiers::empty(),
-            pointer: Point::ORIGIN,
+            pointer: glide_sdk::pointer::PointerCell::default(),
             primary,
             marked: 0,
             handles: None,
@@ -1074,7 +1074,7 @@ impl App {
                 self.open_path(path)
             }
             Message::TreeMenu(path) => {
-                self.open_menu(MenuKind::Tree(path), self.pointer, false);
+                self.open_menu(MenuKind::Tree(path), self.pointer.get(), false);
                 Task::none()
             }
             Message::TabPressed(index) => {
@@ -1176,7 +1176,7 @@ impl App {
                 Task::none()
             }
             Message::Pointer(point) => {
-                self.pointer = point;
+                self.pointer.set(point);
                 self.track_status();
                 Task::none()
             }
@@ -1354,10 +1354,14 @@ impl App {
         self.prefs.status_bar && !self.focus && self.prefs.status_islands
     }
 
-    fn track_status(&mut self) {
+    pub(crate) fn status_zone(&self) -> impl Fn(Point) -> bool + 'static {
         let sidebar = if self.sidebar_visible() { crate::chrome::SIDEBAR + 1.0 } else { 0.0 };
-        let size = self.window.size;
-        let near = self.pointer.x >= sidebar && self.pointer.y >= size.height - crate::chrome::ISLAND_ZONE;
+        let top = self.window.size.height - crate::chrome::ISLAND_ZONE;
+        move |at: Point| at.x >= sidebar && at.y >= top
+    }
+
+    fn track_status(&mut self) {
+        let near = self.status_zone()(self.pointer.get());
         let pinned = self
             .menu
             .as_ref()
@@ -1798,10 +1802,11 @@ impl App {
                 Task::none()
             }
             Command::ContextMenu => {
-                let at = if self.pointer == Point::ORIGIN {
+                let pointer = self.pointer.get();
+                let at = if pointer == Point::ORIGIN {
                     Point::new(self.window.size.width / 2.0 - 120.0, self.window.size.height / 3.0)
                 } else {
-                    self.pointer
+                    pointer
                 };
                 self.open_menu(MenuKind::Context, at, true);
                 Task::none()

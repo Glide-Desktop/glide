@@ -9,6 +9,7 @@ pub mod instance;
 pub mod look;
 pub mod menu;
 pub mod overlay;
+pub mod pointer;
 pub mod system;
 pub mod wheel;
 pub mod widget;

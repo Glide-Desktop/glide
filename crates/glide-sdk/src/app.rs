@@ -8,7 +8,7 @@ use glide_iced::style::{self, SP2};
 use glide_theme::{Accent, Appearance, component, motion};
 use iced::border::Radius;
 use iced::keyboard::{self, Key, key::Named};
-use iced::widget::{column, container, mouse_area};
+use iced::widget::{column, container};
 use iced::{Element, Fill, Point, Size, Subscription, Task};
 
 use crate::look::{self, Lang, Look};
@@ -93,7 +93,7 @@ pub struct Shell<M> {
     paint: Paint,
     lang: Lang,
     window: Window,
-    pointer: Point,
+    pointer: crate::pointer::PointerCell,
     toast: Option<Toast<M>>,
     dialog: Option<Dialog<M>>,
     closing: Option<Dialog<M>>,
@@ -112,7 +112,7 @@ impl<M: Clone> Shell<M> {
             lang: look.lang(),
             look,
             window: Window::default(),
-            pointer: Point::ORIGIN,
+            pointer: crate::pointer::PointerCell::default(),
             toast: None,
             dialog: None,
             closing: None,
@@ -156,7 +156,7 @@ impl<M: Clone> Shell<M> {
 
     #[must_use]
     pub fn pointer(&self) -> Point {
-        self.pointer
+        self.pointer.get()
     }
 
     #[must_use]
@@ -190,7 +190,7 @@ impl<M: Clone> Shell<M> {
     }
 
     pub fn context_menu(&mut self, items: Vec<menu::Item<M>>) {
-        self.context_menu_at(self.pointer, items);
+        self.context_menu_at(self.pointer.get(), items);
     }
 
     pub fn context_menu_at(&mut self, at: Point, items: Vec<menu::Item<M>>) {
@@ -317,7 +317,6 @@ pub enum Event<M> {
     Tick,
     Frame,
     Key(keyboard::Event, bool),
-    Pointer(Point),
     Handles(Option<Handles>),
     MenuBar(menubar::Event),
     Bar(menu::BarEvent),
@@ -407,7 +406,7 @@ impl<A: App> Host<A> {
     }
 
     fn update(&mut self, event: Event<A::Message>) -> Task<Event<A::Message>> {
-        let quiet = matches!(event, Event::Pointer(_) | Event::Frame | Event::Tick);
+        let quiet = matches!(event, Event::Frame | Event::Tick);
         let task = self.handle(event);
         if !quiet {
             self.refresh_menus();
@@ -465,10 +464,6 @@ impl<A: App> Host<A> {
                 Task::none()
             }
             Event::Key(event, captured) => self.on_key(&event, captured),
-            Event::Pointer(point) => {
-                self.shell.pointer = point;
-                Task::none()
-            }
             Event::Handles(handles) => {
                 self.handles = handles;
                 Task::none()
@@ -680,8 +675,8 @@ impl<A: App> Host<A> {
 
     fn view(&self) -> Element<'_, Event<A::Message>> {
         if self.chrome != Chrome::Standard {
-            let body = mouse_area(self.app.view(&self.shell).map(Event::App)).on_move(Event::Pointer);
-            let mut layers: Vec<Element<'_, Event<A::Message>>> = vec![body.into()];
+            let body = crate::pointer::tracked(self.shell.pointer.clone(), self.app.view(&self.shell).map(Event::App));
+            let mut layers: Vec<Element<'_, Event<A::Message>>> = vec![body];
             self.overlays(&mut layers);
             return crate::wheel::smooth_wheel(iced::widget::stack(layers));
         }
@@ -711,8 +706,8 @@ impl<A: App> Host<A> {
             .width(Fill)
             .height(Fill)
             .style(move |_| style::rounded(background, Radius::default().bottom_left(corner).bottom_right(corner)));
-        let body = mouse_area(column![header, separator(&paint), content]).on_move(Event::Pointer);
-        let mut layers: Vec<Element<'_, Event<A::Message>>> = vec![body.into()];
+        let body = crate::pointer::tracked(shell.pointer.clone(), column![header, separator(&paint), content]);
+        let mut layers: Vec<Element<'_, Event<A::Message>>> = vec![body];
         if !window.edge_to_edge() {
             layers.push(window::resize_handles(Event::Window));
         }
@@ -840,6 +835,10 @@ impl<A: App> Harness<A> {
 
     pub fn message(&mut self, message: A::Message) {
         self.send(Event::App(message));
+    }
+
+    pub fn point_at(&mut self, at: Point) {
+        self.host.shell.pointer.set(at);
     }
 
     #[must_use]
