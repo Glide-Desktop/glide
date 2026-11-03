@@ -140,7 +140,7 @@ pub struct Cache {
     handle: HashMap<i32, Keyed>,
     badge: HashMap<i32, Keyed>,
     tip: HashMap<i32, Keyed>,
-    corners: HashMap<(i32, bool), Keyed>,
+    ring: HashMap<i32, Keyed>,
     ids: Vec<Id>,
     pub hover: glide_ui::HoverAnimation<Control>,
     hover_since: Option<Instant>,
@@ -167,7 +167,7 @@ impl Default for Cache {
             handle: HashMap::new(),
             badge: HashMap::new(),
             tip: HashMap::new(),
-            corners: HashMap::new(),
+            ring: HashMap::new(),
             ids: (0..16).map(|_| Id::new()).collect(),
             hover: glide_ui::HoverAnimation::default(),
             hover_since: None,
@@ -1457,7 +1457,7 @@ fn draw_ring(size: (i32, i32), radius: f32, palette: &Palette, scale: i32) -> Op
 fn draw_ring_canvas((w, h): (i32, i32), radius: f32, palette: &Palette, scale: i32) -> Option<Canvas<'static>> {
     let mut canvas = Canvas::new(w + RING_PAD * 2, h + RING_PAD * 2, scale)?;
     let inner = rect(RING_PAD, RING_PAD, w, h);
-    canvas.fill(inner, palette.accent.with_alpha(0.12), radius);
+    canvas.fill(inner, palette.accent.with_alpha(RING_TINT), radius);
     let half = (RING_WIDTH / 2.0).ceil() as i32;
     canvas.stroke(
         rect(RING_PAD - half, RING_PAD - half, w + half * 2, h + half * 2),

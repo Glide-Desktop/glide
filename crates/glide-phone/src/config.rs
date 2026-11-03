@@ -3,9 +3,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::fs;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::crypto::cert::IdentityCert;
+
+fn restrict_permissions(path: &Path) {
+    if let Err(err) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+        tracing::warn!(?err, path = %path.display(), "could not restrict the phone identity file to its owner");
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairedDevice {

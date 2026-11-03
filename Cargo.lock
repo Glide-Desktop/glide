@@ -2385,6 +2385,7 @@ name = "glide-services"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "enumflags2",
  "glide-appmenu",
  "glide-config",
  "glide-shell",

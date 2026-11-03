@@ -229,7 +229,7 @@ fn serve(mut builder: Builder<'_>, sink: Box<dyn Fn(Event) + Send + Sync>) -> an
     DBusProxy::new(&connection)?.add_match_rule(zbus::MatchRule::try_from(OWNER_CHANGES)?)?;
     let watcher = (connection.clone(), shared.clone());
     let messages = MessageIterator::from(&watcher.0);
-    let mut queued = match connection.request_name_with_flags(BUS_NAME, Default::default())? {
+    let mut queued = match connection.request_name_with_flags(BUS_NAME, enumflags2::BitFlags::empty())? {
         RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner => false,
         RequestNameReply::InQueue => {
             tracing::warn!("another service owns {BUS_NAME}; Glide takes it over when that one leaves");

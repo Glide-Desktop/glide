@@ -22,8 +22,6 @@ impl crate::GlideState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn the_welcome_is_shown_once_per_account() {
         let dir = std::env::temp_dir().join(format!("glide-welcome-{}", std::process::id()));

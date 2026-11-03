@@ -113,7 +113,7 @@ fn exec_program(command: &str) -> Option<String> {
                 "-u" | "--unset" | "-C" | "--chdir" => {
                     words.next();
                 }
-                "-S" | "--split-string" => return words.next().and_then(|line| exec_program(&line)),
+                "-S" | "--split-string" => return words.next().and_then(|line| exec_program(&format!("env {line}"))),
                 _ if word.starts_with('-') || word.contains('=') => {}
                 _ => break word,
             }
@@ -457,7 +457,7 @@ mod tests {
         directory.attach(tx);
         let apps = vec![app("a", "A", "a")];
         directory.apply(Reply::Index(Arc::new(AppIndex::new(apps.clone()))));
-        directory.rebuild(apps.clone());
+        directory.rebuild(apps);
         assert!(rx.try_recv().is_err(), "the same list is not rebuilt");
         directory.resolve(7);
         directory.apply(Reply::Process { pid: 7, app: Some("a".into()) });
