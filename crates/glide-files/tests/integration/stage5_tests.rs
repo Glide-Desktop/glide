@@ -19,7 +19,7 @@ fn view_preferences_round_trip_and_ignore_junk() {
         view: ViewMode::List,
         sort: SortConfig { by: SortBy::Modified, ascending: false },
         show_hidden: true,
-        grid_zoom: 4,
+        grid_zoom: 3,
         list_zoom: 0,
         columns: vec![glide_files::config::ListColumn::Tags, glide_files::config::ListColumn::Size],
         queue: true,
@@ -27,6 +27,9 @@ fn view_preferences_round_trip_and_ignore_junk() {
     };
     assert_eq!(ViewPrefs::parse(&prefs.render()), prefs);
     assert_eq!(ViewPrefs::parse("garbage\nsort = sideways\ngrid-zoom = 99\n"), ViewPrefs::default());
+    let legacy = |level: u8| ViewPrefs::parse(&format!("grid-zoom = {level}\n")).grid_zoom;
+    assert_eq!([0, 1, 2, 3, 4, 5].map(legacy), [0, 0, 1, 2, 3, 3], "old six-step sizes map to the nearest of four");
+    assert_eq!(ViewPrefs::parse("grid-zoom = 5\ngrid-size = 0\n").grid_zoom, 0, "the new key wins");
 }
 
 #[test]

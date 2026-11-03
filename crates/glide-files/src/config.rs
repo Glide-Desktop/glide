@@ -45,9 +45,10 @@ impl ListColumn {
     }
 }
 
-pub(crate) const GRID_ZOOMS: usize = 6;
+pub(crate) const GRID_ZOOMS: usize = 4;
 pub(crate) const LIST_ZOOMS: usize = 4;
-pub(crate) const DEFAULT_GRID_ZOOM: u8 = 2;
+pub(crate) const DEFAULT_GRID_ZOOM: u8 = 1;
+const LEGACY_GRID_ZOOMS: [u8; 6] = [0, 0, 1, 2, 3, 3];
 pub(crate) const DEFAULT_LIST_ZOOM: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +86,8 @@ impl ViewPrefs {
     #[must_use]
     pub fn parse(text: &str) -> Self {
         let mut prefs = Self::default();
+        let mut grid = None;
+        let mut legacy = None;
         for (key, value) in
             text.lines().filter_map(|line| line.split_once('=')).map(|(key, value)| (key.trim(), value.trim()))
         {
@@ -98,7 +101,10 @@ impl ViewPrefs {
                 }
                 ("ascending", flag) => prefs.sort.ascending = flag != "false",
                 ("hidden", flag) => prefs.show_hidden = flag == "true",
-                ("grid-zoom", level) => prefs.grid_zoom = zoom(level, GRID_ZOOMS, DEFAULT_GRID_ZOOM),
+                ("grid-size", level) => grid = Some(zoom(level, GRID_ZOOMS, DEFAULT_GRID_ZOOM)),
+                ("grid-zoom", level) => {
+                    legacy = level.parse::<usize>().ok().and_then(|level| LEGACY_GRID_ZOOMS.get(level).copied());
+                }
                 ("list-zoom", level) => prefs.list_zoom = zoom(level, LIST_ZOOMS, DEFAULT_LIST_ZOOM),
                 ("columns", list) => {
                     let mut columns: Vec<ListColumn> = Vec::new();
@@ -114,6 +120,7 @@ impl ViewPrefs {
                 _ => {}
             }
         }
+        prefs.grid_zoom = grid.or(legacy).unwrap_or(DEFAULT_GRID_ZOOM);
         prefs
     }
 
@@ -125,7 +132,7 @@ impl ViewPrefs {
         };
         let columns: Vec<&str> = self.columns.iter().map(|column| column.key()).collect();
         format!(
-            "view = {view}\nsort = {}\nascending = {}\nhidden = {}\ngrid-zoom = {}\nlist-zoom = {}\ncolumns = {}\nqueue = {}\ninspector = {}\n",
+            "view = {view}\nsort = {}\nascending = {}\nhidden = {}\ngrid-size = {}\nlist-zoom = {}\ncolumns = {}\nqueue = {}\ninspector = {}\n",
             sort_key(self.sort.by),
             self.sort.ascending,
             self.show_hidden,

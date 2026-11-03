@@ -19,7 +19,9 @@ use crate::icons::Icon;
 use crate::theme;
 
 pub const GRID_PADDING: f32 = theme::SP4;
-pub const TILE_GAP: f32 = theme::SP3;
+pub const TILE_GAP: f32 = theme::SP2;
+pub const ROW_GAP: f32 = theme::SP3;
+pub const LABEL_LINE: f32 = 17.0;
 pub const LIST_PADDING: f32 = 0.0;
 const LOCATION_WIDTH: f32 = 220.0;
 const NAME_MIN: f32 = 64.0;
@@ -28,13 +30,14 @@ const DOT: f32 = theme::SP2;
 const DOT_GAP: f32 = 2.0;
 const LABEL_LINES: usize = 2;
 const LINK_MARK: f32 = 11.0;
-const GRID_ICONS: [f32; crate::config::GRID_ZOOMS] = [40.0, 52.0, 60.0, 76.0, 96.0, 128.0];
+const GRID_TILES: [(f32, f32); crate::config::GRID_ZOOMS] =
+    [(92.0, 48.0), (112.0, 64.0), (136.0, 80.0), (172.0, 108.0)];
+const GRID_PERCENT: [u32; crate::config::GRID_ZOOMS] = [75, 100, 125, 160];
 const LIST_ROWS: [(f32, f32); crate::config::LIST_ZOOMS] = [(28.0, 16.0), (34.0, 22.0), (40.0, 24.0), (48.0, 32.0)];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Metrics {
     pub icon: f32,
-    pub plate: f32,
     pub tile_w: f32,
     pub tile_h: f32,
     pub row: f32,
@@ -50,21 +53,28 @@ impl Default for Metrics {
 impl Metrics {
     #[must_use]
     pub fn new(grid_zoom: u8, list_zoom: u8) -> Self {
-        let icon = GRID_ICONS[usize::from(grid_zoom).min(GRID_ICONS.len() - 1)];
+        let (tile_w, icon) = GRID_TILES[usize::from(grid_zoom).min(GRID_TILES.len() - 1)];
         let (row, row_icon) = LIST_ROWS[usize::from(list_zoom).min(LIST_ROWS.len() - 1)];
-        let plate = icon + 2.0 * theme::SP2;
-        let tile_w = (icon * 1.2 + 32.0).round();
-        Self { icon, plate, tile_w, tile_h: plate + 46.0, row, row_icon }
+        let tile_h = 3.0 * theme::SP2 + icon + LABEL_LINES as f32 * LABEL_LINE;
+        Self { icon, tile_w, tile_h, row, row_icon }
+    }
+
+    #[must_use]
+    pub fn tile_width(&self, width: f32) -> f32 {
+        let columns = self.columns(width) as f32;
+        ((width - 2.0 * GRID_PADDING - (columns - 1.0) * TILE_GAP) / columns).floor().max(self.tile_w)
     }
 
     #[must_use]
     pub fn percent(&self, view: ViewMode) -> u32 {
-        let normal = Self::default();
-        let ratio = match view {
-            ViewMode::Grid => self.icon / normal.icon,
-            ViewMode::List => self.row / normal.row,
-        };
-        (ratio * 100.0).round() as u32
+        match view {
+            ViewMode::Grid => GRID_TILES
+                .iter()
+                .position(|&(_, icon)| icon == self.icon)
+                .and_then(|level| GRID_PERCENT.get(level).copied())
+                .unwrap_or(100),
+            ViewMode::List => (self.row / Self::default().row * 100.0).round() as u32,
+        }
     }
 
     #[must_use]
@@ -77,7 +87,7 @@ impl Metrics {
         match view {
             ViewMode::Grid => {
                 let row = (index / self.columns(width)) as f32;
-                let top = GRID_PADDING + row * (self.tile_h + TILE_GAP);
+                let top = GRID_PADDING + row * (self.tile_h + ROW_GAP);
                 (top - GRID_PADDING, top + self.tile_h + GRID_PADDING)
             }
             ViewMode::List => {
@@ -95,9 +105,10 @@ impl Metrics {
                 if x < 0.0 || y < 0.0 {
                     return None;
                 }
-                let (pitch_x, pitch_y) = (self.tile_w + TILE_GAP, self.tile_h + TILE_GAP);
+                let tile_w = self.tile_width(width);
+                let (pitch_x, pitch_y) = (tile_w + TILE_GAP, self.tile_h + ROW_GAP);
                 let (column, row) = ((x / pitch_x).floor(), (y / pitch_y).floor());
-                let inside = x - column * pitch_x <= self.tile_w && y - row * pitch_y <= self.tile_h;
+                let inside = x - column * pitch_x <= tile_w && y - row * pitch_y <= self.tile_h;
                 let columns = self.columns(width);
                 if !inside || column as usize >= columns {
                     return None;
@@ -121,7 +132,8 @@ impl Metrics {
             ViewMode::Grid => {
                 let columns = self.columns(width);
                 let (column, row) = ((index % columns) as f32, (index / columns) as f32);
-                (GRID_PADDING + column * (self.tile_w + TILE_GAP), GRID_PADDING + row * (self.tile_h + TILE_GAP))
+                let pitch_x = self.tile_width(width) + TILE_GAP;
+                (GRID_PADDING + column * pitch_x, GRID_PADDING + row * (self.tile_h + ROW_GAP))
             }
             ViewMode::List => (0.0, LIST_PADDING + index as f32 * self.row),
         }
@@ -132,7 +144,7 @@ impl Metrics {
         let (left, right) = (from.0.min(to.0), from.0.max(to.0));
         let (top, bottom) = (from.1.min(to.1), from.1.max(to.1));
         let (w, h) = match view {
-            ViewMode::Grid => (self.tile_w, self.tile_h),
+            ViewMode::Grid => (self.tile_width(width), self.tile_h),
             ViewMode::List => (width, self.row),
         };
         (0..count)
@@ -277,11 +289,12 @@ fn rename_field(app: &App, style: TextStyle) -> Option<Element<'_, Message>> {
 fn grid(app: &App) -> Element<'_, Message> {
     let metrics = app.metrics();
     let columns = metrics.columns(app.pane.width);
-    let pitch = metrics.tile_h + TILE_GAP;
+    let tile_w = metrics.tile_width(app.pane.width);
+    let pitch = metrics.tile_h + ROW_GAP;
     let total = app.entries.len().div_ceil(columns);
     let shown = visible_rows(total, pitch, GRID_PADDING, app.scroll_offset(), app.pane.height);
     let rows = app.entries.chunks(columns).skip(shown.start).take(shown.len()).map(|chunk| {
-        container(Row::with_children(chunk.iter().map(|entry| tile(app, entry, &metrics))).spacing(TILE_GAP))
+        container(Row::with_children(chunk.iter().map(|entry| tile(app, entry, &metrics, tile_w))).spacing(TILE_GAP))
             .height(pitch)
             .into()
     });
@@ -291,32 +304,33 @@ fn grid(app: &App) -> Element<'_, Message> {
     files(app, Column::with_children(body).padding(GRID_PADDING).width(Fill))
 }
 
-fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics) -> Element<'a, Message> {
+fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics, tile_w: f32) -> Element<'a, Message> {
     let paint = paint(&app.theme);
     let selected = app.selected_level(&entry.path);
     let key = Hover::Entry(entry.path.clone());
     let badge = entry.is_symlink.then(|| corner_badge(&paint, Icon::Link, 10.0));
-    let tile_w = metrics.tile_w;
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
-    let label: Element<'a, Message> = if let Some(field) = rename_field(app, TextStyle::CAP).filter(|_| editing) {
-        container(field).width(Length::Fixed(tile_w)).into()
+    let style = TextStyle { line_height_px: LABEL_LINE, ..TextStyle::CALL };
+    let room = tile_w - 2.0 * theme::SP1;
+    let label: Element<'a, Message> = if let Some(field) = rename_field(app, style).filter(|_| editing) {
+        container(field).width(Length::Fixed(room)).into()
     } else {
+        let style = if selected > 0.5 { TextStyle { weight: 560, ..style } } else { style };
         let dotted = tags::colors(&entry.tags).len() as f32;
         let marks = if dotted > 0.0 { dotted * DOT + (dotted - 1.0) * DOT_GAP + theme::SP1 } else { 0.0 };
-        let room = tile_w - 2.0 * theme::SP1 - marks;
-        let name = text(elide_lines(&entry.name, room, TextStyle::CAP, LABEL_LINES), TextStyle::CAP)
+        let name = text(elide_lines(&entry.name, room - marks, style, LABEL_LINES), style)
             .wrapping(Wrapping::WordOrGlyph)
             .align_x(Alignment::Center)
             .color(item_ink(&paint, selected, false));
-        let mut line = row![].spacing(theme::SP1).align_y(Alignment::Center);
+        let mut line = row![name].spacing(theme::SP1).align_y(Alignment::Center);
         if let Some(dots) = dots(entry) {
             line = line.push(dots);
         }
-        line.push(name).into()
+        line.into()
     };
     let art = file_icon(app, entry, metrics.icon);
     let state = (app.hover(&key), app.lift(&key));
-    let tile = item_tile(&paint, art, badge, label, metrics.plate, (tile_w, metrics.tile_h), selected, state);
+    let tile = item_tile(&paint, art, badge, label, metrics.icon, (tile_w, metrics.tile_h), selected, state);
     mouse_area(tile)
         .on_press(Message::Pressed(entry.path.clone()))
         .on_right_press(Message::Secondary(entry.path.clone()))

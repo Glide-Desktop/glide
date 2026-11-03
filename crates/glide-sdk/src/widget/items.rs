@@ -19,27 +19,25 @@ pub fn corner_badge<'a, M: 'a>(paint: &Paint, glyph: impl Glyph, side: f32) -> E
 #[must_use]
 #[allow(clippy::too_many_arguments)] // One tile of a grid: its parts, its size and three independent animated states
 pub fn item_tile<'a, M: 'a>(
-    paint: &Paint, art: Element<'a, M>, badge: Option<Element<'a, M>>, label: Element<'a, M>, plate: f32,
+    paint: &Paint, art: Element<'a, M>, badge: Option<Element<'a, M>>, label: Element<'a, M>, icon: f32,
     (width, height): (f32, f32), selected: f32, (hover, lift): (f32, f32),
 ) -> Element<'a, M> {
     let paint = *paint;
     let rise = lift * LIFT;
     let art: Element<'a, M> = glide_iced::widgets::lift(art, 1.0 + lift * GROWTH, -rise);
+    let art = container(art).center(Length::Fixed(icon));
     let art: Element<'a, M> = match badge {
         Some(badge) => stack![art, container(badge).align_bottom(Fill).align_left(Fill)].into(),
-        None => art,
+        None => art.into(),
     };
     let base = mix(Color::TRANSPARENT, paint.acc_soft(), selected);
-    let plate =
-        container(art).center(Length::Fixed(plate)).style(move |_| style::rounded(paint.hover(base, hover), R2));
-    let label = container(label)
-        .padding(Padding::from([1.0, SP1]))
-        .max_width(width)
-        .style(move |_| if selected > 0.0 { style::rounded(base, R1) } else { container::Style::default() });
-    container(column![plate, label].spacing(SP1).align_x(Alignment::Center))
-        .center_x(Length::Fixed(width))
+    let hover = hover * (1.0 - selected);
+    let body = column![art, container(label).center_x(Fill)].spacing(SP2).align_x(Alignment::Center);
+    container(body)
+        .padding(Padding::from([SP2, SP1]))
+        .width(Length::Fixed(width))
         .height(Length::Fixed(height))
-        .clip(true)
+        .style(move |_| style::rounded(paint.hover(base, hover), R2))
         .into()
 }
 

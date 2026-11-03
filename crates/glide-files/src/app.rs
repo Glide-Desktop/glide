@@ -2473,7 +2473,7 @@ impl App {
         let metrics = self.metrics();
         let (x, y) = metrics.origin(self.view, index, self.pane.width);
         let (dx, dy) = match self.view {
-            ViewMode::Grid => (metrics.tile_w / 2.0, metrics.tile_h),
+            ViewMode::Grid => (metrics.tile_width(self.pane.width) / 2.0, metrics.tile_h),
             ViewMode::List => (KEY_MENU_INSET, metrics.row),
         };
         let y = (top + y + dy - self.scroll_y).clamp(top, self.content_top() + self.pane.height);

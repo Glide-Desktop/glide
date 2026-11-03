@@ -113,9 +113,17 @@ fn phones_and_cameras_are_found_in_sysfs_and_hubs_are_ignored() {
 
 #[test]
 fn zoom_levels_scale_the_grid_and_list_geometry() {
+    use glide_files::widgets::content::{GRID_PADDING, TILE_GAP};
     let normal = Metrics::default();
-    assert_eq!((normal.tile_w, normal.tile_h, normal.icon), (104.0, 122.0, 60.0), "the default look is unchanged");
-    assert_eq!(normal.plate - normal.icon, 16.0, "an 8 px margin leaves room for the hover lift");
+    assert_eq!((normal.tile_w, normal.icon), (112.0, 64.0), "minmax(112px, 1fr) around a 64 px icon");
+    assert_eq!(normal.tile_h, 8.0 + 64.0 + 8.0 + 2.0 * 17.0 + 8.0, "padding, icon, gap, two 17 px lines");
+    for width in [600.0, 783.0, 1000.0] {
+        let (columns, tile) = (normal.columns(width) as f32, normal.tile_width(width));
+        assert!(tile >= normal.tile_w, "a tile never shrinks below its minimum");
+        let used = 2.0 * GRID_PADDING + columns * tile + (columns - 1.0) * TILE_GAP;
+        assert!(width - used < columns, "the columns stretch across {width} px, not leave a gap");
+    }
+    assert_eq!([0, 1, 2, 3].map(|level| Metrics::new(level, 1).percent(ViewMode::Grid)), [75, 100, 125, 160]);
     let big = Metrics::new(5, 3);
     let small = Metrics::new(0, 0);
     assert!(big.columns(1200.0) < normal.columns(1200.0));
