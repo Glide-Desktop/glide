@@ -95,6 +95,7 @@ pub struct Shell<M> {
     window: Window,
     pointer: crate::pointer::PointerCell,
     toast: Option<Toast<M>>,
+    toast_wake: Option<Instant>,
     dialog: Option<Dialog<M>>,
     closing: Option<Dialog<M>>,
     popup: Option<Popup<M>>,
@@ -114,6 +115,7 @@ impl<M: Clone> Shell<M> {
             window: Window::default(),
             pointer: crate::pointer::PointerCell::default(),
             toast: None,
+            toast_wake: None,
             dialog: None,
             closing: None,
             popup: None,
@@ -416,7 +418,19 @@ impl<A: App> Host<A> {
             .map(|action| self.shell.window.update(action).map(Event::Window))
             .collect();
         let exit = if self.shell.exit { iced::exit() } else { Task::none() };
-        Task::batch([task, Task::batch(actions), exit])
+        Task::batch([task, Task::batch(actions), exit, self.wake_for_toast()])
+    }
+
+    fn wake_for_toast(&mut self) -> Task<Event<A::Message>> {
+        let fall = self.shell.toast.as_ref().map(|toast| toast.at + overlay::TOAST.saturating_sub(motion::t2()));
+        if fall == self.shell.toast_wake {
+            return Task::none();
+        }
+        self.shell.toast_wake = fall;
+        let Some(fall) = fall else {
+            return Task::none();
+        };
+        Task::perform(tokio::time::sleep_until(fall.into()), |()| Event::Frame)
     }
 
     fn handle(&mut self, event: Event<A::Message>) -> Task<Event<A::Message>> {

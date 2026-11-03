@@ -28,18 +28,20 @@ struct Run {
 struct State {
     modifiers: keyboard::Modifiers,
     run: Option<Run>,
+    frame: Option<Instant>,
 }
 
 fn span() -> Duration {
     motion::t2()
 }
 
-fn progress(started: Instant) -> f32 {
+fn progress(started: Instant, now: Instant) -> f32 {
     let span = span();
     if span.is_zero() {
         return 1.0;
     }
-    motion::ease_out((started.elapsed().as_secs_f64() / span.as_secs_f64()).clamp(0.0, 1.0)) as f32
+    let elapsed = now.saturating_duration_since(started);
+    motion::ease_out((elapsed.as_secs_f64() / span.as_secs_f64()).clamp(0.0, 1.0)) as f32
 }
 
 fn notch(delta: mouse::ScrollDelta) -> Option<Vector> {
@@ -59,9 +61,13 @@ impl State {
         self.run = Some(Run { started: Instant::now(), total: carried + step, sent: Vector::ZERO });
     }
 
-    fn advance(&mut self) -> Option<Vector> {
+    fn advance(&mut self, at: Instant) -> Option<Vector> {
+        if self.frame == Some(at) {
+            return None;
+        }
+        self.frame = Some(at);
         let run = self.run.as_mut()?;
-        let fraction = progress(run.started);
+        let fraction = progress(run.started, at);
         let due = run.total * fraction;
         let delta = due - run.sent;
         run.sent = due;
@@ -101,8 +107,8 @@ impl<M> Widget<M, Theme, Renderer> for SmoothWheel<'_, M> {
             shell.request_redraw();
             return;
         }
-        if matches!(event, Event::Window(window::Event::RedrawRequested(_)))
-            && let Some(delta) = state.advance()
+        if let Event::Window(window::Event::RedrawRequested(at)) = event
+            && let Some(delta) = state.advance(*at)
         {
             let wheel = Event::Mouse(mouse::Event::WheelScrolled {
                 delta: mouse::ScrollDelta::Pixels { x: delta.x, y: delta.y },
@@ -152,13 +158,26 @@ mod tests {
         let mut total = Vector::ZERO;
         let begin = Instant::now();
         while state.run.is_some() && begin.elapsed() < Duration::from_secs(2) {
-            if let Some(delta) = state.advance() {
+            if let Some(delta) = state.advance(Instant::now()) {
                 total += delta;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(state.run.is_none());
         assert!((total.y + LINE).abs() < 0.01, "the animation lands on the full notch: {total:?}");
+    }
+
+    #[test]
+    fn a_redraw_passed_again_in_the_same_frame_scrolls_nothing_more() {
+        if span().is_zero() {
+            return;
+        }
+        let mut state = State::default();
+        state.push(Vector::new(0.0, -LINE));
+        let at = Instant::now() + span() / 2;
+        assert!(state.advance(at).is_some());
+        assert_eq!(state.advance(at), None, "iced re-sends a redraw while layout settles; it is one frame");
+        assert!(state.advance(at + span() / 4).is_some());
     }
 
     #[test]

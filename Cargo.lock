@@ -2375,6 +2375,7 @@ dependencies = [
  "qrcode",
  "raw-window-handle",
  "serde",
+ "tokio",
  "toml",
  "tracing",
  "zbus",
