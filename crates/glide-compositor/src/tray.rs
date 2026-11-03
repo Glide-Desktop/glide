@@ -41,6 +41,7 @@ pub struct TrayService {
     backoff: Option<Duration>,
     known: BTreeSet<String>,
     icon_theme: Arc<Mutex<Option<String>>>,
+    xembed: Option<crate::xembed::Bridge>,
     menus: HashMap<String, Source>,
     pending: Option<(u16, Source, Instant, (i32, i32))>,
     open: Option<Source>,
@@ -190,6 +191,11 @@ impl GlideState {
             *current = icon_theme;
             changed
         };
+        if topbar.tray && self.tray.xembed.is_none() {
+            self.tray.xembed = crate::xembed::Bridge::start();
+        } else if !topbar.tray {
+            self.tray.xembed = None;
+        }
         let waiting = self.tray.retry.is_some();
         if topbar.tray && !self.tray.started && !waiting {
             self.start_tray();

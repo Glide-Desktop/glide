@@ -1,0 +1,20 @@
+[package]
+name = "glide-xembed"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+x11rb = { version = "0.14", features = ["damage", "xfixes"] }
+zbus.workspace = true
+
+[dev-dependencies]
+glide-tray = { path = "../glide-tray" }
+
+[lints]
+workspace = true

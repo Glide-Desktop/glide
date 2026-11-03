@@ -71,6 +71,7 @@ mod tiling;
 mod tray;
 mod welcome;
 mod window;
+mod xembed;
 mod xwayland;
 
 use smithay::{

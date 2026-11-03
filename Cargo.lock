@@ -2571,6 +2571,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "glide-xembed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glide-tray",
+ "tracing",
+ "tracing-subscriber",
+ "x11rb",
+ "zbus",
+]
+
+[[package]]
 name = "glidectl"
 version = "0.1.0"
 dependencies = [

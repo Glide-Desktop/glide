@@ -1,6 +1,7 @@
 use std::path::Path;
 
-const ALWAYS_PROVIDED: [&str; 4] = ["nm-applet", "nm-tray", "blueman-applet", "netbird-ui"];
+const ALWAYS_PROVIDED: [&str; 6] =
+    ["nm-applet", "nm-tray", "blueman-applet", "netbird-ui", "xembedsniproxy", "snixembed"];
 
 const POLKIT_AGENTS: [&str; 8] = [
     "polkit-gnome-authentication-agent-1",
@@ -80,6 +81,8 @@ mod tests {
             "lxqt-policykit-agent",
             "lxpolkit",
             "kdeconnectd",
+            "/usr/bin/xembedsniproxy",
+            "snixembed --fork",
         ] {
             assert!(provided_by_shell(exec, Provided::ALL), "{exec}");
         }

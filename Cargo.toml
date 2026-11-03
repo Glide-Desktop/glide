@@ -40,6 +40,7 @@ members = [
     "crates/glide-tray",
     "crates/glide-ui",
     "crates/glide-welcome",
+    "crates/glide-xembed",
     "crates/glidectl",
 ]
 

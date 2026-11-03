@@ -923,6 +923,13 @@ impl GlideState {
         let Some(window) = self.window_map.get(&id).cloned() else {
             return;
         };
+        if crate::xembed::is_container(window.identity().0.as_deref(), self.window_pid(&window)) {
+            if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
+                handle.send_closed();
+                self.protocols.foreign_toplevel_list_state.remove_toplevel(&handle);
+            }
+            return;
+        }
         self.layout.set_app(id, self.dock_key(id));
         let focused = self.layout.focused_window().filter(|&focused| focused != id && self.layout.is_mapped(focused));
         let client = |window: &GlideWindow| {
