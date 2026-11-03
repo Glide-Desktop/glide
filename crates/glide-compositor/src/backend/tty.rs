@@ -6,6 +6,7 @@ use smithay::desktop::utils::{
     update_surface_primary_scanout_output,
 };
 
+use super::frame_clock::FrameClock;
 use super::frame_stats::{FrameStats, Origin};
 use anyhow::{Context, anyhow};
 use smithay::{
@@ -246,7 +247,8 @@ struct SurfaceData {
     power_blur: Option<(WallpaperKey, MemoryRenderBuffer)>,
     stats: Option<FrameStats>,
     origin: Origin,
-    last_vblank: Option<std::time::Instant>,
+    frame_clock: FrameClock,
+    estimated_vblank: Option<RegistrationToken>,
     repaint_deadline: Option<std::time::Instant>,
 }
 
@@ -973,7 +975,8 @@ impl GlideState {
                 power_blur: None,
                 stats: frame_stats_enabled().then(FrameStats::default),
                 origin: Origin::Idle,
-                last_vblank: None,
+                frame_clock: FrameClock::default(),
+                estimated_vblank: None,
                 repaint_deadline: None,
             },
         );
@@ -998,8 +1001,11 @@ impl GlideState {
             };
             let output = surface.output.clone();
             surface.flip_pending = None;
-            surface.last_vblank = Some(vblank_instant(metadata.as_ref(), &self.clock));
+            surface.frame_clock.presented(vblank_instant(metadata.as_ref(), &self.clock));
             surface.origin = Origin::Vblank;
+            if let Some(token) = surface.estimated_vblank.take() {
+                self.loop_handle.remove(token);
+            }
             if let Some(stats) = surface.stats.as_mut() {
                 stats.presented(metadata.as_ref().map_or(0, |metadata| metadata.sequence));
             }
@@ -1184,7 +1190,7 @@ impl GlideState {
                 {
                     tracing::error!(?err, "failed to blank an output");
                 }
-                if let Some(token) = surface.pending_repaint.take() {
+                for token in [surface.pending_repaint.take(), surface.estimated_vblank.take()].into_iter().flatten() {
                     self.loop_handle.remove(token);
                 }
                 surface.redraw_queued = false;
@@ -1240,11 +1246,20 @@ impl GlideState {
         }
     }
 
+    fn enter_frame_pass(&mut self, crtc: crtc::Handle) -> Option<glide_ui::clock::FramePass> {
+        let surface = self.backend_data.device.as_mut()?.surfaces.get_mut(&crtc)?;
+        if let Some(mode) = surface.output.current_mode() {
+            surface.frame_clock.set_refresh(mode.refresh);
+        }
+        Some(glide_ui::clock::FramePass::enter(surface.frame_clock.target(std::time::Instant::now())))
+    }
+
     #[profiling::function]
     fn render_surface(&mut self, crtc: crtc::Handle) {
         if !self.backend_data.session.is_active() || self.outputs_blanked {
             return;
         }
+        let _pass = self.enter_frame_pass(crtc);
 
         self.reset_dead_cursor_surface();
         self.sync_topbar_home();
@@ -1283,7 +1298,7 @@ impl GlideState {
         surface.flip_pending = None;
         let started = std::time::Instant::now();
         let late = match source {
-            Origin::Vblank => surface.last_vblank.map(|at| started.saturating_duration_since(at)),
+            Origin::Vblank => surface.frame_clock.last_vblank().map(|at| started.saturating_duration_since(at)),
             Origin::Timer | Origin::Estimated => {
                 surface.repaint_deadline.take().map(|at| started.saturating_duration_since(at))
             }
@@ -1826,7 +1841,7 @@ impl GlideState {
                     }
                 };
             if failed {
-                self.schedule_repaint(crtc, &target);
+                self.schedule_repaint(crtc);
             }
             return;
         }
@@ -2035,12 +2050,20 @@ impl GlideState {
         }
 
         match outcome {
-            FrameOutcome::Queued(_) | FrameOutcome::NoDamage(_) => {
+            FrameOutcome::Queued(_) => {
+                if let Some(token) = self
+                    .backend_data
+                    .device
+                    .as_mut()
+                    .and_then(|device| device.surfaces.get_mut(&crtc))
+                    .and_then(|surface| surface.estimated_vblank.take())
+                {
+                    self.loop_handle.remove(token);
+                }
                 self.send_frame_callbacks(output);
             }
-            FrameOutcome::Failed => {
-                self.schedule_repaint(crtc, output);
-            }
+            FrameOutcome::NoDamage(_) => self.defer_frame_callbacks(crtc),
+            FrameOutcome::Failed => self.schedule_repaint(crtc),
         }
     }
 
@@ -2086,14 +2109,42 @@ impl GlideState {
         let Some(device) = self.backend_data.device.as_ref() else {
             return;
         };
-        let pending: Vec<(crtc::Handle, Output)> = device
+        let pending: Vec<crtc::Handle> = device
             .surfaces
             .iter()
-            .filter(|(_, surface)| surface.pending_repaint.is_none() && !surface.redraw_queued)
-            .map(|(&crtc, surface)| (crtc, surface.output.clone()))
+            .filter(|(_, surface)| {
+                let flipping = surface.flip_pending.is_some_and(|since| since.elapsed() < FLIP_WAIT);
+                surface.pending_repaint.is_none() && !surface.redraw_queued && !flipping
+            })
+            .map(|(&crtc, _)| crtc)
             .collect();
-        for (crtc, output) in pending {
-            self.schedule_repaint(crtc, &output);
+        for crtc in pending {
+            self.schedule_repaint(crtc);
+        }
+    }
+
+    fn defer_frame_callbacks(&mut self, crtc: crtc::Handle) {
+        let Some(surface) = self.backend_data.device.as_mut().and_then(|device| device.surfaces.get_mut(&crtc)) else {
+            return;
+        };
+        if surface.estimated_vblank.is_some() {
+            return;
+        }
+        let deadline = surface.frame_clock.target(std::time::Instant::now());
+        let token = self.loop_handle.insert_source(Timer::from_deadline(deadline), move |_, (), state| {
+            let output =
+                state.backend_data.device.as_mut().and_then(|device| device.surfaces.get_mut(&crtc)).map(|surface| {
+                    surface.estimated_vblank = None;
+                    surface.output.clone()
+                });
+            if let Some(output) = output {
+                state.send_frame_callbacks(&output);
+            }
+            TimeoutAction::Drop
+        });
+        match token {
+            Ok(token) => surface.estimated_vblank = Some(token),
+            Err(err) => tracing::warn!(?err, "failed to arm the estimated vblank"),
         }
     }
 
@@ -2126,7 +2177,7 @@ impl GlideState {
         }
     }
 
-    fn schedule_repaint(&mut self, crtc: crtc::Handle, output: &Output) {
+    fn schedule_repaint(&mut self, crtc: crtc::Handle) {
         let Some(device) = self.backend_data.device.as_mut() else {
             return;
         };
@@ -2137,15 +2188,11 @@ impl GlideState {
             return;
         }
 
-        let frame_duration = output
-            .current_mode()
-            .filter(|m| m.refresh > 0)
-            .map_or(Duration::from_millis(16), |mode| Duration::from_secs_f64(1_000f64 / f64::from(mode.refresh)));
-
-        surface.repaint_deadline = Some(std::time::Instant::now() + frame_duration);
+        let deadline = surface.frame_clock.next_vblank(std::time::Instant::now());
+        surface.repaint_deadline = Some(deadline);
         let token = self
             .loop_handle
-            .insert_source(Timer::from_duration(frame_duration), move |_, (), state| {
+            .insert_source(Timer::from_deadline(deadline), move |_, (), state| {
                 if let Some(device) = state.backend_data.device.as_mut()
                     && let Some(surface) = device.surfaces.get_mut(&crtc)
                 {

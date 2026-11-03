@@ -14,7 +14,7 @@ pub(crate) fn fraction(since: Instant, duration: Duration) -> f64 {
     if duration.is_zero() {
         return 1.0;
     }
-    (since.elapsed().as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
+    (crate::clock::since(since).as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
 }
 
 fn linear_ease(t: f64) -> f64 {
@@ -42,7 +42,7 @@ impl Reveal {
         Self {
             phase,
             from,
-            started: Instant::now(),
+            started: crate::clock::now(),
             duration: Duration::ZERO,
             opening: linear_ease,
             closing: linear_ease,
@@ -100,7 +100,7 @@ impl Reveal {
     pub fn is_animating(&self, duration: Duration) -> bool {
         match self.phase {
             Phase::Open | Phase::Closed => false,
-            Phase::Opening | Phase::Closing => !duration.is_zero() && self.started.elapsed() < duration,
+            Phase::Opening | Phase::Closing => !duration.is_zero() && crate::clock::since(self.started) < duration,
         }
     }
 
@@ -123,7 +123,7 @@ impl Reveal {
     fn begin(&mut self, moving: Phase, rest: Phase, duration: Duration) {
         self.from = self.value(self.duration);
         self.phase = if duration.is_zero() { rest } else { moving };
-        self.started = Instant::now();
+        self.started = crate::clock::now();
         self.duration = duration;
     }
 
@@ -158,7 +158,7 @@ pub struct Tween {
 impl Tween {
     #[must_use]
     pub fn at(value: f64) -> Self {
-        Self { from: value, to: value, started: Instant::now(), duration: Duration::ZERO }
+        Self { from: value, to: value, started: crate::clock::now(), duration: Duration::ZERO }
     }
 
     #[must_use]
@@ -172,7 +172,7 @@ impl Tween {
         }
         self.from = self.value(self.duration, ease);
         self.to = to;
-        self.started = Instant::now();
+        self.started = crate::clock::now();
         self.duration = duration;
         true
     }
@@ -180,7 +180,7 @@ impl Tween {
     pub fn jump(&mut self, to: f64) {
         self.from = to;
         self.to = to;
-        self.started = Instant::now();
+        self.started = crate::clock::now();
         self.duration = Duration::ZERO;
     }
 
@@ -195,7 +195,9 @@ impl Tween {
 
     #[must_use]
     pub fn is_animating(&self, duration: Duration) -> bool {
-        !duration.is_zero() && (self.from - self.to).abs() > f64::EPSILON && self.started.elapsed() < duration
+        !duration.is_zero()
+            && (self.from - self.to).abs() > f64::EPSILON
+            && crate::clock::since(self.started) < duration
     }
 }
 
@@ -206,6 +208,29 @@ mod tests {
     const D: Duration = Duration::from_millis(200);
     fn linear(t: f64) -> f64 {
         t
+    }
+
+    #[test]
+    fn a_tween_inside_a_frame_pass_reads_the_frame_time() {
+        let mut tween = Tween::at(0.0);
+        tween.retarget(1.0, D, linear);
+        let started = tween.started;
+        let _pass = crate::clock::FramePass::enter(started + D / 2);
+        assert!((tween.value(D, linear) - 0.5).abs() < 1e-9);
+        assert!(tween.is_animating(D));
+    }
+
+    #[test]
+    fn zero_motion_scale_is_instant_inside_a_frame_pass() {
+        let _pass = crate::clock::FramePass::enter(Instant::now() + D);
+        let mut tween = Tween::at(0.0);
+        tween.retarget(1.0, Duration::ZERO, linear);
+        assert!((tween.value(Duration::ZERO, linear) - 1.0).abs() < f64::EPSILON);
+        assert!(!tween.is_animating(Duration::ZERO));
+        let mut reveal = Reveal::closed();
+        reveal.open(Duration::ZERO);
+        assert!((reveal.value(Duration::ZERO) - 1.0).abs() < f64::EPSILON);
+        assert!(!reveal.is_animating(Duration::ZERO));
     }
 
     #[test]

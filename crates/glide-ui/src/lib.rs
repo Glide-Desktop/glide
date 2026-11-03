@@ -1,3 +1,4 @@
+pub mod clock;
 mod hover;
 mod motion;
 

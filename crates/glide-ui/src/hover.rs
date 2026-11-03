@@ -27,7 +27,7 @@ impl<T: Copy + PartialEq> HoverAnimation<T> {
             return false;
         }
         self.target = target;
-        self.started = target.map(|_| Instant::now());
+        self.started = target.map(|_| crate::clock::now());
         self.rise_from = 0.0;
         self.outgoing.clear();
         true
@@ -37,7 +37,7 @@ impl<T: Copy + PartialEq> HoverAnimation<T> {
         if self.target == target {
             return false;
         }
-        let now = Instant::now();
+        let now = crate::clock::now();
         let resumed = target.map_or(0.0, |next| self.level(next, duration));
         if let Some(old) = self.target {
             let from = self.level(old, duration);
