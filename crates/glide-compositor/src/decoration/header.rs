@@ -75,6 +75,7 @@ pub struct HeaderBar {
     pub(crate) theme_rev: u32,
     pub(crate) focused: bool,
     pub(crate) focus_fade_started: Option<std::time::Instant>,
+    pub(crate) titlebar_fading: Option<f32>,
     pub(crate) maximized: bool,
     pub(crate) outline: Outline,
 
@@ -87,16 +88,36 @@ type MenuKey = (i32, i32, Vec<u8>, bool, u32, u64);
 #[derive(Debug, Default)]
 pub(crate) struct HeaderBuffers {
     pub(crate) titlebar: Option<MemoryRenderBuffer>,
+    pub(crate) titlebar_from: Option<MemoryRenderBuffer>,
+    pub(super) titlebar_from_key: Option<(i32, i32, [u32; 4], u32)>,
     pub(crate) maximize: Option<MemoryRenderBuffer>,
     pub(crate) close: Option<MemoryRenderBuffer>,
     pub(crate) menu: Option<MemoryRenderBuffer>,
-    titlebar_key: Option<(i32, i32, [u32; 4], u32)>,
+    pub(super) titlebar_key: Option<(i32, i32, [u32; 4], u32)>,
     button_keys: [Option<ButtonKey>; 2],
     menu_key: Option<MenuKey>,
 }
 
 fn bits(colour: Color) -> [u32; 4] {
     colour.0.map(f32::to_bits)
+}
+
+fn titlebar_key((w, h): (i32, i32), background: Color, radius: f32) -> (i32, i32, [u32; 4], u32) {
+    (w, h, bits(background), radius.to_bits())
+}
+
+fn paint_titlebar(
+    slot: &mut Option<MemoryRenderBuffer>, (w, h): (i32, i32), scale: i32, background: Color, radius: f32,
+) {
+    let (pw, ph) = (w * scale, h * scale);
+    let buf =
+        slot.get_or_insert_with(|| MemoryRenderBuffer::new(Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, None));
+    let mut ctx = buf.render();
+    ctx.resize((pw, ph));
+    let _ = ctx.draw(|pixels| {
+        Painter::fill_panel_background(pixels, w, h, scale, background, radius, [true, true, false, false]);
+        Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +215,6 @@ impl HeaderBar {
                 .unwrap_or_default();
             self.focus_fade_started = Some(now.checked_sub(remaining).unwrap_or(now));
             for buffers in self.buffers.values_mut() {
-                buffers.titlebar_key = None;
                 buffers.button_keys = [None; 2];
             }
         }
@@ -599,49 +619,30 @@ impl HeaderBar {
         let mut changed = false;
 
         let theme = &self.theme;
-        let mix = |from: crate::config::Color, to: crate::config::Color| {
-            let mut out = from;
-            for (channel, target) in out.0.iter_mut().zip(to.0) {
-                *channel += (target - *channel) * focus_fade_t;
-            }
-            out
+        let resting = |focused: bool| {
+            let (bg, title) =
+                if focused { (theme.background_focused, theme.title_focused) } else { (theme.background, theme.title) };
+            if self.dragging { bg.state_layer(title, glide_theme::motion::ST_DRAG) } else { bg }
         };
-        let (bg_color, title_color) = if self.focused {
-            (mix(theme.background, theme.background_focused), mix(theme.title, theme.title_focused))
-        } else {
-            (mix(theme.background_focused, theme.background), mix(theme.title_focused, theme.title))
-        };
-
-        let bg_color =
-            if self.dragging { bg_color.state_layer(title_color, glide_theme::motion::ST_DRAG) } else { bg_color };
-
         let corner_radius = if self.maximized { 0.0 } else { theme.corner_radius };
+        let size = (self.width, self.height);
 
-        let titlebar_key = (self.width, self.height, bits(bg_color), corner_radius.to_bits());
-        if buffers.titlebar_key != Some(titlebar_key) {
-            buffers.titlebar_key = Some(titlebar_key);
+        let to_key = titlebar_key(size, resting(self.focused), corner_radius);
+        if buffers.titlebar_key != Some(to_key) {
+            buffers.titlebar_key = Some(to_key);
             changed = true;
-            let w = self.width;
-            let h = self.height;
-            let (pw, ph) = (w * scale, h * scale);
-            let buf = buffers.titlebar.get_or_insert_with(|| {
-                MemoryRenderBuffer::new(Fourcc::Argb8888, (pw, ph), scale, Transform::Normal, None)
-            });
-            let mut ctx = buf.render();
-            ctx.resize((pw, ph));
-            let _ = ctx.draw(|pixels| {
-                Painter::fill_panel_background(
-                    pixels,
-                    w,
-                    h,
-                    scale,
-                    bg_color,
-                    corner_radius,
-                    [true, true, false, false],
-                );
-                Ok::<_, ()>(vec![Rectangle::from_size((pw, ph).into())])
-            });
+            paint_titlebar(&mut buffers.titlebar, size, scale, resting(self.focused), corner_radius);
         }
+        let fading = focus_fade_t < 1.0;
+        if fading {
+            let from_key = titlebar_key(size, resting(!self.focused), corner_radius);
+            if buffers.titlebar_from_key != Some(from_key) {
+                buffers.titlebar_from_key = Some(from_key);
+                paint_titlebar(&mut buffers.titlebar_from, size, scale, resting(!self.focused), corner_radius);
+            }
+        }
+        changed |= fading || self.titlebar_fading.is_some();
+        self.titlebar_fading = fading.then_some(focus_fade_t);
 
         let focus_factor = if self.focused { focus_fade_t } else { 1.0 - focus_fade_t };
 

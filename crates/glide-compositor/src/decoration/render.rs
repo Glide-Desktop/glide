@@ -87,14 +87,27 @@ pub fn frame_buffers(window: &GlideWindow, painter: &Painter, scale: i32) -> Vec
     let right = Point::from((header.width - BUTTON_PAD_X - size, pad_y));
     let (maximize_at, close_at) = if header.close_on_left() { (right, left) } else { (left, right) };
 
-    for (buf, at) in
-        [(&buffers.maximize, maximize_at), (&buffers.close, close_at), (&buffers.titlebar, Point::from((0, 0)))]
-    {
+    for (buf, at) in [(&buffers.maximize, maximize_at), (&buffers.close, close_at)] {
         if let Some(buf) = buf {
             out.push(DecorationBuffer::plain(buf.clone(), at));
         }
     }
+    out.extend(titlebar_layers(buffers, header.titlebar_fading));
     out
+}
+
+fn titlebar_layers(buffers: &super::header::HeaderBuffers, fading: Option<f32>) -> Vec<DecorationBuffer> {
+    let Some(titlebar) = &buffers.titlebar else {
+        return Vec::new();
+    };
+    let mut top = DecorationBuffer::plain(titlebar.clone(), Point::from((0, 0)));
+    match (fading, &buffers.titlebar_from) {
+        (Some(alpha), Some(from)) => {
+            top.alpha = alpha;
+            vec![top, DecorationBuffer::plain(from.clone(), Point::from((0, 0)))]
+        }
+        _ => vec![top],
+    }
 }
 
 fn derive_shadow_layers(shadow_size: f32, shadow_color: Color) -> [crate::paint::ShadowLayerSpec; 2] {

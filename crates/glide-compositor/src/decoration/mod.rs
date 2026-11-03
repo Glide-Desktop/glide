@@ -261,6 +261,36 @@ mod tests {
     }
 
     #[test]
+    fn focus_fade_reuses_both_titlebar_rasters() {
+        let (mut h, p) = (header(), painter());
+        h.redraw(&p, 1);
+        h.sync(&DecorationTheme::default(), true, false);
+        let started = h.focus_fade_started.expect("a fade is running");
+        let fade = focus_fade();
+        if fade.is_zero() {
+            return;
+        }
+        let at = |part: u32| glide_ui::clock::FramePass::enter(started + fade * part / 4);
+        let pass = at(1);
+        h.redraw(&p, 1);
+        let keys = |h: &HeaderBar| {
+            let b = h.buffers_at(1).expect("rasterised");
+            (b.titlebar_key, b.titlebar_from_key)
+        };
+        let early = keys(&h);
+        let early_alpha = h.titlebar_fading.expect("fading");
+        drop(pass);
+        let pass = at(3);
+        h.redraw(&p, 1);
+        assert_eq!(keys(&h), early, "the fade moves the alpha, not the rasters");
+        assert!(h.titlebar_fading.expect("still fading") > early_alpha);
+        drop(pass);
+        let _done = at(5);
+        h.redraw(&p, 1);
+        assert_eq!(h.titlebar_fading, None);
+    }
+
+    #[test]
     fn each_output_scale_keeps_its_own_raster_through_a_sync() {
         let (mut h, p) = (header(), painter());
         assert!(h.redraw(&p, 1));
