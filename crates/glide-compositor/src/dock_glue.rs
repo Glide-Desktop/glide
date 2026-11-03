@@ -603,7 +603,7 @@ impl GlideState {
         }
         let running = !self.windows_for_app(app_id).is_empty();
         if !running && self.dock.begin_launch(app_id, name, command) {
-            self.dock.reveal_for(ATTENTION_REVEAL);
+            self.reveal_dock_for_attention();
             self.refresh_dock();
             self.arm_launch_timeout();
         }
@@ -637,8 +637,14 @@ impl GlideState {
         if !self.dock.set_urgent(key, true) {
             return false;
         }
-        self.dock.reveal_for(ATTENTION_REVEAL);
+        self.reveal_dock_for_attention();
         true
+    }
+
+    fn reveal_dock_for_attention(&mut self) {
+        if !self.dock_suppressed() {
+            self.dock.reveal_for(ATTENTION_REVEAL);
+        }
     }
 
     pub fn demand_attention(&mut self, id: WindowId) {

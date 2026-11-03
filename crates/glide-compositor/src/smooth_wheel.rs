@@ -222,6 +222,10 @@ pub fn animates_itself(app_id: &str, extra: &[String]) -> bool {
     SELF_ANIMATED.iter().copied().chain(extra.iter().map(String::as_str)).any(|entry| matches_entry(id, last, entry))
 }
 
+fn constraint_active(surface: &WlSurface, pointer: &smithay::input::pointer::PointerHandle<GlideState>) -> bool {
+    with_pointer_constraint(surface, pointer, |constraint| constraint.is_some_and(|c| c.is_active()))
+}
+
 fn root_of(surface: &WlSurface) -> WlSurface {
     let mut root = surface.clone();
     while let Some(parent) = get_parent(&root) {
@@ -234,6 +238,13 @@ impl GlideState {
     fn pointer_surface(&self) -> Option<WlSurface> {
         let focus = self.seat.get_pointer()?.current_focus()?;
         focus.wl_surface().map(Cow::into_owned)
+    }
+
+    pub(crate) fn pointer_constrained(&self) -> bool {
+        let (Some(pointer), Some(surface)) = (self.seat.get_pointer(), self.pointer_surface()) else {
+            return false;
+        };
+        constraint_active(&surface, &pointer)
     }
 
     pub(crate) fn surface_app_id(&self, surface: &WlSurface) -> Option<String> {
@@ -261,9 +272,7 @@ impl GlideState {
         let Some(pointer) = self.seat.get_pointer() else {
             return false;
         };
-        if !self.reads_fractional_wheel(surface)
-            || with_pointer_constraint(surface, &pointer, |constraint| constraint.is_some_and(|c| c.is_active()))
-        {
+        if !self.reads_fractional_wheel(surface) || constraint_active(surface, &pointer) {
             return false;
         }
         !self.surface_app_id(surface).is_some_and(|id| animates_itself(&id, &self.input_config.smooth_wheel_exclude))

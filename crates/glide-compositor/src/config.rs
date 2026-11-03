@@ -9,7 +9,7 @@ use smithay::input::keyboard::{Keysym, ModifiersState, keysyms, xkb};
 pub use crate::input::GestureConfig;
 use crate::{GlideState, input::ResolvedKeybind};
 
-pub use glide_dock::config::{DockAutohide, DockConfig, DockItemConfig};
+pub use glide_dock::config::{DockConfig, DockItemConfig};
 pub use glide_theme::{Color, DecorationTheme, OverviewTheme, WallpaperFit};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
@@ -1552,6 +1552,7 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glide_dock::config::DockAutohide;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("glide-pins-test-{}-{name}", std::process::id()));

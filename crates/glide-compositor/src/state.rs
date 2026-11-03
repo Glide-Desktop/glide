@@ -2852,11 +2852,23 @@ impl GlideState {
     }
 
     #[must_use]
+    pub fn game_in_front(&self) -> bool {
+        if self.layout.overview_active() {
+            return false;
+        }
+        let output = self.output_rect();
+        let covering = self
+            .layout
+            .focused_window()
+            .and_then(|id| self.layout.window_state(id))
+            .filter(|window| !window.minimized)
+            .is_some_and(|window| covers_output(logical_rect(window.frame_geometry()), window.fullscreen, output));
+        covering || self.pointer_constrained()
+    }
+
+    #[must_use]
     pub fn dock_suppressed(&self) -> bool {
-        self.dock.autohide() == crate::config::DockAutohide::Never
-            && self.dock.menu_index().is_none()
-            && !self.dock.is_dragging()
-            && self.fullscreen_focused_on(self.output_rect())
+        self.dock.menu_index().is_none() && !self.dock.is_dragging() && self.game_in_front()
     }
 
     #[must_use]
@@ -2875,6 +2887,7 @@ impl GlideState {
         let area = self.dock_area();
         let in_zone = !self.screen_locked()
             && !self.layout.overview_active()
+            && !self.dock_suppressed()
             && pointer.is_some_and(|pos| self.dock.in_reveal_zone(area, pos));
         let obstructed = self.dock_obstructed();
         self.dock.update_autohide(obstructed, in_zone)
@@ -4260,6 +4273,11 @@ fn gamma_due(last: Option<std::time::Instant>, now: std::time::Instant, animatin
     !animating || last.is_none_or(|at| now.saturating_duration_since(at) >= GAMMA_PERIOD)
 }
 
+fn covers_output(frame: Rectangle<i32, Logical>, fullscreen: bool, output: Rectangle<i32, Logical>) -> bool {
+    let center = Point::from((frame.loc.x + frame.size.w / 2, frame.loc.y + frame.size.h / 2));
+    (fullscreen && output.contains(center)) || frame.contains_rect(output)
+}
+
 #[must_use]
 pub fn logical_rect(rect: glide_layout::Rectangle) -> Rectangle<i32, Logical> {
     Rectangle::new(
@@ -4439,6 +4457,17 @@ pub fn auto_output_scale(physical_mm: (i32, i32), mode_px: (i32, i32)) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_game_covers_the_output_when_fullscreen_or_borderless_over_all_of_it() {
+        let rect = |x, y, w, h| Rectangle::<i32, Logical>::new(Point::from((x, y)), (w, h).into());
+        let output = rect(0, 0, 1920, 1080);
+        assert!(covers_output(output, true, output));
+        assert!(covers_output(rect(0, 0, 1920, 1080), false, output), "a borderless window over the whole output");
+        assert!(covers_output(rect(-2, -30, 1924, 1112), false, output), "a frame larger than the output");
+        assert!(!covers_output(rect(0, 32, 1920, 1048), false, output), "a maximized window leaves the top bar");
+        assert!(!covers_output(rect(1920, 0, 1920, 1080), true, output), "fullscreen on another output");
+    }
 
     #[test]
     fn gamma_is_written_at_most_once_per_refresh_period() {

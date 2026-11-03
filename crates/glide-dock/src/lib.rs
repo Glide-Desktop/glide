@@ -977,14 +977,13 @@ impl Dock {
         if !self.is_enabled() {
             return false;
         }
+        let span = self.rect(area).to_f64();
         let bottom = f64::from(area.loc.y + area.size.h);
-        let left = f64::from(area.loc.x);
-        let right = left + f64::from(area.size.w);
-        let at_edge = pos.y >= bottom - REVEAL_EDGE && pos.x >= left && pos.x < right;
+        let at_edge = pos.y >= bottom - REVEAL_EDGE && pos.x >= span.loc.x && pos.x < span.loc.x + span.size.w;
         if self.is_hidden() {
             return at_edge;
         }
-        let mut shell = self.rect(area).to_f64();
+        let mut shell = span;
         shell.loc.y -= f64::from(glide_theme::spacing::SP3);
         shell.size.h += f64::from(glide_theme::spacing::SP3 + self.theme.bottom_margin);
         at_edge || shell.contains(pos) || self.menu_rect().is_some_and(|rect| rect.to_f64().contains(pos))
@@ -3048,8 +3047,32 @@ mod tests {
             settle_hidden(&mut dock, false, false);
             assert!(!dock.contains(area(), inside), "a hidden dock takes no clicks");
             assert!(!dock.in_reveal_zone(area(), inside));
-            assert!(dock.in_reveal_zone(area(), Point::from((5.0, 1079.0))));
-            assert!(!dock.in_reveal_zone(area(), Point::from((5.0, 1070.0))));
+            let middle = shell.loc.x + shell.size.w / 2.0;
+            assert!(dock.in_reveal_zone(area(), Point::from((middle, 1079.0))));
+            assert!(!dock.in_reveal_zone(area(), Point::from((middle, 1070.0))));
+        }
+
+        #[test]
+        fn only_the_bottom_edge_under_the_dock_summons_it() {
+            let mut dock = dock(DockAutohide::Always);
+            settle_hidden(&mut dock, false, false);
+            let shell = dock.rect(area()).to_f64();
+            let left = shell.loc.x;
+            let right = shell.loc.x + shell.size.w;
+            assert!(dock.in_reveal_zone(area(), Point::from((left, 1079.0))));
+            assert!(dock.in_reveal_zone(area(), Point::from((right - 1.0, 1079.0))));
+            assert!(!dock.in_reveal_zone(area(), Point::from((left - 1.0, 1079.0))));
+            assert!(!dock.in_reveal_zone(area(), Point::from((right, 1079.0))));
+            assert!(!dock.in_reveal_zone(area(), Point::from((5.0, 1079.0))), "a corner of the screen");
+            assert!(!dock.in_reveal_zone(area(), Point::from((1915.0, 1079.0))));
+        }
+
+        #[test]
+        fn a_shown_dock_lets_go_once_the_pointer_leaves_its_span() {
+            let dock = dock(DockAutohide::Always);
+            let shell = dock.rect(area()).to_f64();
+            assert!(dock.in_reveal_zone(area(), Point::from((shell.loc.x + 1.0, 1079.0))));
+            assert!(!dock.in_reveal_zone(area(), Point::from((5.0, 1079.0))));
         }
     }
 
