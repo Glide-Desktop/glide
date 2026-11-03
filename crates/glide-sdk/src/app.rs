@@ -430,7 +430,7 @@ impl<A: App> Host<A> {
         let Some(fall) = fall else {
             return Task::none();
         };
-        Task::perform(tokio::time::sleep_until(fall.into()), |()| Event::Frame)
+        Task::perform(async move { tokio::time::sleep_until(fall.into()).await }, |()| Event::Frame)
     }
 
     fn handle(&mut self, event: Event<A::Message>) -> Task<Event<A::Message>> {
