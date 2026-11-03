@@ -6,6 +6,7 @@ use smithay::desktop::utils::{
     update_surface_primary_scanout_output,
 };
 
+use super::frame_stats::{FrameStats, Origin};
 use anyhow::{Context, anyhow};
 use smithay::{
     backend::{
@@ -243,6 +244,10 @@ struct SurfaceData {
     power_scrim: SolidColorBuffer,
     blank_scrim: SolidColorBuffer,
     power_blur: Option<(WallpaperKey, MemoryRenderBuffer)>,
+    stats: Option<FrameStats>,
+    origin: Origin,
+    last_vblank: Option<std::time::Instant>,
+    repaint_deadline: Option<std::time::Instant>,
 }
 
 pub(crate) struct DeviceData {
@@ -504,6 +509,22 @@ const OVERVIEW_WALLPAPER_ZOOM: f64 = 1.06;
 const MIRROR_CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 const FLIP_WAIT: Duration = Duration::from_millis(100);
+
+fn frame_stats_enabled() -> bool {
+    std::env::var_os("GLIDE_FRAME_STATS").is_some_and(|value| value == "1")
+}
+
+fn vblank_instant(metadata: Option<&DrmEventMetadata>, clock: &Clock<Monotonic>) -> std::time::Instant {
+    let wall = std::time::Instant::now();
+    let Some(hw_time) = metadata.and_then(|metadata| match metadata.time {
+        smithay::backend::drm::DrmEventTime::Monotonic(tp) => (!tp.is_zero()).then_some(tp),
+        smithay::backend::drm::DrmEventTime::Realtime(_) => None,
+    }) else {
+        return wall;
+    };
+    let mono: Duration = clock.now().into();
+    wall.checked_sub(mono.saturating_sub(hw_time)).unwrap_or(wall)
+}
 
 const BACKDROP_BLUR_SIGMA: f64 = 22.0;
 
@@ -950,6 +971,10 @@ impl GlideState {
                 power_scrim: SolidColorBuffer::default(),
                 blank_scrim: SolidColorBuffer::default(),
                 power_blur: None,
+                stats: frame_stats_enabled().then(FrameStats::default),
+                origin: Origin::Idle,
+                last_vblank: None,
+                repaint_deadline: None,
             },
         );
 
@@ -973,6 +998,11 @@ impl GlideState {
             };
             let output = surface.output.clone();
             surface.flip_pending = None;
+            surface.last_vblank = Some(vblank_instant(metadata.as_ref(), &self.clock));
+            surface.origin = Origin::Vblank;
+            if let Some(stats) = surface.stats.as_mut() {
+                stats.presented(metadata.as_ref().map_or(0, |metadata| metadata.sequence));
+            }
 
             match surface.drm_output.frame_submitted() {
                 Ok(user_data) => {
@@ -1020,13 +1050,19 @@ impl GlideState {
         let Some(crtc) = self.crtc_for_output(output) else {
             return false;
         };
-        let Some(device) = self.backend_data.device.as_ref() else {
+        let Some(device) = self.backend_data.device.as_mut() else {
             return false;
         };
         let size = ramp.len() / 3;
         let (red, rest) = ramp.split_at(size);
         let (green, blue) = rest.split_at(size);
-        match device.drm_output_manager.device().set_gamma(crtc, red, green, blue) {
+        let started = std::time::Instant::now();
+        let result = device.drm_output_manager.device().set_gamma(crtc, red, green, blue);
+        if let Some(stats) = device.surfaces.get_mut(&crtc).and_then(|surface| surface.stats.as_mut()) {
+            let now = std::time::Instant::now();
+            stats.gamma(now - started, now);
+        }
+        match result {
             Ok(()) => true,
             Err(err) => {
                 tracing::warn!(?err, "failed to set the gamma ramp");
@@ -1237,10 +1273,22 @@ impl GlideState {
             self.loop_handle.remove(token);
         }
 
+        let source = std::mem::replace(&mut surface.origin, Origin::Idle);
         if surface.flip_pending.is_some_and(|since| since.elapsed() < FLIP_WAIT) {
+            if let Some(stats) = surface.stats.as_mut() {
+                stats.flip_blocked();
+            }
             return;
         }
         surface.flip_pending = None;
+        let started = std::time::Instant::now();
+        let late = match source {
+            Origin::Vblank => surface.last_vblank.map(|at| started.saturating_duration_since(at)),
+            Origin::Timer | Origin::Estimated => {
+                surface.repaint_deadline.take().map(|at| started.saturating_duration_since(at))
+            }
+            Origin::Idle => None,
+        };
 
         let target = surface.output.clone();
         let mirroring = self.session.mirrors.contains(&target);
@@ -1364,6 +1412,7 @@ impl GlideState {
         } else if let Some(overview) =
             self.overview.as_mut().filter(|overview| overview.place().output == output_geometry)
         {
+            profiling::scope!("overview");
             let window_map = &self.window_map;
             elements.extend(overview_elements(
                 gles_renderer,
@@ -1423,6 +1472,7 @@ impl GlideState {
         }
         let launcher_openness = self.launcher.as_ref().map_or(0.0, crate::launcher::Launcher::backdrop_openness);
         if let Some(launcher) = self.launcher.as_mut().filter(|_| !locked && primary) {
+            profiling::scope!("launcher");
             let grid = crate::launcher::render(
                 launcher,
                 gles_renderer,
@@ -1456,6 +1506,7 @@ impl GlideState {
         let dock = if locked || dock_hidden_here {
             Vec::new()
         } else {
+            profiling::scope!("dock");
             crate::dock::render(
                 &mut self.dock,
                 gles_renderer,
@@ -1508,6 +1559,7 @@ impl GlideState {
         let slid = self.topbar.slide_away(output_geometry, topbar_hidden);
         let sliding = slid > 0.0 && slid < 1.0;
         if !locked && (sliding || !topbar_hidden || (topbar_home && self.topbar.floats())) {
+            profiling::scope!("topbar");
             let topbar = crate::topbar::render(
                 &mut self.topbar,
                 gles_renderer,
@@ -1527,6 +1579,7 @@ impl GlideState {
         }
 
         if let Some(switcher) = self.switcher.as_mut().filter(|_| !locked && primary) {
+            profiling::scope!("switcher");
             let panel = crate::switcher::render(
                 switcher,
                 gles_renderer,
@@ -1901,6 +1954,7 @@ impl GlideState {
 
         let clear_color = self.background_color.0;
 
+        let built = std::time::Instant::now();
         let render_result = surface.drm_output.render_frame(gles_renderer, &elements, clear_color, FrameFlags::DEFAULT);
 
         let outcome = match render_result {
@@ -1910,6 +1964,9 @@ impl GlideState {
                 match surface.drm_output.queue_frame(Some(feedback)) {
                     Ok(()) => {
                         surface.flip_pending = Some(std::time::Instant::now());
+                        if let Some(stats) = surface.stats.as_mut() {
+                            stats.queued(source);
+                        }
                         FrameOutcome::Queued(res.states)
                     }
                     Err(err) => {
@@ -1923,6 +1980,15 @@ impl GlideState {
                 FrameOutcome::Failed
             }
         };
+
+        if let Some(stats) = surface.stats.as_mut() {
+            let now = std::time::Instant::now();
+            if matches!(outcome, FrameOutcome::NoDamage(_)) {
+                stats.no_damage();
+            }
+            stats.rendered(source, late, built - started, now - built, now);
+            stats.report(&output.name(), now);
+        }
 
         if let FrameOutcome::Queued(_) = outcome
             && let Some(lock) = self.session_lock.as_mut()
@@ -2076,6 +2142,7 @@ impl GlideState {
             .filter(|m| m.refresh > 0)
             .map_or(Duration::from_millis(16), |mode| Duration::from_secs_f64(1_000f64 / f64::from(mode.refresh)));
 
+        surface.repaint_deadline = Some(std::time::Instant::now() + frame_duration);
         let token = self
             .loop_handle
             .insert_source(Timer::from_duration(frame_duration), move |_, (), state| {
@@ -2083,6 +2150,7 @@ impl GlideState {
                     && let Some(surface) = device.surfaces.get_mut(&crtc)
                 {
                     surface.pending_repaint = None;
+                    surface.origin = Origin::Timer;
                 }
                 state.render_surface(crtc);
                 TimeoutAction::Drop
