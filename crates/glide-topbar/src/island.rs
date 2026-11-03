@@ -2152,25 +2152,64 @@ fn push_surface<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>,
     if rect.size.w <= 0 || rect.size.h <= 0 {
         return;
     }
-    let key = (rect.size.w, rect.size.h, output_scale, radius.to_bits());
+    let corner = radius.ceil() as i32 + 1;
+    let sliced = rect.size.w >= corner * 2 && rect.size.h >= corner * 2;
+    let size = if sliced { (corner * 2 + 1, corner * 2 + 1) } else { (rect.size.w, rect.size.h) };
+    let key = (size.0, size.1, output_scale, radius.to_bits());
     let island = &mut topbar.island;
     if island.backgrounds.len() >= SURFACE_CACHE_LIMIT && !island.backgrounds.contains_key(&key) {
         island.backgrounds.clear();
     }
     if !island.backgrounds.contains_key(&key)
-        && let Some(canvas) = Canvas::popover(
-            (rect.size.w, rect.size.h),
-            output_scale,
-            radius,
-            topbar.theme.island_bg,
-            topbar.theme.island_line,
-        )
+        && let Some(canvas) =
+            Canvas::popover(size, output_scale, radius, topbar.theme.island_bg, topbar.theme.island_line)
     {
         island.backgrounds.insert(key, canvas.finish());
     }
-    if let Some(buffer) = island.backgrounds.get(&key) {
+    let Some(buffer) = island.backgrounds.get(&key) else {
+        return;
+    };
+    if !sliced {
         push_buffer(renderer, buffer, rect.loc, scale, elements);
+        return;
     }
+    for (src, dst) in nine_slices(rect, corner) {
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            dst.loc.to_f64().to_physical(scale),
+            buffer,
+            None,
+            Some(src),
+            Some(dst.size),
+            Kind::Unspecified,
+        ) {
+            elements.push(element);
+        }
+    }
+}
+
+fn nine_slices(rect: LocalRect, corner: i32) -> Vec<(Rectangle<f64, Logical>, LocalRect)> {
+    let spans = |at: i32, length: i32| {
+        [
+            (0, corner, at, corner),
+            (corner, 1, at + corner, length - corner * 2),
+            (corner + 1, corner, at + length - corner, corner),
+        ]
+    };
+    let mut out = Vec::with_capacity(9);
+    for (src_y, src_h, y, h) in spans(rect.loc.y, rect.size.h) {
+        for (src_x, src_w, x, w) in spans(rect.loc.x, rect.size.w) {
+            if w <= 0 || h <= 0 {
+                continue;
+            }
+            let src = Rectangle::new(
+                Point::from((f64::from(src_x), f64::from(src_y))),
+                Size::from((f64::from(src_w), f64::from(src_h))),
+            );
+            out.push((src, local_rect(x, y, w, h)));
+        }
+    }
+    out
 }
 
 fn shadow_layers(dark: bool, level: Level) -> Vec<glide_theme::elevation::ShadowLayer> {
@@ -2272,6 +2311,25 @@ pub(super) fn push_compact_only<R: ShellRenderer>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn island_morph_reuses_corner_slices_across_sizes() {
+        let corner = 9;
+        for (w, h) in [(344, 29), (500, 120), (712, 84), (356, 201), (18, 18)] {
+            let rect = local_rect(10, 2, w, h);
+            let slices = nine_slices(rect, corner);
+            let area: i32 = slices.iter().map(|(_, dst)| dst.size.w * dst.size.h).sum();
+            assert_eq!(area, w * h, "{w}x{h}: the slices tile the island exactly");
+            for (src, dst) in &slices {
+                assert!(src.loc.x + src.size.w <= f64::from(corner * 2 + 1));
+                assert!(src.loc.y + src.size.h <= f64::from(corner * 2 + 1));
+                assert!(rect.contains_rect(*dst));
+                if src.size.w > 1.0 && src.size.h > 1.0 {
+                    assert_eq!(dst.size, Size::from((corner, corner)), "corners are never stretched");
+                }
+            }
+        }
+    }
 
     fn widths() -> ClockWidths {
         ClockWidths { date: 60, time: 34, badge: 0 }
