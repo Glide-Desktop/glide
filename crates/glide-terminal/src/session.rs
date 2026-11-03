@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
@@ -224,7 +223,8 @@ fn window_size(cells: Cells, cell: iced::Size) -> WindowSize {
 
 impl Pane {
     pub fn spawn(id: PaneId, bus: &Bus, launch: &Launch, config: Config) -> io::Result<Self> {
-        let env = HashMap::from([
+        let mut env = crate::login_env::fresh();
+        env.extend([
             ("TERM".to_string(), "xterm-256color".to_string()),
             ("COLORTERM".to_string(), "truecolor".to_string()),
             ("TERM_PROGRAM".to_string(), "glide-terminal".to_string()),

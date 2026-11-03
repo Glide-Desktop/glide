@@ -487,6 +487,8 @@ impl App {
         let look = ShellLook::load();
         motion::set_scale(look.motion_scale);
         let prefs = config::load();
+        crate::login_env::set_enabled(prefs.login_environment);
+        crate::login_env::warm();
         if launch.command.is_none()
             && let Some(shell) = prefs.shell.clone()
         {
@@ -910,6 +912,7 @@ impl App {
         if prefs.font_family != self.prefs.font_family {
             self.font = family(&prefs);
         }
+        crate::login_env::set_enabled(prefs.login_environment);
         self.prefs = prefs;
         let options = self.prefs.term_config();
         for tab in &self.tabs {

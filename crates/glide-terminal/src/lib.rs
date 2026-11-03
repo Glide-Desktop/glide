@@ -7,6 +7,7 @@ pub mod find;
 pub mod hints;
 pub mod i18n;
 pub mod input;
+pub mod login_env;
 pub mod marks;
 pub mod profile;
 pub mod service;

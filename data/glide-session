@@ -1,4 +1,33 @@
 #!/bin/sh
+# Display managers start sessions without a login shell, and glide.service
+# inherits only the systemd user manager's bare environment. Re-run once
+# through the user's login shell so /etc/profile, /etc/profile.d and the
+# user's profile reach the session, then hand that environment to systemd and
+# D-Bus activation below.
+if [ -z "${GLIDE_LOGIN_ENV:-}" ]; then
+    GLIDE_LOGIN_ENV=1
+    export GLIDE_LOGIN_ENV
+    case "$(basename "${SHELL:-/bin/sh}")" in
+        bash | zsh | ksh | mksh | dash | sh | yash) login_shell="$SHELL" ;;
+        *) login_shell=/bin/sh ;;
+    esac
+    exec "$login_shell" -l -c 'exec "$0" "$@"' "$0" "$@"
+fi
+unset GLIDE_LOGIN_ENV
+
+import_login_environment() {
+    names=$(awk 'BEGIN { for (name in ENVIRON) print name }' |
+        grep -E '^[A-Za-z_][A-Za-z0-9_]*$' |
+        grep -vxE '_|PWD|OLDPWD|SHLVL|TERM|COLORTERM|WAYLAND_DISPLAY|DISPLAY|GLIDE_IPC_SOCK|XDG_SESSION_ID|NOTIFY_SOCKET|INVOCATION_ID|JOURNAL_STREAM|MANAGERPID|SYSTEMD_EXEC_PID')
+    [ -n "$names" ] || return 0
+    # shellcheck disable=SC2086
+    systemctl --user import-environment $names 2>/dev/null || true
+    if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        dbus-update-activation-environment $names 2>/dev/null || true
+    fi
+}
+
 export XDG_CURRENT_DESKTOP=Glide
 export XDG_SESSION_TYPE=wayland
 export XDG_SESSION_DESKTOP=glide
@@ -9,6 +38,7 @@ GLIDE="$(dirname "$0")/glide"
 if command -v systemctl >/dev/null 2>&1 && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] \
     && systemctl --user cat glide.service >/dev/null 2>&1; then
     systemctl --user reset-failed glide.service 2>/dev/null || true
+    import_login_environment
     if [ -n "${XDG_SESSION_ID:-}" ]; then
         systemctl --user set-environment XDG_SESSION_ID="$XDG_SESSION_ID" 2>/dev/null || true
     fi

@@ -46,6 +46,7 @@ pub struct Preferences {
     pub on_exit: OnExit,
     pub confirm_close: bool,
     pub mark_prompts: bool,
+    pub login_environment: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
 }
@@ -69,6 +70,7 @@ impl Default for Preferences {
             on_exit: OnExit::CloseClean,
             confirm_close: true,
             mark_prompts: true,
+            login_environment: true,
             shell: None,
         }
     }
