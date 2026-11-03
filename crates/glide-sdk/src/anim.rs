@@ -401,13 +401,43 @@ pub fn slide_in_end<'a, M: 'a>(open: bool, content: impl Into<Element<'a, M>>) -
     Element::new(Collapse { content: content.into(), open, edge: Edge::Left, from_closed: false })
 }
 
+#[derive(Debug)]
+struct Fold {
+    motion: Motion,
+    frame: Option<Instant>,
+    natural: Size,
+    laid: Size,
+}
+
+impl Fold {
+    fn value(&self) -> f32 {
+        let _pass = self.frame.map(glide_ui::clock::FramePass::enter);
+        self.motion.value(Speed::EXPAND)
+    }
+
+    fn animating(&self) -> bool {
+        let _pass = self.frame.map(glide_ui::clock::FramePass::enter);
+        self.motion.animating(Speed::EXPAND)
+    }
+
+    fn shown(&self, sideways: bool) -> Size {
+        let value = self.value();
+        if sideways {
+            Size::new((self.natural.width * value).ceil(), self.natural.height)
+        } else {
+            Size::new(self.natural.width, (self.natural.height * value).ceil())
+        }
+    }
+}
+
 impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Motion>()
+        tree::Tag::of::<Fold>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(Motion::at(if self.open && !self.from_closed { 1.0 } else { 0.0 }))
+        let motion = Motion::at(if self.open && !self.from_closed { 1.0 } else { 0.0 });
+        tree::State::new(Fold { motion, frame: None, natural: Size::ZERO, laid: Size::ZERO })
     }
 
     forward!(content: children, diff);
@@ -422,7 +452,6 @@ impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
     }
 
     fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
-        let value = tree.state.downcast_ref::<Motion>().value(Speed::EXPAND);
         let sideways = self.edge != Edge::Bottom;
         let room = if sideways {
             layout::Limits::new(Size::new(0.0, limits.min().height), Size::new(f32::INFINITY, limits.max().height))
@@ -431,11 +460,10 @@ impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
         };
         let child = self.content.as_widget_mut().layout(&mut tree.children[0], renderer, &room);
         let size = child.size();
-        let shown = if sideways {
-            Size::new((size.width * value).ceil(), size.height)
-        } else {
-            Size::new(size.width, (size.height * value).ceil())
-        };
+        let fold = tree.state.downcast_mut::<Fold>();
+        fold.natural = size;
+        let shown = fold.shown(sideways);
+        fold.laid = shown;
         let child = if self.edge == Edge::Left {
             child.move_to(iced::Point::new(shown.width - size.width, 0.0))
         } else {
@@ -455,11 +483,22 @@ impl<M> Widget<M, Theme, Renderer> for Collapse<'_, M> {
         &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
         clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
-        let motion = tree.state.downcast_mut::<Motion>();
-        let changed = motion.to(if self.open { 1.0 } else { 0.0 }, Speed::EXPAND);
-        let animating = motion.animating(Speed::EXPAND);
-        if changed || (animating && matches!(event, Event::Window(window::Event::RedrawRequested(_)))) {
+        let fold = tree.state.downcast_mut::<Fold>();
+        let redraw = if let Event::Window(window::Event::RedrawRequested(at)) = event {
+            fold.frame = Some(*at);
+            true
+        } else {
+            false
+        };
+        let changed = fold.motion.to(if self.open { 1.0 } else { 0.0 }, Speed::EXPAND);
+        if changed && !redraw {
+            fold.frame = None;
+        }
+        let animating = fold.animating() || fold.motion.animating(Speed::EXPAND);
+        if changed || (redraw && fold.shown(self.edge != Edge::Bottom) != fold.laid) {
             shell.invalidate_layout();
+        }
+        if changed || (redraw && animating) {
             shell.request_redraw();
         }
         if !self.open && !animating {
@@ -624,6 +663,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_collapse_invalidates_layout_once_per_frame_time() {
+        use iced::advanced::clipboard;
+        if motion::is_disabled() {
+            return;
+        }
+        let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
+        let limits = layout::Limits::new(Size::ZERO, Size::new(400.0, 400.0));
+        let mut closed: Element<'_, ()> = collapse(false, iced::widget::Space::new().width(100).height(100));
+        let mut tree = Tree::new(&closed);
+        let _ = closed.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let mut open: Element<'_, ()> = collapse(true, iced::widget::Space::new().width(100).height(100));
+        tree.diff(&open);
+        let mut node = open.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let mut step = |node: &layout::Node, at: Instant| {
+            let mut messages = Vec::new();
+            let mut shell = Shell::new(&mut messages);
+            open.as_widget_mut().update(
+                &mut tree,
+                &Event::Window(window::Event::RedrawRequested(at)),
+                Layout::new(node),
+                mouse::Cursor::Unavailable,
+                &renderer,
+                &mut clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(Size::new(400.0, 400.0)),
+            );
+            let invalid = shell.is_layout_invalid();
+            (invalid, open.as_widget_mut().layout(&mut tree, &renderer, &limits))
+        };
+        let at = Instant::now() + motion::t3() / 2;
+        let (first, relaid) = step(&node, at);
+        assert!(first, "a new frame time moves the fold");
+        node = relaid;
+        let (again, _) = step(&node, at);
+        assert!(!again, "the same frame time lays out the same size, so iced's redraw loop stops");
+    }
+
+    #[test]
     fn a_frame_is_only_wanted_by_what_the_viewport_shows() {
         let node = layout::Node::new(Size::new(20.0, 20.0)).move_to(iced::Point::new(0.0, 500.0));
         let layout = Layout::new(&node);
@@ -700,10 +777,10 @@ mod tests {
         );
         assert!(shell.is_layout_invalid(), "every frame of the unfold asks for a new layout");
         std::thread::sleep((Speed::EXPAND.duration)() / 3);
-        let middle = open.as_widget_mut().layout(&mut tree, &renderer, &limits).size().height;
+        let middle = next_frame(&mut open, &mut tree, &renderer, &limits).size().height;
         assert!(middle > 10.0 && middle < 120.0, "a third of the way through t3 it is part open: {middle}");
         std::thread::sleep((Speed::EXPAND.duration)());
-        assert_eq!(open.as_widget_mut().layout(&mut tree, &renderer, &limits).size().height, 120.0);
+        assert_eq!(next_frame(&mut open, &mut tree, &renderer, &limits).size().height, 120.0);
     }
 
     #[test]
@@ -733,14 +810,33 @@ mod tests {
             return;
         }
         std::thread::sleep((Speed::EXPAND.duration)() / 3);
-        let middle = closing.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let middle = next_frame(&mut closing, &mut tree, &renderer, &limits);
         let width = middle.size().width;
         let child = middle.children()[0].bounds();
         assert!(width > 24.0 && width < 264.0, "part way through it is part shown: {width}");
         assert!(child.x < -24.0, "the panel moves out past the edge rather than fading: {}", child.x);
         assert!((child.x + child.width - width).abs() < 1.0, "its leading edge stays glued to the visible edge");
         std::thread::sleep((Speed::EXPAND.duration)());
-        assert_eq!(closing.as_widget_mut().layout(&mut tree, &renderer, &limits).size().width, 0.0);
+        assert_eq!(next_frame(&mut closing, &mut tree, &renderer, &limits).size().width, 0.0);
+    }
+
+    fn next_frame(
+        element: &mut Element<'_, ()>, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits,
+    ) -> layout::Node {
+        let node = element.as_widget_mut().layout(tree, renderer, limits);
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        element.as_widget_mut().update(
+            tree,
+            &Event::Window(window::Event::RedrawRequested(Instant::now())),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            renderer,
+            &mut iced::advanced::clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(limits.max()),
+        );
+        element.as_widget_mut().layout(tree, renderer, limits)
     }
 
     #[test]
