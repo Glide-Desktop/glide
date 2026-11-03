@@ -287,6 +287,14 @@ fn segmented_sized<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, 
 }
 
 pub const ICON_SEGMENT: f32 = 30.0;
+const SEGMENT_GAP: f32 = 2.0;
+const SEGMENT_INSET: f32 = (component::CONTROL - component::SMALL_CONTROL) / 2.0;
+
+#[must_use]
+pub fn icon_segmented_width(segments: usize) -> f32 {
+    let count = segments as f32;
+    count * ICON_SEGMENT + (count - 1.0).max(0.0) * SEGMENT_GAP + 2.0 * SEGMENT_INSET
+}
 
 #[must_use]
 pub fn icon_segmented<'a, T: Copy + PartialEq + 'a, G: super::Glyph, M: Clone + 'a>(
@@ -309,9 +317,9 @@ pub fn icon_segmented<'a, T: Copy + PartialEq + 'a, G: super::Glyph, M: Clone + 
         });
         super::tooltip(&paint, control, label)
     });
-    let content = Row::with_children(segments).spacing(2);
+    let content = Row::with_children(segments).spacing(SEGMENT_GAP);
     let control = container(track(&paint, Indicator::Thumb, index, content))
-        .padding((component::CONTROL - component::SMALL_CONTROL) / 2.0)
+        .padding(SEGMENT_INSET)
         .style(move |_| style::rounded(paint.fill_1(), R2));
     let keyed: Vec<(T, ())> = options.iter().map(|&(value, ..)| (value, ())).collect();
     arrows(&paint, control, R2, &keyed, index, on_select)

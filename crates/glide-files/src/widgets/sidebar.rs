@@ -74,7 +74,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .on_press(Message::Window(glide_sdk::window::Action::Drag))
     .on_double_click(Message::Window(glide_sdk::window::Action::ToggleMaximize));
 
-    let places = glide_sdk::widget::scrollable(t, sections).width(Fill).height(Fill);
+    let places = glide_sdk::widget::overlay_scrollable(t, sections).width(Fill).height(Fill);
     if app.chooser.is_some() {
         let corners = theme::window_corners(theme::Side::BottomLeft, app.corner());
         return pane(t.sidebar_bg(), corners, places)
@@ -84,7 +84,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
     let mut panel = column![top, places];
     if !app.jobs.is_empty() {
-        let jobs = glide_sdk::widget::scrollable(t, super::operations::sidebar(app));
+        let jobs = glide_sdk::widget::overlay_scrollable(t, super::operations::sidebar(app));
         panel = panel.push(super::divider(t)).push(container(jobs).max_height(JOBS_HEIGHT));
     }
     let corners = theme::window_corners(theme::Side::Left, app.corner());

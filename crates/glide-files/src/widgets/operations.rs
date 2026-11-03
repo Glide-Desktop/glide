@@ -46,8 +46,8 @@ fn detail(app: &App, job: &Job) -> String {
         parts.push(format!("{} {}", Key::ToPlace.text(lang), app.location_name(job.target())));
     }
     if job.launch.is_some() {
-        parts.push(Key::Queued.text(lang).to_string());
-        return capitalised(&parts.join(" · "));
+        parts.push(Key::Queued.text(lang).to_lowercase());
+        return capitalised(&joined(&parts));
     }
     if job.meter.is_paused() {
         parts.push(Key::Paused.text(lang).to_lowercase());
@@ -62,7 +62,11 @@ fn detail(app: &App, job: &Job) -> String {
             }
         }
     }
-    capitalised(&parts.join(" · "))
+    capitalised(&joined(&parts))
+}
+
+fn joined(parts: &[String]) -> String {
+    parts.iter().map(|part| part.replace(' ', "\u{a0}")).collect::<Vec<_>>().join(" · ")
 }
 
 fn capitalised(line: &str) -> String {
@@ -122,7 +126,7 @@ fn summary(app: &App, totals: &Totals) -> String {
     if let Some(left) = totals.left {
         parts.push(format!("{} ~{}", Key::TimeLeft.text(lang), i18n::duration(left, lang)));
     }
-    parts.join(" · ")
+    joined(&parts)
 }
 
 #[must_use]

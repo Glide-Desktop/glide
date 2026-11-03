@@ -94,7 +94,8 @@ pub use secrets::{
 };
 pub use selection::{
     Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,
-    page_dots, radio_group, segmented, segmented_fill, sidebar_list, swatch, swatches, tabs, track,
+    icon_segmented_width, page_dots, radio_group, segmented, segmented_fill, sidebar_list, swatch, swatches, tabs,
+    track,
 };
 pub use strip::{Mark, Tab, TabStrip, tab_strip};
 
@@ -170,7 +171,8 @@ pub fn measure_lines(content: &str, style: TextStyle, width: f32) -> usize {
 
 #[must_use]
 pub fn breakable(name: &str) -> String {
-    match name.rfind('.').filter(|&dot| dot > 0) {
+    let opens = |stem: &str| stem.contains(|c: char| c.is_whitespace() || c == '-');
+    match name.rfind('.').filter(|&dot| dot > 0 && !opens(&name[..dot])) {
         Some(dot) => format!("{}\u{200B}{}", &name[..dot], &name[dot..]),
         None => name.to_string(),
     }
@@ -304,6 +306,14 @@ pub fn scrollable_style(paint: &Paint, status: scroll::Status) -> scroll::Style 
 pub fn scrollable<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>) -> scroll::Scrollable<'a, M> {
     let paint = *paint;
     let bar = scroll::Scrollbar::new().width(6).scroller_width(6).spacing(SP1);
+    scroll::Scrollable::with_direction(content, scroll::Direction::Vertical(bar))
+        .style(move |_, status| scrollable_style(&paint, status))
+}
+
+#[must_use]
+pub fn overlay_scrollable<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>) -> scroll::Scrollable<'a, M> {
+    let paint = *paint;
+    let bar = scroll::Scrollbar::new().width(6).scroller_width(6).margin(1);
     scroll::Scrollable::with_direction(content, scroll::Direction::Vertical(bar))
         .style(move |_, status| scrollable_style(&paint, status))
 }

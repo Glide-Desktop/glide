@@ -283,6 +283,8 @@ fn grid_labels_prefer_to_break_before_the_extension() {
     assert_eq!(breakable("archive.tar.gz"), "archive.tar\u{200B}.gz");
     assert_eq!(breakable(".bashrc"), ".bashrc", "a leading dot is not an extension");
     assert_eq!(breakable("Makefile"), "Makefile");
+    assert_eq!(breakable("Звіт за жовтень.pdf"), "Звіт за жовтень.pdf", "words wrap; the extension is not orphaned");
+    assert_eq!(breakable("meeting-notes.md"), "meeting-notes.md");
 }
 
 #[test]

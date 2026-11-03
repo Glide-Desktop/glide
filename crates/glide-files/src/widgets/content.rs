@@ -236,7 +236,7 @@ fn empty_state(app: &App) -> Element<'_, Message> {
 }
 
 fn files<'a>(app: &'a App, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    glide_sdk::widget::scrollable(&paint(&app.theme), content)
+    glide_sdk::widget::overlay_scrollable(&paint(&app.theme), content)
         .id(FILES_ID)
         .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
         .width(Fill)

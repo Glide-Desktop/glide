@@ -90,7 +90,8 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
     let buttons = [Key::Restore, Key::EmptyTrash];
     let taken: f32 = buttons.iter().map(|key| Size::Small.width(key.text(lang)) + theme::SP2).sum();
     let heading = measure(title, TextStyle { weight: 600, ..TextStyle::CALL });
-    let room = app.pane.width - 2.0 * theme::SP3 - heading - theme::SP2 - taken;
+    let aside = if app.inspector_shown() { glide_sdk::widget::INSPECTOR_WIDTH + 1.0 } else { 0.0 };
+    let room = app.pane.width + aside - 2.0 * theme::SP3 - heading - theme::SP2 - taken;
     let blurb = elide_end(Key::TrashBanner.text(lang), room, TextStyle::CAP);
     let actions = buttons
         .into_iter()

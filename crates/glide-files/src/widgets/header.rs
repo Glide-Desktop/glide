@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use glide_sdk::theme::TextStyle;
-use glide_sdk::widget::{ICON_SEGMENT, elide, elide_end, measure};
+use glide_sdk::widget::{elide, elide_end, icon_segmented_width, measure};
 use iced::widget::{container, mouse_area, row, text_input};
 use iced::{Element, Fill, Length};
 
@@ -18,8 +18,8 @@ const WIDE_WINDOW: f32 = 1000.0;
 pub const WINDOW_CONTROL: f32 = theme::SMALL_CONTROL;
 pub const GAP: f32 = SP2;
 pub(crate) const INSET: f32 = SP3;
-const VIEWS: f32 = 2.0 * ICON_SEGMENT + 4.0;
-const LEADING: f32 = 2.0 * CONTROL + GAP;
+const BUTTON: f32 = theme::CONTROL;
+const LEADING: f32 = 2.0 * BUTTON + GAP;
 
 #[must_use]
 pub fn search_width(app: &App) -> f32 {
@@ -27,12 +27,13 @@ pub fn search_width(app: &App) -> f32 {
 }
 
 fn trailing(app: &App) -> f32 {
-    let inspector = if app.inspector_fits() { CONTROL + GAP } else { 0.0 };
-    search_width(app) + VIEWS + CONTROL + inspector + WINDOW_CONTROL + 2.0 + 4.0 * GAP
+    let inspector = if app.inspector_fits() { BUTTON + GAP } else { 0.0 };
+    search_width(app) + icon_segmented_width(2) + BUTTON + inspector + WINDOW_CONTROL + 2.0 + 4.0 * GAP
 }
 const CRUMB_CHROME: f32 = 2.0 * SP2 + 16.0;
 const CRUMB_GLYPH: f32 = 13.0 + theme::SP1;
 const CRUMB_LABEL: f32 = 200.0;
+const CURRENT: TextStyle = TextStyle { weight: 600, ..TextStyle::CALL };
 
 #[must_use]
 pub fn search_title(label: &str, query: &str, room: f32) -> String {
@@ -160,6 +161,11 @@ pub fn trail(app: &App) -> Vec<Crumb> {
     if crumbs.len() > 1 && crumbs.iter().map(width).sum::<f32>() > budget {
         crumbs.drain(..crumbs.len() - 1);
     }
+    if let [only] = crumbs.as_mut_slice()
+        && face(only) > budget
+    {
+        only.label = elide(&only.label, budget - (face(only) - measure(&only.label, CURRENT)), CURRENT);
+    }
     crumbs
 }
 
@@ -186,9 +192,13 @@ fn crumbs(app: &App) -> Vec<Crumb> {
     crumbs
 }
 
-fn width(crumb: &Crumb) -> f32 {
+fn face(crumb: &Crumb) -> f32 {
     let glyph = if crumb.glyph.is_some() { CRUMB_GLYPH } else { 0.0 };
-    measure(&crumb.label, TextStyle { weight: 600, ..TextStyle::CALL }) + CRUMB_CHROME + glyph
+    measure(&crumb.label, CURRENT) + 2.0 * SP2 + glyph
+}
+
+fn width(crumb: &Crumb) -> f32 {
+    face(crumb) + CRUMB_CHROME - 2.0 * SP2
 }
 
 #[must_use]
@@ -214,4 +224,21 @@ pub(crate) fn crumbs_row(app: &App) -> Element<'_, Message> {
             .into()
     });
     container(glide_sdk::widget::crumb_trail(&paint, items.collect())).width(Fill).clip(true).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{crumb_room, face, trail};
+    use glide_sdk::window::{Frame, Window};
+
+    #[test]
+    fn the_current_folder_fits_the_header_of_the_smallest_window() {
+        let (mut app, _) = crate::App::new();
+        app.follow_window(Window { size: iced::Size::new(720.0, 480.0), focused: true, frame: Frame::Floating });
+        app.current = std::path::PathBuf::from("/Документи з дуже довгою назвою для перевірки");
+        let crumbs = trail(&app);
+        assert_eq!(crumbs.len(), 1);
+        assert!(crumbs[0].label.contains('…'));
+        assert!(face(&crumbs[0]) <= crumb_room(&app));
+    }
 }

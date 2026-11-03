@@ -8,7 +8,7 @@ use iced::keyboard::{self, Key, Modifiers, key::Named};
 use iced::widget::{Space, button, container, mouse_area, pin, row, stack};
 use iced::{Alignment, Background, Element, Fill, Length, Padding, Point, Size};
 
-use crate::widget::{Icon, Wrapping, icon, popover, scrollable, text};
+use crate::widget::{Icon, Wrapping, icon, overlay_scrollable, popover, text};
 
 pub const WIDTH: f32 = 280.0;
 pub const SCROLL: &str = "glide-menu";
@@ -662,7 +662,7 @@ fn card_layer<'a, E: Clone + 'a>(
     paint: &Paint, rows: Vec<Element<'a, E>>, id: &'static str, at: Point, size: Size, progress: f32,
     dismiss: Option<E>,
 ) -> Element<'a, E> {
-    let content = scrollable(paint, iced::widget::column(rows)).id(id).height(size.height - 2.0 * SP1 - 2.0);
+    let content = overlay_scrollable(paint, iced::widget::column(rows)).id(id).height(size.height - 2.0 * SP1 - 2.0);
     let card = container(popover(paint, content)).width(size.width);
     let scale = component::POPOVER_CLOSED_SCALE + (1.0 - component::POPOVER_CLOSED_SCALE) * progress;
     let card = pin(widgets::scale(card, scale)).x(at.x).y(at.y + (1.0 - progress) * component::POPOVER_RISE);
