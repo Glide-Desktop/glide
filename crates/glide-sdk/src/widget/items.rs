@@ -1,5 +1,5 @@
 use glide_iced::Paint;
-use glide_iced::style::{self, R2, SP1, SP2};
+use glide_iced::style::{self, R2, SP1, SP2, SP3};
 use glide_theme::TextStyle;
 use glide_theme::shape::R1;
 use iced::widget::{Space, column, container, stack};
@@ -70,9 +70,9 @@ pub fn table_row<'a, M: 'a>(
 #[must_use]
 pub fn section_title<'a, M: 'a>(paint: &Paint, title: &str, highlighted: bool) -> Element<'a, M> {
     let paint = *paint;
-    let ink = if highlighted { paint.acc_soft_fg() } else { paint.fg_3() };
+    let ink = if highlighted { paint.acc_soft_fg() } else { paint.fg_2() };
     container(text(title.to_string(), TextStyle::MICRO).color(ink))
-        .padding(Padding::from([2.0, SP2]))
+        .padding(Padding::from([2.0, SP3]))
         .width(Fill)
         .style(move |_| if highlighted { style::rounded(paint.acc_soft(), R2) } else { container::Style::default() })
         .into()

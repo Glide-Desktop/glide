@@ -122,7 +122,7 @@ glide_sdk::catalogue! {
     DeletePromptOne => "This item will be erased and can’t be restored.", "Цей об’єкт буде стерто без можливості відновлення.";
     EmptyTrashTitle => "Empty the Trash?", "Очистити смітник?";
     EmptyTrashPrompt => "All items in the Trash will be erased and can’t be restored.", "Усі об’єкти в смітнику буде стерто без можливості відновлення.";
-    TrashBanner => "Items in the Trash can be restored or erased.", "Об’єкти в смітнику можна відновити або стерти.";
+    TrashBanner => "Items here can be restored to where they were or erased for good.", "Об’єкти тут можна відновити туди, звідки їх вилучено, або стерти назавжди.";
     Location => "Location", "Розташування";
     OriginalLocation => "Original location", "Початкове розташування";
     Size => "Size", "Розмір";

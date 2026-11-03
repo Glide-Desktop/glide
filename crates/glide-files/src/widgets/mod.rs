@@ -88,11 +88,11 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
     let restorable = app.selected_entries().any(|e| app.trash.is_top_level(&e.path));
     let title = Key::Trash.text(lang);
     let buttons = [Key::Restore, Key::EmptyTrash];
-    let taken: f32 = buttons.iter().map(|key| Size::Small.width(key.text(lang)) + theme::SP2).sum();
-    let heading = measure(title, TextStyle { weight: 600, ..TextStyle::CALL });
+    let taken: f32 = buttons.iter().map(|key| Size::Small.width(key.text(lang)) + theme::SP3).sum();
+    let heading = measure(title, TextStyle { weight: 630, ..TextStyle::CALL });
     let aside = if app.inspector_shown() { glide_sdk::widget::INSPECTOR_WIDTH + 1.0 } else { 0.0 };
-    let room = app.pane.width + aside - 2.0 * theme::SP3 - heading - theme::SP2 - taken;
-    let blurb = elide_end(Key::TrashBanner.text(lang), room, TextStyle::CAP);
+    let room = app.pane.width + aside - theme::SP4 - theme::SP3 - heading - theme::SP3 - taken;
+    let blurb = elide_end(Key::TrashBanner.text(lang), room, TextStyle::CALL);
     let actions = buttons
         .into_iter()
         .map(|key| {
@@ -103,7 +103,7 @@ fn trash_banner(app: &App) -> Element<'_, Message> {
             glide_sdk::widget::compact_button(t, key.text(lang), tone, message)
         })
         .collect();
-    glide_sdk::widget::info_bar(t, None, title, &blurb, actions)
+    glide_sdk::widget::info_bar(t, Some(glide_sdk::widget::Severity::Warn), title, &blurb, actions)
 }
 
 fn drag_ghost<'a>(app: &'a App, drag: &'a crate::app::Drag) -> Element<'a, Message> {

@@ -15,7 +15,7 @@ use crate::theme::{self, SP2, SP3};
 pub const SEARCH_WIDTH: f32 = 220.0;
 const NARROW_SEARCH: f32 = 160.0;
 const WIDE_WINDOW: f32 = 1000.0;
-pub const WINDOW_CONTROL: f32 = theme::SMALL_CONTROL;
+pub const WINDOW_CONTROL: f32 = glide_sdk::window::CONTROL;
 pub const GAP: f32 = SP2;
 pub(crate) const INSET: f32 = SP3;
 const BUTTON: f32 = theme::CONTROL;

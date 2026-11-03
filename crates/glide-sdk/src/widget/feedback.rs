@@ -145,14 +145,15 @@ pub fn empty_state<'a, M: 'a>(
 ) -> Element<'a, M> {
     let (title, body) = (title.into(), body.into());
     let paint = *paint;
-    let well =
-        container(icon(glyph, 28.0, paint.fg_3())).center(64).style(move |_| style::rounded(paint.fill_1(), R_ROUND));
-    let mut content = column![well].spacing(SP3).align_x(Alignment::Center).max_width(360);
+    let well = container(icon(glyph, 32.0, paint.fg_2()))
+        .center(72)
+        .style(move |_| style::rounded(paint.fill_1(), glide_theme::shape::R4));
+    let mut content = column![well].spacing(SP3).align_x(Alignment::Center).max_width(340);
     if !title.is_empty() {
-        content = content.push(text(title, TextStyle::HEAD));
+        content = content.push(text(title, TextStyle::T3));
     }
     if !body.is_empty() {
-        content = content.push(text(body, TextStyle::CALL).color(paint.fg_3()).align_x(Alignment::Center).width(Fill));
+        content = content.push(text(body, TextStyle::CALL).color(paint.fg_2()).align_x(Alignment::Center).width(Fill));
     }
     if let Some(action) = action {
         content = content.push(action);

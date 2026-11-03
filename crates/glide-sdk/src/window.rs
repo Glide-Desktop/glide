@@ -31,7 +31,7 @@ pub fn handles() -> Task<Option<Handles>> {
 }
 
 pub const HEADER: f32 = component::WINDOW_HEADER;
-const CONTROL: f32 = component::SMALL_CONTROL;
+pub const CONTROL: f32 = component::WINDOW_CONTROL as f32;
 const EDGE: f32 = 5.0;
 const CORNER: f32 = 10.0;
 

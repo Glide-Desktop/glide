@@ -158,7 +158,7 @@ fn item<'a>(app: &'a App, place: &'a Place, bookmark: bool) -> Element<'a, Messa
     let active = is_active(app, Some(&place.path));
     Line {
         glyph: place.icon,
-        tint: app.theme.fg_3(),
+        tint: app.theme.fg_2(),
         label: place.name.clone(),
         dim: None,
         eject: None,
@@ -183,7 +183,7 @@ fn phone_item<'a>(app: &'a App, phone: &'a crate::fs::mtp::Phone) -> Element<'a,
     let active = is_active(app, phone.mount.as_deref());
     Line {
         glyph: if phone.camera { Icon::Camera } else { Icon::Phone },
-        tint: if busy { t.fg_4() } else { t.fg_3() },
+        tint: if busy { t.fg_4() } else { t.fg_2() },
         label: if phone.name.is_empty() { fallback.text(app.lang).to_string() } else { phone.name.clone() },
         dim: match (busy, phone.mount.is_some()) {
             (true, _) => Some(t.fg_4()),
@@ -211,7 +211,7 @@ fn volume_item<'a>(app: &'a App, volume: &'a Volume) -> Element<'a, Message> {
     let (tint, dim) = if busy {
         (t.fg_4(), Some(t.fg_4()))
     } else if volume.mount.is_some() {
-        (t.fg_3(), None)
+        (t.fg_2(), None)
     } else {
         (t.fg_3(), Some(t.fg_3()))
     };

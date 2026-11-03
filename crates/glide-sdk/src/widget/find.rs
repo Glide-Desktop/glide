@@ -1,5 +1,5 @@
 use glide_iced::Paint;
-use glide_iced::style::{self, SP1, SP2, SP3};
+use glide_iced::style::{self, SP1, SP2, SP3, SP4};
 use glide_theme::TextStyle;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -255,18 +255,33 @@ fn strip<'a, M: 'a>(
     container(content).padding(padding).width(Fill).style(move |_| style::rounded(background, 0.0)).into()
 }
 
-pub const INFO_BAR: f32 = glide_theme::component::SMALL_CONTROL + 2.0 * SP1;
+pub const INFO_BAR: f32 = glide_theme::component::SMALL_CONTROL + 2.0 * SP2;
+const BANNER_STRIP: f32 = 3.0;
 
 #[must_use]
 pub fn info_bar<'a, M: 'a>(
     paint: &Paint, severity: Option<Severity>, title: &str, detail: &str, actions: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
-    let weight = if detail.is_empty() { TextStyle::CALL.weight } else { 600 };
+    let weight = if detail.is_empty() { TextStyle::CALL.weight } else { 630 };
     let mut content = row![text(title.to_string(), TextStyle { weight, ..TextStyle::CALL }).wrapping(Wrapping::None)]
-        .spacing(SP2)
+        .spacing(SP3)
         .align_y(Alignment::Center);
-    let blurb = text(detail.to_string(), TextStyle::CAP).color(paint.fg_3()).wrapping(Wrapping::None);
+    let blurb = text(detail.to_string(), TextStyle::CALL).color(paint.fg_2()).wrapping(Wrapping::None);
     content = content.push(container(blurb).width(Fill).clip(true));
     let content = actions.into_iter().fold(content, iced::widget::Row::push);
-    strip(paint, severity, Padding::from([0.0, SP3]), container(content).height(INFO_BAR).align_y(Alignment::Center))
+    let content = container(content).height(INFO_BAR).align_y(Alignment::Center);
+    let edge = match severity {
+        Some(Severity::Warn) => Some(paint.warn()),
+        Some(Severity::Danger) => Some(paint.danger()),
+        Some(Severity::Ok) => Some(paint.ok()),
+        Some(Severity::Accent) => Some(paint.acc_bg()),
+        Some(Severity::Neutral) => Some(paint.fg_4()),
+        None => None,
+    };
+    let Some(edge) = edge else {
+        return strip(paint, severity, Padding::from([0.0, SP3]), content);
+    };
+    let mark = container(Space::new().width(BANNER_STRIP).height(INFO_BAR)).style(move |_| style::rounded(edge, 0.0));
+    let body = container(content).padding(Padding::from([0.0, SP3]).left(SP4 - BANNER_STRIP)).width(Fill);
+    strip(paint, severity, Padding::ZERO, row![mark, body])
 }

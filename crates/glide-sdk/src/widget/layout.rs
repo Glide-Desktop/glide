@@ -749,7 +749,7 @@ impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
             if let Some(leading) = leading {
                 content = content.push(leading);
             } else if let Some((glyph, tint)) = glyph {
-                content = content.push(glyph(if selected { paint.acc_soft_fg() } else { tint }));
+                content = content.push(glyph(if selected { paint.acc_text() } else { tint }));
             }
             let style = if current { TextStyle { weight: 600, ..TextStyle::CALL } } else { TextStyle::CALL };
             let ink = ink.filter(|_| !selected);

@@ -4,7 +4,7 @@ use iced::border::Radius;
 use iced::widget::{button, container, text_input};
 use iced::{Background, Border, Color, Shadow};
 
-pub use glide_theme::shape::{R2, R3};
+pub use glide_theme::shape::{R_ROUND, R2, R3};
 pub const SP1: f32 = glide_theme::spacing::SP1 as f32;
 pub const SP2: f32 = glide_theme::spacing::SP2 as f32;
 pub const SP3: f32 = glide_theme::spacing::SP3 as f32;
@@ -195,18 +195,18 @@ pub fn menu_item(paint: &Paint, status: button::Status) -> button::Style {
 #[must_use]
 pub fn window_control(paint: &Paint, status: button::Status) -> button::Style {
     match status {
-        button::Status::Hovered => flat(paint.danger(), Color::WHITE, R2),
-        button::Status::Pressed => flat(paint.layer(paint.danger(), ST_PRESS), Color::WHITE, R2),
-        _ => flat(paint.fill_1(), paint.fg_2(), R2),
+        button::Status::Hovered => flat(paint.danger(), Color::WHITE, R_ROUND),
+        button::Status::Pressed => flat(paint.layer(paint.danger(), ST_PRESS), Color::WHITE, R_ROUND),
+        _ => flat(paint.fill_1(), paint.fg_2(), R_ROUND),
     }
 }
 
 #[must_use]
 pub fn maximize_control(paint: &Paint, status: button::Status) -> button::Style {
     match status {
-        button::Status::Hovered => flat(paint.acc_bg(), paint.acc_fg(), R2),
-        button::Status::Pressed => flat(paint.layer(paint.acc_bg(), ST_PRESS), paint.acc_fg(), R2),
-        _ => flat(paint.fill_1(), paint.fg_2(), R2),
+        button::Status::Hovered => flat(paint.acc_bg(), paint.acc_fg(), R_ROUND),
+        button::Status::Pressed => flat(paint.layer(paint.acc_bg(), ST_PRESS), paint.acc_fg(), R_ROUND),
+        _ => flat(paint.fill_1(), paint.fg_2(), R_ROUND),
     }
 }
 
