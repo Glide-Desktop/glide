@@ -29,6 +29,7 @@ fn installer_stages_the_welcome_binary_desktop_entry_and_icon() {
         "glide-portal",
         "glide-keychain",
         "glide-phone",
+        "glide-xembed",
         "libpam_glide_keychain.so",
     ] {
         std::fs::write(binaries.join(name), b"fixture").expect("create binary fixture");
