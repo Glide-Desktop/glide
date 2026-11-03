@@ -5683,7 +5683,7 @@ mod tests {
         assert_eq!(bar.clock, "14:05");
         bar.reconfigure(TopbarTheme { clock_24h: Some(false), ..TopbarTheme::default() });
         bar.set_now(at(24, 4, 8, 15));
-        assert_eq!(bar.clock, "3:05 PM");
+        assert_eq!(bar.clock, format!("3:05 {}", crate::i18n::t(crate::i18n::Key::ClockPm)));
         assert!(!bar.date.is_empty());
     }
 

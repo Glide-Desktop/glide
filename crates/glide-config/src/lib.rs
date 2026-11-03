@@ -15,6 +15,7 @@ pub mod senders;
 pub mod terminal;
 pub mod toolkits;
 pub mod uri;
+pub mod welcome;
 
 pub use file::{write_atomic, write_private};
 pub use keyboard::SystemKeyboard;

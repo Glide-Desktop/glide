@@ -1,14 +1,19 @@
 pub use glide_shot::{compose, crop_region, model, render};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use smithay::backend::input::TouchSlot;
 use smithay::input::keyboard::{Keysym, ModifiersState};
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use crate::paint::Painter;
 use crate::{state::GlideState, window::GlideWindow};
 use compose::{Frame, Image, Shadow};
 use model::{Area, BTN_LEFT, Mode, Outcome, Shot, Tool};
+
+const FREEZE_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct Session {
     pub output: Output,
@@ -22,6 +27,14 @@ pub struct Session {
     pub window_generation: usize,
     pub waiters: Vec<UnixStream>,
     pub cache: render::Cache,
+    opened: Instant,
+    closing: bool,
+    finishing: Option<bool>,
+    touches: Vec<TouchSlot>,
+    primary_touch: Option<TouchSlot>,
+    touch_at: Point<f64, Logical>,
+    painter: Option<Arc<Painter>>,
+    sprites_generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +56,12 @@ pub struct WindowCapture {
 impl Session {
     #[must_use]
     pub fn awaiting_freeze(&self, output: &Output) -> bool {
-        self.output == *output && self.frozen.is_none()
+        self.output == *output && self.freezing()
+    }
+
+    #[must_use]
+    pub fn freezing(&self) -> bool {
+        self.frozen.is_none() && !self.closing
     }
 
     #[must_use]
@@ -57,16 +75,52 @@ impl Session {
         let frozen = self.frozen.as_deref()?;
         let chosen = shot.window.and_then(|index| self.windows.get(index));
         let window = self.window_image.as_deref().zip(chosen.map(|candidate| candidate.frame));
+        let outlined = shot.window.or(shot.hovered).and_then(|index| self.windows.get(index));
         Some(render::Scene {
             shot,
             sources: render::Sources { frozen, window, scale: self.scale },
             window_generation: self.window_generation,
-            radius: shot.hovered.and_then(|index| self.windows.get(index)).map_or(0.0, |candidate| candidate.radius),
+            radius: outlined.map_or(0.0, |candidate| candidate.radius),
         })
+    }
+
+    pub fn refresh_sprites(&mut self, painter: &Arc<Painter>) {
+        self.painter = Some(Arc::clone(painter));
+        let scale = self.scale;
+        let generation = crate::paint::painter_generation();
+        let Some(shot) = self.shot.as_mut() else {
+            return;
+        };
+        if generation != self.sprites_generation {
+            self.sprites_generation = generation;
+            for mark in shot.marks.iter_mut().chain(shot.draft.as_mut()) {
+                mark.sprite = None;
+            }
+            shot.revision += 1;
+        }
+        draw_sprites(shot, painter, scale);
     }
 
     fn local(&self, pos: Point<f64, Logical>) -> model::Pos {
         pos - self.origin.to_f64()
+    }
+
+    fn live(&self) -> bool {
+        !self.closing
+    }
+}
+
+fn draw_sprites(shot: &mut Shot, painter: &Painter, scale: f64) {
+    let mut drew = false;
+    for mark in shot.marks.iter_mut().filter(|mark| mark.shape.needs_sprite() && mark.sprite.is_none()) {
+        mark.sprite = render::sprite_for(mark, painter, scale);
+        drew |= mark.sprite.is_some();
+    }
+    if let Some(draft) = shot.draft.as_mut().filter(|draft| draft.shape.needs_sprite() && draft.sprite.is_none()) {
+        draft.sprite = render::sprite_for(draft, painter, scale);
+    }
+    if drew {
+        shot.revision += 1;
     }
 }
 
@@ -191,17 +245,26 @@ fn frame_of(window: &GlideWindow, location: Point<i32, Logical>) -> Rectangle<i3
 impl GlideState {
     #[must_use]
     pub fn shot_active(&self) -> bool {
-        self.session.shot.is_some()
+        self.session.shot.as_ref().is_some_and(Session::live)
+    }
+
+    fn live_shot(&self) -> Option<&Shot> {
+        self.session.shot.as_ref().filter(|session| session.live()).and_then(|session| session.shot.as_ref())
     }
 
     #[must_use]
     pub fn shot_typing(&self) -> bool {
-        self.session.shot.as_ref().and_then(|session| session.shot.as_ref()).is_some_and(|shot| shot.typing)
+        self.live_shot().is_some_and(|shot| shot.typing)
     }
 
     #[must_use]
     pub fn shot_editing(&self) -> bool {
-        self.session.shot.as_ref().and_then(|session| session.shot.as_ref()).is_some_and(Shot::editing)
+        self.live_shot().is_some_and(Shot::editing)
+    }
+
+    #[must_use]
+    pub fn shot_freezing(&self) -> bool {
+        self.session.shot.as_ref().is_some_and(Session::freezing)
     }
 
     fn capture_radius(&self, window: &GlideWindow) -> (f32, f32) {
@@ -229,6 +292,10 @@ impl GlideState {
     }
 
     pub fn open_shot(&mut self, waiter: Option<UnixStream>) {
+        self.open_shot_after(waiter, 0);
+    }
+
+    fn open_shot_after(&mut self, waiter: Option<UnixStream>, attempt: u32) {
         let blocked =
             self.screen_locked() || self.greeter.is_some() || self.picker_active() || self.handoff_blocks_input();
         if blocked {
@@ -237,10 +304,15 @@ impl GlideState {
             }
             return;
         }
-        if let Some(session) = self.session.shot.as_mut() {
+        if let Some(session) = self.session.shot.as_mut().filter(|session| session.live()) {
             session.waiters.extend(waiter);
             return;
         }
+        if self.capture_busy() && crate::screenshot_ui::may_retry(attempt) {
+            self.retry_capture(attempt, move |state, next| state.open_shot_after(waiter, next));
+            return;
+        }
+        self.session.shot = None;
         let Some((output, geometry)) = self.pointer_output() else {
             if let Some(waiter) = waiter {
                 refuse(&waiter, "no output to capture");
@@ -274,6 +346,14 @@ impl GlideState {
             window_generation: 0,
             waiters: waiter.into_iter().collect(),
             cache: render::Cache::default(),
+            opened: Instant::now(),
+            closing: false,
+            finishing: None,
+            touches: Vec::new(),
+            primary_touch: None,
+            touch_at: Point::from((0.0, 0.0)),
+            painter: None,
+            sprites_generation: 0,
         });
         self.pending_screenshot = Some(output);
         self.queue_redraw();
@@ -283,8 +363,22 @@ impl GlideState {
         let Some(session) = self.session.shot.as_ref() else {
             return false;
         };
+        if session.closing {
+            if session.cache.is_animating() {
+                return true;
+            }
+            self.session.shot = None;
+            self.queue_redraw();
+            return false;
+        }
         if self.space.output_geometry(&session.output).is_none() || self.screen_locked() {
             tracing::info!("the screenshot tool lost its output or the screen locked");
+            self.cancel_shot();
+            self.session.shot = None;
+            return false;
+        }
+        if session.freezing() && session.opened.elapsed() >= FREEZE_TIMEOUT {
+            tracing::warn!(output = %session.output.name(), "the screen never froze for the screenshot tool");
             self.cancel_shot();
             return false;
         }
@@ -328,7 +422,7 @@ impl GlideState {
     }
 
     fn update_shot_cursor(&mut self, pos: Point<f64, Logical>) {
-        let Some(session) = self.session.shot.as_ref() else {
+        let Some(session) = self.session.shot.as_ref().filter(|session| session.live()) else {
             return;
         };
         let Some(shot) = session.shot.as_ref() else {
@@ -339,8 +433,62 @@ impl GlideState {
         self.shell_cursor = Some(render::cursor_for(shot, control, local));
     }
 
-    pub fn shot_motion(&mut self, pos: Point<f64, Logical>) -> bool {
+    pub fn shot_touch_down(&mut self, slot: TouchSlot, pos: Point<f64, Logical>) {
+        let Some(session) = self.session.shot.as_mut().filter(|session| session.live()) else {
+            return;
+        };
+        let first = session.touches.is_empty();
+        if !session.touches.contains(&slot) {
+            session.touches.push(slot);
+        }
+        if first {
+            session.primary_touch = Some(slot);
+            session.touch_at = pos;
+            self.shot_motion(pos);
+            self.shot_button(pos, BTN_LEFT);
+        }
+    }
+
+    #[must_use]
+    pub fn shot_owns_touch(&self, slot: TouchSlot) -> bool {
+        self.session.shot.as_ref().is_some_and(|session| session.touches.contains(&slot))
+    }
+
+    pub fn shot_touch_motion(&mut self, slot: TouchSlot, pos: Point<f64, Logical>) {
         let Some(session) = self.session.shot.as_mut() else {
+            return;
+        };
+        if session.primary_touch == Some(slot) {
+            session.touch_at = pos;
+            self.shot_motion(pos);
+        }
+    }
+
+    pub fn shot_touch_up(&mut self, slot: TouchSlot) {
+        let Some(session) = self.session.shot.as_mut() else {
+            return;
+        };
+        session.touches.retain(|touch| *touch != slot);
+        if session.primary_touch == Some(slot) {
+            session.primary_touch = None;
+            let at = session.touch_at;
+            self.shot_release(at, BTN_LEFT);
+        }
+    }
+
+    pub fn shot_touch_cancel(&mut self) {
+        let Some(session) = self.session.shot.as_mut() else {
+            return;
+        };
+        session.touches.clear();
+        if session.primary_touch.take().is_some() {
+            let at = session.touch_at;
+            self.shot_release(at, BTN_LEFT);
+        }
+    }
+
+    pub fn shot_motion(&mut self, pos: Point<f64, Logical>) -> bool {
+        let Some(session) = self.session.shot.as_mut().filter(|session| session.live()) else {
             return false;
         };
         let local = session.local(pos);
@@ -357,7 +505,7 @@ impl GlideState {
     }
 
     pub fn shot_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
-        let Some(session) = self.session.shot.as_mut() else {
+        let Some(session) = self.session.shot.as_mut().filter(|session| session.live()) else {
             return false;
         };
         let local = session.local(pos);
@@ -368,6 +516,7 @@ impl GlideState {
             return true;
         }
         let control = shot.control_at(local);
+        session.cache.set_pressed(control);
         let outcome = shot.press(local, control);
         self.shot_outcome(outcome);
         self.update_shot_cursor(pos);
@@ -375,10 +524,16 @@ impl GlideState {
     }
 
     pub fn shot_release(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
-        let Some(session) = self.session.shot.as_mut() else {
+        let Some(session) = self.session.shot.as_mut().filter(|session| session.live()) else {
             return false;
         };
         let local = session.local(pos);
+        if button == BTN_LEFT && session.cache.set_pressed(None) {
+            self.queue_redraw();
+        }
+        let Some(session) = self.session.shot.as_mut() else {
+            return true;
+        };
         if let Some(shot) = session.shot.as_mut() {
             let outcome = shot.release_button(local, button);
             self.shot_outcome(outcome);
@@ -388,7 +543,8 @@ impl GlideState {
     }
 
     pub fn shot_key(&mut self, key: ShotKey) {
-        let Some(shot) = self.session.shot.as_mut().and_then(|session| session.shot.as_mut()) else {
+        let live = self.session.shot.as_mut().filter(|session| session.live());
+        let Some(shot) = live.and_then(|session| session.shot.as_mut()) else {
             if key == ShotKey::Cancel {
                 self.cancel_shot();
             }
@@ -480,63 +636,67 @@ impl GlideState {
                 self.queue_redraw();
             }
         }
-        self.refresh_shot_sprites();
     }
 
-    fn refresh_shot_sprites(&mut self) {
-        let Some(session) = self.session.shot.as_mut() else {
-            return;
-        };
-        let scale = session.scale;
-        let Some(shot) = session.shot.as_mut() else {
-            return;
-        };
-        let painter = crate::paint::current();
-        let mut drew = false;
-        for mark in shot.marks.iter_mut().filter(|mark| mark.shape.needs_sprite() && mark.sprite.is_none()) {
-            mark.sprite = render::sprite_for(mark, &painter, scale);
-            drew |= mark.sprite.is_some();
-        }
-        if let Some(draft) = shot.draft.as_mut().filter(|draft| draft.shape.needs_sprite() && draft.sprite.is_none()) {
-            draft.sprite = render::sprite_for(draft, &painter, scale);
-        }
-        if drew {
-            shot.revision += 1;
-        }
-    }
-
-    pub fn cancel_shot(&mut self) {
-        if let Some(session) = self.session.shot.take() {
+    fn close_shot_session(&mut self) {
+        if let Some(session) = self.session.shot.as_mut().filter(|session| session.live()) {
             if let Some(shot) = session.shot.as_ref() {
                 self.session.shot_memory = shot.memory();
-            }
-            for waiter in &session.waiters {
-                refuse(waiter, "cancelled");
             }
             if self.pending_screenshot.as_ref() == Some(&session.output) {
                 self.pending_screenshot = None;
             }
+            session.closing = true;
+            session.finishing = None;
+            session.cache.conceal();
+            if session.shot.is_none() || session.frozen.is_none() || !session.cache.is_animating() {
+                self.session.shot = None;
+            }
         }
         self.session.window_capture.take_if(|capture| !capture.direct);
         self.shell_cursor = None;
         self.queue_redraw();
     }
 
+    pub fn cancel_shot(&mut self) {
+        if let Some(session) = self.session.shot.as_mut().filter(|session| session.live()) {
+            for waiter in session.waiters.drain(..) {
+                refuse(&waiter, "cancelled");
+            }
+        }
+        self.close_shot_session();
+    }
+
+    fn shot_capture_lost(&mut self) {
+        self.cancel_shot();
+        self.screenshot_failed_notice("the window could not be captured".to_string());
+    }
+
     fn finish_shot(&mut self, copy: bool) {
-        let Some(session) = self.session.shot.take() else {
+        let capture_pending = self.session.window_capture.as_ref().is_some_and(|capture| !capture.direct);
+        let Some(session) = self.session.shot.as_mut().filter(|session| session.live()) else {
             return;
         };
-        self.session.window_capture.take_if(|capture| !capture.direct);
-        self.shell_cursor = None;
-        self.queue_redraw();
-        let (Some(shot), Some(frozen)) = (session.shot.as_ref(), session.frozen.as_ref()) else {
+        let (Some(shot), Some(frozen)) = (session.shot.as_mut(), session.frozen.as_ref()) else {
+            self.cancel_shot();
             return;
         };
-        self.session.shot_memory = shot.memory();
+        if shot.mode == Mode::Window && session.window_image.is_none() {
+            if capture_pending {
+                session.finishing = Some(copy);
+                return;
+            }
+            self.shot_capture_lost();
+            return;
+        }
         let Some(target) = shot.target() else {
+            self.cancel_shot();
             return;
         };
         let scale = session.scale;
+        if let Some(painter) = session.painter.as_deref() {
+            draw_sprites(shot, painter, scale);
+        }
         let chosen = shot.window.and_then(|index| session.windows.get(index));
         let radius = match shot.mode {
             Mode::Window => chosen.map_or(0.0, |candidate| candidate.radius),
@@ -556,13 +716,15 @@ impl GlideState {
             },
             write: !copy || !session.waiters.is_empty(),
         };
-        self.session.screenshot_waiters.extend(session.waiters);
         tracing::info!(mode = ?shot.mode, marks = shot.marks.len(), copy, "screenshot taken");
+        let waiters = std::mem::take(&mut session.waiters);
+        self.session.screenshot_waiters.extend(waiters);
+        self.close_shot_session();
         crate::screenshot_ui::run_in_background(&self.loop_handle, move || job.run());
     }
 
     pub fn screenshot_window_now(&mut self) {
-        if self.screen_locked() || self.session.shot.is_some() {
+        if self.screen_locked() || self.shot_active() {
             return;
         }
         let window = self
@@ -596,6 +758,7 @@ impl GlideState {
     pub fn window_captured(&mut self, capture: &WindowCapture, pixels: Vec<u8>, size: (i32, i32), scale: f64) {
         let Some(image) = Image::from_bgra(size.0.max(0) as u32, size.1.max(0) as u32, pixels) else {
             tracing::warn!(?size, "the window capture was empty");
+            self.window_capture_failed(capture);
             return;
         };
         if capture.direct {
@@ -603,9 +766,10 @@ impl GlideState {
                 self.session.shot_memory.shadow.then_some(Shadow { radius: capture.radius * scale as f32, scale });
             let target =
                 Rectangle::from_size(Size::from((f64::from(image.width) / scale, f64::from(image.height) / scale)));
+            let image = Arc::new(image);
             let job = Job {
-                frozen: Arc::new(image.clone()),
-                window: Some(Arc::new(image)),
+                frozen: Arc::clone(&image),
+                window: Some(image),
                 target,
                 scale,
                 marks: Vec::new(),
@@ -616,13 +780,29 @@ impl GlideState {
             crate::screenshot_ui::run_in_background(&self.loop_handle, move || job.run());
             return;
         }
-        let Some(session) = self.session.shot.as_mut().filter(|session| session.output == capture.output) else {
+        let Some(session) =
+            self.session.shot.as_mut().filter(|session| session.live() && session.output == capture.output)
+        else {
             return;
         };
         session.window_image = Some(Arc::new(image));
         session.window_generation += 1;
         session.cache.drop_window();
+        let finishing = session.finishing.take();
         self.queue_redraw();
+        if let Some(copy) = finishing {
+            self.finish_shot(copy);
+        }
+    }
+
+    pub fn window_capture_failed(&mut self, capture: &WindowCapture) {
+        if capture.direct {
+            self.screenshot_failed_notice("the window could not be captured".to_string());
+            return;
+        }
+        if self.session.shot.as_ref().is_some_and(|session| session.live() && session.output == capture.output) {
+            self.shot_capture_lost();
+        }
     }
 }
 
@@ -653,8 +833,10 @@ impl Job {
             (compose::rounded_corners(cropped, self.round), frame)
         };
         compose::apply_marks(&mut image, &self.marks, &frame);
-        if self.window.is_some() && self.round > 0.0 {
-            image = compose::rounded_corners(image, self.round);
+        if let Some(window) = self.window.as_deref()
+            && !self.marks.is_empty()
+        {
+            compose::keep_corners(&mut image, window, self.round);
         }
         match self.shadow {
             Some(shadow) => compose::with_shadow(&image, shadow),
@@ -727,21 +909,29 @@ mod tests {
         for pixel in window.data.chunks_exact_mut(4) {
             pixel.copy_from_slice(&[10, 20, 30, 255]);
         }
+        let window = Arc::new(compose::rounded_corners(window, 8.0));
         let job = Job {
-            frozen: Arc::new(window.clone()),
-            window: Some(Arc::new(window)),
+            frozen: Arc::clone(&window),
+            window: Some(Arc::clone(&window)),
             target: Rectangle::new(Point::from((100.0, 100.0)), Size::from((40.0, 30.0))),
             scale: 1.0,
             marks: Vec::new(),
-            shadow: Some(Shadow { radius: 8.0, scale: 1.0 }),
+            shadow: None,
             round: 8.0,
             write: false,
+        };
+        assert_eq!(job.compose().expect("image").data, window.data, "the captured corners are masked only once");
+        let pen = vec![Point::from((100.0, 100.0)), Point::from((140.0, 130.0))];
+        let job = Job {
+            marks: vec![model::Mark::new(model::Shape::Pen(pen), 0)],
+            shadow: Some(Shadow { radius: 8.0, scale: 1.0 }),
+            ..job
         };
         let image = job.compose().expect("image");
         let (margin, top) = compose::shadow_margins(1.0);
         assert_eq!((image.width, image.height), (40 + margin * 2, 30 + margin + top));
         let corner = ((top * image.width + margin) * 4 + 3) as usize;
-        assert!(image.data[corner] < 255, "the corner is rounded off");
+        assert!(image.data[corner] < 255, "a mark never fills the rounded-off corner");
     }
 
     #[test]

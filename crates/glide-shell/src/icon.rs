@@ -1552,6 +1552,20 @@ Exec=firefox --private-window %u
         }
 
         #[test]
+        fn welcome_desktop_entry_is_visible_and_launchable_in_glide() {
+            let body = include_str!("../../../data/glide-welcome.desktop");
+            let desktops = [String::from("glide")];
+            let host = Host { desktops: &desktops, installed: &|_| true };
+            let app = parse_desktop_entry_for("glide-welcome", body, "uk", &|| String::from("foot"), &host)
+                .expect("welcome is listed in Glide");
+            assert_eq!(app.name, "Ласкаво просимо до Glide");
+            assert_eq!(app.command, glide_config::welcome::APPLICATION_ID);
+            assert_eq!(app.icon, glide_config::welcome::APPLICATION_ID);
+            assert!(app.keywords.iter().any(|word| word == "знайомство"));
+            assert!(parse_on("GNOME", &[], body).is_some());
+        }
+
+        #[test]
         fn only_show_in_and_not_show_in_follow_the_current_desktop() {
             let only = "[Desktop Entry]\nName=A\nExec=a\nOnlyShowIn=GNOME;XFCE;\n";
             assert_eq!(parse_on("Glide", &[], only), None);

@@ -703,8 +703,22 @@ pub fn render_png(data: &[u8], side: i32) -> Option<Vec<u8>> {
 
 #[must_use]
 pub fn render_png_rounded(data: &[u8], side: i32, radius: f32) -> Option<Vec<u8>> {
+    rounded_square(wallpaper::decode_png(data)?, side, radius)
+}
+
+#[must_use]
+pub fn render_rgba_rounded(rgba: &[u8], width: u32, height: u32, side: i32, radius: f32) -> Option<Vec<u8>> {
+    let len = usize::try_from(u64::from(width) * u64::from(height) * 4).ok()?;
+    let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
+    for (pixel, rgba) in pixmap.pixels_mut().iter_mut().zip(rgba.get(..len)?.chunks_exact(4)) {
+        *pixel = tiny_skia::ColorU8::from_rgba(rgba[0], rgba[1], rgba[2], rgba[3]).premultiply();
+    }
+    rounded_square(pixmap, side, radius)
+}
+
+fn rounded_square(source: tiny_skia::Pixmap, side: i32, radius: f32) -> Option<Vec<u8>> {
     let side_u32 = square_side(side)?;
-    let source = halved_below_twice(wallpaper::decode_png(data)?, side_u32)?;
+    let source = halved_below_twice(source, side_u32)?;
     let (w, h) = (source.width() as f32, source.height() as f32);
     let transform = fit_square_transform(w, h, side, true);
     let mut pixmap = draw_bilinear(source.as_ref(), side_u32, transform)?;
@@ -1967,6 +1981,24 @@ mod cover_tests {
         assert_eq!(rendered[3], 0);
         let center = (16 * 32 + 16) * 4;
         assert_eq!(rendered[center + 3], 255);
+    }
+
+    #[test]
+    fn rgba_previews_match_the_png_they_would_have_been_decoded_from() {
+        let (width, height) = (64_u32, 40_u32);
+        let mut rgba = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                rgba.extend_from_slice(&[(x * 4) as u8, (y * 6) as u8, 90, 255]);
+            }
+        }
+        let mut pixmap = tiny_skia::Pixmap::new(width, height).unwrap();
+        for (pixel, px) in pixmap.pixels_mut().iter_mut().zip(rgba.chunks_exact(4)) {
+            *pixel = tiny_skia::ColorU8::from_rgba(px[0], px[1], px[2], px[3]).premultiply();
+        }
+        let png = pixmap.encode_png().unwrap();
+        assert_eq!(render_rgba_rounded(&rgba, width, height, 24, 4.0), render_png_rounded(&png, 24, 4.0));
+        assert!(render_rgba_rounded(&rgba[..16], width, height, 24, 4.0).is_none(), "a short buffer is refused");
     }
 }
 

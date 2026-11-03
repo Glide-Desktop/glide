@@ -63,7 +63,7 @@ fn line_stroke(width: f32) -> Stroke {
     Stroke { width, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Stroke::default() }
 }
 
-fn rounded(rect: Rect, radius: f32) -> Option<tiny_skia::Path> {
+pub(crate) fn rounded(rect: Rect, radius: f32) -> Option<tiny_skia::Path> {
     let radius = radius.min(rect.width() / 2.0).min(rect.height() / 2.0).max(0.0);
     if radius <= 0.0 {
         return Some(PathBuilder::from_rect(rect));
@@ -244,13 +244,18 @@ pub fn obscured(source: &Image, region: (i32, i32, i32, i32), scale: f64) -> Opt
 }
 
 pub fn apply_marks(image: &mut Image, marks: &[Mark], frame: &Frame) {
-    let source = image.clone();
-    for mark in marks {
-        if let Shape::Blur(a, b) = mark.shape {
-            let (x, y, w, h) = frame.pixels(a, b);
-            if let Some(patch) = obscured(&source, (x, y, w, h), frame.scale) {
-                image.draw_replace(&patch, x.max(0), y.max(0));
-            }
+    let blurs: Vec<(i32, i32, i32, i32)> = marks
+        .iter()
+        .filter_map(|mark| match mark.shape {
+            Shape::Blur(a, b) => Some(frame.pixels(a, b)),
+            _ => None,
+        })
+        .collect();
+    let source = (blurs.len() > 1).then(|| image.clone());
+    for region in blurs {
+        let patch = obscured(source.as_ref().unwrap_or(&*image), region, frame.scale);
+        if let Some(patch) = patch {
+            image.draw_replace(&patch, region.0.max(0), region.1.max(0));
         }
     }
     let Some(mut pixmap) = image.pixmap() else {
@@ -308,20 +313,21 @@ pub fn with_shadow(content: &Image, shadow: Shadow) -> Option<Image> {
     canvas.crop(((0), (margin - top) as i32, width as i32, (height - (margin - top)) as i32))
 }
 
+fn corner_mask(width: u32, height: u32, radius: f32) -> Option<Pixmap> {
+    if radius <= 0.0 {
+        return None;
+    }
+    let mask_path = Rect::from_xywh(0.0, 0.0, width as f32, height as f32).and_then(|rect| rounded(rect, radius))?;
+    let mut mask = Pixmap::new(width, height)?;
+    mask.fill_path(&mask_path, &paint([255, 255, 255], 1.0), FillRule::Winding, Transform::identity(), None);
+    Some(mask)
+}
+
 #[must_use]
 pub fn rounded_corners(mut content: Image, radius: f32) -> Image {
-    if radius <= 0.0 {
-        return content;
-    }
-    let Some(mask_path) =
-        Rect::from_xywh(0.0, 0.0, content.width as f32, content.height as f32).and_then(|rect| rounded(rect, radius))
-    else {
+    let Some(mask) = corner_mask(content.width, content.height, radius) else {
         return content;
     };
-    let Some(mut mask) = Pixmap::new(content.width, content.height) else {
-        return content;
-    };
-    mask.fill_path(&mask_path, &paint([255, 255, 255], 1.0), FillRule::Winding, Transform::identity(), None);
     for (pixel, cover) in content.data.chunks_exact_mut(4).zip(mask.data().chunks_exact(4)) {
         let keep = u16::from(cover[3]);
         if keep < 255 {
@@ -331,6 +337,21 @@ pub fn rounded_corners(mut content: Image, radius: f32) -> Image {
         }
     }
     content
+}
+
+pub fn keep_corners(content: &mut Image, original: &Image, radius: f32) {
+    if (content.width, content.height) != (original.width, original.height) {
+        return;
+    }
+    let Some(mask) = corner_mask(content.width, content.height, radius) else {
+        return;
+    };
+    let pixels = content.data.chunks_exact_mut(4).zip(original.data.chunks_exact(4));
+    for ((pixel, before), cover) in pixels.zip(mask.data().chunks_exact(4)) {
+        if cover[3] < 255 {
+            pixel.copy_from_slice(before);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -396,6 +417,18 @@ mod tests {
     }
 
     #[test]
+    fn kept_corners_drop_marks_without_masking_the_captured_edge_twice() {
+        let captured = rounded_corners(solid(40, 40, [200, 100, 50, 255]), 12.0);
+        let mut marked = solid(40, 40, [255, 255, 255, 255]);
+        keep_corners(&mut marked, &captured, 12.0);
+        assert_eq!(at(&marked, 0, 0), at(&captured, 0, 0), "a mark over the corner is cut back to the capture");
+        let edge = (0..40).map(|x| at(&captured, x, 1)).find(|px| px[3] > 0 && px[3] < 255).expect("an edge pixel");
+        let x = (0..40).find(|x| at(&captured, *x, 1) == edge).expect("edge");
+        assert_eq!(at(&marked, x, 1), edge, "the anti-aliased edge keeps its single mask");
+        assert_eq!(at(&marked, 20, 20), [255, 255, 255, 255], "the middle keeps the mark");
+    }
+
+    #[test]
     fn obscuring_hides_detail_but_keeps_the_average() {
         let mut image = solid(64, 64, [0, 0, 0, 255]);
         for y in 0..64 {
@@ -442,6 +475,26 @@ mod tests {
         assert!(at(&image, 30, 50)[0] < 200, "the line is smeared inside");
         assert_eq!(at(&image, 80, 50), [255, 255, 255, 255], "and sharp outside");
         assert_eq!(at(&image, 80, 10), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn overlapping_blurs_both_read_the_untouched_capture() {
+        let mut image = solid(100, 100, [0, 0, 0, 255]);
+        for x in 0..100 {
+            let index = ((50 * 100 + x) * 4) as usize;
+            image.data[index..index + 3].copy_from_slice(&[255, 255, 255]);
+        }
+        let original = image.clone();
+        let frame = Frame { x: 0.0, y: 0.0, scale: 1.0 };
+        let (a, b) = (
+            (Point::from((10.0, 30.0)), Point::from((60.0, 70.0))),
+            (Point::from((40.0, 20.0)), Point::from((90.0, 80.0))),
+        );
+        let marks = [Mark::new(Shape::Blur(a.0, a.1), 0), Mark::new(Shape::Blur(b.0, b.1), 0)];
+        apply_marks(&mut image, &marks, &frame);
+        let second = frame.pixels(b.0, b.1);
+        let expected = obscured(&original, second, 1.0).expect("patch");
+        assert_eq!(at(&image, 50, 50), at(&expected, 50 - second.0 as u32, 50 - second.1 as u32));
     }
 
     #[test]

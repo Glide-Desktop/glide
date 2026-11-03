@@ -26,6 +26,7 @@ struct Atoms {
     net_wm_name: Atom,
     net_wm_pid: Atom,
     utf8_string: Atom,
+    compound_text: Atom,
     gtk_bus: Atom,
     gtk_menubar: Atom,
     gtk_app: Atom,
@@ -52,6 +53,56 @@ struct Poller {
     last_attempt: Option<Instant>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Encoding {
+    Utf8,
+    Latin1,
+    Compound,
+}
+
+fn latin1(raw: &[u8]) -> String {
+    raw.iter().map(|&byte| char::from(byte)).collect()
+}
+
+fn compound(raw: &[u8]) -> String {
+    let mut out = String::new();
+    let mut utf8 = false;
+    let mut index = 0;
+    while index < raw.len() {
+        if raw[index] == 0x1b {
+            let rest = &raw[index + 1..];
+            if rest.starts_with(b"%G") {
+                utf8 = true;
+            } else if rest.starts_with(b"%@") {
+                utf8 = false;
+            }
+            index += 1;
+            while index < raw.len() && (0x20..=0x2f).contains(&raw[index]) {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        let end = raw[index..].iter().position(|&byte| byte == 0x1b).map_or(raw.len(), |at| index + at);
+        let run = &raw[index..end];
+        if utf8 {
+            out.push_str(&String::from_utf8_lossy(run));
+        } else {
+            out.push_str(&latin1(run));
+        }
+        index = end;
+    }
+    out
+}
+
+fn decode(raw: &[u8], encoding: Encoding) -> String {
+    match encoding {
+        Encoding::Utf8 => String::from_utf8_lossy(raw).into_owned(),
+        Encoding::Latin1 => latin1(raw),
+        Encoding::Compound => compound(raw),
+    }
+}
+
 fn words(raw: &[u8]) -> impl Iterator<Item = u32> + '_ {
     raw.chunks_exact(4).map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
 }
@@ -69,6 +120,7 @@ fn connect() -> Option<Live> {
         net_wm_name: intern(&connection, "_NET_WM_NAME")?,
         net_wm_pid: intern(&connection, "_NET_WM_PID")?,
         utf8_string: intern(&connection, "UTF8_STRING")?,
+        compound_text: intern(&connection, "COMPOUND_TEXT")?,
         gtk_bus: intern(&connection, "_GTK_UNIQUE_BUS_NAME")?,
         gtk_menubar: intern(&connection, "_GTK_MENUBAR_OBJECT_PATH")?,
         gtk_app: intern(&connection, "_GTK_APPLICATION_OBJECT_PATH")?,
@@ -84,10 +136,21 @@ impl Live {
     }
 
     fn text(&self, window: Window, atom: Atom) -> Option<String> {
-        let raw = self
-            .property(window, atom, self.atoms.utf8_string)
-            .or_else(|| self.property(window, atom, AtomEnum::STRING.into()))?;
-        let text = String::from_utf8_lossy(&raw);
+        let reply =
+            self.connection.get_property(false, window, atom, AtomEnum::ANY, 0, PROPERTY_LIMIT).ok()?.reply().ok()?;
+        if reply.value_len == 0 || reply.format != 8 {
+            return None;
+        }
+        let encoding = if reply.type_ == self.atoms.utf8_string {
+            Encoding::Utf8
+        } else if reply.type_ == self.atoms.compound_text {
+            Encoding::Compound
+        } else if reply.type_ == Atom::from(AtomEnum::STRING) {
+            Encoding::Latin1
+        } else {
+            return None;
+        };
+        let text = decode(&reply.value, encoding);
         let text = text.trim_end_matches('\0');
         (!text.is_empty()).then(|| text.to_string())
     }
@@ -118,7 +181,7 @@ impl Live {
 
     fn window(&self, id: Window) -> Option<X11Window> {
         let class_raw = self.property(id, AtomEnum::WM_CLASS.into(), AtomEnum::STRING.into())?;
-        let mut parts = class_raw.split(|byte| *byte == 0).map(|p| String::from_utf8_lossy(p).to_string());
+        let mut parts = class_raw.split(|byte| *byte == 0).map(latin1);
         let instance = parts.next().unwrap_or_default();
         let class = parts.next().unwrap_or_default();
         let title = self
@@ -260,6 +323,16 @@ mod tests {
         let windows = [window(1, "Kate", "a.rs"), window(2, "Kate", "b.rs")];
         assert_eq!(match_window(&windows, "kate", "b.rs").map(|w| w.id), Some(2));
         assert_eq!(match_window(&windows, "kate", "c.rs"), None, "guessing between siblings would open the wrong menu");
+    }
+
+    #[test]
+    fn x11_strings_are_decoded_by_their_declared_type() {
+        assert_eq!(decode(b"Caf\xe9", Encoding::Latin1), "Café", "STRING is Latin-1, not UTF-8");
+        assert_eq!(decode("Café".as_bytes(), Encoding::Utf8), "Café");
+        assert_eq!(decode(b"Caf\xe9", Encoding::Compound), "Café", "compound text starts in Latin-1");
+        let mixed = b"a \x1b%G\xd0\x9f\xd1\x80\xd0\xb8\x1b%@ \xe9";
+        assert_eq!(decode(mixed, Encoding::Compound), "a При é");
+        assert_eq!(decode(b"x\x1b$)Ay", Encoding::Compound), "xy", "other charset switches are dropped");
     }
 
     #[test]

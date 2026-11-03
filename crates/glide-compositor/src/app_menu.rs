@@ -138,6 +138,11 @@ impl AppMenus {
         if identity.app_id.is_empty() && identity.title.is_empty() {
             return None;
         }
+        let bridged =
+            identity.pid.and_then(|pid| i32::try_from(pid).ok()).is_some_and(crate::force_quit::is_x11_bridge);
+        if !bridged {
+            return None;
+        }
         let windows = self.x11.windows();
         let window = crate::x11_menus::match_window(&windows, identity.app_id, identity.title)?.clone();
         self.registrations.get(&window.id).map(|(source, _)| source.clone()).or(window.gtk)

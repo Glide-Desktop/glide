@@ -28,6 +28,7 @@ pub enum Hint {
     Keys,
     Checking,
     Wrong { left: u8 },
+    Said { text: String, left: u8 },
     Broken,
     CapsLock,
 }

@@ -156,6 +156,15 @@ fn parse_start(line: &str) -> Result<Start, ReadError> {
     }
 }
 
+fn transport_client_port(transport: &str) -> Option<u16> {
+    transport
+        .split(';')
+        .find_map(|parameter| parameter.trim().strip_prefix("client_port="))
+        .and_then(|ports| ports.split('-').next())
+        .and_then(|port| port.trim().parse().ok())
+        .filter(|port| *port != 0)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Negotiated {
     pub video: Video,
@@ -320,13 +329,20 @@ impl Session {
                 (out, vec![])
             }
             "SETUP" => {
-                let Some(negotiated) = &self.negotiated else {
+                let Some(negotiated) = self.negotiated.as_mut() else {
                     return (vec![self.reply(request, 455, "Method Not Valid In This State")], vec![]);
                 };
+                let mut events = Vec::new();
+                if let Some(port) = request.header("Transport").and_then(transport_client_port)
+                    && port != negotiated.sink_rtp_port
+                {
+                    negotiated.sink_rtp_port = port;
+                    events.push(Event::Negotiated(negotiated.clone()));
+                }
                 let client = negotiated.sink_rtp_port;
                 self.set_up = true;
                 let transport = format!("RTP/AVP/UDP;unicast;client_port={client};server_port={}", self.server_port);
-                (vec![self.reply(request, 200, "OK").with("Transport", transport)], vec![])
+                (vec![self.reply(request, 200, "OK").with("Transport", transport)], events)
             }
             "PLAY" if self.set_up => {
                 let events = match self.playback {
@@ -459,7 +475,7 @@ mod tests {
         assert_eq!(reader.next_message(), Err(ReadError::TooLarge));
     }
 
-    const SOUND: AudioSupport = AudioSupport { enabled: true, aac_encoder: true };
+    const SOUND: AudioSupport = AudioSupport { enabled: true, capture: true, aac_encoder: true };
 
     fn new_session(audio: AudioSupport) -> Session {
         Session::new("192.168.49.1", 19000, &formats::SOFTWARE_PREFERENCE, audio, "6B8B4567")
@@ -552,6 +568,27 @@ mod tests {
         assert_eq!(trigger.parameters()["wfd_trigger_method"], "TEARDOWN");
         let m8 = parse("TEARDOWN rtsp://192.168.49.1/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 5\r\n\r\n");
         assert_eq!(session.receive(&m8, now).1, vec![Event::Teardown]);
+    }
+
+    #[test]
+    fn setup_sends_to_the_client_port_the_sink_names_in_its_transport() {
+        let now = Instant::now();
+        let mut session = new_session(SOUND);
+        let m3 = at_capabilities(&mut session, now);
+        let (out, _) = session.receive(&reply_to(&m3, "", CAPABILITIES), now);
+        let _ = session.receive(&reply_to(&out[0], "", ""), now);
+        let same = parse(
+            "SETUP rtsp://x/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 2\r\nTransport: RTP/AVP/UDP;unicast;client_port=1028\r\n\r\n",
+        );
+        assert_eq!(session.receive(&same, now).1, vec![], "the agreed port needs no news");
+        let moved = parse(
+            "SETUP rtsp://x/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: 3\r\nTransport: RTP/AVP/UDP;unicast;client_port=5004-5005\r\n\r\n",
+        );
+        let (out, events) = session.receive(&moved, now);
+        assert_eq!(out[0].header("Transport"), Some("RTP/AVP/UDP;unicast;client_port=5004;server_port=19000"));
+        assert!(matches!(events.as_slice(), [Event::Negotiated(choice)] if choice.sink_rtp_port == 5004), "{events:?}");
+        assert_eq!(transport_client_port("RTP/AVP/UDP;unicast;client_port=0"), None);
+        assert_eq!(transport_client_port("RTP/AVP/UDP;unicast"), None);
     }
 
     #[test]
@@ -740,11 +777,18 @@ mod tests {
         let offers =
             ["LPCM 00000003 00, AAC 00000001 00", "LPCM 00000001 00, AAC 00000001 00", "LPCM 00000003 00", "none"];
         for enabled in [false, true] {
-            for aac_encoder in [false, true] {
+            for (aac_encoder, capture) in [(false, false), (false, true), (true, false), (true, true)] {
                 for offer in offers {
-                    let support = AudioSupport { enabled, aac_encoder };
+                    let support = AudioSupport { enabled, capture, aac_encoder };
                     let (promised, negotiated) = m4_audio(support, offer);
-                    let available = |name: &str| name == "openh264enc" || (aac_encoder && name == "avenc_aac");
+                    let available = |name: &str| match name {
+                        "avenc_aac" | "aacparse" => aac_encoder,
+                        "pipewiresrc" => capture,
+                        "fdkaacenc" | "voaacenc" => false,
+                        _ => true,
+                    };
+                    assert_eq!(crate::pipeline::aac_encoder(available), aac_encoder);
+                    assert_eq!(crate::pipeline::audio_capture(available), capture);
                     let spec = crate::pipeline::Spec {
                         video: negotiated.video,
                         audio: negotiated.audio,
@@ -752,12 +796,13 @@ mod tests {
                         port: 1028,
                         frame_format: "BGRx",
                         input: (640, 480),
+                        encoder: crate::pipeline::Probed::assumed("openh264enc"),
                     };
-                    let sent = crate::pipeline::description(&spec, available).unwrap().contains("pipewiresrc");
+                    let sent = crate::pipeline::description(&spec, available).contains("pipewiresrc");
                     assert_eq!(
                         promised.is_some(),
                         sent,
-                        "enabled={enabled} aac_encoder={aac_encoder} offer={offer:?}: M4 says {promised:?}"
+                        "enabled={enabled} aac_encoder={aac_encoder} capture={capture} offer={offer:?}: M4 says {promised:?}"
                     );
                 }
             }
@@ -767,7 +812,7 @@ mod tests {
     #[test]
     fn turning_sound_off_leaves_the_audio_line_out_of_m4() {
         let (promised, negotiated) =
-            m4_audio(AudioSupport { enabled: false, aac_encoder: true }, "LPCM 00000003 00, AAC 00000001 00");
+            m4_audio(AudioSupport { enabled: false, ..SOUND }, "LPCM 00000003 00, AAC 00000001 00");
         assert_eq!((promised, negotiated.audio), (None, None));
         let (promised, negotiated) = m4_audio(SOUND, "LPCM 00000003 00, AAC 00000001 00");
         assert_eq!((promised.as_deref(), negotiated.audio), (Some("LPCM 00000002 00"), Some(Audio::Lpcm48)));

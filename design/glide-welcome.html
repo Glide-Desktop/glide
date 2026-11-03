@@ -1,0 +1,2483 @@
+<!DOCTYPE html>
+<html lang="uk" data-theme="dark" data-accent="teal">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Glide Welcome — Перше знайомство (Meridian v3)</title>
+  
+  <!-- Fonts: Inter & JetBrains Mono (Meridian Spec §5.1) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;630;650;680&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <style>
+    /* =========================================================================
+       MERIDIAN DESIGN SYSTEM v3 — Canonical Tokens & Variables
+       From design/MERIDIAN_DESIGN_SPEC.md & glide-theme crate
+       ========================================================================= */
+    :root {
+      /* Typography */
+      --font: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      --mono: 'JetBrains Mono', ui-monospace, monospace;
+
+      /* Spacing (§6: step 4px) */
+      --sp-1: 4px;
+      --sp-2: 8px;
+      --sp-3: 12px;
+      --sp-4: 16px;
+      --sp-5: 24px;
+      --sp-6: 32px;
+      --sp-7: 48px;
+      --sp-8: 64px;
+
+      /* Form Radii (§7 & Rule 1.1) */
+      --r-1: 4px;       /* Micro: tag, chip, badge, handle */
+      --r-2: 8px;       /* Controls: button, field, menu item, segment */
+      --r-3: 12px;      /* Containers: card, popover, modal, window */
+      --r-4: 18px;      /* Shell: dock, panels */
+      --r-round: 999px; /* Circle: avatar, switch thumb, pill badge */
+
+      /* State Layers (§8 & Rule 1.2) */
+      --st-hover: 0.08;
+      --st-press: 0.13;
+      --st-drag: 0.18;
+
+      /* Motion (§10 & Rule 1.3) */
+      --motion-scale: 1;
+      --t-1: calc(120ms * var(--motion-scale));
+      --t-2: calc(200ms * var(--motion-scale));
+      --t-3: calc(320ms * var(--motion-scale));
+      --t-4: calc(420ms * var(--motion-scale));
+      --e-out: cubic-bezier(.2, 0, 0, 1);
+      --e-io: cubic-bezier(.4, 0, .2, 1);
+      --e-over: cubic-bezier(.32, 1.28, .5, 1);
+      --e-spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    /* Light Theme Palette */
+    :root[data-theme="light"] {
+      --win-bg: #f3f2ef;
+      --view-bg: #ffffff;
+      --sidebar-bg: #eceae6;
+      --bar-bg: #fbfaf8;
+      --bar-bg-idle: #f2f0ed;
+      --card-bg: #ffffff;
+      --popover-bg: #ffffff;
+      --sunken-bg: #e8e6e2;
+      --inverse-bg: #26251f;
+      --inverse-fg: #f7f6f3;
+
+      --fg-1: #1b1a17;
+      --fg-2: rgba(27, 26, 23, .66);
+      --fg-3: rgba(27, 26, 23, .44);
+      --fg-4: rgba(27, 26, 23, .20);
+
+      --line: rgba(27, 26, 23, .10);
+      --line-2: rgba(27, 26, 23, .17);
+      --fill-1: rgba(27, 26, 23, .05);
+      --fill-2: rgba(27, 26, 23, .09);
+      --fill-3: rgba(27, 26, 23, .14);
+      --state: 27, 26, 23;
+
+      --ok: #1c7a4c;
+      --ok-soft: #dcf0e5;
+      --warn: #a1690a;
+      --warn-soft: #f8ecd6;
+      --danger: #bf372c;
+      --danger-soft: #fae3e0;
+
+      --switch-thumb: #ffffff;
+      --segment-thumb: #ffffff;
+
+      --el-1: 0 1px 2px rgba(27, 26, 23, .07);
+      --el-2: 0 2px 4px rgba(27, 26, 23, .06), 0 6px 16px rgba(27, 26, 23, .09);
+      --el-3: 0 4px 8px rgba(27, 26, 23, .08), 0 18px 44px rgba(27, 26, 23, .15);
+      --el-win: 0 0 0 1px rgba(27, 26, 23, .07), 0 10px 24px rgba(27, 26, 23, .10), 0 30px 70px rgba(27, 26, 23, .22);
+
+      --ambient-overlay: radial-gradient(circle at 50% 30%, rgba(255, 255, 255, 0.7) 0%, rgba(240, 238, 232, 0.95) 100%);
+      color-scheme: light;
+    }
+
+    /* Dark Theme Palette (Canonical Glide) */
+    :root[data-theme="dark"] {
+      --win-bg: #1c1b1e;
+      --view-bg: #161518;
+      --sidebar-bg: #232227;
+      --bar-bg: #29282d;
+      --bar-bg-idle: #222126;
+      --card-bg: #29282d;
+      --popover-bg: #2f2e34;
+      --sunken-bg: #121114;
+      --inverse-bg: #edece8;
+      --inverse-fg: #1b1a17;
+
+      --fg-1: #f2f0ed;
+      --fg-2: rgba(242, 240, 237, .68);
+      --fg-3: rgba(242, 240, 237, .46);
+      --fg-4: rgba(242, 240, 237, .22);
+
+      --line: rgba(255, 255, 255, .09);
+      --line-2: rgba(255, 255, 255, .15);
+      --fill-1: rgba(255, 255, 255, .07);
+      --fill-2: rgba(255, 255, 255, .12);
+      --fill-3: rgba(255, 255, 255, .18);
+      --state: 255, 255, 255;
+
+      --ok: #62d69b;
+      --ok-soft: rgba(98, 214, 155, .16);
+      --warn: #e5b355;
+      --warn-soft: rgba(229, 179, 85, .16);
+      --danger: #f0796f;
+      --danger-soft: rgba(240, 121, 111, .16);
+
+      --switch-thumb: #cfccc7;
+      --segment-thumb: rgba(255, 255, 255, .18);
+
+      --el-1: 0 1px 2px rgba(0, 0, 0, .45);
+      --el-2: 0 2px 6px rgba(0, 0, 0, .45), 0 10px 24px rgba(0, 0, 0, .40);
+      --el-3: 0 4px 10px rgba(0, 0, 0, .5), 0 22px 52px rgba(0, 0, 0, .55);
+      --el-win: 0 0 0 1px rgba(255, 255, 255, .12), 0 12px 28px rgba(0, 0, 0, .6), 0 38px 84px rgba(0, 0, 0, .75);
+
+      --ambient-overlay: radial-gradient(circle at 50% 25%, rgba(28, 27, 30, 0.6) 0%, rgba(12, 11, 14, 0.96) 100%);
+      color-scheme: dark;
+    }
+
+    /* 8 Accent Ramps (§3.1) */
+    :root[data-accent="blue"][data-theme="light"] {
+      --acc-bg: #2f6fd0; --acc-bg-hover: #1f56a8; --acc-fg: #ffffff;
+      --acc-text: #1f56a8; --acc-soft: #d9e6fb; --acc-soft-fg: #163e79;
+      --acc-ring: rgba(47, 111, 208, .32); --acc-glow: rgba(47, 111, 208, .25);
+    }
+    :root[data-accent="blue"][data-theme="dark"] {
+      --acc-bg: #2f6fd0; --acc-bg-hover: #5b9bec; --acc-fg: #ffffff;
+      --acc-text: #5b9bec; --acc-soft: rgba(91, 155, 236, .20); --acc-soft-fg: #a7c8f6;
+      --acc-ring: rgba(91, 155, 236, .40); --acc-glow: rgba(91, 155, 236, .35);
+    }
+
+    :root[data-accent="teal"][data-theme="light"] {
+      --acc-bg: #128b7e; --acc-bg-hover: #0d6a61; --acc-fg: #ffffff;
+      --acc-text: #0d6a61; --acc-soft: #d3ebe7; --acc-soft-fg: #084b45;
+      --acc-ring: rgba(18, 139, 126, .32); --acc-glow: rgba(18, 139, 126, .25);
+    }
+    :root[data-accent="teal"][data-theme="dark"] {
+      --acc-bg: #128b7e; --acc-bg-hover: #46b3a6; --acc-fg: #ffffff;
+      --acc-text: #46b3a6; --acc-soft: rgba(70, 179, 166, .20); --acc-soft-fg: #9ad4cd;
+      --acc-ring: rgba(70, 179, 166, .40); --acc-glow: rgba(70, 179, 166, .35);
+    }
+
+    :root[data-accent="green"][data-theme="light"] {
+      --acc-bg: #3f9639; --acc-bg-hover: #2d7229; --acc-fg: #ffffff;
+      --acc-text: #2d7229; --acc-soft: #dcefd9; --acc-soft-fg: #1e4f1c;
+      --acc-ring: rgba(63, 150, 57, .32); --acc-glow: rgba(63, 150, 57, .25);
+    }
+    :root[data-accent="green"][data-theme="dark"] {
+      --acc-bg: #3f9639; --acc-bg-hover: #6cbb62; --acc-fg: #ffffff;
+      --acc-text: #6cbb62; --acc-soft: rgba(108, 187, 98, .20); --acc-soft-fg: #b0dbaa;
+      --acc-ring: rgba(108, 187, 98, .40); --acc-glow: rgba(108, 187, 98, .35);
+    }
+
+    :root[data-accent="amber"][data-theme="light"] {
+      --acc-bg: #b57e10; --acc-bg-hover: #8d600b; --acc-fg: #ffffff;
+      --acc-text: #8d600b; --acc-soft: #faecd2; --acc-soft-fg: #63430a;
+      --acc-ring: rgba(181, 126, 16, .32); --acc-glow: rgba(181, 126, 16, .25);
+    }
+    :root[data-accent="amber"][data-theme="dark"] {
+      --acc-bg: #b57e10; --acc-bg-hover: #e0a83f; --acc-fg: #ffffff;
+      --acc-text: #e0a83f; --acc-soft: rgba(224, 168, 63, .20); --acc-soft-fg: #f2d296;
+      --acc-ring: rgba(224, 168, 63, .40); --acc-glow: rgba(224, 168, 63, .35);
+    }
+
+    :root[data-accent="orange"][data-theme="light"] {
+      --acc-bg: #cf6524; --acc-bg-hover: #a44b17; --acc-fg: #ffffff;
+      --acc-text: #a44b17; --acc-soft: #fce4d6; --acc-soft-fg: #74340f;
+      --acc-ring: rgba(207, 101, 36, .32); --acc-glow: rgba(207, 101, 36, .25);
+    }
+    :root[data-accent="orange"][data-theme="dark"] {
+      --acc-bg: #cf6524; --acc-bg-hover: #ec8b4f; --acc-fg: #ffffff;
+      --acc-text: #ec8b4f; --acc-soft: rgba(236, 139, 79, .20); --acc-soft-fg: #f6bf9c;
+      --acc-ring: rgba(236, 139, 79, .40); --acc-glow: rgba(236, 139, 79, .35);
+    }
+
+    :root[data-accent="red"][data-theme="light"] {
+      --acc-bg: #c8483c; --acc-bg-hover: #9f3529; --acc-fg: #ffffff;
+      --acc-text: #9f3529; --acc-soft: #fbe3e0; --acc-soft-fg: #71241b;
+      --acc-ring: rgba(200, 72, 60, .32); --acc-glow: rgba(200, 72, 60, .25);
+    }
+    :root[data-accent="red"][data-theme="dark"] {
+      --acc-bg: #c8483c; --acc-bg-hover: #e3736a; --acc-fg: #ffffff;
+      --acc-text: #e3736a; --acc-soft: rgba(227, 115, 106, .20); --acc-soft-fg: #f3b8b1;
+      --acc-ring: rgba(227, 115, 106, .40); --acc-glow: rgba(227, 115, 106, .35);
+    }
+
+    :root[data-accent="purple"][data-theme="light"] {
+      --acc-bg: #7a4dbb; --acc-bg-hover: #5d3893; --acc-fg: #ffffff;
+      --acc-text: #5d3893; --acc-soft: #eae0f8; --acc-soft-fg: #402566;
+      --acc-ring: rgba(122, 77, 187, .32); --acc-glow: rgba(122, 77, 187, .25);
+    }
+    :root[data-accent="purple"][data-theme="dark"] {
+      --acc-bg: #7a4dbb; --acc-bg-hover: #a077d8; --acc-fg: #ffffff;
+      --acc-text: #a077d8; --acc-soft: rgba(160, 119, 216, .20); --acc-soft-fg: #cdb4ee;
+      --acc-ring: rgba(160, 119, 216, .40); --acc-glow: rgba(160, 119, 216, .35);
+    }
+
+    :root[data-accent="graphite"][data-theme="light"] {
+      --acc-bg: #6a6459; --acc-bg-hover: #4c4740; --acc-fg: #ffffff;
+      --acc-text: #4c4740; --acc-soft: #e5e2db; --acc-soft-fg: #35312c;
+      --acc-ring: rgba(106, 100, 89, .32); --acc-glow: rgba(106, 100, 89, .25);
+    }
+    :root[data-accent="graphite"][data-theme="dark"] {
+      --acc-bg: #918a7d; --acc-bg-hover: #c6c0b5; --acc-fg: #1c1b1e;
+      --acc-text: #c6c0b5; --acc-soft: rgba(145, 138, 125, .20); --acc-soft-fg: #e5e2db;
+      --acc-ring: rgba(198, 192, 181, .40); --acc-glow: rgba(198, 192, 181, .35);
+    }
+
+    /* Reset & Base */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      font-family: var(--font);
+      background-color: var(--win-bg);
+      color: var(--fg-1);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      user-select: none;
+      position: relative;
+      transition: background-color var(--t-3) var(--e-io), color var(--t-3) var(--e-io);
+    }
+
+    /* Ambient Living Canvas */
+    .ambient-canvas-wrapper {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      overflow: hidden;
+    }
+    #ambientCanvas {
+      width: 100%;
+      height: 100%;
+      opacity: 0.65;
+    }
+    .ambient-overlay {
+      position: absolute;
+      inset: 0;
+      background: var(--ambient-overlay);
+      backdrop-filter: blur(60px);
+    }
+
+    /* Simulated Desktop Wallpaper Background (when finished or peeked) */
+    .desktop-preview-backdrop {
+      position: fixed;
+      inset: 0;
+      background-size: cover;
+      background-position: center;
+      opacity: 0;
+      pointer-events: none;
+      transform: scale(1.04);
+      transition: opacity 800ms var(--e-out), transform 900ms var(--e-out);
+      z-index: 1;
+    }
+    body.in-desktop .desktop-preview-backdrop {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    /* State Layer (§8) */
+    .layer {
+      position: relative;
+      isolation: isolate;
+      overflow: hidden;
+    }
+    .layer::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      background: currentColor;
+      opacity: 0;
+      transition: opacity var(--t-1) var(--e-io);
+      border-radius: inherit;
+    }
+    .layer:hover::before { opacity: var(--st-hover); }
+    .layer:active::before { opacity: var(--st-press); }
+
+    /* Typography Classes */
+    .t-display { font-size: 32px; line-height: 38px; font-weight: 680; letter-spacing: -0.030em; }
+    .t-t1 { font-size: 24px; line-height: 30px; font-weight: 650; letter-spacing: -0.024em; }
+    .t-t2 { font-size: 18px; line-height: 24px; font-weight: 630; letter-spacing: -0.017em; }
+    .t-t3 { font-size: 15px; line-height: 21px; font-weight: 610; letter-spacing: -0.012em; }
+    .t-head { font-size: 14px; line-height: 20px; font-weight: 630; letter-spacing: -0.007em; }
+    .t-body { font-size: 14px; line-height: 21px; font-weight: 400; letter-spacing: -0.006em; }
+    .t-call { font-size: 13px; line-height: 19px; font-weight: 400; }
+    .t-cap { font-size: 12px; line-height: 16px; font-weight: 450; }
+    .t-micro { font-size: 11px; line-height: 14px; font-weight: 640; letter-spacing: +0.075em; text-transform: uppercase; }
+    .t-num { font-family: var(--mono); font-size: 13px; letter-spacing: -0.020em; font-feature-settings: "tnum" 1; }
+
+    /* The Frameless Welcome Window */
+    .welcome-window {
+      position: relative;
+      z-index: 10;
+      width: 1120px;
+      max-width: calc(100vw - 48px);
+      height: 740px;
+      max-height: calc(100vh - 48px);
+      background-color: var(--win-bg);
+      border-radius: var(--r-4);
+      box-shadow: var(--el-win);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      backdrop-filter: blur(48px) saturate(180%);
+      transition: transform 600ms var(--e-out), opacity 450ms var(--e-out), box-shadow var(--t-3) var(--e-io), background-color var(--t-3) var(--e-io);
+      animation: windowAppear 650ms var(--e-out) forwards;
+    }
+    @keyframes windowAppear {
+      0% { opacity: 0; transform: translateY(28px) scale(0.96); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .welcome-window.launching {
+      transform: scale(1.08) translateY(-14px);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Topbar */
+    .welcome-topbar {
+      height: 56px;
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--sp-5);
+      border-bottom: 1px solid var(--line);
+      background: var(--bar-bg);
+      gap: 12px;
+    }
+    .brand-section {
+      display: flex;
+      align-items: center;
+      gap: var(--sp-3);
+    }
+    .glide-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--r-2);
+      background: var(--acc-bg);
+      color: var(--acc-fg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: var(--el-1), 0 0 16px var(--acc-glow);
+    }
+    .brand-title {
+      font-weight: 650;
+      font-size: 15px;
+      letter-spacing: -0.015em;
+    }
+
+    /* 13-Step Stepper Navigation */
+    .stepper-nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: var(--fill-1);
+      padding: 3px;
+      border-radius: var(--r-round);
+      position: relative;
+    }
+    .step-dot-btn {
+      width: 24px;
+      height: 24px;
+      border-radius: var(--r-round);
+      border: none;
+      background: transparent;
+      color: var(--fg-3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      position: relative;
+      z-index: 2;
+      transition: color var(--t-2) var(--e-out), transform var(--t-1) var(--e-out);
+    }
+    .step-dot-btn:hover {
+      color: var(--fg-1);
+      transform: scale(1.12);
+    }
+    .step-dot-btn.completed {
+      color: var(--acc-text);
+    }
+    .step-dot-btn.active {
+      color: var(--acc-fg);
+    }
+    .stepper-slider {
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      border-radius: var(--r-round);
+      background: var(--acc-bg);
+      box-shadow: var(--el-1), 0 0 10px var(--acc-glow);
+      z-index: 1;
+      left: 3px;
+      top: 3px;
+      pointer-events: none;
+      transition: transform var(--t-3) var(--e-spring), background var(--t-2) var(--e-out);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: var(--sp-2);
+    }
+
+    /* Buttons */
+    .btn {
+      min-height: 34px;
+      height: 34px;
+      padding: 0 var(--sp-4);
+      border-radius: var(--r-2);
+      border: none;
+      background: var(--fill-1);
+      color: var(--fg-1);
+      font-family: var(--font);
+      font-size: 13.5px;
+      font-weight: 550;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--sp-2);
+      cursor: pointer;
+      text-decoration: none;
+      transition: background-color var(--t-2) var(--e-out),
+                  color var(--t-2) var(--e-out),
+                  border-color var(--t-2) var(--e-out),
+                  transform var(--t-1) var(--e-out),
+                  box-shadow var(--t-2) var(--e-out);
+    }
+    .btn:active { transform: scale(0.975); }
+    .btn--primary {
+      background: var(--acc-bg);
+      color: var(--acc-fg);
+      box-shadow: var(--el-1);
+    }
+    .btn--primary:hover {
+      background: var(--acc-bg-hover);
+      box-shadow: var(--el-2), 0 0 16px var(--acc-glow);
+    }
+    .btn--tonal {
+      background: var(--acc-soft);
+      color: var(--acc-soft-fg);
+    }
+    .btn--outline {
+      background: transparent;
+      border: 1px solid var(--line-2);
+      color: var(--fg-1);
+    }
+    .btn--outline:hover {
+      border-color: var(--fill-3);
+      background: var(--fill-1);
+    }
+    .btn--ghost {
+      background: transparent;
+      color: var(--fg-2);
+    }
+    .btn--ghost:hover {
+      color: var(--fg-1);
+      background: var(--fill-1);
+    }
+    .btn--sm {
+      min-height: 28px;
+      height: 28px;
+      padding: 0 11px;
+      font-size: 12.5px;
+    }
+    .btn--lg {
+      min-height: 42px;
+      height: 42px;
+      padding: 0 24px;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .btn--icon-sm {
+      width: 28px;
+      min-width: 28px;
+      height: 28px;
+      min-height: 28px;
+      padding: 0;
+    }
+
+    /* Content Viewport & Step Cards */
+    .welcome-content-viewport {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      background: var(--view-bg);
+      transition: background-color var(--t-3) var(--e-io);
+    }
+    .step-card {
+      position: absolute;
+      inset: 0;
+      padding: var(--sp-5) var(--sp-7);
+      display: flex;
+      flex-direction: column;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(48px) scale(0.98);
+      transition: opacity var(--t-3) var(--e-io), transform var(--t-4) var(--e-out);
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--line-2) transparent;
+    }
+    .step-card.active {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(0) scale(1);
+      z-index: 5;
+    }
+    .step-card.exit-left {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateX(-48px) scale(0.98);
+    }
+
+    /* Step Heading */
+    .step-heading-group {
+      margin-bottom: var(--sp-4);
+    }
+    .step-subtitle-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--acc-text);
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: var(--sp-1);
+    }
+    .step-subtitle-badge svg { width: 14px; height: 14px; }
+    .step-title { color: var(--fg-1); margin-bottom: 2px; }
+    .step-desc { color: var(--fg-2); font-size: 14px; line-height: 21px; max-width: 780px; }
+
+    /* Footer */
+    .welcome-footer {
+      height: 60px;
+      min-height: 60px;
+      border-top: 1px solid var(--line);
+      background: var(--bar-bg);
+      padding: 0 var(--sp-6);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: relative;
+      z-index: 10;
+    }
+    .skip-step-btn {
+      font-size: 13px;
+      color: var(--fg-3);
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 6px 12px;
+      border-radius: var(--r-2);
+      transition: color var(--t-2) var(--e-out), background-color var(--t-2) var(--e-out);
+    }
+    .skip-step-btn:hover { color: var(--fg-1); background: var(--fill-1); }
+
+    /* Switch Component */
+    .switch {
+      width: 44px;
+      height: 26px;
+      border-radius: var(--r-round);
+      background: var(--fill-3);
+      position: relative;
+      cursor: pointer;
+      border: none;
+      outline: none;
+      transition: background-color var(--t-2) var(--e-out);
+    }
+    .switch.active { background: var(--acc-bg); }
+    .switch-thumb {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      border-radius: var(--r-round);
+      background: var(--switch-thumb);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+      transition: transform var(--t-2) var(--e-over);
+    }
+    .switch.active .switch-thumb { transform: translateX(18px); }
+
+    /* Common Card & Grid Elements */
+    .two-col-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--sp-5);
+      align-items: start;
+    }
+    .card-box {
+      background: var(--card-bg);
+      border: 1px solid var(--line);
+      border-radius: var(--r-3);
+      padding: var(--sp-4);
+      box-shadow: var(--el-1);
+    }
+
+    /* STEP 0 HERO */
+    .hero-layout {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      height: 100%;
+    }
+    .hero-emblem-container {
+      position: relative;
+      width: 96px;
+      height: 96px;
+      margin-bottom: var(--sp-4);
+    }
+    .hero-emblem {
+      width: 100%;
+      height: 100%;
+      border-radius: 26px;
+      background: linear-gradient(135deg, var(--acc-bg) 0%, var(--acc-bg-hover) 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 16px 36px var(--acc-glow);
+      cursor: pointer;
+      transition: transform var(--t-3) var(--e-out);
+    }
+    .hero-emblem:hover { transform: translateY(-4px) scale(1.05); }
+    .hero-emblem svg { width: 50px; height: 50px; stroke: #fff; fill: none; stroke-width: 2.2; stroke-linecap: round; }
+    .hero-pillars {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--sp-4);
+      width: 100%;
+      max-width: 820px;
+      margin: var(--sp-5) 0;
+    }
+    .pillar-card {
+      background: var(--card-bg);
+      border: 1px solid var(--line);
+      border-radius: var(--r-3);
+      padding: var(--sp-4);
+      text-align: left;
+    }
+
+    /* STEP 1 NETWORK */
+    .wifi-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+    .wifi-item {
+      border-radius: var(--r-2);
+      border: 1px solid var(--line);
+      background: var(--view-bg);
+      overflow: hidden;
+      transition: border-color var(--t-2) var(--e-out);
+    }
+    .wifi-item.selected { border-color: var(--acc-bg); background: var(--acc-soft); }
+    .wifi-row-main { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; cursor: pointer; }
+    .wifi-drawer { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--t-3) var(--e-out); background: var(--sunken-bg); }
+    .wifi-item.selected .wifi-drawer { grid-template-rows: 1fr; }
+    .wifi-drawer-inner { overflow: hidden; padding: 0 14px; display: flex; flex-direction: column; gap: 8px; }
+    .wifi-item.selected .wifi-drawer-inner { padding: 10px 14px; }
+    .input {
+      width: 100%; height: 34px; padding: 0 12px;
+      border-radius: var(--r-2); border: 1px solid var(--line-2);
+      background: var(--view-bg); color: var(--fg-1); outline: none;
+    }
+
+    /* STEP 2 APPEARANCE */
+    .segmented-control { display: flex; background: var(--fill-2); padding: 4px; border-radius: var(--r-2); position: relative; margin-bottom: 16px; }
+    .seg-item { flex: 1; text-align: center; border: none; background: transparent; padding: 8px; border-radius: calc(var(--r-2) - 2px); color: var(--fg-2); cursor: pointer; position: relative; z-index: 2; font-size: 13px; font-weight: 550; }
+    .seg-item.active { color: var(--fg-1); }
+    .seg-thumb { position: absolute; top: 4px; bottom: 4px; width: calc((100% - 8px) / 3); border-radius: calc(var(--r-2) - 2px); background: var(--card-bg); box-shadow: var(--el-1); z-index: 1; transition: transform var(--t-3) var(--e-spring); }
+    .accent-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+    .accent-card { background: var(--card-bg); border: 1px solid var(--line); border-radius: var(--r-2); padding: 8px; display: flex; flex-direction: column; align-items: center; gap: 6px; cursor: pointer; }
+    .accent-card.active { border-color: var(--acc-bg); box-shadow: 0 0 0 2px var(--acc-ring); background: var(--acc-soft); }
+    .accent-swatch { width: 24px; height: 24px; border-radius: 999px; }
+
+    /* STEP 3 SHELL */
+    .shell-canvas {
+      height: 310px;
+      border-radius: var(--r-3);
+      background: var(--sunken-bg);
+      border: 1px solid var(--line-2);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 12px;
+      position: relative;
+      overflow: hidden;
+    }
+    .mock-desktop-topbar {
+      height: 34px;
+      background: rgba(28, 27, 30, 0.8);
+      backdrop-filter: blur(20px);
+      border-radius: var(--r-round);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      color: #fff;
+    }
+    .status-island {
+      height: 26px;
+      min-width: 140px;
+      background: #000;
+      color: #fff;
+      border-radius: var(--r-round);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 12px;
+      gap: 8px;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+      transition: min-width var(--t-3) var(--e-spring);
+    }
+    .mock-dock {
+      background: rgba(28, 27, 30, 0.75);
+      backdrop-filter: blur(28px);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 20px;
+      padding: 6px 12px;
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      margin: 0 auto;
+    }
+    .dock-app-tile {
+      width: 42px;
+      height: 42px;
+      border-radius: 11px;
+      background: var(--fill-2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: #fff;
+      position: relative;
+      transition: transform 180ms var(--e-out);
+    }
+    .dock-app-tile:hover { transform: scale(1.35) translateY(-6px); }
+    .dock-app-tile.bouncing { animation: dockBounce 600ms var(--e-spring); }
+    @keyframes dockBounce {
+      0%, 100% { transform: translateY(0); }
+      40% { transform: translateY(-16px) scale(1.15); }
+    }
+
+    /* STEP 4 GESTURES */
+    .trackpad-mock {
+      height: 270px;
+      background: var(--card-bg);
+      border: 1px solid var(--line-2);
+      border-radius: var(--r-3);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      cursor: grab;
+      overflow: hidden;
+    }
+    .ws-mini-screen {
+      flex: 1;
+      border-radius: var(--r-2);
+      background: var(--sunken-bg);
+      border: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--fg-3);
+    }
+    .ws-mini-screen.active { border-color: var(--acc-bg); background: var(--acc-soft); color: var(--acc-soft-fg); transform: scale(1.04); }
+
+    /* STEP 5 PHONE */
+    .phone-mockup-frame {
+      width: 220px;
+      height: 350px;
+      border-radius: 34px;
+      background: #151417;
+      border: 4px solid #2d2b30;
+      box-shadow: 0 18px 44px rgba(0,0,0,0.4);
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      padding: 10px;
+    }
+    .phone-screen {
+      flex: 1;
+      border-radius: 26px;
+      background: #1e1d22;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      text-align: center;
+      color: #fff;
+    }
+
+    /* STEP 6 NIGHT LIGHT */
+    .night-light-stage {
+      height: 290px;
+      border-radius: var(--r-3);
+      border: 1px solid var(--line-2);
+      overflow: hidden;
+      position: relative;
+      background: #1a1a20;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .night-light-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: rgba(255, 140, 0, 0);
+      mix-blend-mode: color;
+      transition: background 250ms var(--e-out);
+    }
+
+    /* STEP 7 PHOTOS */
+    .photos-stage {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      height: 290px;
+    }
+    .photo-thumb-card {
+      border-radius: var(--r-2);
+      overflow: hidden;
+      position: relative;
+      cursor: pointer;
+      border: 1px solid var(--line);
+      background-size: cover;
+      background-position: center;
+      transition: transform var(--t-2) var(--e-over), box-shadow var(--t-2) var(--e-out);
+    }
+    .photo-thumb-card:hover {
+      transform: scale(1.03);
+      box-shadow: var(--el-2);
+    }
+    .photo-badge-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 8px 10px;
+      background: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.7) 100%);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+
+    /* STEP 8 QUICKLOOK */
+    .file-row-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-radius: var(--r-2);
+      border: 1px solid var(--line);
+      cursor: pointer;
+      background: var(--card-bg);
+      transition: background-color var(--t-2) var(--e-out);
+    }
+    .file-row-item:hover { background: var(--fill-1); }
+    .file-row-item.active-file { border-color: var(--acc-bg); background: var(--acc-soft); }
+    .quicklook-popup {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0.9);
+      width: 420px;
+      background: var(--popover-bg);
+      border: 1px solid var(--line-2);
+      border-radius: var(--r-3);
+      box-shadow: var(--el-3);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transition: transform var(--t-3) var(--e-over), opacity var(--t-2) var(--e-out);
+      z-index: 50;
+    }
+    .quicklook-popup.open {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translate(-50%, -50%) scale(1);
+    }
+
+    /* STEP 9 SNAPPING */
+    .snap-sandbox-screen {
+      height: 290px;
+      background: var(--sunken-bg);
+      border: 1px solid var(--line-2);
+      border-radius: var(--r-3);
+      position: relative;
+      overflow: hidden;
+    }
+    .snap-ghost-aura {
+      position: absolute;
+      background: var(--acc-soft);
+      border: 2px dashed var(--acc-bg);
+      border-radius: var(--r-2);
+      opacity: 0;
+      pointer-events: none;
+      transition: all var(--t-3) var(--e-out);
+    }
+    .snap-actor-window {
+      position: absolute;
+      width: 180px;
+      height: 140px;
+      left: 70px;
+      top: 60px;
+      background: var(--card-bg);
+      border: 1px solid var(--line-2);
+      border-radius: var(--r-2);
+      box-shadow: var(--el-2);
+      cursor: grab;
+      display: flex;
+      flex-direction: column;
+      transition: all var(--t-3) var(--e-spring);
+    }
+
+    /* STEP 10 APP CATALOG */
+    .app-store-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    .app-store-card {
+      background: var(--card-bg);
+      border: 1px solid var(--line);
+      border-radius: var(--r-3);
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .app-icon-badge {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 20px;
+      box-shadow: var(--el-1);
+    }
+
+    /* STEP 11 GLIDE SHOT */
+    .shot-stage-box {
+      height: 290px;
+      border-radius: var(--r-3);
+      border: 1px solid var(--line-2);
+      position: relative;
+      background: #18171c;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .shot-crop-target {
+      width: 240px;
+      height: 160px;
+      border: 2px solid var(--acc-bg);
+      box-shadow: 0 0 0 9999px rgba(0,0,0,0.65);
+      border-radius: 6px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .camera-flash-overlay {
+      position: absolute;
+      inset: 0;
+      background: #fff;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 150ms var(--e-out);
+    }
+
+    /* STEP 12 FINALE */
+    .final-celebration {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      justify-content: center;
+      gap: var(--sp-4);
+      height: 100%;
+    }
+    .summary-card-deck {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      width: 100%;
+      max-width: 860px;
+    }
+    .summary-item {
+      background: var(--card-bg);
+      border: 1px solid var(--line);
+      border-radius: var(--r-2);
+      padding: 10px;
+      text-align: left;
+    }
+
+    /* Modal & Toast */
+    .modal-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--t-3) var(--e-io);
+    }
+    .modal-overlay.open { opacity: 1; pointer-events: auto; }
+    .modal-card {
+      width: 440px;
+      background: var(--popover-bg);
+      border: 1px solid var(--line-2);
+      border-radius: var(--r-3);
+      padding: 24px;
+      box-shadow: var(--el-3);
+    }
+    .toast-center {
+      position: absolute;
+      bottom: 74px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: var(--popover-bg);
+      border: 1px solid var(--line-2);
+      padding: 10px 18px;
+      border-radius: var(--r-round);
+      box-shadow: var(--el-3);
+      font-size: 13.5px;
+      font-weight: 550;
+      color: var(--fg-1);
+      opacity: 0;
+      pointer-events: none;
+      transition: transform var(--t-3) var(--e-out), opacity var(--t-3) var(--e-out);
+      z-index: 99;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .toast-center.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  </style>
+</head>
+
+<body>
+  <!-- Ambient Living Mesh Canvas -->
+  <div class="ambient-canvas-wrapper">
+    <canvas id="ambientCanvas"></canvas>
+    <div class="ambient-overlay"></div>
+  </div>
+
+  <!-- Simulated Desktop View (revealed upon completing onboarding) -->
+  <div class="desktop-preview-backdrop" id="desktopBackdrop" style="background-image: url('/home/artem/Pictures/Wallpapers/amber-d-8be2adf4dc1b49fbe65082ce57d2ce967fa4a49c.webp');"></div>
+
+  <!-- The Frameless Onboarding Window (No window controls _ □ ×) -->
+  <main class="welcome-window" id="welcomeWindow" role="dialog" aria-modal="true">
+    
+    <!-- Topbar: Branding, 13-Step Stepper & Skip -->
+    <header class="welcome-topbar">
+      <div class="brand-section">
+        <div class="glide-mark" title="Glide Wayland Desktop">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 16l8-8 8 8"/>
+            <path d="M7 19l5-5 5 5"/>
+          </svg>
+        </div>
+        <span class="brand-title">Glide</span>
+        <span class="t-micro" style="color:var(--fg-3); background:var(--fill-2); padding:2px 6px; border-radius:999px;">v0.8.2</span>
+      </div>
+
+      <!-- 13-Step Stepper Navigation -->
+      <nav class="stepper-nav" id="stepperNav" aria-label="Кроки налаштування">
+        <div class="stepper-slider" id="stepperSlider"></div>
+        <button class="step-dot-btn active" data-step="0" title="0. Привітання">0</button>
+        <button class="step-dot-btn" data-step="1" title="1. Мережа">1</button>
+        <button class="step-dot-btn" data-step="2" title="2. Стиль">2</button>
+        <button class="step-dot-btn" data-step="3" title="3. Острівець та Док">3</button>
+        <button class="step-dot-btn" data-step="4" title="4. Жести">4</button>
+        <button class="step-dot-btn" data-step="5" title="5. Телефон">5</button>
+        <button class="step-dot-btn" data-step="6" title="6. Зір та Ніч">6</button>
+        <button class="step-dot-btn" data-step="7" title="7. Світлини">7</button>
+        <button class="step-dot-btn" data-step="8" title="8. Швидкий перегляд">8</button>
+        <button class="step-dot-btn" data-step="9" title="9. Прив'язка вікон">9</button>
+        <button class="step-dot-btn" data-step="10" title="10. Каталог">10</button>
+        <button class="step-dot-btn" data-step="11" title="11. Знімки екрана">11</button>
+        <button class="step-dot-btn" data-step="12" title="12. Готово">12</button>
+      </nav>
+
+      <!-- Utility Actions -->
+      <div class="header-actions">
+        <!-- Sound Effect Toggle -->
+        <button class="btn btn--ghost btn--icon-sm layer" id="soundToggle" title="Звуковий супровід">
+          <svg id="soundIconOn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+          </svg>
+          <svg id="soundIconOff" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="display:none;">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <line x1="23" y1="9" x2="17" y2="15"/>
+            <line x1="17" y1="9" x2="23" y2="15"/>
+          </svg>
+        </button>
+
+        <!-- Language Switcher -->
+        <button class="btn btn--ghost btn--sm layer" id="langSwitch" title="Мова">
+          <span style="font-weight: 650; font-size: 11px;">UA</span>
+        </button>
+
+        <!-- Skip Entire Tour (Global) -->
+        <button class="btn btn--outline btn--sm layer" id="globalSkipBtn" style="color: var(--fg-2);">
+          Пропустити
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content Area: 13 Staggered Interactive Steps -->
+    <div class="welcome-content-viewport" id="viewport">
+
+      <!-- STEP 0: HERO WELCOME -->
+      <section class="step-card active" data-step-index="0" aria-label="Ласкаво просимо">
+        <div class="hero-layout">
+          <div class="hero-emblem-container" id="heroEmblemContainer">
+            <div class="hero-emblem">
+              <svg viewBox="0 0 24 24">
+                <path d="M4 16l8-8 8 8"/>
+                <path d="M7 19l5-5 5 5"/>
+              </svg>
+            </div>
+          </div>
+
+          <h1 class="t-display">Ласкаво просимо в Glide</h1>
+          <p class="step-desc" style="text-align:center; font-size:15px; margin-top:6px;">
+            Швидка, спокійна та передбачувана стільниця нового покоління для Wayland, написана на Rust.
+          </p>
+
+          <div class="hero-pillars">
+            <div class="pillar-card">
+              <div style="font-size:20px; margin-bottom:6px;">⚡</div>
+              <div style="font-weight:630; font-size:14px; margin-bottom:2px;">Швидкість без зусиль</div>
+              <div class="t-call" style="color:var(--fg-3);">Прямий рендеринг без зависань. Усе запускається блискавично.</div>
+            </div>
+            <div class="pillar-card">
+              <div style="font-size:20px; margin-bottom:6px;">🧘</div>
+              <div style="font-weight:630; font-size:14px; margin-bottom:2px;">Філософія Спокою</div>
+              <div class="t-call" style="color:var(--fg-3);">Жодного візуального сміття. Чітка геометрія та приємні кольори.</div>
+            </div>
+            <div class="pillar-card">
+              <div style="font-size:20px; margin-bottom:6px;">🌊</div>
+              <div style="font-weight:630; font-size:14px; margin-bottom:2px;">Плавний Рух</div>
+              <div class="t-call" style="color:var(--fg-3);">Фізика пружин у кожному русі: вікна, меню та жести дихають.</div>
+            </div>
+          </div>
+
+          <div style="display:flex; gap:16px;">
+            <button class="btn btn--primary btn--lg layer" id="startOnboardingBtn">
+              <span>Почати знайомство</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+            </button>
+            <button class="btn btn--ghost btn--lg layer" id="heroSkipBtn">
+              Пропустити та перейти до стільниці
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 1: NETWORK & CONNECTIVITY -->
+      <section class="step-card" data-step-index="1" aria-label="Мережа та зв'язок">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><circle cx="12" cy="20" r="1"/></svg>
+            <span>Крок 1 із 12 • Підключення</span>
+          </div>
+          <h2 class="t-t1 step-title">Підключення до Інтернету</h2>
+          <p class="step-desc">Оберіть домашній або офісний Wi-Fi для миттєвого доступу до мережі.</p>
+        </div>
+
+        <div class="two-col-grid">
+          <div>
+            <div class="card-box" style="margin-bottom:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:600; font-size:14px;">Провідний кабель (Ethernet)</span>
+                <span class="t-micro" style="color:var(--ok);">ПІДКЛЮЧЕНО</span>
+              </div>
+              <div style="margin-top:8px; font-size:13px; color:var(--fg-2);">
+                Швидкість 1000 Мбіт/с • IPv4: 192.168.1.104
+              </div>
+            </div>
+
+            <div class="card-box">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:600; font-size:14px;">Безпровідний модуль (Wi-Fi)</span>
+                <button class="switch active" id="wifiMasterToggle"><div class="switch-thumb"></div></button>
+              </div>
+              <div style="margin-top:6px; font-size:12.5px; color:var(--fg-3);">
+                Автоматичний швидкий роумінг 2.4 / 5 / 6 ГГц
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <span class="t-micro" style="color:var(--fg-3);">Знайдені мережі</span>
+            <div class="wifi-list" id="wifiList" style="margin-top:6px;">
+              <div class="wifi-item selected" data-ssid="Glide-Home-5G">
+                <div class="wifi-row-main">
+                  <span style="font-weight:600; font-size:13.5px;">Glide-Home-5G (Рекомендована)</span>
+                  <span class="t-micro" style="background:var(--acc-soft); color:var(--acc-text); padding:2px 6px; border-radius:4px;">WPA3</span>
+                </div>
+                <div class="wifi-drawer">
+                  <div class="wifi-drawer-inner">
+                    <input type="password" class="input" id="wifiPassInput" value="GlideFastNetwork2026">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                      <span id="wifiConnectFeedback" style="font-size:12px; color:var(--ok);">Підключено • 192.168.1.142</span>
+                      <button class="btn btn--primary btn--sm layer" id="wifiConnectBtn">Підключитись</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="wifi-item" data-ssid="Studio_Guest">
+                <div class="wifi-row-main">
+                  <span style="font-weight:550; font-size:13.5px;">Studio_Guest</span>
+                  <span class="t-micro" style="color:var(--fg-3);">WPA2</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 2: APPEARANCE & 8 ACCENTS -->
+      <section class="step-card" data-step-index="2" aria-label="Персоналізація">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a7 7 0 0 0 0 14v6"/></svg>
+            <span>Крок 2 із 12 • Стиль</span>
+          </div>
+          <h2 class="t-t1 step-title">Стиль та колірна палітра</h2>
+          <p class="step-desc">Оберіть тему оформлення та системний колірний акцент.</p>
+        </div>
+
+        <div class="two-col-grid">
+          <div>
+            <div class="segmented-control" id="themeSegment">
+              <div class="seg-thumb" id="themeSegThumb" style="transform: translateX(100%);"></div>
+              <button class="seg-item" data-theme="light">Світла</button>
+              <button class="seg-item active" data-theme="dark">Темна</button>
+              <button class="seg-item" data-theme="auto">Авто (за сонцем)</button>
+            </div>
+
+            <span class="t-micro" style="color:var(--fg-3);">8 Системних акцентів Meridian</span>
+            <div class="accent-grid" id="accentGrid" style="margin-top:8px;">
+              <div class="accent-card" data-acc="blue"><div class="accent-swatch" style="background:#2f6fd0;"></div><span class="t-micro">Азурит</span></div>
+              <div class="accent-card active" data-acc="teal"><div class="accent-swatch" style="background:#128b7e;"></div><span class="t-micro">Малахіт</span></div>
+              <div class="accent-card" data-acc="green"><div class="accent-swatch" style="background:#3f9639;"></div><span class="t-micro">Хвоя</span></div>
+              <div class="accent-card" data-acc="amber"><div class="accent-swatch" style="background:#b57e10;"></div><span class="t-micro">Бурштин</span></div>
+              <div class="accent-card" data-acc="orange"><div class="accent-swatch" style="background:#cf6524;"></div><span class="t-micro">Теракота</span></div>
+              <div class="accent-card" data-acc="red"><div class="accent-swatch" style="background:#c8483c;"></div><span class="t-micro">Цинобра</span></div>
+              <div class="accent-card" data-acc="purple"><div class="accent-swatch" style="background:#7a4dbb;"></div><span class="t-micro">Аметист</span></div>
+              <div class="accent-card" data-acc="graphite"><div class="accent-swatch" style="background:#6a6459;"></div><span class="t-micro">Графіт</span></div>
+            </div>
+          </div>
+
+          <!-- Preview Stage -->
+          <div class="card-box">
+            <span class="t-micro" style="color:var(--fg-3);">Живий перегляд кнопок та елементів:</span>
+            <div style="display:flex; flex-direction:column; gap:12px; margin-top:12px;">
+              <div style="display:flex; gap:8px;">
+                <button class="btn btn--primary btn--sm layer">Головна дія</button>
+                <button class="btn btn--tonal btn--sm layer">Тональна</button>
+                <button class="btn btn--outline btn--sm layer">Контур</button>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:center; padding-top:8px; border-top:1px solid var(--line);">
+                <span style="font-size:13.5px;">Активний перемикач:</span>
+                <button class="switch active"><div class="switch-thumb"></div></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 3: SHELL ANATOMY (Status Island & Dock) -->
+      <section class="step-card" data-step-index="3" aria-label="Острівець та Док">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            <span>Крок 3 із 12 • Стільниця</span>
+          </div>
+          <h2 class="t-t1 step-title">Острівець стану та Док</h2>
+          <p class="step-desc">Спробуйте взаємодію з Dynamic Status Island та плавним збільшенням іконок у доку.</p>
+        </div>
+
+        <div class="shell-canvas" id="shellCanvas">
+          <div class="mock-desktop-topbar">
+            <span style="font-weight:700; font-size:13px; color:var(--acc-text);">Glide</span>
+            <div class="status-island" id="statusIsland" title="Клікніть для зміни режиму">
+              <span id="islandText" style="font-size:12px; font-weight:600;">Chopin — Nocturne Op. 9</span>
+            </div>
+            <span style="font-size:12px; opacity:0.8;">11:45 • 98% ⚡</span>
+          </div>
+
+          <div style="text-align:center; color:rgba(255,255,255,0.7);">
+            <span class="t-cap" style="background:rgba(0,0,0,0.4); padding:4px 12px; border-radius:999px;">
+              💡 Натисніть на Острівець вгорі або наведіть на іконки дока внизу
+            </span>
+          </div>
+
+          <div class="mock-dock" id="mockDock">
+            <div class="dock-app-tile" data-name="Файли" title="Файли">📁</div>
+            <div class="dock-app-tile" data-name="Світлини" title="Світлини">🖼️</div>
+            <div class="dock-app-tile" data-name="Каталог програм" title="Каталог">🛍️</div>
+            <div class="dock-app-tile" data-name="Телефон" title="Телефон">📱</div>
+            <div class="dock-app-tile" data-name="Налаштування" title="Налаштування">⚙️</div>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:center; gap:8px; margin-top:12px;">
+          <button class="btn btn--tonal btn--sm layer" id="islandModeMusic">🎵 Музика</button>
+          <button class="btn btn--outline btn--sm layer" id="islandModeNotify">🔔 Сповіщення</button>
+          <button class="btn btn--outline btn--sm layer" id="islandModeCall">📞 Дзвінок</button>
+        </div>
+      </section>
+
+      <!-- STEP 4: GESTURES & WORKSPACES -->
+      <section class="step-card" data-step-index="4" aria-label="Жести та Огляд">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v7"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/></svg>
+            <span>Крок 4 із 12 • Керування</span>
+          </div>
+          <h2 class="t-t1 step-title">Жести та Робочі простори</h2>
+          <p class="step-desc">Свайп 3 пальцями по тачпаду перемикає простори з плавною інерцією.</p>
+        </div>
+
+        <div class="two-col-grid">
+          <div class="trackpad-mock" id="trackpadMock">
+            <div style="display:flex; gap:8px; position:absolute; top:12px; left:12px; right:12px; height:48px;">
+              <div class="ws-mini-screen active" id="ws1">Робота</div>
+              <div class="ws-mini-screen" id="ws2">Інтернет</div>
+              <div class="ws-mini-screen" id="ws3">Медіа</div>
+            </div>
+            <div style="font-size:32px; margin-top:28px;">👆👆👆</div>
+            <div style="font-weight:600; font-size:13.5px; margin-top:8px;">Потягніть мишею ліворуч / праворуч</div>
+            <div class="t-cap" style="color:var(--fg-3);">Симуляція трипальцевого свайпу тачпада</div>
+          </div>
+
+          <div class="card-box">
+            <span style="font-weight:630; font-size:14px;">Швидкий пошук у Лаунчері (Клавіша Super)</span>
+            <div style="margin-top:10px;">
+              <input type="text" class="input" id="launcherInput" value="48 * 12">
+              <div id="launcherResult" style="margin-top:8px; padding:10px; background:var(--sunken-bg); border-radius:var(--r-2);">
+                <span class="t-num" style="font-weight:700; color:var(--acc-text);">= 576 (Калькулятор)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 5: GLIDE PHONE -->
+      <section class="step-card" data-step-index="5" aria-label="Зв'язок з телефоном">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+            <span>Крок 5 із 12 • Смартфон</span>
+          </div>
+          <h2 class="t-t1 step-title">Синхронізація зі смартфоном</h2>
+          <p class="step-desc">Спільний буфер обміну, сповіщення та вхідні дзвінки прямо на вашому екрані.</p>
+        </div>
+
+        <div class="two-col-grid" style="align-items:center;">
+          <div style="display:flex; flex-direction:column; gap:12px;">
+            <div class="card-box" style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <div style="font-weight:600; font-size:14px;">Спільний буфер обміну</div>
+                <div class="t-cap" style="color:var(--fg-3);">Скопіювали на телефоні — вставили в Glide.</div>
+              </div>
+              <button class="switch active"><div class="switch-thumb"></div></button>
+            </div>
+
+            <div class="card-box" style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <div style="font-weight:600; font-size:14px;">Дзвінки та SMS</div>
+                <div class="t-cap" style="color:var(--fg-3);">Відповідайте на дзвінки без смартфона в руках.</div>
+              </div>
+              <button class="switch active"><div class="switch-thumb"></div></button>
+            </div>
+
+            <button class="btn btn--primary btn--sm layer" id="btnPairSimulate">
+              Згенерувати пару з телефоном
+            </button>
+          </div>
+
+          <div class="phone-mockup-frame">
+            <div class="phone-screen">
+              <div style="width:100px; height:100px; background:#fff; border-radius:12px; padding:6px; display:flex; align-items:center; justify-content:center;">
+                <!-- QR SVG -->
+                <svg width="84" height="84" viewBox="0 0 25 25" fill="#000">
+                  <rect x="0" y="0" width="7" height="7"/>
+                  <rect x="1" y="1" width="5" height="5" fill="#fff"/>
+                  <rect x="2" y="2" width="3" height="3"/>
+                  <rect x="18" y="0" width="7" height="7"/>
+                  <rect x="19" y="1" width="5" height="5" fill="#fff"/>
+                  <rect x="20" y="2" width="3" height="3"/>
+                  <rect x="0" y="18" width="7" height="7"/>
+                  <rect x="1" y="19" width="5" height="5" fill="#fff"/>
+                  <rect x="2" y="20" width="3" height="3"/>
+                  <rect x="9" y="9" width="7" height="7"/>
+                </svg>
+              </div>
+              <div id="phonePairStatus" style="font-weight:630; font-size:13px; margin-top:12px;">
+                Відскануйте камерою
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 6: NIGHT LIGHT & EYE COMFORT (REPLACED FROM VPN) -->
+      <section class="step-card" data-step-index="6" aria-label="Зір та Нічне світло">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+            <span>Крок 6 із 12 • Комфорт та зір</span>
+          </div>
+          <h2 class="t-t1 step-title">Здоровий зір та Нічне світло</h2>
+          <p class="step-desc">Glide піклується про ваші очі: увечері екран плавно теплішає, знижуючи втому.</p>
+        </div>
+
+        <div class="two-col-grid">
+          <div style="display:flex; flex-direction:column; gap:14px;">
+            <div class="card-box">
+              <span class="t-micro" style="color:var(--fg-3);">Колірна температура екрана</span>
+              <div style="display:flex; align-items:center; gap:12px; margin-top:8px;">
+                <span class="t-num" style="font-size:12px;">6500K</span>
+                <input type="range" min="3200" max="6500" value="4600" id="nightLightSlider" style="flex:1; cursor:pointer;">
+                <span class="t-num" id="nightTempLabel" style="font-size:13px; font-weight:700; color:var(--acc-text);">4600K</span>
+              </div>
+            </div>
+
+            <div class="card-box" style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <div style="font-weight:600; font-size:13.5px;">Автоматично із заходом сонця</div>
+                <div class="t-cap" style="color:var(--fg-3);">Плавний перехід без помітних стрибків.</div>
+              </div>
+              <button class="switch active"><div class="switch-thumb"></div></button>
+            </div>
+
+            <div class="card-box" style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <div style="font-weight:600; font-size:13.5px;">Режим Фокусу (Не турбувати)</div>
+                <div class="t-cap" style="color:var(--fg-3);">Приховує гучні банери під час відпочинку.</div>
+              </div>
+              <button class="switch" id="focusModeToggle"><div class="switch-thumb"></div></button>
+            </div>
+          </div>
+
+          <!-- Night Light Interactive Screen -->
+          <div class="night-light-stage" id="nightStage">
+            <div class="night-light-overlay" id="nightOverlay"></div>
+            <div style="text-align:center; color:#fff; position:relative; z-index:2;">
+              <div style="font-size:42px; margin-bottom:8px;">🌙</div>
+              <div style="font-weight:650; font-size:16px;">Затишне вечірнє читання</div>
+              <div class="t-call" style="opacity:0.8; margin-top:4px;">Потягніть повзунок ліворуч, щоб зігріти екран</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 7: GLIDE PHOTOS (NEW) -->
+      <section class="step-card" data-step-index="7" aria-label="Світлини">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+            <span>Крок 7 із 12 • Світлини та Медіа</span>
+          </div>
+          <h2 class="t-t1 step-title">Glide Світлини: Ваші яскраві спогади</h2>
+          <p class="step-desc">Миттєве відкриття світлин без очікування, зручні альбоми та розумний пошук.</p>
+        </div>
+
+        <div class="two-col-grid">
+          <div class="photos-stage">
+            <div class="photo-thumb-card" style="background-color:#2a3b4c;" data-title="Карпати на світанку">
+              <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:36px;">🏔️</div>
+              <div class="photo-badge-bar"><span>Карпати</span><span class="heart-btn">🤍</span></div>
+            </div>
+            <div class="photo-thumb-card" style="background-color:#4c2a3b;" data-title="Морський захід сонця">
+              <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:36px;">🌅</div>
+              <div class="photo-badge-bar"><span>Захід сонця</span><span class="heart-btn">🤍</span></div>
+            </div>
+            <div class="photo-thumb-card" style="background-color:#2a4c38;" data-title="Осінній ліс">
+              <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:36px;">🌲</div>
+              <div class="photo-badge-bar"><span>Осінній парк</span><span class="heart-btn">🤍</span></div>
+            </div>
+            <div class="photo-thumb-card" style="background-color:#3d3a4c;" data-title="Затишна кав'ярня">
+              <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:36px;">☕</div>
+              <div class="photo-badge-bar"><span>Кав'ярня</span><span class="heart-btn">🤍</span></div>
+            </div>
+          </div>
+
+          <div class="card-box" style="display:flex; flex-direction:column; justify-content:center; gap:12px;">
+            <div style="font-weight:650; font-size:15px;" id="selectedPhotoTitle">Оберіть світлину ліворуч</div>
+            <p class="t-call" style="color:var(--fg-2);">
+              Натисніть на сердечко 🤍, щоб додати улюблену світлину до вибраного з приємним звуковим відгуком.
+            </p>
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn--primary btn--sm layer" id="btnPhotoZoom">Збільшити фото</button>
+              <button class="btn btn--outline btn--sm layer" id="btnPhotoFav">❤️ Додати в Улюблені</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 8: QUICKLOOK (NEW) -->
+      <section class="step-card" data-step-index="8" aria-label="Швидкий перегляд">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>Крок 8 із 12 • Зручність</span>
+          </div>
+          <h2 class="t-t1 step-title">Швидкий перегляд клавішею [Пробіл]</h2>
+          <p class="step-desc">Більше не потрібно чекати відкриття важких програм. Натисніть Пробіл — і файл відкриється миттєво.</p>
+        </div>
+
+        <div class="two-col-grid" style="position:relative;">
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <div class="file-row-item active-file" data-file="Звіт_2026.pdf" data-type="PDF документ" data-size="2.4 МБ">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:20px;">📄</span>
+                <div>
+                  <div style="font-weight:600; font-size:13.5px;">Звіт_Glide_2026.pdf</div>
+                  <div class="t-cap" style="color:var(--fg-3);">PDF Документ • 2.4 МБ</div>
+                </div>
+              </div>
+              <span class="t-micro" style="color:var(--acc-text);">ВИБРАНО</span>
+            </div>
+
+            <div class="file-row-item" data-file="Chopin_Nocturne.flac" data-type="Аудіотрек FLAC" data-size="34 МБ">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:20px;">🎵</span>
+                <div>
+                  <div style="font-weight:600; font-size:13.5px;">Chopin_Nocturne.flac</div>
+                  <div class="t-cap" style="color:var(--fg-3);">Аудіо високої чіткості • 34 МБ</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="file-row-item" data-file="План_подорожі.png" data-type="Світлина PNG" data-size="4.1 МБ">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span style="font-size:20px;">🖼️</span>
+                <div>
+                  <div style="font-weight:600; font-size:13.5px;">План_подорожі.png</div>
+                  <div class="t-cap" style="color:var(--fg-3);">Зображення 4K • 4.1 МБ</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Interactive Spacebar key simulator -->
+          <div class="card-box" style="display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; height:240px;">
+            <div class="t-call" style="color:var(--fg-2); margin-bottom:12px;">Натисніть на клавіатурі або кнопку нижче:</div>
+            <button class="btn btn--primary btn--lg layer" id="btnSimulateSpace" style="padding:0 36px; border-radius:14px; font-weight:700; letter-spacing:0.04em;">
+              [ ПРОБІЛ ]
+            </button>
+            <div class="t-cap" style="color:var(--fg-3); margin-top:12px;">Миттєве розгортання картки попереднього перегляду</div>
+          </div>
+
+          <!-- Floating QuickLook Popup -->
+          <div class="quicklook-popup" id="quicklookPopup">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-weight:650; font-size:15px;" id="qlFileName">Звіт_Glide_2026.pdf</span>
+              <button class="btn btn--ghost btn--icon-sm layer" id="qlCloseBtn">✕</button>
+            </div>
+            <div style="height:140px; background:var(--sunken-bg); border-radius:var(--r-2); display:flex; align-items:center; justify-content:center; font-size:42px;">
+              📊
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span class="t-cap" id="qlMetaText" style="color:var(--fg-3);">PDF • 2.4 МБ • 18 сторінок</span>
+              <button class="btn btn--tonal btn--sm layer">Відкрити в додатку</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 9: WINDOW SNAPPING (NEW) -->
+      <section class="step-card" data-step-index="9" aria-label="Прив'язка вікон">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+            <span>Крок 9 із 12 • Продуктивність</span>
+          </div>
+          <h2 class="t-t1 step-title">Розумна прив'язка вікон (Window Snapping)</h2>
+          <p class="step-desc">Зручно розміщуйте програми поруч: просто піднесіть вікно до краю екрана.</p>
+        </div>
+
+        <div class="two-col-grid">
+          <div class="snap-sandbox-screen" id="snapScreen">
+            <div class="snap-ghost-aura" id="snapGhost"></div>
+            <div class="snap-actor-window" id="snapWindow">
+              <div style="height:28px; background:var(--bar-bg); border-bottom:1px solid var(--line); display:flex; align-items:center; padding:0 8px;">
+                <span class="t-micro" style="font-weight:700;">Вікно</span>
+              </div>
+              <div style="flex:1; padding:8px; font-size:12px; color:var(--fg-3);">
+                Потягніть до краю або натисніть кнопки праворуч
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <div class="t-call" style="color:var(--fg-2);">Спробуйте готові положення вікна:</div>
+            <button class="btn btn--outline btn--sm layer" id="btnSnapLeft">◧ Розділити 50% Ліворуч</button>
+            <button class="btn btn--outline btn--sm layer" id="btnSnapRight">◨ Розділити 50% Праворуч</button>
+            <button class="btn btn--outline btn--sm layer" id="btnSnapMax">⊞ Розгорнути на весь екран</button>
+            <button class="btn btn--ghost btn--sm layer" id="btnSnapReset">Повернути у центр</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 10: APP STORE (NEW) -->
+      <section class="step-card" data-step-index="10" aria-label="Каталог програм">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+            <span>Крок 10 із 12 • Застосунки</span>
+          </div>
+          <h2 class="t-t1 step-title">Усі потрібні програми в один клік</h2>
+          <p class="step-desc">Безпечний каталог: встановлюйте популярні програми без складних команд чи підозрілих сайтів.</p>
+        </div>
+
+        <div class="app-store-grid">
+          <div class="app-store-card">
+            <div class="app-icon-badge" style="background:#ea4335;">🌐</div>
+            <div style="flex:1;">
+              <div style="font-weight:630; font-size:14px;">Google Chrome</div>
+              <div class="t-cap" style="color:var(--fg-3);">Швидкий переглядач веб-сторінок</div>
+            </div>
+            <button class="btn btn--primary btn--sm layer install-app-btn" data-app="Chrome">Встановити</button>
+          </div>
+
+          <div class="app-store-card">
+            <div class="app-icon-badge" style="background:#229ed9;">✈️</div>
+            <div style="flex:1;">
+              <div style="font-weight:630; font-size:14px;">Telegram</div>
+              <div class="t-cap" style="color:var(--fg-3);">Спілкування з друзями та каналами</div>
+            </div>
+            <button class="btn btn--primary btn--sm layer install-app-btn" data-app="Telegram">Встановити</button>
+          </div>
+
+          <div class="app-store-card">
+            <div class="app-icon-badge" style="background:#1ed760;">🎧</div>
+            <div style="flex:1;">
+              <div style="font-weight:630; font-size:14px;">Spotify Music</div>
+              <div class="t-cap" style="color:var(--fg-3);">Мільйони треків та подкастів</div>
+            </div>
+            <button class="btn btn--primary btn--sm layer install-app-btn" data-app="Spotify">Встановити</button>
+          </div>
+
+          <div class="app-store-card">
+            <div class="app-icon-badge" style="background:#107c41;">📝</div>
+            <div style="flex:1;">
+              <div style="font-weight:630; font-size:14px;">LibreOffice</div>
+              <div class="t-cap" style="color:var(--fg-3);">Документи, таблиці та слайди</div>
+            </div>
+            <button class="btn btn--primary btn--sm layer install-app-btn" data-app="LibreOffice">Встановити</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 11: GLIDE SHOT (NEW) -->
+      <section class="step-card" data-step-index="11" aria-label="Знімки екрана">
+        <div class="step-heading-group">
+          <div class="step-subtitle-badge">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            <span>Крок 11 із 12 • Творчість</span>
+          </div>
+          <h2 class="t-t1 step-title">Знімки та Запис екрана (Glide Shot)</h2>
+          <p class="step-desc">Зберігайте важливі моменти або знімайте відео-інструкції в один клік клавішею PrintScreen.</p>
+        </div>
+
+        <div class="two-col-grid">
+          <div class="shot-stage-box" id="shotBox">
+            <div class="camera-flash-overlay" id="shotFlash"></div>
+            <div class="shot-crop-target">
+              <span>🎯 Область захоплення</span>
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:12px; justify-content:center;">
+            <div class="card-box">
+              <div style="font-weight:600; font-size:14px; margin-bottom:4px;">Режими захоплення</div>
+              <div class="t-call" style="color:var(--fg-3);">Виділена область • Окреме вікно • Повний екран</div>
+            </div>
+
+            <button class="btn btn--primary btn--lg layer" id="btnTakeShot">
+              📸 Зробити тестовий знімок
+            </button>
+            <div class="t-cap" style="color:var(--fg-3);">
+              Знімок миттєво копіюється в буфер для швидкої вставки в повідомлення.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 12: READY TO GLIDE (FINALE) -->
+      <section class="step-card" data-step-index="12" aria-label="Готово">
+        <div class="final-celebration">
+          <div style="width:76px; height:76px; border-radius:999px; background:var(--acc-soft); color:var(--acc-text); display:flex; align-items:center; justify-content:center; font-size:36px; box-shadow:0 0 28px var(--acc-glow);">
+            ✨
+          </div>
+
+          <h2 class="t-display">Усе готово до вашого польоту!</h2>
+          <p class="t-body" style="color:var(--fg-2); max-width:620px;">
+            Стільниця Glide повністю налаштована під ваші уподобання та готова до щоденної швидкої роботи.
+          </p>
+
+          <!-- Summary Chips -->
+          <div class="summary-card-deck">
+            <div class="summary-item">
+              <div class="t-micro" style="color:var(--fg-3);">Тема</div>
+              <div style="font-weight:630; font-size:13px;" id="sumStyle">Темна • Малахіт</div>
+            </div>
+            <div class="summary-item">
+              <div class="t-micro" style="color:var(--fg-3);">Мережа</div>
+              <div style="font-weight:630; font-size:13px;" id="sumNet">Glide-Home-5G</div>
+            </div>
+            <div class="summary-item">
+              <div class="t-micro" style="color:var(--fg-3);">Нічне світло</div>
+              <div style="font-weight:630; font-size:13px;" id="sumNight">4600K Увімкнено</div>
+            </div>
+            <div class="summary-item">
+              <div class="t-micro" style="color:var(--fg-3);">Програми</div>
+              <div style="font-weight:630; font-size:13px;" id="sumApps">Готові до роботи</div>
+            </div>
+          </div>
+
+          <!-- Hotkey Sheet for Beginners -->
+          <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center;">
+            <div style="background:var(--fill-2); padding:5px 10px; border-radius:999px; font-size:12px;"><strong>Super</strong> — Лаунчер</div>
+            <div style="background:var(--fill-2); padding:5px 10px; border-radius:999px; font-size:12px;"><strong>Пробіл</strong> — Швидкий перегляд</div>
+            <div style="background:var(--fill-2); padding:5px 10px; border-radius:999px; font-size:12px;"><strong>PrintScreen</strong> — Знімок екрана</div>
+            <div style="background:var(--fill-2); padding:5px 10px; border-radius:999px; font-size:12px;"><strong>Super + L</strong> — Блокування</div>
+          </div>
+
+          <button class="btn btn--primary btn--lg layer" id="btnFinishLaunch" style="box-shadow: 0 10px 28px var(--acc-glow);">
+            <span>Увійти в стільницю Glide</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </button>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Window Footer: Back, Skip Step, Next -->
+    <footer class="welcome-footer">
+      <div class="footer-left-group">
+        <button class="btn btn--outline btn--sm layer" id="btnBack" style="display:none;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+          <span>Назад</span>
+        </button>
+      </div>
+
+      <div class="footer-right-group">
+        <button class="skip-step-btn" id="btnSkipStep">Пропустити цей крок</button>
+        <button class="btn btn--primary btn--sm layer" id="btnNext">
+          <span id="btnNextLabel">Продовжити</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </button>
+      </div>
+    </footer>
+  </main>
+
+  <!-- Modal: Skip Confirmation Dialog -->
+  <div class="modal-overlay" id="skipModal" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="t-t2" style="font-weight:650;">Пропустити знайомство?</div>
+      <p class="t-body" style="color:var(--fg-2); margin-top:8px;">
+        Ви завжди зможете налаштувати усе пізніше у програмі <strong>«Налаштування» (Super + I)</strong>.
+      </p>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
+        <button class="btn btn--outline btn--sm layer" id="modalCancelBtn">Залишитися в турі</button>
+        <button class="btn btn--primary btn--sm layer" id="modalConfirmSkipBtn">Так, перейти до стільниці</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Center Toast Notification -->
+  <div class="toast-center" id="toastCenter">
+    <span id="toastIcon">✨</span>
+    <span id="toastText">Сповіщення</span>
+  </div>
+
+  <!-- JavaScript Interaction Engine -->
+  <script>
+  (function() {
+    'use strict';
+
+    const state = {
+      step: 0,
+      totalSteps: 13,
+      theme: 'dark',
+      accent: 'teal',
+      lang: 'uk',
+      soundEnabled: true,
+      nightTemp: 4600,
+      installedApps: []
+    };
+
+    const docEl = document.documentElement;
+    const welcomeWindow = document.getElementById('welcomeWindow');
+    const stepperSlider = document.getElementById('stepperSlider');
+    const stepBtns = document.querySelectorAll('.step-dot-btn');
+    const btnBack = document.getElementById('btnBack');
+    const btnNext = document.getElementById('btnNext');
+    const btnNextLabel = document.getElementById('btnNextLabel');
+    const btnSkipStep = document.getElementById('btnSkipStep');
+    const globalSkipBtn = document.getElementById('globalSkipBtn');
+    const heroSkipBtn = document.getElementById('heroSkipBtn');
+    const startOnboardingBtn = document.getElementById('startOnboardingBtn');
+    const soundToggle = document.getElementById('soundToggle');
+    const soundIconOn = document.getElementById('soundIconOn');
+    const soundIconOff = document.getElementById('soundIconOff');
+    const langSwitch = document.getElementById('langSwitch');
+    const skipModal = document.getElementById('skipModal');
+    const modalCancelBtn = document.getElementById('modalCancelBtn');
+    const modalConfirmSkipBtn = document.getElementById('modalConfirmSkipBtn');
+    const toastCenter = document.getElementById('toastCenter');
+    const toastText = document.getElementById('toastText');
+    const toastIcon = document.getElementById('toastIcon');
+
+    // Standalone Web Audio Synthesizer
+    let audioCtx = null;
+    function getAudioContext() {
+      if (!audioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (AudioContext) audioCtx = new AudioContext();
+      }
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+      return audioCtx;
+    }
+
+    function playSound(type) {
+      if (!state.soundEnabled) return;
+      try {
+        const ctx = getAudioContext();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+
+        if (type === 'click') {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(750, now);
+          osc.frequency.exponentialRampToValueAtTime(200, now + 0.035);
+          gain.gain.setValueAtTime(0.08, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.035);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(now);
+          osc.stop(now + 0.035);
+        } else if (type === 'step') {
+          [523.25, 659.25, 783.99].forEach((freq, idx) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(freq, now + idx * 0.03);
+            gain.gain.setValueAtTime(0.05, now + idx * 0.03);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.03 + 0.2);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(now + idx * 0.03);
+            osc.stop(now + idx * 0.03 + 0.2);
+          });
+        } else if (type === 'celebrate') {
+          [440, 554.37, 659.25, 880].forEach((freq, idx) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, now + idx * 0.05);
+            gain.gain.setValueAtTime(0.06, now + idx * 0.05);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.05 + 0.6);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(now + idx * 0.05);
+            osc.stop(now + idx * 0.05 + 0.65);
+          });
+        }
+      } catch (e) {}
+    }
+
+    let toastTimer = null;
+    function showToast(text, icon = '✨') {
+      if (!toastCenter) return;
+      toastText.textContent = text;
+      toastIcon.textContent = icon;
+      toastCenter.classList.add('show');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toastCenter.classList.remove('show'), 2200);
+    }
+
+    // Step Switching
+    function setStep(newIndex, isForward = true) {
+      if (newIndex < 0 || newIndex >= state.totalSteps) return;
+      if (newIndex === state.step) return;
+
+      const oldIndex = state.step;
+      const oldCard = document.querySelector(`.step-card[data-step-index="${oldIndex}"]`);
+      const newCard = document.querySelector(`.step-card[data-step-index="${newIndex}"]`);
+
+      playSound('step');
+      state.step = newIndex;
+
+      // Update Slider
+      const btn = document.querySelector(`.step-dot-btn[data-step="${newIndex}"]`);
+      if (btn && stepperSlider) {
+        stepperSlider.style.transform = `translateX(${btn.offsetLeft - 3}px)`;
+      }
+
+      // Update Step Dots
+      stepBtns.forEach((b, idx) => {
+        b.classList.remove('active');
+        if (idx === newIndex) b.classList.add('active');
+        if (idx < newIndex) b.classList.add('completed');
+        else b.classList.remove('completed');
+      });
+
+      // Card Transitions
+      if (oldCard && newCard) {
+        if (isForward) {
+          oldCard.classList.remove('active');
+          oldCard.classList.add('exit-left');
+          newCard.style.transform = 'translateX(48px) scale(0.98)';
+        } else {
+          oldCard.classList.remove('active');
+          oldCard.classList.remove('exit-left');
+          newCard.style.transform = 'translateX(-48px) scale(0.98)';
+        }
+        void newCard.offsetWidth;
+        newCard.classList.add('active');
+        setTimeout(() => oldCard.classList.remove('exit-left'), 400);
+      }
+
+      // Footer Controls
+      if (newIndex === 0) {
+        btnBack.style.display = 'none';
+        btnSkipStep.style.display = 'none';
+        btnNextLabel.textContent = 'Почати';
+      } else if (newIndex === state.totalSteps - 1) {
+        btnBack.style.display = 'inline-flex';
+        btnSkipStep.style.display = 'none';
+        btnNext.style.display = 'none';
+        updateSummaryCard();
+        playSound('celebrate');
+      } else {
+        btnBack.style.display = 'inline-flex';
+        btnSkipStep.style.display = 'inline-block';
+        btnNext.style.display = 'inline-flex';
+        btnNextLabel.textContent = 'Продовжити';
+      }
+    }
+
+    function updateSummaryCard() {
+      const sumStyle = document.getElementById('sumStyle');
+      const sumNight = document.getElementById('sumNight');
+      const sumApps = document.getElementById('sumApps');
+      const accNames = {
+        blue: 'Азурит', teal: 'Малахіт', green: 'Хвоя', amber: 'Бурштин',
+        orange: 'Теракота', red: 'Цинобра', purple: 'Аметист', graphite: 'Графіт'
+      };
+      if (sumStyle) sumStyle.textContent = `${state.theme === 'light' ? 'Світла' : 'Темна'} • ${accNames[state.accent] || 'Малахіт'}`;
+      if (sumNight) sumNight.textContent = `${state.nightTemp}K Увімкнено`;
+      if (sumApps) sumApps.textContent = state.installedApps.length > 0 ? `${state.installedApps.length} встановлено` : 'Готові до роботи';
+    }
+
+    // STEP 1 WI-FI
+    function setupStep1() {
+      const wifiMasterToggle = document.getElementById('wifiMasterToggle');
+      const wifiConnectBtn = document.getElementById('wifiConnectBtn');
+      const wifiConnectFeedback = document.getElementById('wifiConnectFeedback');
+      if (wifiMasterToggle) {
+        wifiMasterToggle.addEventListener('click', () => {
+          playSound('click');
+          wifiMasterToggle.classList.toggle('active');
+          showToast('Стан Wi-Fi змінено', '📶');
+        });
+      }
+      if (wifiConnectBtn) {
+        wifiConnectBtn.addEventListener('click', () => {
+          playSound('click');
+          wifiConnectBtn.textContent = "З'єднання...";
+          setTimeout(() => {
+            wifiConnectBtn.textContent = 'Підключено';
+            if (wifiConnectFeedback) wifiConnectFeedback.textContent = 'Підключено • 192.168.1.142 (шлюз 192.168.1.1)';
+            playSound('celebrate');
+            showToast("Успішно під'єднано до Glide-Home-5G!", '✅');
+          }, 600);
+        });
+      }
+    }
+
+    // STEP 2 THEME & ACCENT
+    function setupStep2() {
+      const themeBtns = document.querySelectorAll('.seg-item');
+      const themeSegThumb = document.getElementById('themeSegThumb');
+      const accentCards = document.querySelectorAll('.accent-card');
+
+      themeBtns.forEach((btn, idx) => {
+        btn.addEventListener('click', () => {
+          playSound('click');
+          themeBtns.forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          if (themeSegThumb) themeSegThumb.style.transform = `translateX(${idx * 100}%)`;
+          const th = btn.getAttribute('data-theme');
+          state.theme = th === 'auto' ? 'dark' : th;
+          docEl.setAttribute('data-theme', state.theme);
+          showToast(`Тема: ${btn.textContent.trim()}`, '🎨');
+        });
+      });
+
+      accentCards.forEach(card => {
+        card.addEventListener('click', () => {
+          playSound('click');
+          accentCards.forEach(c => c.classList.remove('active'));
+          card.classList.add('active');
+          const acc = card.getAttribute('data-acc');
+          state.accent = acc;
+          docEl.setAttribute('data-accent', acc);
+          showToast(`Акцент: ${card.querySelector('.t-micro').textContent}`, '💎');
+        });
+      });
+    }
+
+    // STEP 3 SHELL (ISLAND & DOCK)
+    function setupStep3() {
+      const island = document.getElementById('statusIsland');
+      const islandText = document.getElementById('islandText');
+      const btnMusic = document.getElementById('islandModeMusic');
+      const btnNotify = document.getElementById('islandModeNotify');
+      const btnCall = document.getElementById('islandModeCall');
+      const dockTiles = document.querySelectorAll('.dock-app-tile');
+
+      function setIsland(text, width) {
+        playSound('click');
+        if (islandText) islandText.textContent = text;
+        if (island) island.style.minWidth = width;
+      }
+      if (btnMusic) btnMusic.addEventListener('click', () => setIsland('🎵 Chopin — Nocturne Op. 9', '210px'));
+      if (btnNotify) btnNotify.addEventListener('click', () => setIsland('🔔 Telegram: Нове повідомлення!', '240px'));
+      if (btnCall) btnCall.addEventListener('click', () => setIsland('📞 Вхідний дзвінок: Олена', '200px'));
+
+      dockTiles.forEach(tile => {
+        tile.addEventListener('click', () => {
+          playSound('click');
+          tile.classList.remove('bouncing');
+          void tile.offsetWidth;
+          tile.classList.add('bouncing');
+          showToast(`Запуск: ${tile.getAttribute('data-name')}`, '🚀');
+        });
+      });
+    }
+
+    // STEP 4 GESTURES
+    function setupStep4() {
+      const trackpad = document.getElementById('trackpadMock');
+      const wsScreens = [document.getElementById('ws1'), document.getElementById('ws2'), document.getElementById('ws3')];
+      let curWs = 0;
+      let startX = 0;
+      let isDragging = false;
+
+      if (trackpad) {
+        trackpad.addEventListener('mousedown', (e) => { isDragging = true; startX = e.clientX; });
+        window.addEventListener('mouseup', (e) => {
+          if (!isDragging) return;
+          isDragging = false;
+          const diff = e.clientX - startX;
+          if (diff < -40 && curWs < 2) curWs++;
+          else if (diff > 40 && curWs > 0) curWs--;
+          wsScreens.forEach((ws, idx) => { if (ws) ws.classList.toggle('active', idx === curWs); });
+          playSound('click');
+        });
+      }
+
+      const launcherInput = document.getElementById('launcherInput');
+      const launcherResult = document.getElementById('launcherResult');
+      if (launcherInput && launcherResult) {
+        launcherInput.addEventListener('input', (e) => {
+          const val = e.target.value.trim();
+          try {
+            if (/^[0-9+\-*/. ()]+$/.test(val)) {
+              const res = Function(`'use strict'; return (${val})`)();
+              launcherResult.innerHTML = `<span class="t-num" style="font-weight:700; color:var(--acc-text);">= ${res} (Калькулятор)</span>`;
+            } else {
+              launcherResult.innerHTML = `<span>Швидкий запуск програми <strong>${val}</strong></span>`;
+            }
+          } catch(err) {}
+        });
+      }
+    }
+
+    // STEP 5 PHONE
+    function setupStep5() {
+      const btnPairSimulate = document.getElementById('btnPairSimulate');
+      const phonePairStatus = document.getElementById('phonePairStatus');
+      if (btnPairSimulate && phonePairStatus) {
+        btnPairSimulate.addEventListener('click', () => {
+          playSound('click');
+          btnPairSimulate.textContent = "З'єднуємо...";
+          setTimeout(() => {
+            btnPairSimulate.textContent = "З'єднано з Pixel 8 Pro";
+            phonePairStatus.textContent = "✅ Підключено • 92% заряду";
+            phonePairStatus.style.color = "var(--ok)";
+            playSound('celebrate');
+            showToast("Смартфон зв'язано з комп'ютером!", '📱');
+          }, 700);
+        });
+      }
+    }
+
+    // STEP 6 NIGHT LIGHT
+    function setupStep6() {
+      const slider = document.getElementById('nightLightSlider');
+      const label = document.getElementById('nightTempLabel');
+      const overlay = document.getElementById('nightOverlay');
+      if (slider && label && overlay) {
+        slider.addEventListener('input', (e) => {
+          const val = parseInt(e.target.value, 10);
+          state.nightTemp = val;
+          label.textContent = `${val}K`;
+          // Warm amber opacity
+          const warmth = (6500 - val) / (6500 - 3200);
+          overlay.style.background = `rgba(255, 130, 0, ${warmth * 0.4})`;
+          playSound('click');
+        });
+      }
+    }
+
+    // STEP 7 PHOTOS
+    function setupStep7() {
+      const thumbs = document.querySelectorAll('.photo-thumb-card');
+      const title = document.getElementById('selectedPhotoTitle');
+      const btnPhotoFav = document.getElementById('btnPhotoFav');
+
+      thumbs.forEach(card => {
+        card.addEventListener('click', () => {
+          playSound('click');
+          const t = card.getAttribute('data-title');
+          if (title) title.textContent = `Вибрано: ${t}`;
+          showToast(`Світлина: ${t}`, '🖼️');
+        });
+      });
+
+      if (btnPhotoFav) {
+        btnPhotoFav.addEventListener('click', () => {
+          playSound('celebrate');
+          showToast('Додано до альбому «Улюблені» ❤️', '❤️');
+        });
+      }
+    }
+
+    // STEP 8 QUICKLOOK
+    function setupStep8() {
+      const fileRows = document.querySelectorAll('.file-row-item');
+      const btnSimulateSpace = document.getElementById('btnSimulateSpace');
+      const qlPopup = document.getElementById('quicklookPopup');
+      const qlCloseBtn = document.getElementById('qlCloseBtn');
+      const qlFileName = document.getElementById('qlFileName');
+      const qlMetaText = document.getElementById('qlMetaText');
+
+      let currentFile = { name: 'Звіт_Glide_2026.pdf', type: 'PDF документ', size: '2.4 МБ' };
+
+      fileRows.forEach(row => {
+        row.addEventListener('click', () => {
+          playSound('click');
+          fileRows.forEach(r => r.classList.remove('active-file'));
+          row.classList.add('active-file');
+          currentFile.name = row.getAttribute('data-file');
+          currentFile.type = row.getAttribute('data-type');
+          currentFile.size = row.getAttribute('data-size');
+        });
+      });
+
+      function toggleQuicklook() {
+        if (!qlPopup) return;
+        const isOpen = qlPopup.classList.contains('open');
+        if (!isOpen) {
+          if (qlFileName) qlFileName.textContent = currentFile.name;
+          if (qlMetaText) qlMetaText.textContent = `${currentFile.type} • ${currentFile.size}`;
+          qlPopup.classList.add('open');
+          playSound('step');
+        } else {
+          qlPopup.classList.remove('open');
+          playSound('click');
+        }
+      }
+
+      if (btnSimulateSpace) btnSimulateSpace.addEventListener('click', toggleQuicklook);
+      if (qlCloseBtn) qlCloseBtn.addEventListener('click', () => { qlPopup.classList.remove('open'); playSound('click'); });
+
+      window.addEventListener('keydown', (e) => {
+        if (state.step === 8 && e.code === 'Space' && e.target.tagName !== 'INPUT') {
+          e.preventDefault();
+          toggleQuicklook();
+        }
+      });
+    }
+
+    // STEP 9 SNAPPING
+    function setupStep9() {
+      const snapWindow = document.getElementById('snapWindow');
+      const snapGhost = document.getElementById('snapGhost');
+      const btnLeft = document.getElementById('btnSnapLeft');
+      const btnRight = document.getElementById('btnSnapRight');
+      const btnMax = document.getElementById('btnSnapMax');
+      const btnReset = document.getElementById('btnSnapReset');
+
+      function snapTo(x, y, w, h) {
+        playSound('step');
+        if (snapGhost) {
+          snapGhost.style.left = `${x}px`;
+          snapGhost.style.top = `${y}px`;
+          snapGhost.style.width = `${w}px`;
+          snapGhost.style.height = `${h}px`;
+          snapGhost.style.opacity = '1';
+        }
+        setTimeout(() => {
+          if (snapWindow) {
+            snapWindow.style.left = `${x}px`;
+            snapWindow.style.top = `${y}px`;
+            snapWindow.style.width = `${w}px`;
+            snapWindow.style.height = `${h}px`;
+          }
+          if (snapGhost) snapGhost.style.opacity = '0';
+        }, 180);
+      }
+
+      if (btnLeft) btnLeft.addEventListener('click', () => snapTo(4, 4, 180, 280));
+      if (btnRight) btnRight.addEventListener('click', () => snapTo(188, 4, 180, 280));
+      if (btnMax) btnMax.addEventListener('click', () => snapTo(4, 4, 364, 280));
+      if (btnReset) btnReset.addEventListener('click', () => snapTo(90, 70, 190, 140));
+    }
+
+    // STEP 10 APP STORE
+    function setupStep10() {
+      const installBtns = document.querySelectorAll('.install-app-btn');
+      installBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const app = btn.getAttribute('data-app');
+          playSound('click');
+          btn.disabled = true;
+          btn.textContent = 'Встановлення...';
+          setTimeout(() => {
+            btn.textContent = 'Встановлено ✅';
+            btn.classList.remove('btn--primary');
+            btn.classList.add('btn--tonal');
+            state.installedApps.push(app);
+            playSound('celebrate');
+            showToast(`${app} успішно додано до вашого доку!`, '🎉');
+          }, 800);
+        });
+      });
+    }
+
+    // STEP 11 GLIDE SHOT
+    function setupStep11() {
+      const btnTakeShot = document.getElementById('btnTakeShot');
+      const flash = document.getElementById('shotFlash');
+      if (btnTakeShot && flash) {
+        btnTakeShot.addEventListener('click', () => {
+          playSound('click');
+          flash.style.opacity = '0.9';
+          setTimeout(() => {
+            flash.style.opacity = '0';
+            playSound('celebrate');
+            showToast('Знімок збережено та скопійовано в буфер! 📸', '📸');
+          }, 120);
+        });
+      }
+    }
+
+    // STEP 12 FINALE
+    function setupStep12() {
+      const btnFinish = document.getElementById('btnFinishLaunch');
+      if (btnFinish) {
+        btnFinish.addEventListener('click', () => {
+          playSound('celebrate');
+          welcomeWindow.classList.add('launching');
+          document.body.classList.add('in-desktop');
+          showToast('Ласкаво просимо у вашу нову стільницю Glide!', '🎉');
+        });
+      }
+    }
+
+    // Skip Modals
+    function setupSkip() {
+      function openModal() { playSound('click'); if (skipModal) skipModal.classList.add('open'); }
+      function closeModal() { playSound('click'); if (skipModal) skipModal.classList.remove('open'); }
+
+      if (globalSkipBtn) globalSkipBtn.addEventListener('click', openModal);
+      if (heroSkipBtn) heroSkipBtn.addEventListener('click', openModal);
+      if (modalCancelBtn) modalCancelBtn.addEventListener('click', closeModal);
+      if (modalConfirmSkipBtn) {
+        modalConfirmSkipBtn.addEventListener('click', () => {
+          closeModal();
+          playSound('celebrate');
+          setStep(12);
+        });
+      }
+      if (btnSkipStep) {
+        btnSkipStep.addEventListener('click', () => {
+          playSound('click');
+          showToast(`Крок ${state.step} пропущено`, '⏭️');
+          setStep(state.step + 1, true);
+        });
+      }
+    }
+
+    // Ambient Living Mesh
+    function initAmbient() {
+      const canvas = document.getElementById('ambientCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      let w, h, t = 0;
+      function resize() { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; }
+      window.addEventListener('resize', resize);
+      resize();
+
+      function draw() {
+        t += 0.006;
+        ctx.clearRect(0, 0, w, h);
+        const grad = ctx.createRadialGradient(w * (0.5 + 0.2 * Math.sin(t)), h * (0.4 + 0.2 * Math.cos(t)), 0, w * 0.5, h * 0.5, Math.max(w, h) * 0.6);
+        grad.addColorStop(0, state.theme === 'light' ? 'rgba(18, 139, 126, 0.2)' : 'rgba(18, 139, 126, 0.35)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+        requestAnimationFrame(draw);
+      }
+      draw();
+    }
+
+    function init() {
+      stepBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const s = parseInt(btn.getAttribute('data-step'), 10);
+          setStep(s, s > state.step);
+        });
+      });
+
+      if (btnNext) btnNext.addEventListener('click', () => { if (state.step < state.totalSteps - 1) setStep(state.step + 1, true); });
+      if (btnBack) btnBack.addEventListener('click', () => { if (state.step > 0) setStep(state.step - 1, false); });
+      if (startOnboardingBtn) startOnboardingBtn.addEventListener('click', () => setStep(1, true));
+
+      if (soundToggle) {
+        soundToggle.addEventListener('click', () => {
+          state.soundEnabled = !state.soundEnabled;
+          soundIconOn.style.display = state.soundEnabled ? 'block' : 'none';
+          soundIconOff.style.display = state.soundEnabled ? 'none' : 'block';
+          playSound('click');
+          showToast(state.soundEnabled ? 'Звук увімкнено' : 'Звук вимкнено', state.soundEnabled ? '🔊' : '🔇');
+        });
+      }
+
+      if (langSwitch) {
+        langSwitch.addEventListener('click', () => {
+          state.lang = state.lang === 'uk' ? 'en' : 'uk';
+          langSwitch.querySelector('span').textContent = state.lang.toUpperCase();
+          playSound('click');
+          showToast(state.lang === 'uk' ? 'Мову встановлено: Українська' : 'Language set to: English', '🌐');
+        });
+      }
+
+      // 3D Emblem Tilt
+      const emblemBox = document.getElementById('heroEmblemContainer');
+      if (emblemBox) {
+        emblemBox.addEventListener('mousemove', (e) => {
+          const rect = emblemBox.getBoundingClientRect();
+          const x = e.clientX - rect.left - rect.width / 2;
+          const y = e.clientY - rect.top - rect.height / 2;
+          const emb = emblemBox.querySelector('.hero-emblem');
+          if (emb) emb.style.transform = `rotateX(${-y * 0.4}deg) rotateY(${x * 0.4}deg) scale(1.05)`;
+        });
+        emblemBox.addEventListener('mouseleave', () => {
+          const emb = emblemBox.querySelector('.hero-emblem');
+          if (emb) emb.style.transform = 'rotateX(0deg) rotateY(0deg) scale(1)';
+        });
+      }
+
+      setupStep1();
+      setupStep2();
+      setupStep3();
+      setupStep4();
+      setupStep5();
+      setupStep6();
+      setupStep7();
+      setupStep8();
+      setupStep9();
+      setupStep10();
+      setupStep11();
+      setupStep12();
+      setupSkip();
+      initAmbient();
+
+      // Keyboard navigation
+      window.addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+          if (state.step < state.totalSteps - 1) setStep(state.step + 1, true);
+        } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+          if (state.step > 0) setStep(state.step - 1, false);
+        } else if (e.key === 'Escape') {
+          if (skipModal && skipModal.classList.contains('open')) skipModal.classList.remove('open');
+        }
+      });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  })();
+  </script>
+</body>
+</html>

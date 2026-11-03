@@ -469,6 +469,10 @@ fn draw_hint(c: &mut Canvas<'_>, ink: &Ink<'_>, view: &View, layout: &Layout) {
             let text = format!("{} {}", t(Key::PkWrong), crate::polkit::attempts_left(crate::i18n::language(), *left));
             warn(c, &text);
         }
+        Hint::Said { text, left } => {
+            let text = format!("{text} {}", crate::polkit::attempts_left(crate::i18n::language(), *left));
+            warn(c, &text);
+        }
         Hint::Broken => warn(c, t(Key::PkBroken)),
         Hint::CapsLock => warn(c, t(Key::PkCapsLock)),
         Hint::Keys => {

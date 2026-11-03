@@ -75,7 +75,7 @@ mod xwayland;
 use smithay::{
     backend::session::libseat::LibSeatSession,
     reexports::{
-        calloop::{EventLoop, channel},
+        calloop::{EventLoop, LoopHandle, channel},
         wayland_server::Display,
     },
 };
@@ -284,10 +284,6 @@ fn init_session_services(
 ) -> anyhow::Result<()> {
     spawn_xwayland_satellite();
     update_session_managers_environment();
-    spawn_autostart(&config.general.autostart);
-    if config.general.xdg_autostart {
-        xdg_autostart::spawn_all();
-    }
     if config.general.polkit_agent {
         init_polkit_agent(event_loop, state);
     }
@@ -300,6 +296,10 @@ fn init_session_services(
     init_dock_services(event_loop, state);
     init_logind(event_loop, state);
     init_screensaver(event_loop, state);
+    spawn_autostart(&config.general.autostart);
+    if config.general.xdg_autostart {
+        xdg_autostart::spawn_all(glide_config::autostart::Provided::detect(config.general.polkit_agent));
+    }
     init_shell_bus(event_loop, state);
     init_bluetooth_agent(event_loop);
     init_network_agent(event_loop);
@@ -560,31 +560,126 @@ fn init_quick_settings_network(event_loop: &mut EventLoop<'static, GlideState>) 
 
 fn init_notifications(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
     state.notifications.load_senders(glide_config::senders::Senders::load());
+    start_notification_icons(event_loop, state);
     let (send, receiver) = sink::<glide_notify::NotifyEvent>("a notification");
-    match glide_notify::start(std::sync::Arc::new(send)) {
-        Ok(handle) => state.notifications.attach(handle),
-        Err(err) => {
-            tracing::warn!(
-                "notifications are unavailable ({err}); another daemon may already own \
-                 {}, or there is no session bus",
-                glide_notify::BUS_NAME
-            );
+    if watch(event_loop, receiver, "the notification channel", GlideState::handle_notify_event) {
+        start_notifications(&event_loop.handle(), state, std::sync::Arc::new(send), 0);
+    }
+}
+
+fn notify_retry_delay(failures: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(2u64 << failures.min(5)).min(std::time::Duration::from_mins(1))
+}
+
+fn start_notifications(
+    handle: &LoopHandle<'static, GlideState>, state: &mut GlideState, sink: glide_notify::Sink, failures: u32,
+) {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+
+    let err = match glide_notify::start(sink.clone()) {
+        Ok(notify) => {
+            state.notifications.attach(notify);
             return;
         }
+        Err(err) => err,
+    };
+    let failures = failures.saturating_add(1);
+    let delay = notify_retry_delay(failures);
+    if failures == 1 {
+        tracing::warn!(
+            "notifications are unavailable ({err}); another daemon may own {}, or there is no session bus. \
+             Trying again every {delay:?} or so",
+            glide_notify::BUS_NAME
+        );
+    } else {
+        tracing::debug!("notifications are still unavailable ({err}); trying again in {delay:?}");
     }
-    watch(event_loop, receiver, "the notification channel", GlideState::handle_notify_event);
+    let again = handle.clone();
+    let scheduled = handle.insert_source(Timer::from_duration(delay), move |_, (), state| {
+        start_notifications(&again, state, sink.clone(), failures);
+        TimeoutAction::Drop
+    });
+    if let Err(err) = scheduled {
+        tracing::error!("failed to schedule another try at serving notifications: {err}");
+    }
+}
+
+fn start_notification_icons(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
+    let (send, receiver) = sink::<(u32, u64, Option<Vec<u8>>)>("a notification icon");
+    let watched = watch(event_loop, receiver, "the notification icon channel", |state, (id, ticket, icon)| {
+        state.handle_notification_icon(id, ticket, icon);
+    });
+    if !watched {
+        return;
+    }
+    let (jobs, queue) = std::sync::mpsc::channel::<crate::notifications::IconJob>();
+    let spawned = std::thread::Builder::new().name("glide-notify-icons".into()).spawn(move || {
+        for job in queue {
+            send((job.id, job.ticket, job.render()));
+        }
+    });
+    match spawned {
+        Ok(_) => state.notifications.attach_icon_worker(jobs),
+        Err(err) => tracing::warn!("notification images will load on the compositor thread: {err}"),
+    }
+}
+
+const MEDIA_STABLE: std::time::Duration = std::time::Duration::from_mins(1);
+
+fn media_retry_delay(failures: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(2u64 << failures.min(5)).min(MEDIA_STABLE)
+}
+
+fn start_media(handle: &LoopHandle<'static, GlideState>, state: &mut GlideState, failures: u32) {
+    let (send, receiver) = sink::<glide_media::MediaEvent>("a media update");
+    let media = match glide_media::start(std::sync::Arc::new(send)) {
+        Ok(media) => media,
+        Err(err) => {
+            let failures = failures.saturating_add(1);
+            tracing::warn!(
+                "media players are unavailable ({err}); is there a session bus? Trying again in {:?}",
+                media_retry_delay(failures)
+            );
+            retry_media(handle, failures);
+            return;
+        }
+    };
+    let started = std::time::Instant::now();
+    let restart = handle.clone();
+    let mut closed = false;
+    let inserted = handle.insert_source(receiver, move |event, (), state| match event {
+        channel::Event::Msg(event) => state.handle_media_event(event),
+        channel::Event::Closed if !closed => {
+            closed = true;
+            state.media = None;
+            state.handle_media_event(glide_media::MediaEvent::Gone);
+            let failures = if started.elapsed() >= MEDIA_STABLE { 0 } else { failures.saturating_add(1) };
+            tracing::warn!("the media player link stopped; starting it again in {:?}", media_retry_delay(failures));
+            retry_media(&restart, failures);
+        }
+        channel::Event::Closed => {}
+    });
+    match inserted {
+        Ok(_) => state.media = Some(media),
+        Err(err) => tracing::error!("failed to watch the media channel: {err}"),
+    }
+}
+
+fn retry_media(handle: &LoopHandle<'static, GlideState>, failures: u32) {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+
+    let again = handle.clone();
+    let scheduled = handle.insert_source(Timer::from_duration(media_retry_delay(failures)), move |_, (), state| {
+        start_media(&again, state, failures);
+        TimeoutAction::Drop
+    });
+    if let Err(err) = scheduled {
+        tracing::error!("failed to schedule a media restart: {err}");
+    }
 }
 
 fn init_media(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
-    let (send, receiver) = sink::<glide_media::MediaEvent>("a media update");
-    match glide_media::start(std::sync::Arc::new(send)) {
-        Ok(handle) => state.media = Some(handle),
-        Err(err) => {
-            tracing::warn!("media players are unavailable ({err}); is there a session bus?");
-            return;
-        }
-    }
-    watch(event_loop, receiver, "the media channel", GlideState::handle_media_event);
+    start_media(&event_loop.handle(), state, 0);
 
     let (send, receiver) = sink::<(String, media_art::DecodedArt)>("decoded cover art");
     let Some(worker) = media_art::start(move |url, art| send((url, art))) else {
@@ -769,6 +864,13 @@ mod tests {
         assert_eq!(parse(&["-V"]), Cli::Version);
         assert_eq!(parse(&["--versoin"]), Cli::Unknown("--versoin".into()));
         assert!(USAGE.contains("--greeter") && USAGE.contains("--version"));
+    }
+
+    #[test]
+    fn a_failing_media_link_is_retried_ever_more_slowly_up_to_a_minute() {
+        let delays: Vec<u64> = (0..9).map(|failures| media_retry_delay(failures).as_secs()).collect();
+        assert_eq!(delays, [2, 4, 8, 16, 32, 60, 60, 60, 60]);
+        assert_eq!(media_retry_delay(u32::MAX), MEDIA_STABLE);
     }
 
     #[test]

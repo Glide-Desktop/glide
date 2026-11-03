@@ -30,7 +30,9 @@ const TIP_H: i32 = 26;
 const TIP_GAP: f64 = 8.0;
 const RING_PAD: i32 = 4;
 const RING_WIDTH: f32 = 2.5;
+const RING_TINT: f32 = 0.12;
 const BAR_RISE: f64 = 8.0;
+const ANCHORED_RISE: f64 = 6.0;
 const GLYPH: f32 = 20.0;
 const TEXT_PAD: f32 = 4.0;
 const TOOL_GLYPH: f32 = 18.0;
@@ -131,17 +133,23 @@ pub struct Cache {
     marks: Option<Layer>,
     draft: Option<Layer>,
     blurs: HashMap<usize, Layer>,
+    pending_blurs: HashMap<usize, BlurJob>,
     bars: HashMap<i32, Keyed>,
     hovers: HashMap<(i32, i32, i32, u32, bool), Option<MemoryRenderBuffer>>,
     hover_key: u64,
     handle: HashMap<i32, Keyed>,
     badge: HashMap<i32, Keyed>,
     tip: HashMap<i32, Keyed>,
-    ring: HashMap<i32, Keyed>,
+    corners: HashMap<(i32, bool), Keyed>,
     ids: Vec<Id>,
     pub hover: glide_ui::HoverAnimation<Control>,
     hover_since: Option<Instant>,
+    pressed: Option<Control>,
     reveal: glide_ui::Tween,
+    closing: bool,
+    bar_shown: glide_ui::Tween,
+    badge_shown: glide_ui::Tween,
+    handles_shown: glide_ui::Tween,
 }
 
 impl Default for Cache {
@@ -152,25 +160,48 @@ impl Default for Cache {
             marks: None,
             draft: None,
             blurs: HashMap::new(),
+            pending_blurs: HashMap::new(),
             bars: HashMap::new(),
             hovers: HashMap::new(),
             hover_key: 0,
             handle: HashMap::new(),
             badge: HashMap::new(),
             tip: HashMap::new(),
-            ring: HashMap::new(),
-            ids: (0..12).map(|_| Id::new()).collect(),
+            corners: HashMap::new(),
+            ids: (0..16).map(|_| Id::new()).collect(),
             hover: glide_ui::HoverAnimation::default(),
             hover_since: None,
+            pressed: None,
             reveal: glide_ui::Tween::at(0.0),
+            closing: false,
+            bar_shown: glide_ui::Tween::at(1.0),
+            badge_shown: glide_ui::Tween::at(0.0),
+            handles_shown: glide_ui::Tween::at(0.0),
         }
     }
 }
 
+fn presence(tween: &mut glide_ui::Tween, shown: bool) -> f64 {
+    let duration = glide_theme::motion::t2();
+    tween.retarget(if shown { 1.0 } else { 0.0 }, duration, glide_theme::motion::ease_out);
+    tween.value(duration, glide_theme::motion::ease_out).clamp(0.0, 1.0)
+}
+
 impl Cache {
     pub fn reveal(&mut self) {
+        self.closing = false;
         self.reveal.jump(0.0);
         self.reveal.retarget(1.0, glide_theme::motion::t2(), glide_theme::motion::ease_out);
+    }
+
+    pub fn conceal(&mut self) {
+        let from = self.openness();
+        self.closing = true;
+        self.pressed = None;
+        self.hover.set_with(None, glide_theme::motion::t1());
+        self.hover_since = None;
+        self.reveal.jump(from);
+        self.reveal.retarget(0.0, glide_theme::motion::t2(), glide_theme::motion::ease_io);
     }
 
     pub fn set_hover(&mut self, control: Option<Control>) -> bool {
@@ -181,22 +212,36 @@ impl Cache {
         changed
     }
 
+    pub fn set_pressed(&mut self, control: Option<Control>) -> bool {
+        let changed = self.pressed != control;
+        self.pressed = control;
+        changed
+    }
+
     #[must_use]
     pub fn is_animating(&self) -> bool {
         let layers = glide_theme::motion::t1();
+        let scene = glide_theme::motion::t2();
         let tip_pending = self.hover_since.is_some_and(|since| {
             since.elapsed() < glide_theme::component::TOOLTIP_DELAY + layers && tip_text(self.hover.target()).is_some()
         });
-        self.hover.is_animating(layers) || self.reveal.is_animating(glide_theme::motion::t2()) || tip_pending
+        let shown = [&self.bar_shown, &self.badge_shown, &self.handles_shown];
+        self.hover.is_animating(layers)
+            || self.reveal.is_animating(scene)
+            || tip_pending
+            || shown.iter().any(|tween| tween.is_animating(scene))
+            || self.pending_blurs.values().any(|job| !job.failed)
     }
 
     fn openness(&self) -> f64 {
-        self.reveal.value(glide_theme::motion::t2(), glide_theme::motion::ease_out).clamp(0.0, 1.0)
+        let ease = if self.closing { glide_theme::motion::ease_io } else { glide_theme::motion::ease_out };
+        self.reveal.value(glide_theme::motion::t2(), ease).clamp(0.0, 1.0)
     }
 
     pub fn drop_window(&mut self) {
         self.window = None;
         self.blurs.clear();
+        self.pending_blurs.clear();
     }
 }
 
@@ -442,6 +487,7 @@ struct Ctx<'a, R: crate::raster::ShellRenderer> {
     scale: f64,
     frozen_size: (u32, u32),
     openness: f32,
+    content: f32,
     output_scale: i32,
     base_key: u64,
     full: Area,
@@ -462,13 +508,15 @@ pub fn render<R>(
 where
     R: crate::raster::ShellRenderer,
 {
+    let openness = cache.openness() as f32;
     let mut ctx = Ctx {
         renderer,
         painter,
         palette,
         scale: scene.sources.scale,
         frozen_size: (scene.sources.frozen.width, scene.sources.frozen.height),
-        openness: cache.openness() as f32,
+        openness,
+        content: if cache.closing { openness } else { 1.0 },
         output_scale,
         base_key: palette.revision().u64(theme_revision).u64(crate::paint::painter_generation()).finish(),
         full: scene.shot.full(),
@@ -485,19 +533,27 @@ fn render_bar<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &Shot, c
     let (renderer, pieces) = (&mut *ctx.renderer, &mut ctx.pieces);
     let (painter, palette, scale, openness) = (ctx.painter, ctx.palette, ctx.scale, ctx.openness);
     let (output_scale, base_key, full) = (ctx.output_scale, ctx.base_key, ctx.full);
-    if shot.bar_visible() {
+    let visible = shot.bar_visible();
+    let shown = if cache.closing {
+        cache.bar_shown.value(glide_theme::motion::t2(), glide_theme::motion::ease_out).clamp(0.0, 1.0)
+    } else {
+        presence(&mut cache.bar_shown, visible)
+    };
+    if shown > 0.0 {
         let bar = shot.bar();
-        let rise = BAR_RISE * (1.0 - f64::from(openness));
+        let rise = BAR_RISE * (1.0 - f64::from(openness)) + BAR_RISE * (1.0 - shown);
         let origin = bar.rect.loc + Point::from((0.0, rise));
-        if let Some(control) = cache.hover.target()
+        let alpha = (glide_theme::motion::assist(f64::from(openness)) * glide_theme::motion::assist(shown)) as f32;
+        if visible
+            && let Some(control) = cache.hover.target()
             && let Some(text) = tip_text(Some(control))
             && cache.hover_since.is_some_and(|since| since.elapsed() >= glide_theme::component::TOOLTIP_DELAY)
             && let Some(item) = bar.item(control)
         {
             let since = cache.hover_since.map_or(0.0, |since| {
-                (since.elapsed().saturating_sub(glide_theme::component::TOOLTIP_DELAY).as_secs_f64()
-                    / glide_theme::motion::t1().as_secs_f64().max(1e-6))
-                .min(1.0)
+                let fraction = since.elapsed().saturating_sub(glide_theme::component::TOOLTIP_DELAY).as_secs_f64()
+                    / glide_theme::motion::t1().as_secs_f64().max(1e-6);
+                glide_theme::motion::ease_out(fraction.min(1.0))
             });
             let key = glide_theme::Revision::new().u64(base_key).str(&text).finish();
             let tip = cache.tip.entry(output_scale).or_insert_with(|| Keyed {
@@ -515,14 +571,17 @@ fn render_bar<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &Shot, c
                 let w = f64::from(tip.size.0);
                 let x = (centre - w / 2.0).round().clamp(4.0, (full.size.w - w - 4.0).max(4.0));
                 let above = origin.y - TIP_GAP - f64::from(TIP_H);
-                let y = if above >= 4.0 { above } else { origin.y + bar.rect.size.h + TIP_GAP };
-                pieces.extend(raster(renderer, &tip.buffer, Point::from((x, y)), (since as f32) * openness, scale));
+                let travel = ANCHORED_RISE * (1.0 - since);
+                let y = if above >= 4.0 { above + travel } else { origin.y + bar.rect.size.h + TIP_GAP - travel };
+                let tip_alpha = glide_theme::motion::assist(since) as f32 * alpha;
+                pieces.extend(raster(renderer, &tip.buffer, Point::from((x, y)), tip_alpha, scale));
             }
         }
         let layers = glide_theme::motion::t1();
         for (control, item) in &bar.items {
             let level = cache.hover.level(*control, layers);
-            if level <= 0.0 || !shot.enabled(*control) {
+            let pressed = visible && cache.pressed == Some(*control);
+            if (level <= 0.0 && !pressed) || !shot.enabled(*control) {
                 continue;
             }
             let radius = match control {
@@ -545,8 +604,9 @@ fn render_bar<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &Shot, c
             }) else {
                 continue;
             };
-            let alpha = (level as f32) * glide_theme::motion::ST_HOVER * openness;
-            pieces.extend(raster(renderer, buffer, origin + item.loc, alpha, scale));
+            let state = if pressed { glide_theme::motion::ST_PRESS } else { glide_theme::motion::ST_HOVER };
+            let layer = if pressed { 1.0 } else { level as f32 };
+            pieces.extend(raster(renderer, buffer, origin + item.loc, layer * state * alpha, scale));
         }
         let key = glide_theme::Revision::new().u64(base_key).u64(bar_state(shot)).finish();
         let panel = cache.bars.entry(output_scale).or_insert_with(|| Keyed {
@@ -562,7 +622,7 @@ fn render_bar<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &Shot, c
         if panel.key == key {
             let margin = bar_margin();
             let at = origin - Point::from((f64::from(margin), f64::from(margin)));
-            pieces.extend(raster(renderer, &panel.buffer, at, openness, scale));
+            pieces.extend(raster(renderer, &panel.buffer, at, alpha, scale));
         }
     }
 }
@@ -573,6 +633,13 @@ fn render_selection<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &S
     let (output_scale, base_key, full, frozen_size) = (ctx.output_scale, ctx.base_key, ctx.full, ctx.frozen_size);
     let target = shot.target();
     let show_badge = shot.selecting() || (shot.editing() && shot.mode == Mode::Area);
+    let closing = cache.closing;
+    let badge_shown = if closing { 1.0 } else { presence(&mut cache.badge_shown, show_badge && target.is_some()) };
+    let handles_shown = if closing { 1.0 } else { presence(&mut cache.handles_shown, shot.resizable()) };
+    let entering = |shown: f64| {
+        let progress = f64::from(openness) * shown;
+        (ANCHORED_RISE * (1.0 - progress), glide_theme::motion::assist(progress) as f32)
+    };
     if let Some(target) = target.filter(|_| show_badge) {
         let (w, h) = badge_size(target, scale, frozen_size);
         let text = format!("{w} × {h}");
@@ -591,7 +658,9 @@ fn render_selection<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &S
             let above = target.loc.y - BADGE_GAP - f64::from(BADGE_H);
             let y = if above >= 2.0 { above } else { target.loc.y + BADGE_GAP };
             let x = target.loc.x.clamp(2.0, (full.size.w - f64::from(badge.size.0) - 2.0).max(2.0));
-            pieces.extend(raster(renderer, &badge.buffer, Point::from((x.round(), y.round())), openness, scale));
+            let (rise, alpha) = entering(badge_shown);
+            let at = Point::from((x.round(), (y + rise).round()));
+            pieces.extend(raster(renderer, &badge.buffer, at, alpha, scale));
         }
     }
 
@@ -610,9 +679,16 @@ fn render_selection<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &S
             *handle = Keyed { key, buffer, size: (HANDLE, HANDLE) };
         }
         let half = f64::from(HANDLE) / 2.0;
+        let (rise, alpha) = entering(handles_shown);
         for which in model::HANDLES {
             let at = which.at(target);
-            pieces.extend(raster(renderer, &handle.buffer, Point::from((at.x - half, at.y - half)), openness, scale));
+            pieces.extend(raster(
+                renderer,
+                &handle.buffer,
+                Point::from((at.x - half, at.y - half + rise)),
+                alpha,
+                scale,
+            ));
         }
     }
 
@@ -632,12 +708,13 @@ fn render_selection<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &S
 
 fn render_marks<R: crate::raster::ShellRenderer>(cache: &mut Cache, scene: &Scene<'_>, ctx: &mut Ctx<'_, R>) {
     let (renderer, pieces) = (&mut *ctx.renderer, &mut ctx.pieces);
-    let (palette, scale) = (ctx.palette, ctx.scale);
+    let (palette, scale, content) = (ctx.palette, ctx.scale, ctx.content);
     let shot = scene.shot;
     let clip = shot
         .target()
         .filter(|_| shot.editing())
         .map(|target| selection_area(shot.mode, target, scale, ctx.frozen_size));
+    let blur_tint = if palette.appearance_dark { Color([1.0, 1.0, 1.0, 0.18]) } else { Color([1.0, 1.0, 1.0, 0.35]) };
     if let Some(draft) = shot.draft.as_ref() {
         let key = shape_key(draft);
         if cache.draft.as_ref().is_none_or(|layer| layer.key != key) {
@@ -648,14 +725,12 @@ fn render_marks<R: crate::raster::ShellRenderer>(cache: &mut Cache, scene: &Scen
             };
         }
         if let Some(layer) = cache.draft.as_ref() {
-            pieces.extend(place(renderer, &layer.buffer, layer.area, layer.pixels, clip, 1.0, scale));
+            pieces.extend(place(renderer, &layer.buffer, layer.area, layer.pixels, clip, content, scale));
         }
         if let Shape::Blur(a, b) = draft.shape {
             let preview = model::rect_between(a, b);
             if let Some(visible) = clip.and_then(|clip| intersect(preview, clip)) {
-                let tint =
-                    if palette.appearance_dark { Color([1.0, 1.0, 1.0, 0.18]) } else { Color([1.0, 1.0, 1.0, 0.35]) };
-                pieces.push(solid(&cache.ids[9], visible, premultiplied(tint, 1.0), scale));
+                pieces.push(solid(&cache.ids[9], visible, premultiplied(blur_tint, content), scale));
             }
         }
     } else {
@@ -665,45 +740,89 @@ fn render_marks<R: crate::raster::ShellRenderer>(cache: &mut Cache, scene: &Scen
     let marks_key = glide_theme::Revision::new()
         .u64(shot.revision)
         .u64(shot.marks.iter().filter(|mark| mark.sprite.is_some()).count() as u64)
+        .u64(crate::paint::painter_generation())
         .f64(scale)
         .finish();
     if cache.marks.as_ref().is_none_or(|layer| layer.key != marks_key) {
         cache.marks = draw_layer(&shot.marks, scale, marks_key);
     }
     if let Some(layer) = cache.marks.as_ref() {
-        pieces.extend(place(renderer, &layer.buffer, layer.area, layer.pixels, clip, 1.0, scale));
+        pieces.extend(place(renderer, &layer.buffer, layer.area, layer.pixels, clip, content, scale));
     }
 
     let (source, frame) = scene.sources.blur_source();
     let generation = scene.window_generation as u64;
     cache.blurs.retain(|index, _| *index < shot.marks.len());
+    cache.pending_blurs.retain(|index, _| *index < shot.marks.len());
     for (index, mark) in shot.marks.iter().enumerate() {
         let Shape::Blur(from, to) = mark.shape else {
             continue;
         };
         let key = shape_key(mark) ^ generation.rotate_left(17);
-        let fresh = cache.blurs.get(&index).is_none_or(|layer| layer.key != key);
-        if fresh {
-            let region = frame.pixels(from, to);
-            match compose::obscured(source, region, scale) {
-                Some(patch) => {
-                    let px = f64::from(region.0.max(0)) + frame.x;
-                    let py = f64::from(region.1.max(0)) + frame.y;
-                    let at =
-                        area(px / scale, py / scale, f64::from(patch.width) / scale, f64::from(patch.height) / scale);
-                    cache.blurs.insert(
-                        index,
-                        Layer { key, buffer: frame_buffer(&patch), area: at, pixels: (patch.width, patch.height) },
-                    );
+        if cache.blurs.get(&index).is_none_or(|layer| layer.key != key) {
+            cache.blurs.remove(&index);
+            if cache.pending_blurs.get(&index).is_none_or(|job| job.key != key) {
+                let region = frame.pixels(from, to);
+                let px = f64::from(region.0.max(0)) + frame.x;
+                let py = f64::from(region.1.max(0)) + frame.y;
+                match source.crop(region) {
+                    Some(cropped) => {
+                        let at = area(
+                            px / scale,
+                            py / scale,
+                            f64::from(cropped.width) / scale,
+                            f64::from(cropped.height) / scale,
+                        );
+                        cache.pending_blurs.insert(index, BlurJob::start(key, at, cropped, scale));
+                    }
+                    None => {
+                        cache.pending_blurs.remove(&index);
+                    }
                 }
-                None => {
-                    cache.blurs.remove(&index);
+            }
+            if let Some(job) = cache.pending_blurs.get_mut(&index).filter(|job| !job.failed) {
+                match job.receiver.try_recv() {
+                    Ok(Some(patch)) => {
+                        let layer = Layer {
+                            key,
+                            buffer: frame_buffer(&patch),
+                            area: job.at,
+                            pixels: (patch.width, patch.height),
+                        };
+                        cache.blurs.insert(index, layer);
+                        cache.pending_blurs.remove(&index);
+                    }
+                    Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => job.failed = true,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 }
             }
         }
         if let Some(layer) = cache.blurs.get(&index) {
-            pieces.extend(place(renderer, &layer.buffer, layer.area, layer.pixels, clip, 1.0, scale));
+            pieces.extend(place(renderer, &layer.buffer, layer.area, layer.pixels, clip, content, scale));
+        } else if let Some(job) = cache.pending_blurs.get(&index)
+            && let Some(visible) = clip.map_or(Some(job.at), |clip| intersect(job.at, clip))
+        {
+            pieces.push(solid(&job.id, visible, premultiplied(blur_tint, content), scale));
         }
+    }
+}
+
+struct BlurJob {
+    key: u64,
+    at: Area,
+    id: Id,
+    receiver: std::sync::mpsc::Receiver<Option<Image>>,
+    failed: bool,
+}
+
+impl BlurJob {
+    fn start(key: u64, at: Area, cropped: Image, scale: f64) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let region = (0, 0, cropped.width as i32, cropped.height as i32);
+        let spawned = std::thread::Builder::new().name("glide-shot-blur".into()).spawn(move || {
+            let _ = sender.send(compose::obscured(&cropped, region, scale));
+        });
+        Self { key, at, id: Id::new(), receiver, failed: spawned.is_err() }
     }
 }
 
@@ -792,7 +911,7 @@ fn bar_state(shot: &Shot) -> u64 {
         .bool(shot.can_redo())
         .u64(crate::i18n::language() as u64);
     let bar = shot.bar();
-    revision = revision.f64(bar.rect.size.w);
+    revision = revision.f64(bar.rect.size.w).f64(bar.rect.size.h);
     revision.finish()
 }
 
@@ -1140,7 +1259,7 @@ fn bar_canvas(shot: &Shot, bar: &Bar, palette: &Palette, painter: &Painter, scal
     canvas.fill(panel, palette.panel, radius);
     canvas.stroke(panel, 1.0, radius, palette.line);
     for rule in &bar.rules {
-        canvas.fill(rect(margin + *rule as i32, margin + (height - 20) / 2, 1, 20), palette.line, 0.0);
+        canvas.fill(rect(margin + rule.x as i32, margin + rule.y as i32 - 10, 1, 20), palette.line, 0.0);
     }
     let mut decor = Decor::default();
     for (control, item) in &bar.items {

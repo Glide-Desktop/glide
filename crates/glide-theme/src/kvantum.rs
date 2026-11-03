@@ -466,10 +466,11 @@ const SHADOW: f32 = 10.0;
 const TOP_SHADOW: f32 = 0.55;
 const SIDE_SHADOW: f32 = 0.8;
 const CHECK: f32 = 18.0;
-const CHECK_RADIUS: f32 = 5.0;
+const CHECK_RADIUS: f32 = R2 / 2.0 + 1.0;
 const BOX_STROKE: f32 = 1.5;
 const HANDLE: f32 = 18.0;
 const PROGRESS: f32 = 6.0;
+const GROOVE_ROUND: f32 = PROGRESS / 2.0;
 
 #[must_use]
 pub fn svg(tokens: &Tokens) -> String {
@@ -490,9 +491,9 @@ pub fn svg(tokens: &Tokens) -> String {
     svg.frames("common", [Look::new(CLEAR, p.on_win(t.line)); 5], R2, 1.0);
     svg.frames("tooltip", p.card(t.popover_bg), R2, 1.0);
     svg.frames("header", p.header(), 1.0, 1.0);
-    svg.frames("slider", p.groove(), 3.0, 1.0);
-    svg.frames("progress", p.groove(), 3.0, 1.0);
-    svg.frames("progress-pattern", p.accent(), 3.0, 1.0);
+    svg.frames("slider", p.groove(), GROOVE_ROUND, 1.0);
+    svg.frames("progress", p.groove(), GROOVE_ROUND, 1.0);
+    svg.frames("progress-pattern", p.accent(), GROOVE_ROUND, 1.0);
     svg.frames("scrollbarslider", p.thumb(), R1, 1.0);
     let rule = p.on_win(t.line_2);
     for id in ["toolbar-handle", "toolbar-separator", "header-separator"] {
@@ -742,10 +743,10 @@ fn widget_sections(out: &mut String, p: &Palette) {
     let mut header = framed("header", 1.0, true);
     header.extend(text(p.on_win(t.fg_2), fg));
     section(out, "HeaderSection", &header);
-    section(out, "Slider", &framed("slider", 3.0, true));
+    section(out, "Slider", &framed("slider", GROOVE_ROUND, true));
     section(out, "SliderCursor", &with(bare(), &[("interior", "true"), ("interior.element", "slidercursor")]));
-    section(out, "Progressbar", &framed("progress", 3.0, true));
-    section(out, "ProgressbarContents", &framed("progress-pattern", 3.0, true));
+    section(out, "Progressbar", &framed("progress", GROOVE_ROUND, true));
+    section(out, "ProgressbarContents", &framed("progress-pattern", GROOVE_ROUND, true));
     section(out, "ScrollbarSlider", &framed("scrollbarslider", R1, true));
     section(out, "ScrollbarGroove", &bare());
     section(out, "Scrollbar", &with(bare(), &[("indicator.element", "arrow"), ("indicator.size", "10")]));

@@ -65,27 +65,37 @@ fn device_name() -> String {
 
 impl PhoneConfig {
     pub fn load_or_generate(path: &Path) -> Result<(Self, IdentityCert), Box<dyn std::error::Error + Send + Sync>> {
-        if path.is_file() {
-            let content = fs::read_to_string(path)?;
-            if let Ok(mut config) = serde_json::from_str::<PhoneConfig>(&content)
-                && !config.cert_der.is_empty()
-                && !config.key_der.is_empty()
-                && config.device_id.len() >= 32
-            {
-                config.config_path = Some(path.to_path_buf());
-                let name = device_name();
-                if config.device_name != name {
-                    config.device_name = name;
-                    config.save_if_configured();
+        match fs::read_to_string(path) {
+            Ok(content) => match Self::parse(&content) {
+                Ok(mut config) => {
+                    config.config_path = Some(path.to_path_buf());
+                    restrict_permissions(path);
+                    let name = device_name();
+                    if config.device_name != name {
+                        config.device_name = name;
+                        config.save_if_configured();
+                    }
+                    let cert = IdentityCert::from_der(
+                        config.cert_der.clone(),
+                        config.key_der.clone(),
+                        config.cert_pem.clone(),
+                        config.key_pem.clone(),
+                    );
+                    return Ok((config, cert));
                 }
-                let cert = IdentityCert::from_der(
-                    config.cert_der.clone(),
-                    config.key_der.clone(),
-                    config.cert_pem.clone(),
-                    config.key_pem.clone(),
-                );
-                return Ok((config, cert));
-            }
+                Err(reason) => {
+                    let backup = path.with_extension("json.bad");
+                    fs::rename(path, &backup)?;
+                    tracing::error!(
+                        path = %path.display(),
+                        backup = %backup.display(),
+                        %reason,
+                        "phone identity is unreadable; kept it aside and created a new one, every phone must pair again"
+                    );
+                }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(Box::new(err)),
         }
 
         let device_id = generate_device_id();
@@ -102,23 +112,38 @@ impl PhoneConfig {
             config_path: Some(path.to_path_buf()),
         };
 
-        let _ = config.save(path);
+        config.save(path)?;
 
         Ok((config, cert))
     }
 
+    fn parse(content: &str) -> Result<Self, String> {
+        let config = serde_json::from_str::<PhoneConfig>(content).map_err(|err| err.to_string())?;
+        if config.cert_der.is_empty() || config.key_der.is_empty() {
+            return Err("certificate or key missing".into());
+        }
+        if config.device_id.len() < 32 {
+            return Err("device id too short".into());
+        }
+        Ok(config)
+    }
+
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty())
+            && !parent.exists()
+        {
+            fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
         }
         let serialized =
             serde_json::to_string_pretty(self).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        fs::write(path, serialized)
+        glide_config::write_private(path, serialized.as_bytes())
     }
 
     pub fn save_if_configured(&self) {
-        if let Some(path) = &self.config_path {
-            let _ = self.save(path);
+        if let Some(path) = &self.config_path
+            && let Err(err) = self.save(path)
+        {
+            tracing::error!(path = %path.display(), %err, "failed to save phone identity and pairings");
         }
     }
 

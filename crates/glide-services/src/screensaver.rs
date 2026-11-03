@@ -9,7 +9,7 @@ use std::{
 
 use zbus::{
     blocking::{Connection, MessageIterator, connection::Builder, fdo::DBusProxy},
-    fdo::{RequestNameFlags, RequestNameReply},
+    fdo::RequestNameReply,
     message::Header,
     names::BusName,
 };
@@ -161,7 +161,6 @@ impl ScreenSaver {
 }
 
 pub struct Handle {
-    inhibited: bool,
     active: bool,
     changes: mpsc::Sender<bool>,
     shared: Arc<Shared>,
@@ -169,17 +168,13 @@ pub struct Handle {
 
 impl Handle {
     #[must_use]
-    pub const fn inhibited(&self) -> bool {
-        self.inhibited
+    pub fn inhibited(&self) -> bool {
+        self.shared.cookies.lock().unwrap_or_else(PoisonError::into_inner).any()
     }
 
     #[must_use]
     pub fn apps(&self) -> Vec<String> {
         self.shared.cookies.lock().unwrap_or_else(PoisonError::into_inner).apps()
-    }
-
-    pub const fn set_inhibited(&mut self, inhibited: bool) {
-        self.inhibited = inhibited;
     }
 
     pub fn set_active(&mut self, active: bool) {
@@ -189,7 +184,7 @@ impl Handle {
     }
 }
 
-fn vanished_owner(message: &zbus::Message) -> Option<String> {
+fn owner_change(message: &zbus::Message) -> Option<(String, String)> {
     let header = message.header();
     let relevant = header.message_type() == zbus::message::Type::Signal
         && header.sender().is_some_and(|sender| sender.as_str() == "org.freedesktop.DBus")
@@ -199,7 +194,15 @@ fn vanished_owner(message: &zbus::Message) -> Option<String> {
         return None;
     }
     let (name, _, new_owner) = message.body().deserialize::<(String, String, String)>().ok()?;
-    new_owner.is_empty().then_some(name)
+    Some((name, new_owner))
+}
+
+fn vanished_owner(message: &zbus::Message) -> Option<String> {
+    owner_change(message).and_then(|(name, new_owner)| new_owner.is_empty().then_some(name))
+}
+
+fn took_over(message: &zbus::Message, own: Option<&str>) -> bool {
+    owner_change(message).is_some_and(|(name, new_owner)| name == BUS_NAME && Some(new_owner.as_str()) == own)
 }
 
 fn announce(connection: &Connection, shared: &Shared, changes: mpsc::Receiver<bool>) {
@@ -223,16 +226,29 @@ fn serve(mut builder: Builder<'_>, sink: Box<dyn Fn(Event) + Send + Sync>) -> an
         builder = builder.serve_at(path, ScreenSaver(shared.clone()))?;
     }
     let connection = builder.build()?;
-    match connection.request_name_with_flags(BUS_NAME, RequestNameFlags::DoNotQueue.into())? {
-        RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner => {}
-        _ => anyhow::bail!("another service already owns the name"),
-    }
     DBusProxy::new(&connection)?.add_match_rule(zbus::MatchRule::try_from(OWNER_CHANGES)?)?;
-
     let watcher = (connection.clone(), shared.clone());
+    let messages = MessageIterator::from(&watcher.0);
+    let mut queued = match connection.request_name_with_flags(BUS_NAME, Default::default())? {
+        RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner => false,
+        RequestNameReply::InQueue => {
+            tracing::warn!("another service owns {BUS_NAME}; Glide takes it over when that one leaves");
+            true
+        }
+        RequestNameReply::Exists => anyhow::bail!("another service already owns the name"),
+    };
+
     std::thread::Builder::new().name("glide-screensaver".into()).spawn(move || {
-        for message in MessageIterator::from(&watcher.0) {
-            if let Some(owner) = message.ok().as_ref().and_then(vanished_owner)
+        let own = watcher.0.unique_name().map(ToString::to_string);
+        for message in messages {
+            let Ok(message) = message else {
+                continue;
+            };
+            if queued && took_over(&message, own.as_deref()) {
+                queued = false;
+                tracing::info!("took over {BUS_NAME}");
+            }
+            if let Some(owner) = vanished_owner(&message)
                 && watcher.1.edit(|cookies| cookies.forget(&owner))
             {
                 tracing::info!(owner, "an app holding the screen on went away");
@@ -245,7 +261,7 @@ fn serve(mut builder: Builder<'_>, sink: Box<dyn Fn(Event) + Send + Sync>) -> an
     std::thread::Builder::new()
         .name("glide-screensaver-state".into())
         .spawn(move || announce(&connection, &announcer, receiver))?;
-    Ok(Handle { inhibited: false, active: false, changes, shared })
+    Ok(Handle { active: false, changes, shared })
 }
 
 #[cfg(test)]
@@ -323,8 +339,18 @@ mod tests {
         handle.set_active(true);
         wait_until("the active state to be published", active);
 
+        assert!(!handle.inhibited());
+        call(&player, PATHS[0], "Inhibit", &("player", "video"));
+        assert_eq!(next(), Event::Inhibited(true));
+        assert!(handle.inhibited(), "the handle reads the cookies themselves");
+
         let second = serve(daemon.builder(), Box::new(|_| {}));
-        assert!(second.is_err(), "a second owner must fail loudly instead of serving paths nobody routes to");
+        assert!(second.is_ok(), "a second owner waits in the queue instead of failing");
+        let owner = DBusProxy::new(&player)
+            .expect("bus proxy")
+            .get_name_owner(BusName::try_from(BUS_NAME).expect("name"))
+            .expect("the name has an owner");
+        assert_ne!(owner.as_str(), "", "the first owner keeps the name");
     }
 
     #[test]
@@ -398,12 +424,13 @@ mod tests {
         let (changes, announced) = mpsc::channel();
         let shared =
             Arc::new(Shared { cookies: Mutex::default(), active: AtomicBool::new(false), sink: Box::new(|_| {}) });
-        let mut handle = Handle { inhibited: false, active: false, changes, shared };
+        let mut handle = Handle { active: false, changes, shared };
         for active in [false, true, true, false] {
             handle.set_active(active);
         }
         assert_eq!(announced.try_iter().collect::<Vec<_>>(), [true, false]);
-        handle.set_inhibited(true);
+        assert!(!handle.inhibited());
+        handle.shared.edit(|cookies| cookies.take("a"));
         assert!(handle.inhibited());
     }
 }

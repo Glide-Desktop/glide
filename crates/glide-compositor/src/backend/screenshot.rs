@@ -27,7 +27,7 @@ pub fn save(mut pixels: Vec<u8>, width: i32, height: i32) -> anyhow::Result<Save
 
 pub fn save_rgba(rgba: &[u8], width: u32, height: u32, write: bool) -> anyhow::Result<Saved> {
     let png = glide_shell::image::encode_png(width, height, rgba).context("failed to encode the screenshot")?;
-    let preview = glide_paint::render_png_rounded(&png, 96, 8.0);
+    let preview = glide_paint::render_rgba_rounded(rgba, width, height, 96, 8.0);
     if !write {
         return Ok(Saved { path: None, png, preview });
     }
@@ -64,12 +64,28 @@ where
         .map_err(|err| anyhow!("failed to render the frame: {err:?}"))?;
 
     let region = Rectangle::<i32, Buffer>::from_size((width, height).into());
-    let mapping = renderer
-        .copy_framebuffer(&target, region, Fourcc::Argb8888)
-        .context("failed to read back the offscreen capture buffer")?;
+    let (mapping, swizzle) = match renderer.copy_framebuffer(&target, region, Fourcc::Argb8888) {
+        Ok(mapping) => (mapping, false),
+        Err(err) => {
+            tracing::debug!(?err, "the driver refused a BGRA readback, reading RGBA instead");
+            let mapping = renderer
+                .copy_framebuffer(&target, region, Fourcc::Abgr8888)
+                .context("failed to read back the offscreen capture buffer")?;
+            (mapping, true)
+        }
+    };
     let data = renderer.map_texture(&mapping).context("failed to map the offscreen capture buffer")?;
+    let mut pixels = data.to_vec();
+    if swizzle {
+        bgra_to_rgba_in_place(&mut pixels);
+    }
+    Ok(pixels)
+}
 
-    Ok(data.to_vec())
+#[must_use]
+pub fn upright_size(mode: (i32, i32), transform: Transform) -> (i32, i32) {
+    let size = transform.transform_size(smithay::utils::Size::<i32, Buffer>::from(mode));
+    (size.w, size.h)
 }
 
 fn bgra_to_rgba_in_place(pixels: &mut [u8]) {
@@ -80,6 +96,11 @@ fn bgra_to_rgba_in_place(pixels: &mut [u8]) {
 
 fn pick_screenshot_dir(home: &Path, pictures_override: Option<&Path>) -> PathBuf {
     let pictures = pictures_override.map_or_else(|| home.join("Pictures"), Path::to_path_buf);
+    if !pictures.is_dir()
+        && let Err(err) = std::fs::create_dir_all(&pictures)
+    {
+        tracing::warn!(?err, dir = %pictures.display(), "could not create the pictures folder, saving into home");
+    }
     if pictures.is_dir() { pictures } else { home.to_path_buf() }
 }
 
@@ -157,10 +178,28 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_home_when_neither_pictures_dir_exists() {
+    fn a_missing_pictures_dir_is_created_before_home_is_used() {
         let home = test_dir("no-pictures-anywhere");
-        assert_eq!(pick_screenshot_dir(&home, None), home, "must never point at a directory that doesn't exist");
-        let bogus_override = home.join("does-not-exist");
-        assert_eq!(pick_screenshot_dir(&home, Some(&bogus_override)), home);
+        assert_eq!(pick_screenshot_dir(&home, None), home.join("Pictures"));
+        assert!(home.join("Pictures").is_dir());
+        let localised = home.join("Зображення");
+        assert_eq!(pick_screenshot_dir(&home, Some(&localised)), localised);
+        assert!(localised.is_dir());
+    }
+
+    #[test]
+    fn falls_back_to_home_when_the_pictures_dir_cannot_be_created() {
+        let home = test_dir("pictures-blocked");
+        let blocker = home.join("file");
+        std::fs::write(&blocker, b"").unwrap();
+        assert_eq!(pick_screenshot_dir(&home, Some(&blocker.join("Pictures"))), home);
+    }
+
+    #[test]
+    fn a_rotated_output_is_captured_in_its_upright_size() {
+        assert_eq!(upright_size((1920, 1080), Transform::Normal), (1920, 1080));
+        assert_eq!(upright_size((1920, 1080), Transform::_90), (1080, 1920));
+        assert_eq!(upright_size((1920, 1080), Transform::Flipped270), (1080, 1920));
+        assert_eq!(upright_size((1920, 1080), Transform::_180), (1920, 1080));
     }
 }

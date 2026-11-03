@@ -1162,7 +1162,7 @@ impl GreeterUi {
         let Some(now) = glide_shell::clock::LocalNow::now() else {
             return;
         };
-        let h24 = glide_shell::clock::default_24h(glide_shell::clock::env_locale_is_us());
+        let h24 = glide_shell::clock::default_24h(glide_shell::clock::env_prefers_12h());
         let full = glide_shell::clock::format_time(now.hour, now.minute, h24);
         let time = full.split(' ').next().unwrap_or_default().to_string();
         let date = glide_shell::i18n::long_date(glide_shell::i18n::language(), now.weekday, now.day, now.month0)

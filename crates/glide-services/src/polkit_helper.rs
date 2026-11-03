@@ -8,10 +8,14 @@ use zeroize::Zeroizing;
 
 pub const SOCKET: &str = "/run/polkit/agent-helper.socket";
 const HELPERS: &[&str] = &[
+    "/run/wrappers/bin/polkit-agent-helper-1",
+    "/run/setuid-programs/polkit-agent-helper-1",
     "/usr/lib/polkit-1/polkit-agent-helper-1",
     "/usr/libexec/polkit-agent-helper-1",
+    "/usr/libexec/polkit-1/polkit-agent-helper-1",
     "/usr/lib/policykit-1/polkit-agent-helper-1",
 ];
+const STDERR_LIMIT: u64 = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
@@ -150,8 +154,20 @@ struct Link {
     socket: Option<UnixStream>,
 }
 
+fn setuid(path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o4000 != 0)
+}
+
+fn pick_helper<'a>(
+    candidates: &[&'a str], exists: impl Fn(&str) -> bool, setuid: impl Fn(&str) -> bool,
+) -> Option<&'a str> {
+    let present: Vec<&str> = candidates.iter().copied().filter(|path| exists(path)).collect();
+    present.iter().copied().find(|path| setuid(path)).or_else(|| present.first().copied())
+}
+
 fn helper() -> Option<&'static str> {
-    HELPERS.iter().copied().find(|path| Path::new(path).exists())
+    pick_helper(HELPERS, |path| Path::new(path).exists(), setuid)
 }
 
 fn connect(user: &str, cookie: &str, cancel: &Cancel) -> std::io::Result<Link> {
@@ -176,7 +192,7 @@ fn connect(user: &str, cookie: &str, cancel: &Cancel) -> std::io::Result<Link> {
     }
     let path = helper().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no polkit-agent-helper-1"))?;
     let mut child =
-        Command::new(path).arg(user).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+        Command::new(path).arg(user).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         let _ = child.kill();
         let _ = child.wait();
@@ -214,6 +230,11 @@ fn converse(link: &mut Link, password: &Zeroizing<String>) -> Report {
             }
         }
         match parse(&received) {
+            Some(Line::Ask { echo: true }) if !answered => {
+                report.outcome =
+                    Outcome::Broken("the login stack asked a visible question instead of a password".into());
+                return report;
+            }
             Some(Line::Ask { .. }) if !answered => {
                 answered = true;
                 let mut reply = Zeroizing::new(Vec::with_capacity(password.len() + 1));
@@ -234,6 +255,11 @@ fn converse(link: &mut Link, password: &Zeroizing<String>) -> Report {
                 report.outcome = Outcome::Success;
                 return report;
             }
+            Some(Line::Failure) if !answered => {
+                let reason = report.errors.first().cloned().unwrap_or_default();
+                report.outcome = Outcome::Broken(format!("the helper failed before asking for a password: {reason}"));
+                return report;
+            }
             Some(Line::Failure) => {
                 report.outcome = Outcome::Failure;
                 return report;
@@ -251,8 +277,18 @@ fn finish(link: Link) {
     let mut reader = link.reader;
     let _ = std::io::copy(&mut reader.by_ref().take(64 * 1024), &mut std::io::sink());
     if let Some(mut child) = link.child {
-        let _ = child.wait();
+        let stderr = child.stderr.take().map(read_stderr).unwrap_or_default();
+        let status = child.wait();
+        if !stderr.is_empty() {
+            tracing::warn!(?status, stderr, "polkit-agent-helper-1 reported an error");
+        }
     }
+}
+
+fn read_stderr(stderr: impl Read) -> String {
+    let mut bytes = Vec::new();
+    let _ = stderr.take(STDERR_LIMIT).read_to_end(&mut bytes);
+    String::from_utf8_lossy(&bytes).trim().to_string()
 }
 
 #[must_use]
@@ -379,6 +415,39 @@ mod tests {
 
         let (mut link, _) = scripted("PAM_PROMPT_ECHO_OFF Password: \n");
         assert!(matches!(converse(&mut link, &password).outcome, Outcome::Broken(_)), "a closed helper is no success");
+    }
+
+    #[test]
+    fn a_failure_before_any_question_is_a_broken_helper_not_a_wrong_password() {
+        let password = Zeroizing::new(String::from("secret"));
+        let (mut link, written) = scripted("PAM_ERROR_MSG Unknown user\nFAILURE\n");
+        let report = converse(&mut link, &password);
+        assert!(matches!(&report.outcome, Outcome::Broken(reason) if reason.contains("Unknown user")), "{report:?}");
+        assert!(written.0.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
+    }
+
+    #[test]
+    fn the_password_never_answers_a_visible_question() {
+        let password = Zeroizing::new(String::from("secret"));
+        let (mut link, written) = scripted("PAM_PROMPT_ECHO_ON Login: \nSUCCESS\n");
+        assert!(matches!(converse(&mut link, &password).outcome, Outcome::Broken(_)));
+        assert!(written.0.lock().unwrap_or_else(PoisonError::into_inner).is_empty(), "nothing was typed back");
+    }
+
+    #[test]
+    fn a_setuid_helper_is_preferred_over_one_found_earlier() {
+        let candidates = ["/a/helper", "/b/helper", "/c/helper"];
+        let present = |path: &str| path != "/a/helper";
+        assert_eq!(pick_helper(&candidates, present, |path| path == "/c/helper"), Some("/c/helper"));
+        assert_eq!(pick_helper(&candidates, present, |_| false), Some("/b/helper"), "else the first present");
+        assert_eq!(pick_helper(&candidates, |_| false, |_| true), None);
+    }
+
+    #[test]
+    fn helper_stderr_is_read_up_to_its_limit() {
+        let long = vec![b'x'; 10_000];
+        assert_eq!(read_stderr(std::io::Cursor::new(long)).len(), STDERR_LIMIT as usize);
+        assert_eq!(read_stderr(std::io::Cursor::new(b" pam: oops \n".to_vec())), "pam: oops");
     }
 
     #[test]

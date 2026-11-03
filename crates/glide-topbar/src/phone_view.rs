@@ -236,7 +236,7 @@ fn paint_popover<'a>(
     let notif_value = if notif_count == 0 {
         t(Key::PhNone).to_string()
     } else {
-        t(Key::PhActiveCount).replace("{n}", &notif_count.to_string())
+        crate::i18n::plural(notif_count as u64, [Key::PhActiveOne, Key::PhActiveFew, Key::PhActiveMany])
     };
     draw_tile(&mut c, painter, theme, layout.tiles[1], (Key::Notifications, Some(notif_value)), (None, theme.label));
 

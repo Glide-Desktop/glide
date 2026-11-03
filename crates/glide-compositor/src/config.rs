@@ -1337,16 +1337,16 @@ impl Config {
         state.gestures.config = self.gestures;
     }
 
-    fn icon_theme(&self) -> String {
+    fn icon_theme(&self) -> Option<String> {
         let roots = crate::icon::icon_roots();
         let source = glide_theme::icons::source(
             self.dock.theme.icon_theme.as_deref(),
             self.topbar.appearance,
             self.topbar.accent,
             &roots,
-        );
+        )?;
         glide_system::icon_plates::ensure(&source, roots.clone());
-        glide_theme::plates::prefer(source, &roots)
+        Some(glide_theme::plates::prefer(source, &roots))
     }
 
     pub fn apply_to_state(&self, state: &mut GlideState) {
@@ -1373,7 +1373,7 @@ impl Config {
         state.overview_theme = self.overview.clone();
         state.overview_theme.repaint(&palette);
         let mut dock = self.dock.clone();
-        dock.theme.icon_theme = Some(self.icon_theme());
+        dock.theme.icon_theme = self.icon_theme();
         dock.theme.repaint(&palette);
         dock.pins = state.applied_config.pins();
         state.dock.reconfigure(&dock);

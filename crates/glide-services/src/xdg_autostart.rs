@@ -68,7 +68,11 @@ fn list(value: &str) -> Vec<String> {
 }
 
 fn exec_command(exec: &str) -> String {
-    exec.split_whitespace().filter(|word| !(word.len() == 2 && word.starts_with('%'))).collect::<Vec<_>>().join(" ")
+    exec.split_whitespace()
+        .filter(|word| word.contains("%%") || !(word.len() == 2 && word.starts_with('%')))
+        .map(|word| word.replace("%%", "%"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 use glide_config::autostart::{Provided, is_phone_daemon, provided_by_shell};
@@ -125,8 +129,10 @@ pub fn parse_entry(text: &str, desktops: &[String], probe: &Probe<'_>) -> Option
     (!command.is_empty() && !provided_by_shell(&command, probe.provided)).then_some(Entry { command, phase, delay })
 }
 
+const GSETTINGS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 fn gsetting(schema: &str, key: &str) -> Option<bool> {
-    let output = std::process::Command::new("gsettings").args(["get", schema, key]).output().ok()?;
+    let output = glide_system::spawn::run_with_timeout("gsettings", &["get", schema, key], GSETTINGS_TIMEOUT)?;
     match String::from_utf8_lossy(&output.stdout).trim() {
         "true" => Some(true),
         "false" => Some(false),
@@ -232,6 +238,10 @@ mod tests {
     fn plain_entries_run_with_field_codes_stripped() {
         let text = "[Desktop Entry]\nType=Application\nExec=syncthing serve --no-browser %U\n";
         assert_eq!(command(text, &INSTALLED).as_deref(), Some("syncthing serve --no-browser"));
+        let percent = "[Desktop Entry]\nType=Application\nExec=progress --format 100%% %f\n";
+        assert_eq!(command(percent, &INSTALLED).as_deref(), Some("progress --format 100%"));
+        let alone = "[Desktop Entry]\nType=Application\nExec=printf %%\n";
+        assert_eq!(command(alone, &INSTALLED).as_deref(), Some("printf %"));
     }
 
     #[test]

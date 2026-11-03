@@ -39,6 +39,7 @@ members = [
     "crates/glide-topbar",
     "crates/glide-tray",
     "crates/glide-ui",
+    "crates/glide-welcome",
     "crates/glidectl",
 ]
 

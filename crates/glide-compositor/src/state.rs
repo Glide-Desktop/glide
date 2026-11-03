@@ -256,8 +256,7 @@ pub struct Gestures {
     pub practice: Option<crate::input::Practice>,
     pub holding: bool,
     pub app_switching: bool,
-    pub pinching: bool,
-    pub pinch_scale: f64,
+    pub pinch: Option<crate::input::PinchTracker>,
     pub shown_desktop: Vec<glide_layout::WindowId>,
     pub edge: Option<crate::input::EdgeSwipe>,
     pub touch_points: usize,
@@ -789,8 +788,8 @@ impl GlideState {
         let id = glide_layout::WindowId::next();
         let size = layout_size(&window);
         if let Some(pointer) = self.seat.get_pointer() {
-            let at = pointer.current_location();
-            self.layout.set_placement_anchor(glide_layout::Point::new(at.x as i32, at.y as i32));
+            let at = pointer.current_location().to_i32_floor::<i32>();
+            self.layout.set_placement_anchor(glide_layout::Point::new(at.x, at.y));
         }
 
         if let Some(parent) = parent {
@@ -1321,12 +1320,7 @@ impl GlideState {
     pub fn handle_screensaver_event(&mut self, event: crate::screensaver::Event) {
         use crate::screensaver::Event;
         match event {
-            Event::Inhibited(inhibited) => {
-                if let Some(screensaver) = self.session.screensaver.as_mut() {
-                    screensaver.set_inhibited(inhibited);
-                }
-                self.refresh_idle_inhibit();
-            }
+            Event::Inhibited(_) => self.refresh_idle_inhibit(),
             Event::Lock => self.lock_screen(),
             Event::Activity => {
                 self.idle.activity(std::time::Instant::now());
@@ -1759,6 +1753,19 @@ impl GlideState {
         if dirty || topbar_dirty {
             self.queue_redraw();
         }
+    }
+
+    pub fn handle_notification_icon(&mut self, id: u32, ticket: u64, icon: Option<Vec<u8>>) {
+        let Some(icon) = self.notifications.icon_ready(id, ticket, icon) else {
+            return;
+        };
+        if let Some(alert) = self.topbar.alert().filter(|alert| alert.id == id) {
+            let alert = crate::topbar::IslandAlert { icon: Some(icon), ..alert.clone() };
+            self.topbar.show_alert(alert, std::time::Instant::now());
+        }
+        self.sync_notice();
+        self.refresh_topbar();
+        self.queue_redraw();
     }
 
     pub fn sync_notice(&mut self) {
@@ -2333,6 +2340,7 @@ impl GlideState {
         let result = self.loop_handle.insert_source(receiver, |event, (), state| {
             if let smithay::reexports::calloop::channel::Event::Msg((apps, pixels, scale, history, recent)) = event {
                 tracing::info!(count = apps.len(), recent = recent.len(), "launcher apps loaded");
+                state.app_directory.rebuild(apps.clone());
                 if let Some(launcher) = state.launcher.as_mut() {
                     launcher.set_history(history);
                     launcher.set_recent(recent);
@@ -3793,10 +3801,11 @@ impl GlideState {
         let (locked, idle) = (self.screen_locked(), self.idle.is_idle());
         self.notifications.set_locked(locked);
         let sharing = self.topbar.sharing_screen();
-        self.notifications.set_inhibited(sharing && self.notifications.policy().system.quiet_while_sharing);
+        self.notifications.set_sharing_quiet(sharing && self.notifications.policy().system.quiet_while_sharing);
         if let Some(logind) = self.session.logind.as_mut() {
             logind.set_locked(locked);
             logind.set_idle(idle);
+            logind.settle_sleep(locked);
         }
         let active = locked || self.outputs_blanked;
         if let Some(screensaver) = self.session.screensaver.as_mut() {
@@ -3908,7 +3917,7 @@ impl GlideState {
         .ok()
     }
 
-    pub fn adopt_changed_login_password(&mut self, password: glide_ipc::keychain::Hidden) {
+    pub fn adopt_changed_login_password(&mut self, password: &glide_ipc::keychain::Hidden) {
         use crate::greeter::pam::{Authenticator, Verdict};
         use smithay::reexports::calloop::channel;
 
@@ -3917,8 +3926,7 @@ impl GlideState {
         }
         let user = crate::greeter::current_user(&self.topbar.system_status().user_name);
         let (sender, receiver) = channel::channel::<Verdict>();
-        let secret = password.expose().to_owned();
-        let offered = password;
+        let offered = password.clone();
         let token = std::rc::Rc::new(std::cell::Cell::new(None));
         let own = token.clone();
         let inserted = self.loop_handle.insert_source(receiver, move |event, (), state| {
@@ -3949,7 +3957,7 @@ impl GlideState {
         }) {
             Ok(mut authenticator) => {
                 authenticator.begin();
-                if !authenticator.check(secret) {
+                if !authenticator.check(password.expose().to_owned()) {
                     tracing::warn!("the PAM worker stopped before the changed login password reached it");
                 }
             }

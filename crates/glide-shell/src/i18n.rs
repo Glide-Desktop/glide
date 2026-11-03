@@ -48,7 +48,9 @@ glide_app::catalogue! {
     PhRejectPair => "Decline Pairing", "Відхилити з'єднання";
     PhClearNotifs => "Clear Phone Notifications", "Очистити сповіщення телефону";
     PhOpenApp => "Phone Link…", "Відкрити Phone Link…";
-    PhActiveCount => "{n} active", "{n} активних";
+    PhActiveOne => "{n} active", "{n} активне";
+    PhActiveFew => "{n} active", "{n} активні";
+    PhActiveMany => "{n} active", "{n} активних";
     PhNone => "None", "Немає";
     NeedsAnswer => "Needs your answer", "Потрібна відповідь";
     PkWants => "wants administrator rights", "просить права адміністратора";
@@ -376,7 +378,9 @@ glide_app::catalogue! {
     QsHealthy => "Normal", "Нормальний";
     QsWorn => "Worn", "Зношений";
     QsCycles => "Cycles", "Цикли";
-    QsCyclesUnit => "cycles", "циклів";
+    QsCyclesOne => "cycle", "цикл";
+    QsCyclesFew => "cycles", "цикли";
+    QsCyclesMany => "cycles", "циклів";
     QsDraw => "Power draw", "Споживання";
     QsWatts => "W", "Вт";
     QsCapacity => "Full capacity", "Повна ємність";
@@ -430,6 +434,8 @@ glide_app::catalogue! {
     LockNoticesFew => "{n} new notifications", "{n} нові сповіщення";
     LockNoticesMany => "{n} new notifications", "{n} нових сповіщень";
     LockNoticesHidden => "hidden", "приховано";
+    ClockAm => "AM", "дп";
+    ClockPm => "PM", "пп";
     GreeterChecking => "Checking…", "Перевірка…";
     GreeterLoggingIn => "Logging in…", "Вхід…";
     GreeterWrongPassword => "Incorrect password. Try again", "Невірний пароль. Спробуйте ще раз";
@@ -574,6 +580,21 @@ glide_app::catalogue! {
 #[must_use]
 pub fn t(key: Key) -> &'static str {
     key.text(language())
+}
+
+#[must_use]
+pub fn plural_key(lang: Lang, count: u64, [one, few, many]: [Key; 3]) -> Key {
+    match lang.plural(count) {
+        glide_app::i18n::Plural::One => one,
+        glide_app::i18n::Plural::Few => few,
+        glide_app::i18n::Plural::Many => many,
+    }
+}
+
+#[must_use]
+pub fn plural(count: u64, keys: [Key; 3]) -> String {
+    let lang = language();
+    plural_key(lang, count, keys).text(lang).replace("{n}", &count.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -737,11 +758,23 @@ mod tests {
             for text in [key.uk(), key.en()] {
                 let letters: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
                 assert!(
-                    letters.len() < 2 || letters.iter().any(|c| c.is_lowercase()),
+                    letters.len() <= 2 || letters.iter().any(|c| c.is_lowercase()),
                     "{key:?}: {text} is shouting; uppercase belongs to the MICRO style"
                 );
             }
         }
+    }
+
+    #[test]
+    fn counted_labels_take_the_ukrainian_form_for_the_number() {
+        let cycles = [Key::QsCyclesOne, Key::QsCyclesFew, Key::QsCyclesMany];
+        let form = |count| plural_key(Lang::Uk, count, cycles).uk();
+        assert_eq!(
+            [form(1), form(3), form(5), form(11), form(21), form(112)],
+            ["цикл", "цикли", "циклів", "циклів", "цикл", "циклів"]
+        );
+        assert_eq!(plural_key(Lang::En, 1, cycles).en(), "cycle");
+        assert_eq!(plural_key(Lang::En, 2, cycles).en(), "cycles");
     }
 
     const fn day(minute_of_day: u64, month0: usize, day: u32) -> LocalDay {

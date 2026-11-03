@@ -68,16 +68,19 @@ impl Image {
     }
 
     pub fn draw_replace(&mut self, src: &Self, x: i32, y: i32) {
-        let stride = self.width as usize * 4;
-        for row in 0..src.height as usize {
-            let ty = y as usize + row;
-            if ty >= self.height as usize {
-                break;
-            }
-            let columns = (src.width as usize).min(self.width as usize - (x as usize).min(self.width as usize));
-            let from = row * src.width as usize * 4;
-            let to = ty * stride + x as usize * 4;
-            self.data[to..to + columns * 4].copy_from_slice(&src.data[from..from + columns * 4]);
+        let (x, y) = (i64::from(x), i64::from(y));
+        let (dst_w, dst_h) = (i64::from(self.width), i64::from(self.height));
+        let (src_w, src_h) = (i64::from(src.width), i64::from(src.height));
+        let (left, right) = ((-x).max(0), src_w.min(dst_w - x));
+        let (top, bottom) = ((-y).max(0), src_h.min(dst_h - y));
+        if left >= right || top >= bottom {
+            return;
+        }
+        let bytes = (right - left) as usize * 4;
+        for row in top..bottom {
+            let from = ((row * src_w + left) * 4) as usize;
+            let to = (((y + row) * dst_w + x + left) * 4) as usize;
+            self.data[to..to + bytes].copy_from_slice(&src.data[from..from + bytes]);
         }
     }
 
@@ -133,6 +136,21 @@ mod tests {
         assert_eq!(image.data, [30, 20, 10, 255]);
         assert_eq!(image.to_bgra(), [10, 20, 30, 255]);
         assert!(Image::from_bgra(2, 2, vec![0; 4]).is_none(), "too few bytes");
+    }
+
+    #[test]
+    fn replacing_pixels_clips_a_patch_past_any_edge_instead_of_panicking() {
+        let mut canvas = Image::new(3, 2).expect("canvas");
+        let patch = Image::from_bgra(2, 2, vec![255; 16]).expect("patch");
+        for (x, y) in [(5, 0), (0, 5), (-5, 0), (0, -5), (3, 2), (i32::MIN, i32::MAX)] {
+            canvas.draw_replace(&patch, x, y);
+        }
+        assert!(canvas.data.iter().all(|&byte| byte == 0), "nothing of the patch landed on the canvas");
+        canvas.draw_replace(&patch, -1, 1);
+        let lit: Vec<bool> = canvas.data.chunks_exact(4).map(|pixel| pixel[3] == 255).collect();
+        assert_eq!(lit, [false, false, false, true, false, false]);
+        canvas.draw_replace(&patch, 2, -1);
+        assert!(canvas.data[2 * 4..3 * 4].iter().all(|&byte| byte == 255), "the top-right pixel");
     }
 
     #[test]

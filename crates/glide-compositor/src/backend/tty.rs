@@ -1598,6 +1598,7 @@ impl GlideState {
         if let Some(session) = self.session.shot.as_mut().filter(|session| session.shows_on(&output)) {
             let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
             let palette = crate::shot::render::Palette::from_tokens(&tokens);
+            session.refresh_sprites(&painter);
             let mut cache = std::mem::take(&mut session.cache);
             let pieces = session.scene().map_or_else(Vec::new, |scene| {
                 crate::shot::render::render(
@@ -1800,18 +1801,25 @@ impl GlideState {
         };
         if self.pending_screenshot.as_ref() == Some(&output) {
             self.pending_screenshot = None;
-            match capture_frame(gles_renderer, &elements[cursor_count..]) {
+            let upright = super::screenshot::upright_size(output_mode, transform);
+            match super::screenshot::capture_frame(
+                gles_renderer,
+                &elements[cursor_count..],
+                upright,
+                fractional,
+                Transform::Normal,
+            ) {
                 Ok(pixels) => {
                     if let Some(capture) = self.session.capture.take().filter(|capture| capture.output == output) {
                         self.loop_handle.insert_idle(move |state| {
-                            state.deliver_capture(&capture, &pixels, output_mode, fractional);
+                            state.deliver_capture(&capture, &pixels, upright, fractional);
                         });
                     } else if let Some(scan) = self.session.qr_scan.take_if(|scan| scan.output == output) {
-                        crate::qr_scan::deliver(scan, pixels, output_mode);
+                        crate::qr_scan::deliver(scan, pixels, upright);
                     } else if self.session.shot.as_ref().is_some_and(|session| session.awaiting_freeze(&output)) {
                         let frozen = output.clone();
                         self.loop_handle.insert_idle(move |state| {
-                            state.shot_frozen(&frozen, pixels, output_mode, fractional);
+                            state.shot_frozen(&frozen, pixels, upright, fractional);
                         });
                     } else {
                         self.screenshot_flash.start(
@@ -1819,10 +1827,15 @@ impl GlideState {
                             std::time::Instant::now(),
                             glide_theme::motion::t2(),
                         );
-                        crate::screenshot_ui::save_in_background(&self.loop_handle, pixels, output_mode);
+                        crate::screenshot_ui::save_in_background(&self.loop_handle, pixels, upright);
                     }
                 }
-                Err(err) => tracing::error!(?err, "failed to capture screenshot"),
+                Err(err) => {
+                    tracing::error!(?err, "failed to capture screenshot");
+                    let failed = output.clone();
+                    let message = format!("{err:#}");
+                    self.loop_handle.insert_idle(move |state| state.capture_failed(&failed, &message));
+                }
             }
         }
 
@@ -1851,7 +1864,10 @@ impl GlideState {
                     self.loop_handle
                         .insert_idle(move |state| state.window_captured(&capture, pixels, size, fractional));
                 }
-                Err(err) => tracing::error!(?err, "failed to capture the window"),
+                Err(err) => {
+                    tracing::error!(?err, "failed to capture the window");
+                    self.loop_handle.insert_idle(move |state| state.window_capture_failed(&capture));
+                }
             }
         }
 

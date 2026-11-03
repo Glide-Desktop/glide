@@ -34,12 +34,24 @@ pub fn decode(pixels: &[u8], width: usize, height: usize) -> Vec<Hidden> {
 
 impl GlideState {
     pub fn start_qr_scan(&mut self, waiter: UnixStream) {
+        self.start_qr_scan_after(waiter, 0);
+    }
+
+    fn start_qr_scan_after(&mut self, waiter: UnixStream, attempt: u32) {
         if self.screen_locked() {
             crate::ipc::reply(&waiter, &glide_ipc::Response::Error { message: "the screen is locked".into() });
             return;
         }
         if let Some(scan) = self.session.qr_scan.as_mut() {
             scan.waiters.push(waiter);
+            return;
+        }
+        if self.capture_busy() {
+            if crate::screenshot_ui::may_retry(attempt) {
+                self.retry_capture(attempt, move |state, next| state.start_qr_scan_after(waiter, next));
+            } else {
+                crate::ipc::reply(&waiter, &glide_ipc::Response::Error { message: "the screen is busy".into() });
+            }
             return;
         }
         let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location()).unwrap_or_default();

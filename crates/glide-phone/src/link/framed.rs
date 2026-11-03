@@ -4,6 +4,8 @@ use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::protocol::packet::NetworkPacket;
 
+pub const MAX_PACKET_BYTES: usize = 4 * 1024 * 1024;
+
 pub struct PacketStream<S> {
     framed: Framed<S, LinesCodec>,
 }
@@ -14,7 +16,7 @@ where
 {
     #[must_use]
     pub fn new(stream: S) -> Self {
-        Self { framed: Framed::new(stream, LinesCodec::new()) }
+        Self { framed: Framed::new(stream, LinesCodec::new_with_max_length(MAX_PACKET_BYTES)) }
     }
 
     pub async fn send_packet(

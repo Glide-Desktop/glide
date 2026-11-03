@@ -129,6 +129,7 @@ impl PhoneApp {
             DeviceType::Laptop => shell.t("Ноутбук", "Laptop"),
             DeviceType::Desktop => shell.t("Комп'ютер", "Desktop"),
             DeviceType::Tv => shell.t("Телевізор", "TV"),
+            DeviceType::Unknown => shell.t("Пристрій", "Device"),
         };
 
         if matches!(dev.pair_state, PairState::RequestedByPeer | PairState::RequestedByLocal)

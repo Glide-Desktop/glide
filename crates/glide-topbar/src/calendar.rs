@@ -11,7 +11,7 @@ use crate::raster::Canvas;
 use glide_theme::TextStyle;
 use glide_theme::shape::R_ROUND;
 
-pub use glide_shell::clock::{LocalNow, default_24h, env_locale_is_us, format_time, refresh_timezone};
+pub use glide_shell::clock::{LocalNow, default_24h, env_locale_is_us, env_prefers_12h, format_time, refresh_timezone};
 
 const HEADER_H: i32 = 28;
 const TITLE_H: i32 = 26;
@@ -111,7 +111,7 @@ impl Topbar {
     pub fn set_now(&mut self, now: LocalNow) -> bool {
         let lang = crate::i18n::language();
         let us = env_locale_is_us();
-        let h24 = self.theme.clock_24h.unwrap_or_else(|| default_24h(us));
+        let h24 = self.theme.clock_24h.unwrap_or_else(|| default_24h(env_prefers_12h()));
         let date =
             if self.theme.clock_date { format_date(lang, now.weekday, now.day, now.month0) } else { String::new() };
         let clock = format_time(now.hour, now.minute, h24);
@@ -156,7 +156,7 @@ impl Topbar {
 
     pub(super) fn clock_metrics(&mut self, painter: &crate::paint::Painter) -> (i32, i32) {
         let lang = self.calendar.lang;
-        let h24 = self.theme.clock_24h.unwrap_or_else(|| default_24h(env_locale_is_us()));
+        let h24 = self.theme.clock_24h.unwrap_or_else(|| default_24h(env_prefers_12h()));
         let key = MetricsKey { lang, h24, date: self.theme.clock_date && !self.date.is_empty() };
         if let Some((cached, widths)) = self.calendar.metrics
             && cached == key

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Welcome to Glide
+Name[uk]=Ласкаво просимо до Glide
+Comment=Explore the Glide desktop
+Comment[uk]=Знайомство зі стільницею Glide
+Exec=glide-welcome
+Icon=glide-welcome
+Terminal=false
+Categories=Utility;
+Keywords=welcome;onboarding;guide;ласкаво;знайомство;
+StartupWMClass=glide-welcome

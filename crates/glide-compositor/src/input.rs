@@ -877,12 +877,25 @@ impl GlideState {
             }
             InputEvent::PointerButton { event, .. } => self.handle_pointer_button::<I>(&event),
             InputEvent::PointerAxis { event, .. } => self.handle_pointer_axis::<I>(&event),
-            InputEvent::TouchDown { .. } if self.shot_active() => {}
+            InputEvent::TouchDown { event } if self.shot_active() => {
+                if let Some(position) = self.touch_position::<I>(&event) {
+                    self.shot_touch_down(event.slot(), position);
+                }
+            }
             InputEvent::TouchDown { event } => self.handle_touch_down::<I>(&event),
+            InputEvent::TouchUp { event } if self.shot_owns_touch(event.slot()) => self.shot_touch_up(event.slot()),
             InputEvent::TouchUp { event } => self.handle_touch_up::<I>(&event),
+            InputEvent::TouchMotion { event } if self.shot_owns_touch(event.slot()) => {
+                if let Some(position) = self.touch_position::<I>(&event) {
+                    self.shot_touch_motion(event.slot(), position);
+                }
+            }
             InputEvent::TouchMotion { event } => self.handle_touch_motion::<I>(&event),
             InputEvent::TouchFrame { .. } => self.handle_touch_frame(),
-            InputEvent::TouchCancel { .. } => self.handle_touch_cancel(),
+            InputEvent::TouchCancel { .. } => {
+                self.shot_touch_cancel();
+                self.handle_touch_cancel();
+            }
             InputEvent::GestureSwipeBegin { event } => {
                 self.handle_gesture_swipe_begin::<I>(&event);
             }
@@ -1002,7 +1015,8 @@ impl GlideState {
             (SwipeRole::Shell, GestureKind::Overview) => self.apply_shell_position(position),
             (SwipeRole::Shell, GestureKind::Workspace) => {
                 self.catch_workspace_swipe();
-                if self.workspace_swipe.is_none() {
+                let created = self.workspace_swipe.is_none();
+                if created {
                     let active_ws = self.active_workspace_index().unwrap_or(0);
                     let room_for_new =
                         self.layout.fixed_workspaces().is_none() && !self.layout.last_workspace_is_empty();
@@ -1011,7 +1025,7 @@ impl GlideState {
                     self.workspace_swipe = Some(WorkspaceSwipeState::new(active_ws, total_ws, screen_width));
                 }
                 if let Some(swipe) = self.workspace_swipe.as_mut() {
-                    swipe.update(dx);
+                    swipe.update(if created { accum_dx } else { dx });
                     let (active, width) = (swipe.active_workspace, swipe.screen_width);
                     let eff_x = swipe.effective_x();
                     self.apply_swipe_offset(active, eff_x, width);
@@ -1087,7 +1101,7 @@ impl GlideState {
         true
     }
 
-    fn end_edge_swipe(&mut self, cancelled: bool) -> bool {
+    fn end_edge_swipe(&mut self, cancelled: bool, micros: Option<u64>) -> bool {
         let Some(edge) = self.gestures.edge.take() else {
             return false;
         };
@@ -1105,7 +1119,10 @@ impl GlideState {
             }
             return true;
         }
-        if let Some(tracker) = self.touchpad_gesture.take() {
+        if let Some(mut tracker) = self.touchpad_gesture.take() {
+            if let Some(micros) = micros {
+                tracker.finish(micros);
+            }
             self.end_compositor_swipe(&tracker, cancelled);
         }
         true
@@ -1208,8 +1225,7 @@ impl GlideState {
             self.gestures.app_switching = self.switcher_open();
         }
         if let Some(switcher) = self.switcher.as_mut().filter(|s| !s.is_closing()) {
-            let last = switcher.entries().len().saturating_sub(1);
-            let index = usize::try_from(app_switch_offset(accum_dx).max(0)).unwrap_or(0).min(last);
+            let index = app_switch_index(accum_dx, switcher.entries().len());
             if switcher.select(index) {
                 self.queue_redraw();
             }
@@ -1357,13 +1373,15 @@ impl GlideState {
         let target = std::mem::replace(&mut self.gestures.target, SwipeTarget::None);
         match target {
             SwipeTarget::Practice => {
-                if let Some(practice) = self.gestures.practice.take() {
+                if let Some(mut practice) = self.gestures.practice.take() {
+                    practice.finish(event.time().micros());
                     let sample = practice.end(event.cancelled(), &self.gestures.config);
                     self.send_practice(sample);
                 }
             }
             SwipeTarget::Compositor => {
-                if let Some(tracker) = self.touchpad_gesture.take() {
+                if let Some(mut tracker) = self.touchpad_gesture.take() {
+                    tracker.finish(event.time().micros());
                     self.end_compositor_swipe(&tracker, event.cancelled());
                 }
             }
@@ -1410,9 +1428,9 @@ impl GlideState {
         if self.gestures.config.claims_pinch(event.fingers())
             && self.can_handle_shell_gesture()
             && !self.layout.overview_active()
+            && self.launcher.as_ref().is_none_or(Launcher::is_closing)
         {
-            self.gestures.pinching = true;
-            self.gestures.pinch_scale = 1.0;
+            self.gestures.pinch = Some(PinchTracker::default());
             return;
         }
         if let Some(pointer) = self.unlocked_pointer() {
@@ -1434,10 +1452,10 @@ impl GlideState {
             self.send_practice(sample);
             return;
         }
-        if self.gestures.pinching {
-            self.gestures.pinch_scale = scale;
-            let progress = pinch_progress(scale).max(0.0);
-            if progress > 0.0 || self.launcher.is_some() {
+        if let Some(pinch) = self.gestures.pinch.as_mut() {
+            pinch.update(event.time().micros(), scale);
+            let progress = pinch.progress().max(0.0);
+            if progress > 0.0 || self.launcher.as_ref().is_some_and(Launcher::is_interactive) {
                 self.begin_interactive_launcher(progress);
             }
             return;
@@ -1459,17 +1477,16 @@ impl GlideState {
         if self.end_practice(glide_ipc::GestureKind::Pinch, event.cancelled()) {
             return;
         }
-        if std::mem::take(&mut self.gestures.pinching) {
-            let scale = self.gestures.pinch_scale;
-            match decide_pinch(scale, event.cancelled()) {
-                Some(PinchAction::Launcher) => self.settle_shell(SHELL_LAUNCHER, 0.0),
-                Some(PinchAction::Desktop) => self.toggle_show_desktop(),
-                None => {
-                    if let Some(launcher) = self.launcher.as_mut().filter(|l| l.is_interactive()) {
-                        launcher.release_gesture(false, 0.0);
-                        self.queue_animation_redraw();
-                    }
+        if let Some(mut pinch) = self.gestures.pinch.take() {
+            pinch.finish(event.time().micros());
+            let velocity = pinch.velocity();
+            match pinch.decide(event.cancelled()) {
+                Some(PinchAction::Launcher) => self.settle_shell(SHELL_LAUNCHER, velocity),
+                Some(PinchAction::Desktop) => {
+                    self.close_pinched_launcher(0.0);
+                    self.toggle_show_desktop();
                 }
+                None => self.close_pinched_launcher(velocity),
             }
             return;
         }
@@ -1479,6 +1496,13 @@ impl GlideState {
                 self,
                 &GesturePinchEndEvent { serial, time: event.time(), cancelled: event.cancelled() },
             );
+        }
+    }
+
+    fn close_pinched_launcher(&mut self, velocity: f64) {
+        if let Some(launcher) = self.launcher.as_mut().filter(|l| l.is_interactive()) {
+            launcher.release_gesture(false, velocity);
+            self.queue_animation_redraw();
         }
     }
 
@@ -1510,9 +1534,7 @@ impl GlideState {
             return;
         }
         if std::mem::take(&mut self.gestures.holding) {
-            if !event.cancelled() {
-                self.release_caught_animation();
-            }
+            self.release_caught_animation();
             return;
         }
         if let Some(pointer) = self.unlocked_pointer() {
@@ -1562,7 +1584,7 @@ impl GlideState {
     fn handle_touch_up<I: InputBackend>(&mut self, event: &I::TouchUpEvent) {
         self.gestures.touch_points = self.gestures.touch_points.saturating_sub(1);
         let ours = self.gestures.edge.as_ref().is_some_and(|edge| edge.slot == event.slot());
-        if ours && self.end_edge_swipe(false) {
+        if ours && self.end_edge_swipe(false, Some(event.time().micros())) {
             return;
         }
         let Some(touch) = self.seat.get_touch() else {
@@ -1600,7 +1622,7 @@ impl GlideState {
 
     fn handle_touch_cancel(&mut self) {
         self.gestures.touch_points = 0;
-        self.end_edge_swipe(true);
+        self.end_edge_swipe(true, None);
         if let Some(touch) = self.seat.get_touch() {
             touch.cancel(self);
         }

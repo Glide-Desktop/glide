@@ -134,12 +134,13 @@ impl Audio {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioSupport {
     pub enabled: bool,
+    pub capture: bool,
     pub aac_encoder: bool,
 }
 
 #[must_use]
 pub(crate) fn choose_audio(value: &str, support: AudioSupport) -> Option<Audio> {
-    if !support.enabled {
+    if !support.enabled || !support.capture {
         return None;
     }
     let codecs: Vec<(String, u32)> = value
@@ -227,7 +228,7 @@ mod tests {
         assert_eq!(video_formats_line(video), "38 00 01 04 00000080 00000000 00000000 00 0000 0000 00 none none");
     }
 
-    const SOUND: AudioSupport = AudioSupport { enabled: true, aac_encoder: true };
+    const SOUND: AudioSupport = AudioSupport { enabled: true, capture: true, aac_encoder: true };
 
     #[test]
     fn lpcm_at_48_khz_wins_and_aac_is_the_fallback() {
@@ -242,6 +243,7 @@ mod tests {
         let aac_only = "LPCM 00000001 00, AAC 00000001 00";
         assert_eq!(choose_audio(both, AudioSupport { enabled: false, ..SOUND }), None, "sound is switched off");
         assert_eq!(choose_audio(aac_only, AudioSupport { aac_encoder: false, ..SOUND }), None, "no AAC encoder");
+        assert_eq!(choose_audio(both, AudioSupport { capture: false, ..SOUND }), None, "no pipewiresrc");
         assert_eq!(
             choose_audio(both, AudioSupport { aac_encoder: false, ..SOUND }),
             Some(Audio::Lpcm48),

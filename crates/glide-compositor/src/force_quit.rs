@@ -21,6 +21,11 @@ fn process_name(pid: i32) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()
 }
 
+#[must_use]
+pub fn is_x11_bridge(pid: i32) -> bool {
+    pid > 1 && process_name(pid).is_some_and(|name| name.trim().starts_with(X11_BRIDGE))
+}
+
 impl GlideState {
     pub fn force_quit_window(&mut self, window: &GlideWindow) {
         let pid = self.window_pid(window);

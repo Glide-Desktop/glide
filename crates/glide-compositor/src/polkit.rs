@@ -48,6 +48,7 @@ pub struct Prompt {
     failures: u8,
     broken: bool,
     note: Option<String>,
+    said: Option<String>,
     shaken: Option<Instant>,
     checking: Option<Instant>,
     done: Option<Instant>,
@@ -66,8 +67,24 @@ impl std::fmt::Debug for Prompt {
     }
 }
 
+const LOCKOUT_PHRASES: [&str; 5] =
+    ["account is locked", "account locked", "locked due to", "account has been locked", "заблоковано"];
+
+fn is_lockout(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    glide_greeter::ui::lockout_left(text).is_some() || LOCKOUT_PHRASES.iter().any(|phrase| lower.contains(phrase))
+}
+
+fn messages(report: &Report) -> impl Iterator<Item = &str> {
+    report.errors.iter().chain(&report.notes).map(|text| text.trim()).filter(|text| !text.is_empty())
+}
+
 fn locked_out(report: &Report) -> Option<String> {
-    report.notes.iter().chain(&report.errors).map(|text| text.trim()).find(|text| !text.is_empty()).map(str::to_string)
+    messages(report).find(|text| is_lockout(text)).map(str::to_string)
+}
+
+fn said(report: &Report) -> Option<String> {
+    messages(report).next().map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 impl Prompt {
@@ -85,6 +102,7 @@ impl Prompt {
             failures: 0,
             broken: false,
             note: None,
+            said: None,
             shaken: None,
             checking: None,
             done: None,
@@ -167,6 +185,7 @@ impl Prompt {
             Outcome::Failure => {
                 self.failures = self.failures.saturating_add(1);
                 self.shaken = Some(now);
+                self.said = said(report);
                 if let Some(text) = locked_out(report) {
                     self.note = Some(text);
                     self.stage = Stage::Locked;
@@ -248,7 +267,10 @@ impl Prompt {
         let hint = match self.stage {
             Stage::Checking => Hint::Checking,
             Stage::Wrong if self.broken => Hint::Broken,
-            Stage::Wrong => Hint::Wrong { left: ATTEMPTS.saturating_sub(self.failures) },
+            Stage::Wrong => {
+                let left = ATTEMPTS.saturating_sub(self.failures);
+                self.said.clone().map_or(Hint::Wrong { left }, |text| Hint::Said { text, left })
+            }
             _ if caps_lock => Hint::CapsLock,
             _ => Hint::Keys,
         };
@@ -561,6 +583,46 @@ mod tests {
         prompt.report(attempt, &report(Outcome::Success), now);
         assert_eq!(answered(receiver), Some(true));
         assert!(!prompt.finished(now) && prompt.finished(now + DONE_HOLD));
+    }
+
+    #[test]
+    fn other_pam_messages_are_shown_as_the_hint_and_attempts_keep_counting() {
+        let (sender, _receiver) = oneshot::channel();
+        let mut prompt = Prompt::new(request(), sender);
+        let now = Instant::now();
+        typed(&mut prompt, "x");
+        let (attempt, _, _) = prompt.submit(now).expect("submitted");
+        let failed = Report {
+            outcome: Outcome::Failure,
+            errors: vec!["Authentication service cannot\nretrieve data".into()],
+            notes: vec!["Place your finger on the reader".into()],
+        };
+        prompt.report(attempt, &failed, now);
+        assert_eq!(prompt.stage(), Stage::Wrong);
+        let text = "Authentication service cannot retrieve data".to_string();
+        assert_eq!(prompt.view(false).hint, Hint::Said { text, left: 2 });
+        typed(&mut prompt, "x");
+        let (attempt, _, _) = prompt.submit(now).expect("submitted");
+        prompt.report(attempt, &report(Outcome::Failure), now);
+        assert_eq!(prompt.view(false).hint, Hint::Wrong { left: 1 }, "a bare failure says nothing extra");
+        typed(&mut prompt, "x");
+        let (attempt, _, _) = prompt.submit(now).expect("submitted");
+        prompt.report(attempt, &report(Outcome::Failure), now);
+        assert_eq!(prompt.stage(), Stage::Locked, "the third failure still locks");
+    }
+
+    #[test]
+    fn only_a_real_lockout_message_locks_at_once() {
+        for text in [
+            "The account is locked due to 3 failed logins. (10 minutes left to unlock)",
+            "Account locked due to 5 failed logins",
+            "Обліковий запис заблоковано (5 хв до розблокування)",
+        ] {
+            assert!(is_lockout(text), "{text}");
+        }
+        for text in ["Place your finger on the reader", "Password expired", "Last login: Mon 10 minutes ago"] {
+            assert!(!is_lockout(text), "{text}");
+        }
     }
 
     #[test]

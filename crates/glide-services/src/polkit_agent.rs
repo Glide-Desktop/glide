@@ -143,9 +143,6 @@ fn locale() -> &'static str {
 }
 
 fn session_id(connection: &Connection) -> Option<String> {
-    if let Some(id) = std::env::var("XDG_SESSION_ID").ok().filter(|id| !id.trim().is_empty()) {
-        return Some(id);
-    }
     let path: OwnedObjectPath = crate::logind::session_path(connection).ok()?;
     let session = Proxy::new(connection, "org.freedesktop.login1", path, "org.freedesktop.login1.Session").ok()?;
     session.get_property::<String>("Id").ok().filter(|id| !id.is_empty())
@@ -153,14 +150,15 @@ fn session_id(connection: &Connection) -> Option<String> {
 
 fn register(connection: &Connection) -> zbus::Result<()> {
     let Some(id) = session_id(connection) else {
-        tracing::warn!("no logind session to register the polkit agent for; password prompts will not appear");
-        return Err(zbus::Error::Failure("this user has no logind session".into()));
+        return Err(zbus::Error::Failure(
+            "this user has no logind session to register the polkit agent for; password prompts will not appear".into(),
+        ));
     };
     let subject = ("unix-session", HashMap::from([("session-id", Value::from(id.as_str()))]));
     let authority = Proxy::new(connection, AUTHORITY, AUTHORITY_PATH, "org.freedesktop.PolicyKit1.Authority")?;
     authority
         .call_method("RegisterAuthenticationAgent", &(subject, locale(), AGENT_PATH))
-        .inspect_err(|err| tracing::warn!(%err, session = id, "polkit refused the authentication agent"))?;
+        .inspect_err(|err| tracing::debug!(%err, session = id, "polkit refused the authentication agent"))?;
     tracing::info!(session = id, "registered the polkit authentication agent");
     Ok(())
 }

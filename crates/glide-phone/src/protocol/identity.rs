@@ -12,9 +12,12 @@ pub const MAX_TCP_PORT: u16 = 1764;
 pub enum DeviceType {
     Desktop,
     Laptop,
+    #[serde(alias = "smartphone")]
     Phone,
     Tablet,
     Tv,
+    #[serde(other)]
+    Unknown,
 }
 
 impl DeviceType {
@@ -26,6 +29,7 @@ impl DeviceType {
             Self::Phone => "phone",
             Self::Tablet => "tablet",
             Self::Tv => "tv",
+            Self::Unknown => "unknown",
         }
     }
 }

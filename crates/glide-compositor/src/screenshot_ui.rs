@@ -106,8 +106,62 @@ pub fn target_output<T: Clone>(
         .map(|(output, _)| output.clone())
 }
 
+const CAPTURE_RETRY: Duration = Duration::from_millis(30);
+const CAPTURE_ATTEMPTS: u32 = 60;
+
+#[must_use]
+pub fn may_retry(attempt: u32) -> bool {
+    attempt < CAPTURE_ATTEMPTS
+}
+
 impl GlideState {
+    #[must_use]
+    pub fn capture_busy(&self) -> bool {
+        self.pending_screenshot.is_some() || self.shot_freezing()
+    }
+
+    pub fn retry_capture(&mut self, attempt: u32, retry: impl FnOnce(&mut Self, u32) + 'static) {
+        let mut retry = Some(retry);
+        let timer = smithay::reexports::calloop::timer::Timer::from_duration(CAPTURE_RETRY);
+        let inserted = self.loop_handle.insert_source(timer, move |_, (), state| {
+            if let Some(retry) = retry.take() {
+                retry(state, attempt + 1);
+            }
+            smithay::reexports::calloop::timer::TimeoutAction::Drop
+        });
+        if let Err(err) = inserted {
+            tracing::warn!(?err, "could not wait for the screen capture in flight");
+        }
+    }
+
+    pub fn capture_failed(&mut self, output: &Output, message: &str) {
+        let answer = glide_ipc::Response::Error { message: message.to_string() };
+        if let Some(capture) = self.session.capture.take_if(|capture| capture.output == *output) {
+            for waiter in &capture.waiters {
+                crate::ipc::reply(waiter, &answer);
+            }
+        } else if let Some(scan) = self.session.qr_scan.take_if(|scan| scan.output == *output) {
+            for waiter in &scan.waiters {
+                crate::ipc::reply(waiter, &answer);
+            }
+        } else if self.session.shot.as_ref().is_some_and(|session| session.awaiting_freeze(output)) {
+            self.cancel_shot();
+            self.screenshot_failed_notice(message.to_string());
+        } else {
+            self.screenshot_finished(Err(message.to_string()));
+        }
+    }
+
     pub fn request_screenshot(&mut self) {
+        self.request_screenshot_after(0);
+    }
+
+    fn request_screenshot_after(&mut self, attempt: u32) {
+        let freezing = self.shot_freezing() || self.session.qr_scan.is_some() || self.session.capture.is_some();
+        if freezing && may_retry(attempt) {
+            self.retry_capture(attempt, Self::request_screenshot_after);
+            return;
+        }
         let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location()).unwrap_or_default();
         let outputs: Vec<_> = self
             .space
@@ -194,6 +248,17 @@ impl GlideState {
                 (crate::i18n::screenshot_failed(), err, None)
             }
         };
+        self.screenshot_notice(summary, body, actions, preview);
+    }
+
+    pub fn screenshot_failed_notice(&mut self, message: String) {
+        tracing::error!(%message, "the screenshot failed");
+        self.screenshot_notice(crate::i18n::screenshot_failed(), message, Vec::new(), None);
+    }
+
+    fn screenshot_notice(
+        &mut self, summary: &str, body: String, actions: Vec<glide_notify::Action>, preview: Option<Vec<u8>>,
+    ) {
         let app_icon = self
             .session
             .last_screenshot

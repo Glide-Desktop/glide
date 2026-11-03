@@ -1,0 +1,19 @@
+[package]
+name = "glide-welcome"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glide-config = { path = "../glide-config" }
+glide-sdk = { path = "../glide-sdk" }
+tokio = { version = "1", features = ["time"] }
+
+[dev-dependencies]
+iced_tiny_skia = { version = "0.14", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

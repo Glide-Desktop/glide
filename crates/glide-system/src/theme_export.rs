@@ -2,7 +2,8 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use glide_config::toolkits::Support;
-use glide_theme::{Appearance, Tokens, export};
+use glide_theme::export::{self, Qt};
+use glide_theme::{Appearance, Tokens};
 
 use crate::system_info::DesktopAppearance;
 
@@ -28,9 +29,9 @@ pub fn export(look: &DesktopAppearance, gtk_theme: Option<&str>) {
         write_settings_ini(&config.join(dir), &gtk_settings(look, gtk_theme, gtk3));
     }
     let family = named(look.font_family.as_deref()).unwrap_or(glide_theme::font::DEFAULT_FAMILY);
-    for (name, roles) in [("qt6ct", 22), ("qt5ct", 21)] {
+    for (name, roles, qt) in [("qt6ct", 22, Qt::Six), ("qt5ct", 21, Qt::Five)] {
         let colors = export::qtct_colors(&tokens, roles);
-        write_qtct(&config.join(name), name, &colors, family, icon_theme, look.toolkits.kvantum);
+        write_qtct(&config.join(name), name, &colors, (family, qt), icon_theme, look.toolkits.kvantum);
     }
     write_kde(&config, &data, &tokens, family, icon_theme);
     write_kvantum(&config.join("Kvantum"), &tokens);
@@ -204,12 +205,12 @@ fn ini_value<'a>(text: &'a str, section: &str, key: &str) -> Option<&'a str> {
     None
 }
 
-fn write_qtct(dir: &Path, name: &str, colors: &str, family: &str, icon_theme: Option<&str>, kvantum: bool) {
+fn write_qtct(dir: &Path, name: &str, colors: &str, font: (&str, Qt), icon_theme: Option<&str>, kvantum: bool) {
     let scheme = dir.join("colors").join(QT_SCHEME);
     write(&scheme, colors);
     let conf = dir.join(format!("{name}.conf"));
     let Some(text) = user_file(&conf) else { return };
-    write(&conf, &qtct_conf(&text, &scheme.to_string_lossy(), family, icon_theme, kvantum));
+    write(&conf, &qtct_conf(&text, &scheme.to_string_lossy(), font, icon_theme, kvantum));
 }
 
 const QT_GNOME_BUTTON_LAYOUT: &str = "3";
@@ -220,14 +221,17 @@ fn unset_or(text: &str, section: &str, key: &str, ours: impl Fn(&str) -> bool) -
 
 #[must_use]
 pub fn is_glide_qt_font(value: &str, points: u32) -> bool {
-    let sample = export::qt_font("", points);
-    let tail = sample.trim_start_matches('"').trim_end_matches('"');
     let value = value.trim_matches('"');
-    value.ends_with(tail) && value.len() > tail.len()
+    [Qt::Five, Qt::Six].into_iter().any(|qt| {
+        let sample = export::qt_font("", points, qt);
+        let tail = sample.trim_matches('"');
+        value.ends_with(tail) && value.len() > tail.len()
+    })
 }
 
 #[must_use]
-pub fn qtct_conf(current: &str, scheme: &str, family: &str, icon_theme: Option<&str>, kvantum: bool) -> String {
+pub fn qtct_conf(current: &str, scheme: &str, font: (&str, Qt), icon_theme: Option<&str>, kvantum: bool) -> String {
+    let (family, qt) = font;
     let file_name = Path::new(scheme).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let palette_in_use = ini_value(current, "Appearance", "custom_palette") == Some("true");
     let owned = !palette_in_use
@@ -256,7 +260,7 @@ pub fn qtct_conf(current: &str, scheme: &str, family: &str, icon_theme: Option<&
         text = set_ini(&text, "Interface", "buttonbox_layout", QT_GNOME_BUTTON_LAYOUT);
     }
     if owned || unset_or(&text, "Fonts", "general", |font| is_glide_qt_font(font, QT_FONT_POINTS)) {
-        text = set_ini(&text, "Fonts", "general", &export::qt_font(family, QT_FONT_POINTS));
+        text = set_ini(&text, "Fonts", "general", &export::qt_font(family, QT_FONT_POINTS, qt));
     }
     text
 }
@@ -283,7 +287,7 @@ pub fn kde_globals(current: &str, scheme: &str, family: &str, icon_theme: Option
             globals = set_ini(&globals, &section, key, value);
         }
     }
-    globals = set_ini(&globals, "General", "font", &export::qt_font(family, QT_FONT_POINTS).replace('"', ""));
+    globals = set_ini(&globals, "General", "font", &export::qt_font(family, QT_FONT_POINTS, Qt::Five).replace('"', ""));
     if let Some(icons) = icon_theme {
         globals = set_ini(&globals, "Icons", "Theme", icons);
     }
@@ -447,12 +451,12 @@ mod tests {
 
     #[test]
     fn qt_dialogs_go_to_the_portal_only_while_the_user_has_not_picked_others() {
-        let fresh = qtct_conf("", "/s/Glide.conf", "Inter", Some("Papirus"), false);
+        let fresh = qtct_conf("", "/s/Glide.conf", ("Inter", Qt::Six), Some("Papirus"), false);
         assert_eq!(ini_value(&fresh, "Appearance", "standard_dialogs"), Some("xdgdesktopportal"));
         assert_eq!(ini_value(&fresh, "Interface", "buttonbox_layout"), Some(QT_GNOME_BUTTON_LAYOUT));
         assert_eq!(ini_value(&fresh, "Appearance", "style"), Some("Fusion"));
         let own = "[Appearance]\nstandard_dialogs=kde\nstyle=Breeze\n\n[Interface]\nbuttonbox_layout=2\n";
-        let kept = qtct_conf(own, "/s/Glide.conf", "Inter", None, true);
+        let kept = qtct_conf(own, "/s/Glide.conf", ("Inter", Qt::Six), None, true);
         assert_eq!(ini_value(&kept, "Appearance", "standard_dialogs"), Some("kde"));
         assert_eq!(ini_value(&kept, "Appearance", "style"), Some("Breeze"));
         assert_eq!(ini_value(&kept, "Interface", "buttonbox_layout"), Some("2"));
@@ -462,27 +466,40 @@ mod tests {
     #[test]
     fn a_qtct_palette_font_and_icons_the_user_chose_survive_an_apply() {
         let scheme = "/home/me/.config/qt6ct/colors/Glide.conf";
-        let font = export::qt_font("Inter", QT_FONT_POINTS);
-        let fresh = qtct_conf("", scheme, "Inter", Some("Papirus"), false);
+        let font = export::qt_font("Inter", QT_FONT_POINTS, Qt::Six);
+        let fresh = qtct_conf("", scheme, ("Inter", Qt::Six), Some("Papirus"), false);
         assert_eq!(ini_value(&fresh, "Appearance", "color_scheme_path"), Some(scheme));
         assert_eq!(ini_value(&fresh, "Appearance", "custom_palette"), Some("true"));
         assert_eq!(ini_value(&fresh, "Appearance", "icon_theme"), Some("Papirus"));
         assert_eq!(ini_value(&fresh, "Fonts", "general"), Some(font.as_str()));
-        let again = qtct_conf(&fresh, scheme, "Noto Sans", Some("Colloid"), false);
+        let again = qtct_conf(&fresh, scheme, ("Noto Sans", Qt::Six), Some("Colloid"), false);
         assert_eq!(ini_value(&again, "Appearance", "icon_theme"), Some("Colloid"), "ours, so it follows Glide");
-        assert_eq!(ini_value(&again, "Fonts", "general"), Some(export::qt_font("Noto Sans", 11).as_str()));
+        assert_eq!(ini_value(&again, "Fonts", "general"), Some(export::qt_font("Noto Sans", 11, Qt::Six).as_str()));
 
         let theirs = "[Appearance]\ncolor_scheme_path=/usr/share/qt6ct/colors/darker.conf\ncustom_palette=true\n\
                       icon_theme=breeze\n\n[Fonts]\ngeneral=\"Fira Sans,10,-1,5,50,0,0,0,0,0\"\n";
-        let kept = qtct_conf(theirs, scheme, "Inter", Some("Papirus"), false);
+        let kept = qtct_conf(theirs, scheme, ("Inter", Qt::Six), Some("Papirus"), false);
         assert_eq!(ini_value(&kept, "Appearance", "color_scheme_path"), Some("/usr/share/qt6ct/colors/darker.conf"));
         assert_eq!(ini_value(&kept, "Appearance", "icon_theme"), Some("breeze"));
         assert_eq!(ini_value(&kept, "Fonts", "general"), Some("\"Fira Sans,10,-1,5,50,0,0,0,0,0\""));
 
         let inactive = theirs.replace("custom_palette=true", "custom_palette=false");
-        let adopted = qtct_conf(&inactive, scheme, "Inter", None, false);
+        let adopted = qtct_conf(&inactive, scheme, ("Inter", Qt::Six), None, false);
         assert_eq!(ini_value(&adopted, "Appearance", "color_scheme_path"), Some(scheme), "an unused palette is free");
         assert!(is_glide_qt_font(&font, QT_FONT_POINTS) && !is_glide_qt_font("\"Fira Sans,10\"", QT_FONT_POINTS));
+    }
+
+    #[test]
+    fn qt5ct_gets_a_font_string_qt5_parses_and_a_qt6_one_written_before_is_still_ours() {
+        let qt6 = qtct_conf("", "/s/Glide.conf", ("Inter", Qt::Six), None, false);
+        let qt5 = qtct_conf(&qt6, "/s/Glide.conf", ("Inter", Qt::Five), None, false);
+        assert_eq!(ini_value(&qt5, "Fonts", "general"), Some("\"Inter,11,-1,5,50,0,0,0,0,0\""));
+        let globals = kde_globals("", "[General]\nColorScheme=Glide\n", "Inter", None).expect("nothing chosen yet");
+        assert_eq!(
+            ini_value(&globals, "General", "font"),
+            Some("Inter,11,-1,5,50,0,0,0,0,0"),
+            "Plasma 5 and 6 read it"
+        );
     }
 
     #[test]

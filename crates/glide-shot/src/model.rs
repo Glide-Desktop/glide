@@ -305,7 +305,7 @@ impl Shot {
     }
 
     pub fn set_mode(&mut self, mode: Mode) -> bool {
-        if self.editing() || self.mode == mode {
+        if self.editing() || self.selecting() || self.mode == mode {
             return false;
         }
         self.mode = mode;
@@ -847,7 +847,7 @@ pub fn edit_slots() -> Vec<Slot> {
 pub struct Bar {
     pub rect: Area,
     pub items: Vec<(Control, Area)>,
-    pub rules: Vec<f64>,
+    pub rules: Vec<Pos>,
 }
 
 impl Bar {
@@ -866,10 +866,11 @@ impl Bar {
     }
 }
 
-fn lay_out(slots: &[Slot], height: f64, pad: f64, control_h: f64) -> (f64, Vec<(Control, Area)>, Vec<f64>) {
+fn lay_out(slots: &[Slot], height: f64, pad: f64, control_h: f64) -> (f64, Vec<(Control, Area)>, Vec<Pos>) {
     let mut x = pad;
     let mut items = Vec::new();
     let mut rules = Vec::new();
+    let middle = (height / 2.0).round();
     for slot in slots {
         match *slot {
             Slot::Control(control, width) => {
@@ -886,7 +887,7 @@ fn lay_out(slots: &[Slot], height: f64, pad: f64, control_h: f64) -> (f64, Vec<(
             }
             Slot::Gap(width) => x += width,
             Slot::Rule => {
-                rules.push(x + (RULE / 2.0).floor());
+                rules.push(Point::from((x + (RULE / 2.0).floor(), middle)));
                 x += RULE;
             }
         }
@@ -902,21 +903,45 @@ pub fn choose_bar(bounds: Size<f64, Logical>) -> Bar {
     Bar { rect: Rectangle::new(Point::from((x, y)), Size::from((width, CHOOSE_H))), items, rules }
 }
 
+type Layout = (f64, f64, Vec<(Control, Area)>, Vec<Pos>);
+
+fn edit_layout(available: f64) -> Layout {
+    let slots = edit_slots();
+    let (width, items, rules) = lay_out(&slots, EDIT_H, EDIT_PAD, BUTTON);
+    if width + EDGE * 2.0 <= available {
+        return (width, EDIT_H, items, rules);
+    }
+    let split = slots.iter().position(|slot| *slot == Slot::Rule).unwrap_or(slots.len());
+    let rows = [&slots[..split], slots.get(split + 1..).unwrap_or_default()];
+    let laid: Vec<_> = rows.iter().map(|row| lay_out(row, EDIT_H, EDIT_PAD, BUTTON)).collect();
+    let width = laid.iter().map(|(width, ..)| *width).fold(0.0, f64::max);
+    let mut items = Vec::new();
+    let mut rules = Vec::new();
+    for (row, (row_width, row_items, row_rules)) in laid.into_iter().enumerate() {
+        let shift = Point::from((((width - row_width) / 2.0).round(), row as f64 * (EDIT_H - EDIT_PAD)));
+        items.extend(
+            row_items.into_iter().map(|(control, area)| (control, Rectangle::new(area.loc + shift, area.size))),
+        );
+        rules.extend(row_rules.into_iter().map(|rule| rule + shift));
+    }
+    (width, EDIT_H * 2.0 - EDIT_PAD, items, rules)
+}
+
 #[must_use]
 pub fn edit_bar(bounds: Size<f64, Logical>, target: Area) -> Bar {
-    let (width, items, rules) = lay_out(&edit_slots(), EDIT_H, EDIT_PAD, BUTTON);
+    let (width, height, items, rules) = edit_layout(bounds.w);
     let bottom = target.loc.y + target.size.h;
-    let y = if bottom + EDIT_GAP + EDIT_H <= bounds.h - EDGE {
+    let y = if bottom + EDIT_GAP + height <= bounds.h - EDGE {
         bottom + EDIT_GAP
-    } else if target.loc.y - EDIT_GAP - EDIT_H >= EDGE {
-        target.loc.y - EDIT_GAP - EDIT_H
+    } else if target.loc.y - EDIT_GAP - height >= EDGE {
+        target.loc.y - EDIT_GAP - height
     } else {
-        (bottom - EDIT_GAP - EDIT_H).clamp(EDGE.min(bounds.h - EDIT_H), (bounds.h - EDGE - EDIT_H).max(0.0))
+        (bottom - EDIT_GAP - height).clamp(EDGE.min(bounds.h - height), (bounds.h - EDGE - height).max(0.0))
     };
     let centre = target.loc.x + target.size.w / 2.0;
     let max_x = (bounds.w - EDGE - width).max(0.0);
     let x = (centre - width / 2.0).round().clamp(EDGE.min(max_x), max_x);
-    Bar { rect: Rectangle::new(Point::from((x, y.round())), Size::from((width, EDIT_H))), items, rules }
+    Bar { rect: Rectangle::new(Point::from((x, y.round())), Size::from((width, height))), items, rules }
 }
 
 impl Shot {
@@ -1000,7 +1025,7 @@ mod tests {
         shot.selection = Some(kept);
         let bar = shot.bar();
         let padding = bar.rect.loc + Point::from((CHOOSE_PAD / 2.0, bar.rect.size.h / 2.0));
-        let rule = bar.rect.loc + Point::from((bar.rules[0], bar.rect.size.h / 2.0));
+        let rule = bar.rect.loc + bar.rules[0];
         for pos in [padding, rule] {
             assert_eq!(shot.press(pos, shot.control_at(pos)), Outcome::Nothing);
             shot.release(pos);
@@ -1362,17 +1387,45 @@ mod tests {
     #[test]
     fn every_bar_control_is_hit_where_it_is_laid_out_and_rules_stay_between() {
         let bounds = Size::from((1920.0, 1080.0));
-        for bar in [choose_bar(bounds), edit_bar(bounds, Rectangle::new(p(400.0, 100.0), Size::from((600.0, 300.0))))] {
+        let narrow = Size::from((540.0, 960.0));
+        let capture = Rectangle::new(p(100.0, 100.0), Size::from((300.0, 300.0)));
+        for bar in [
+            choose_bar(bounds),
+            edit_bar(bounds, Rectangle::new(p(400.0, 100.0), Size::from((600.0, 300.0)))),
+            edit_bar(narrow, capture),
+        ] {
             for (control, area) in &bar.items {
                 let centre = bar.rect.loc + area.loc + Point::from((area.size.w / 2.0, area.size.h / 2.0));
                 assert_eq!(bar.control_at(centre), Some(*control));
                 assert!(area.loc.x >= 0.0 && area.loc.x + area.size.w <= bar.rect.size.w);
                 assert!(area.loc.y >= 0.0 && area.loc.y + area.size.h <= bar.rect.size.h);
             }
-            assert!(
-                bar.rules.iter().all(|x| bar.items.iter().all(|(_, area)| !area.contains(p(*x, area.loc.y + 1.0))))
-            );
+            assert!(bar.rules.iter().all(|rule| bar.items.iter().all(|(_, area)| !area.contains(*rule))));
         }
+    }
+
+    #[test]
+    fn the_edit_bar_wraps_onto_two_rows_on_a_narrow_output() {
+        let narrow = Size::from((540.0, 960.0));
+        let bar = edit_bar(narrow, Rectangle::new(p(100.0, 100.0), Size::from((300.0, 300.0))));
+        assert!(bar.rect.loc.x >= EDGE && bar.rect.loc.x + bar.rect.size.w <= narrow.w - EDGE, "{:?}", bar.rect);
+        assert!(bar.rect.size.h > EDIT_H, "two rows");
+        let tools = bar.item(Control::Tool(Tool::Move)).expect("tools");
+        let save = bar.item(Control::Save).expect("save");
+        assert!(save.loc.y > tools.loc.y + tools.size.h / 2.0, "the swatches and actions move to the second row");
+        assert_eq!(bar.items.len(), edit_bar(Size::from((1920.0, 1080.0)), bar.rect).items.len());
+        let wide = edit_bar(Size::from((1920.0, 1080.0)), Rectangle::new(p(100.0, 100.0), Size::from((300.0, 300.0))));
+        assert!((wide.rect.size.h - EDIT_H).abs() < 1e-9, "one row wherever it fits");
+    }
+
+    #[test]
+    fn the_mode_stays_put_while_an_area_is_being_dragged() {
+        let mut shot = shot();
+        shot.press(p(200.0, 150.0), None);
+        shot.motion(p(500.0, 450.0), None);
+        assert!(!shot.set_mode(Mode::Window));
+        assert_eq!(shot.mode, Mode::Area);
+        assert!(shot.selecting());
     }
 
     #[test]

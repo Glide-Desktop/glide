@@ -14,6 +14,8 @@ const WIFI_P2P: &str = "org.freedesktop.NetworkManager.Device.WifiP2P";
 const PEER: &str = "org.freedesktop.NetworkManager.WifiP2PPeer";
 const ACTIVE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 const IP4_CONFIG: &str = "org.freedesktop.NetworkManager.IP4Config";
+const IWD: &str = "net.connman.iwd";
+const CONNECTION_ID: &str = "Glide screen mirroring";
 const DEVICE_TYPE_WIFI_P2P: u32 = 30;
 const ACTIVATED: u32 = 2;
 const DEACTIVATED: u32 = 4;
@@ -43,13 +45,34 @@ pub(crate) fn sort_peers(mut peers: Vec<Peer>) -> Vec<Peer> {
     peers
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Subnet {
+    pub address: std::net::Ipv4Addr,
+    pub prefix: u8,
+}
+
+impl Subnet {
+    #[must_use]
+    pub(crate) fn contains(self, peer: std::net::IpAddr) -> bool {
+        let peer = match peer {
+            std::net::IpAddr::V4(v4) => v4,
+            std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+                Some(v4) => v4,
+                None => return false,
+            },
+        };
+        let mask = u32::MAX.checked_shl(32 - u32::from(self.prefix.min(32))).unwrap_or(0);
+        u32::from(peer) & mask == u32::from(self.address) & mask && peer != self.address
+    }
+}
+
 type Settings<'a> = HashMap<&'static str, HashMap<&'static str, Value<'a>>>;
 
 #[must_use]
 pub(crate) fn connection_settings(peer_address: &str) -> Settings<'static> {
     let connection = HashMap::from([
         ("type", Value::from("wifi-p2p")),
-        ("id", Value::from("Glide screen mirroring")),
+        ("id", Value::from(CONNECTION_ID)),
         ("autoconnect", Value::from(false)),
     ]);
     let p2p = HashMap::from([
@@ -92,6 +115,29 @@ fn connection_state(read: zbus::Result<u32>) -> Option<u32> {
     }
 }
 
+#[must_use]
+pub(crate) const fn no_device(iwd: bool) -> &'static str {
+    if iwd {
+        "NetworkManager's iwd backend has no Wi-Fi Direct; set wifi.backend=wpa_supplicant in NetworkManager.conf"
+    } else {
+        "NetworkManager has no Wi-Fi P2P device; the Wi-Fi card or driver does not support Wi-Fi Direct"
+    }
+}
+
+fn iwd_running(bus: &Connection) -> bool {
+    let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(bus) else {
+        return false;
+    };
+    let Ok(name) = zbus::names::BusName::try_from(IWD) else {
+        return false;
+    };
+    dbus.name_has_owner(name).unwrap_or(false)
+}
+
+fn device_type(bus: &Connection, device: &OwnedObjectPath) -> Option<u32> {
+    Proxy::new(bus, NM, device.as_str(), DEVICE).and_then(|proxy| proxy.get_property("DeviceType")).ok()
+}
+
 pub struct P2p {
     bus: Connection,
     device: OwnedObjectPath,
@@ -99,18 +145,33 @@ pub struct P2p {
 
 impl P2p {
     pub fn open() -> Result<Self, String> {
-        let bus = Connection::system().map_err(failed)?;
+        let bus = Connection::system().map_err(|err| format!("the system bus is unavailable: {err}"))?;
         let nm = Proxy::new(&bus, NM, NM_PATH, NM).map_err(failed)?;
-        let devices: Vec<OwnedObjectPath> = nm.call("GetDevices", &()).map_err(failed)?;
-        for device in devices {
-            let kind: u32 = Proxy::new(&bus, NM, device.as_str(), DEVICE)
-                .and_then(|proxy| proxy.get_property("DeviceType"))
-                .map_err(failed)?;
-            if kind == DEVICE_TYPE_WIFI_P2P {
-                return Ok(Self { bus, device });
+        let devices: Vec<OwnedObjectPath> =
+            nm.call("GetDevices", &()).map_err(|err| format!("NetworkManager is not available: {err}"))?;
+        let Some(device) = devices.into_iter().find(|device| device_type(&bus, device) == Some(DEVICE_TYPE_WIFI_P2P))
+        else {
+            return Err(no_device(iwd_running(&bus)).into());
+        };
+        let p2p = Self { bus, device };
+        p2p.drop_leftovers();
+        Ok(p2p)
+    }
+
+    fn drop_leftovers(&self) {
+        let Ok(nm) = Proxy::new(&self.bus, NM, NM_PATH, NM) else {
+            return;
+        };
+        let Ok(actives) = nm.get_property::<Vec<OwnedObjectPath>>("ActiveConnections") else {
+            return;
+        };
+        for active in actives {
+            let id =
+                Proxy::new(&self.bus, NM, active.as_str(), ACTIVE).and_then(|proxy| proxy.get_property::<String>("Id"));
+            if id.is_ok_and(|id| id == CONNECTION_ID) {
+                let _ = self.disconnect(&active);
             }
         }
-        Err("NetworkManager has no Wi-Fi P2P device; the Wi-Fi card or driver does not support Wi-Fi Direct".into())
     }
 
     fn p2p(&self) -> Result<Proxy<'_>, String> {
@@ -178,14 +239,19 @@ impl P2p {
     }
 
     #[must_use]
-    pub(crate) fn local_address(&self, active: &OwnedObjectPath) -> Option<std::net::Ipv4Addr> {
+    pub(crate) fn local_address(&self, active: &OwnedObjectPath) -> Option<Subnet> {
         let config: OwnedObjectPath =
             Proxy::new(&self.bus, NM, active.as_str(), ACTIVE).ok()?.get_property("Ip4Config").ok()?;
         let addresses: Vec<HashMap<String, zbus::zvariant::OwnedValue>> =
             Proxy::new(&self.bus, NM, config.as_str(), IP4_CONFIG).ok()?.get_property("AddressData").ok()?;
         addresses.iter().find_map(|entry| {
             let address = String::try_from(entry.get("address")?.try_clone().ok()?).ok()?;
-            address.parse().ok()
+            let prefix = entry
+                .get("prefix")
+                .and_then(|value| u32::try_from(value.try_clone().ok()?).ok())
+                .and_then(|prefix| u8::try_from(prefix).ok())
+                .unwrap_or(24);
+            Some(Subnet { address: address.parse().ok()?, prefix })
         })
     }
 
@@ -235,6 +301,24 @@ mod tests {
         };
         assert_eq!(connection_state(method_error(GONE_ERRORS[0])), Some(DEACTIVATED));
         assert_eq!(connection_state(method_error("org.freedesktop.DBus.Error.AccessDenied")), None);
+    }
+
+    #[test]
+    fn only_peers_on_the_wifi_direct_subnet_are_let_in() {
+        let link = Subnet { address: "192.168.49.1".parse().unwrap(), prefix: 24 };
+        assert!(link.contains("192.168.49.10".parse().unwrap()));
+        assert!(link.contains("::ffff:192.168.49.20".parse().unwrap()));
+        assert!(!link.contains("192.168.1.10".parse().unwrap()), "the home network is not the display");
+        assert!(!link.contains("192.168.49.1".parse().unwrap()), "the source itself is not a display");
+        assert!(!link.contains("fe80::1".parse().unwrap()));
+        let any = Subnet { prefix: 0, ..link };
+        assert!(any.contains("10.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn an_iwd_backend_is_named_instead_of_the_card() {
+        assert!(no_device(true).contains("iwd backend has no Wi-Fi Direct"));
+        assert!(no_device(false).contains("does not support Wi-Fi Direct"));
     }
 
     #[test]

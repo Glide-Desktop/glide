@@ -5,11 +5,13 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use zbus::zvariant::OwnedObjectPath;
+
 use crate::abort::Abort;
 use crate::formats::{self, AudioSupport, Mode};
-use crate::p2p::{P2p, Peer};
-use crate::pipeline::{Gate, Spec, Stream};
-use crate::rtsp::{Event, Message, Negotiated, Reader, Session};
+use crate::p2p::{P2p, Peer, Subnet};
+use crate::pipeline::{Encoder, Gate, Probed, Spec, Stream};
+use crate::rtsp::{Event, Message, Negotiated, REPLY_WAIT, Reader, Session};
 use crate::wfd::CONTROL_PORT;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(40);
@@ -58,12 +60,12 @@ impl Handle {
         self.shared.paused.load(Ordering::Acquire)
     }
 
-    pub fn push_frame(&self, pixels: Vec<u8>) {
+    pub fn push_frame(&self, pixels: Vec<u8>, size: (u32, u32)) {
         if self.paused() {
             return;
         }
-        if let Some((stream, _)) = self.shared.stream.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
-            let _ = stream.push_frame(pixels);
+        if let Some((stream, _)) = self.shared.stream.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
+            let _ = stream.push_frame(pixels, size);
         }
     }
 
@@ -147,10 +149,20 @@ fn search(
     found(Discovery::Finished);
 }
 
+pub fn preflight() -> Result<Encoder, String> {
+    crate::pipeline::probe().map(|probed| probed.encoder)
+}
+
 pub fn discover(seconds: u32, found: impl Fn(Discovery) + Send + 'static) -> std::io::Result<Search> {
     let flag = Arc::new(Flag::default());
     let shared = Arc::clone(&flag);
     let thread = std::thread::Builder::new().name("glide-cast-find".into()).spawn(move || {
+        if let Err(reason) = preflight() {
+            return found(Discovery::Failed(reason));
+        }
+        if shared.cancelled() {
+            return found(Discovery::Finished);
+        }
         let p2p = match P2p::open() {
             Ok(p2p) => p2p,
             Err(err) => return found(Discovery::Failed(err)),
@@ -187,11 +199,27 @@ pub fn start(
     let owned = Arc::clone(&shared);
     std::thread::Builder::new().name("glide-cast".into()).spawn(move || {
         status(Status::Connecting(peer.name.clone()));
-        let outcome = run(&peer, source, options, search.as_ref(), &stopped, &owned, &status);
-        drop(swap(&owned.stream, None));
-        status(ending(outcome));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(&peer, source, options, search.as_ref(), &stopped, &owned, &status)
+        }))
+        .unwrap_or_else(|_| Err(Abort::from(CRASHED)));
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(swap(&owned.stream, None))));
+        status(ending(outcome.and(dropped.map_err(|_| Abort::from(CRASHED)))));
     })?;
     Ok(Handle { stop, shared })
+}
+
+const CRASHED: &str = "screen mirroring stopped after an internal error";
+
+struct Joined<'a> {
+    p2p: &'a P2p,
+    active: OwnedObjectPath,
+}
+
+impl Drop for Joined<'_> {
+    fn drop(&mut self) {
+        let _ = self.p2p.disconnect(&self.active);
+    }
 }
 
 fn ending(outcome: Result<(), Abort>) -> Status {
@@ -210,23 +238,27 @@ fn run(
     if let Some(search) = search {
         search.finish();
     }
-    gstreamer::init().map_err(|err| format!("GStreamer did not start: {err}"))?;
-    let preference = preference(crate::pipeline::hardware_encoder(crate::pipeline::element_exists), options.quality);
+    let encoder = crate::pipeline::probe()?;
+    let preference = preference(encoder.encoder.hardware, options.quality);
     let sound = AudioSupport {
         enabled: options.audio,
+        capture: crate::pipeline::audio_capture(crate::pipeline::element_exists),
         aac_encoder: crate::pipeline::aac_encoder(crate::pipeline::element_exists),
     };
+    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, CONTROL_PORT))
+        .and_then(|listener| listener.set_nonblocking(true).map(|()| listener))
+        .map_err(|err| format!("port {CONTROL_PORT}: {err}"))?;
     let p2p = P2p::open()?;
     let _ = p2p.stop_find();
-    let active = p2p.connect(peer, CONNECT_TIMEOUT, stopped)?;
-    let served: Result<(), Abort> = (|| {
-        let local = wait_for(ADDRESS_WAIT, stopped, || p2p.local_address(&active))?
-            .ok_or("the Wi-Fi Direct link got no address")?;
-        let (tcp, display) = accept(local, stopped)?.ok_or("the display did not open its control connection")?;
-        let link = Link { tcp, display, local, source, preference, sound };
-        link.serve(stopped, shared, status).map_err(Abort::from)
-    })();
-    let _ = p2p.disconnect(&active);
+    let joined = Joined { active: p2p.connect(peer, CONNECT_TIMEOUT, stopped)?, p2p: &p2p };
+    let subnet = wait_for(ADDRESS_WAIT, stopped, || p2p.local_address(&joined.active))?
+        .ok_or("the Wi-Fi Direct link got no address")?;
+    let (tcp, display) =
+        accept(&listener, subnet, stopped)?.ok_or("the display did not open its control connection")?;
+    let link = Link { tcp, display, local: subnet.address, source, preference, sound, encoder };
+    let served = link.serve(stopped, shared, status).map_err(Abort::from);
+    drop(joined);
+    drop(listener);
     served
 }
 
@@ -246,12 +278,12 @@ fn wait_for<T>(
     Ok(None)
 }
 
-fn accept(local: Ipv4Addr, stopped: &mpsc::Receiver<()>) -> Result<Option<(TcpStream, SocketAddr)>, Abort> {
-    let listener = TcpListener::bind((local, CONTROL_PORT)).map_err(|err| format!("port {CONTROL_PORT}: {err}"))?;
-    listener.set_nonblocking(true).map_err(|err| err.to_string())?;
+fn accept(
+    listener: &TcpListener, subnet: Subnet, stopped: &mpsc::Receiver<()>,
+) -> Result<Option<(TcpStream, SocketAddr)>, Abort> {
     wait_for(ACCEPT_WAIT, stopped, || match listener.accept() {
-        Ok((tcp, address)) => Some((tcp, address)),
-        Err(_) => None,
+        Ok((tcp, address)) if subnet.contains(address.ip()) => Some((tcp, address)),
+        Ok(_) | Err(_) => None,
     })
 }
 
@@ -278,6 +310,7 @@ struct Link {
     source: Source,
     preference: &'static [u8],
     sound: AudioSupport,
+    encoder: Probed,
 }
 
 struct Serving {
@@ -314,6 +347,7 @@ impl Link {
                         port: choice.sink_rtp_port,
                         frame_format: self.source.frame_format,
                         input: self.source.size,
+                        encoder: self.encoder.clone(),
                     };
                     let stream = Stream::start(&spec)?;
                     shared.paused.store(false, Ordering::Release);
@@ -351,6 +385,30 @@ impl Link {
         Ok(Flow::Continue)
     }
 
+    fn await_teardown(&mut self, session: &mut Session, reader: &mut Reader) {
+        let deadline = Instant::now() + REPLY_WAIT;
+        let mut buffer = [0; 4096];
+        while Instant::now() < deadline {
+            match self.tcp.read(&mut buffer) {
+                Ok(0) => return,
+                Ok(read) => reader.push(&buffer[..read]),
+                Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(_) => return,
+            }
+            while let Ok(Some(message)) = reader.next_message() {
+                let (out, events) = session.receive(&message, Instant::now());
+                for reply in &out {
+                    if self.write(reply).is_err() {
+                        return;
+                    }
+                }
+                if events.contains(&Event::Teardown) {
+                    return;
+                }
+            }
+        }
+    }
+
     fn serve(mut self, stopped: &mpsc::Receiver<()>, shared: &Shared, status: &impl Fn(Status)) -> Result<(), String> {
         self.tcp.set_nonblocking(false).map_err(|err| err.to_string())?;
         self.tcp.set_read_timeout(Some(TICK)).map_err(|err| err.to_string())?;
@@ -365,7 +423,9 @@ impl Link {
         loop {
             if stopped.try_recv().is_ok() {
                 let teardown = session.teardown(Instant::now());
-                let _ = self.write(&teardown);
+                if self.write(&teardown).is_ok() {
+                    self.await_teardown(&mut session, &mut reader);
+                }
                 return Ok(());
             }
             match self.tcp.read(&mut buffer) {
@@ -703,6 +763,13 @@ mod tests {
             assert!(setup.header("Session").is_some());
         }
 
+        fn answer_teardown(&mut self) {
+            let trigger = self.next();
+            assert_eq!(trigger.parameters()["wfd_trigger_method"], "TEARDOWN");
+            self.ok(&trigger, "");
+            assert_eq!(self.command("TEARDOWN", 90), 200, "the source answers the sink's TEARDOWN");
+        }
+
         fn command(&mut self, method: &str, cseq: u32) -> u16 {
             let reply =
                 self.send(&format!("{method} rtsp://127.0.0.1/wfd1.0/streamid=0 RTSP/1.0\r\nCSeq: {cseq}\r\n\r\n"));
@@ -720,8 +787,9 @@ mod tests {
             let (tcp, display) = listener.accept().unwrap();
             let source = Source { frame_format: "BGRx", size: (800, 500) };
             let preference = &formats::SOFTWARE_PREFERENCE;
-            let sound = AudioSupport { enabled: true, aac_encoder: false };
-            let link = Link { tcp, display, local: Ipv4Addr::LOCALHOST, source, preference, sound };
+            let sound = AudioSupport { enabled: true, capture: true, aac_encoder: false };
+            let encoder = crate::pipeline::probe().unwrap();
+            let link = Link { tcp, display, local: Ipv4Addr::LOCALHOST, source, preference, sound, encoder };
             let statuses = Mutex::new(Vec::new());
             let outcome = link.serve(&stopped, &shared, &|status| statuses.lock().unwrap().push(status));
             (outcome, statuses.into_inner().unwrap())
@@ -737,13 +805,13 @@ mod tests {
     }
 
     fn encoder_installed() -> bool {
-        gstreamer::init().is_ok() && gstreamer::ElementFactory::find("openh264enc").is_some()
+        crate::pipeline::probe().is_ok()
     }
 
     #[test]
     fn a_display_gets_rtp_after_the_full_rtsp_exchange() {
         if !encoder_installed() {
-            eprintln!("no openh264enc; skipping");
+            eprintln!("no working H.264 encoder; skipping");
             return;
         }
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -763,7 +831,7 @@ mod tests {
         let handle = Handle { stop, shared: Arc::clone(&shared) };
         assert_eq!(handle.mode().map(|mode| (mode.width, mode.height)), Some((640, 480)));
         for _ in 0..15 {
-            handle.push_frame(vec![0x40; 800 * 500 * 4]);
+            handle.push_frame(vec![0x40; 800 * 500 * 4], (800, 500));
             std::thread::sleep(Duration::from_millis(33));
         }
         let mut packet = [0; 2048];
@@ -772,17 +840,44 @@ mod tests {
         assert_eq!(packet[12], 0x47);
 
         handle.stop();
-        let teardown = sink.next();
-        assert_eq!(teardown.parameters()["wfd_trigger_method"], "TEARDOWN");
+        sink.answer_teardown();
         let (outcome, statuses) = source.join().unwrap();
         assert_eq!(outcome, Ok(()));
         assert!(matches!(statuses.as_slice(), [Status::Negotiated(_), Status::Streaming(_)]), "{statuses:?}");
     }
 
     #[test]
+    fn a_stopped_source_waits_for_the_sinks_teardown_and_answers_it() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, stopped) = mpsc::channel::<()>();
+        let source = std::thread::spawn(move || {
+            let (tcp, display) = listener.accept().unwrap();
+            let link = Link {
+                tcp,
+                display,
+                local: Ipv4Addr::LOCALHOST,
+                source: Source { frame_format: "BGRx", size: (640, 480) },
+                preference: &formats::SOFTWARE_PREFERENCE,
+                sound: AudioSupport { enabled: false, capture: false, aac_encoder: false },
+                encoder: crate::pipeline::Probed::assumed("openh264enc"),
+            };
+            link.serve(&stopped, &Shared::default(), &|_| {})
+        });
+        let mut sink = Sink { tcp: TcpStream::connect(address).unwrap(), reader: Reader::default() };
+        let m1 = sink.next();
+        sink.ok(&m1, "");
+        stop.send(()).unwrap();
+        let started = Instant::now();
+        sink.answer_teardown();
+        assert_eq!(source.join().unwrap(), Ok(()));
+        assert!(started.elapsed() < REPLY_WAIT, "the source left as soon as the sink tore down");
+    }
+
+    #[test]
     fn pause_stops_the_frames_and_a_later_play_resumes_the_same_pipeline() {
         if !encoder_installed() {
-            eprintln!("no openh264enc; skipping");
+            eprintln!("no working H.264 encoder; skipping");
             return;
         }
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -809,7 +904,7 @@ mod tests {
         assert_eq!(sink.command("PLAY", 6), 200, "a PLAY while playing is harmless");
 
         handle.stop();
-        let _ = sink.next();
+        sink.answer_teardown();
         let (outcome, statuses) = source.join().unwrap();
         assert_eq!(outcome, Ok(()));
         assert!(

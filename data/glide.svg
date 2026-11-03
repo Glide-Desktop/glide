@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Glide logo">
+  <rect x="0" y="0" width="1024" height="1024" rx="270" fill="#5b9bec"/>
+  <g fill="none" stroke="#ffffff" stroke-width="62" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M306 542 L512 336 L718 542"/>
+    <path d="M350 650 L512 488 L674 650"/>
+  </g>
+</svg>

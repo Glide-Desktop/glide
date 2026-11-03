@@ -1,4 +1,7 @@
-use std::{sync::mpsc, time::Duration};
+use std::{
+    sync::{Arc, Mutex, PoisonError, mpsc},
+    time::{Duration, Instant},
+};
 
 use zbus::{
     blocking::{Connection, MessageIterator, Proxy, fdo::DBusProxy},
@@ -10,7 +13,9 @@ const MANAGER_PATH: &str = "/org/freedesktop/login1";
 const MANAGER: &str = "org.freedesktop.login1.Manager";
 const SESSION: &str = "org.freedesktop.login1.Session";
 const USER: &str = "org.freedesktop.login1.User";
-const LOCK_GRACE: Duration = Duration::from_millis(400);
+const SLEEP_GRACE: Duration = Duration::from_secs(2);
+const FIRST_RETRY: Duration = Duration::from_secs(1);
+const LAST_RETRY: Duration = Duration::from_mins(1);
 pub const STARTUP_WAIT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,19 +43,88 @@ impl Hint {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Note {
+    Hint(Hint),
+    Session(OwnedObjectPath),
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Hints {
+    locked: Option<bool>,
+    idle: Option<bool>,
+}
+
+impl Hints {
+    const fn note(&mut self, hint: Hint) {
+        match hint {
+            Hint::Locked(on) => self.locked = Some(on),
+            Hint::Idle(on) => self.idle = Some(on),
+        }
+    }
+
+    fn drain(&mut self) -> Vec<Hint> {
+        let hints = [self.locked.take().map(Hint::Locked), self.idle.take().map(Hint::Idle)];
+        hints.into_iter().flatten().collect()
+    }
+}
+
+#[derive(Default)]
+struct SleepGate {
+    fd: Option<OwnedFd>,
+    waiting: Option<u64>,
+    round: u64,
+}
+
+impl SleepGate {
+    fn hold(&mut self, fd: Option<OwnedFd>) {
+        self.fd = fd;
+    }
+
+    const fn begin(&mut self) -> u64 {
+        self.round += 1;
+        self.waiting = Some(self.round);
+        self.round
+    }
+
+    fn release(&mut self, round: Option<u64>) -> bool {
+        match self.waiting {
+            Some(waiting) if round.is_none_or(|round| round == waiting) => {
+                self.waiting = None;
+                self.fd = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    const fn wake(&mut self) -> bool {
+        self.waiting = None;
+        self.fd.is_none()
+    }
+}
+
+type Gate = Arc<Mutex<SleepGate>>;
+
+fn gate(gate: &Gate) -> std::sync::MutexGuard<'_, SleepGate> {
+    gate.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 pub struct Handle {
-    hints: mpsc::Sender<Hint>,
+    notes: mpsc::Sender<Note>,
     locked: bool,
     idle: bool,
+    sleep: Gate,
+    lock_seen: Option<u64>,
 }
 
 impl Handle {
-    fn new(hints: mpsc::Sender<Hint>) -> Self {
-        Self { hints, locked: false, idle: false }
+    fn new(notes: mpsc::Sender<Note>, sleep: Gate) -> Self {
+        Self { notes, locked: false, idle: false, sleep, lock_seen: None }
     }
 
     fn publish(&self, hint: Hint) {
-        if self.hints.send(hint).is_err() {
+        if self.notes.send(Note::Hint(hint)).is_err() {
             tracing::debug!(?hint, "logind is unavailable; the session hint was not updated");
         }
     }
@@ -64,6 +138,24 @@ impl Handle {
     pub fn set_idle(&mut self, idle: bool) {
         if std::mem::replace(&mut self.idle, idle) != idle {
             self.publish(Hint::Idle(idle));
+        }
+    }
+
+    pub fn sleep_ready(&self) {
+        if gate(&self.sleep).release(None) {
+            tracing::info!("the lock screen is up; letting the system sleep");
+        }
+    }
+
+    pub fn settle_sleep(&mut self, locked: bool) {
+        let waiting = gate(&self.sleep).waiting;
+        match waiting {
+            Some(round) if locked && self.lock_seen == Some(round) => {
+                self.lock_seen = None;
+                self.sleep_ready();
+            }
+            Some(round) if locked => self.lock_seen = Some(round),
+            _ => self.lock_seen = None,
         }
     }
 }
@@ -109,12 +201,70 @@ fn classify(origin: Origin<'_>, interface: &str, member: &str, path: &str, sessi
     }
 }
 
+fn session_uid(connection: &Connection, path: &OwnedObjectPath) -> Option<u32> {
+    let session = Proxy::new(connection, LOGIN1, path.as_str(), SESSION).ok()?;
+    session.get_property::<(u32, OwnedObjectPath)>("User").ok().map(|(uid, _)| uid)
+}
+
+fn own_session(connection: &Connection, path: OwnedObjectPath) -> Option<OwnedObjectPath> {
+    // SAFETY: `getuid` has no preconditions and cannot fail.
+    let own = unsafe { libc::getuid() };
+    match session_uid(connection, &path) {
+        Some(uid) if uid == own => Some(path),
+        Some(uid) => {
+            tracing::warn!(session = %path.as_str(), uid, "ignoring a logind session that belongs to another user");
+            None
+        }
+        None => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Candidate {
+    path: OwnedObjectPath,
+    active: bool,
+    seated: bool,
+}
+
+fn pick_session(candidates: Vec<Candidate>) -> Option<OwnedObjectPath> {
+    let best = candidates
+        .iter()
+        .position(|found| found.active && found.seated)
+        .or_else(|| candidates.iter().position(|found| found.seated))
+        .unwrap_or(0);
+    candidates.into_iter().nth(best).map(|found| found.path)
+}
+
+fn displayed_session(connection: &Connection) -> zbus::Result<OwnedObjectPath> {
+    let user = Proxy::new(connection, LOGIN1, "/org/freedesktop/login1/user/self", USER)?;
+    let (_, display): (String, OwnedObjectPath) = user.get_property("Display")?;
+    if display.as_str() != "/" {
+        return Ok(display);
+    }
+    let sessions: Vec<(String, OwnedObjectPath)> = user.get_property("Sessions")?;
+    let candidates = sessions
+        .into_iter()
+        .map(|(_, path)| {
+            let (active, seat) =
+                Proxy::new(connection, LOGIN1, path.as_str(), SESSION).map_or((None, None), |session| {
+                    (
+                        session.get_property::<bool>("Active").ok(),
+                        session.get_property::<(String, OwnedObjectPath)>("Seat").ok(),
+                    )
+                });
+            Candidate { path, active: active.unwrap_or(false), seated: seat.is_some_and(|(id, _)| !id.is_empty()) }
+        })
+        .collect();
+    pick_session(candidates).ok_or_else(|| zbus::Error::Failure("this user has no logind session".into()))
+}
+
 pub fn session_path(connection: &Connection) -> zbus::Result<OwnedObjectPath> {
     let manager = Proxy::new(connection, LOGIN1, MANAGER_PATH, MANAGER)?;
     if let Ok(id) = std::env::var("XDG_SESSION_ID")
         && !id.is_empty()
         && let Ok(reply) = manager.call_method("GetSession", &(id.as_str(),))
         && let Ok(path) = reply.body().deserialize::<OwnedObjectPath>()
+        && let Some(path) = own_session(connection, path)
     {
         return Ok(path);
     }
@@ -123,9 +273,7 @@ pub fn session_path(connection: &Connection) -> zbus::Result<OwnedObjectPath> {
     {
         return Ok(path);
     }
-    let user = Proxy::new(connection, LOGIN1, "/org/freedesktop/login1/user/self", USER)?;
-    let (_, path): (String, OwnedObjectPath) = user.get_property("Display")?;
-    Ok(path)
+    displayed_session(connection)
 }
 
 fn login1_owner(bus: &DBusProxy<'_>) -> Option<String> {
@@ -164,41 +312,80 @@ fn locked_hint(connection: &Connection, session: &OwnedObjectPath) -> bool {
         .unwrap_or(false)
 }
 
-fn publish_hints(connection: &Connection, session: &OwnedObjectPath, hints: mpsc::Receiver<Hint>) {
-    let proxy = match Proxy::new(connection, LOGIN1, session.as_str(), SESSION) {
-        Ok(proxy) => proxy,
-        Err(err) => {
-            tracing::warn!(?err, "cannot reach the logind session; a restart while locked will come back unlocked");
-            return;
+fn publish_hints(notes: mpsc::Receiver<Note>) {
+    let mut connection: Option<Connection> = None;
+    let mut session: Option<OwnedObjectPath> = None;
+    let mut known = Hints::default();
+    let mut pending = Hints::default();
+    for note in notes {
+        match note {
+            Note::Session(path) => {
+                session = Some(path);
+                pending = known;
+            }
+            Note::Hint(hint) => {
+                known.note(hint);
+                pending.note(hint);
+            }
         }
-    };
-    for hint in hints {
-        let (method, on) = hint.call();
-        if let Err(err) = proxy.call_method(method, &(on,)) {
-            tracing::warn!(?err, ?hint, "logind did not take a session hint");
+        let Some(path) = session.as_ref() else {
+            continue;
+        };
+        if connection.is_none() {
+            connection = Connection::system()
+                .inspect_err(|err| tracing::warn!(?err, "cannot reach the system bus to publish session hints"))
+                .ok();
+        }
+        let Some(connection) = connection.as_ref() else {
+            continue;
+        };
+        let proxy = match Proxy::new(connection, LOGIN1, path.as_str(), SESSION) {
+            Ok(proxy) => proxy,
+            Err(err) => {
+                tracing::warn!(?err, "cannot reach the logind session; a restart while locked will come back unlocked");
+                continue;
+            }
+        };
+        for hint in pending.drain() {
+            let (method, on) = hint.call();
+            if let Err(err) = proxy.call_method(method, &(on,)) {
+                tracing::warn!(?err, ?hint, "logind did not take a session hint");
+            }
         }
     }
 }
 
+fn going_to_sleep(sink: &dyn Fn(LoginEvent), sleep: &Gate) {
+    sink(LoginEvent::Sleep);
+    let round = gate(sleep).begin();
+    let timer = Arc::clone(sleep);
+    let spawned = std::thread::Builder::new().name("glide-logind-sleep".into()).spawn(move || {
+        std::thread::sleep(SLEEP_GRACE);
+        if gate(&timer).release(Some(round)) {
+            tracing::warn!("the lock screen was not drawn in time; letting the system sleep anyway");
+        }
+    });
+    if let Err(err) = spawned {
+        tracing::warn!(?err, "cannot time the sleep delay; releasing it now");
+        gate(sleep).release(Some(round));
+    }
+}
+
 fn watch(
-    sink: &dyn Fn(LoginEvent), hints: mpsc::Receiver<Hint>, locked_at_start: &mpsc::Sender<bool>,
+    sink: &dyn Fn(LoginEvent), notes: &mpsc::Sender<Note>, sleep: &Gate, announce: Option<&mpsc::Sender<bool>>,
 ) -> zbus::Result<()> {
     let connection = Connection::system()?;
     let session = session_path(&connection)?;
     tracing::info!(session = %session.as_str(), "listening for logind lock requests");
-    let locked = locked_hint(&connection, &session);
-    if locked {
-        tracing::warn!("the session was left locked by a previous compositor; locking again");
-        sink(LoginEvent::Lock);
+    if let Some(announce) = announce {
+        let locked = locked_hint(&connection, &session);
+        if locked {
+            tracing::warn!("the session was left locked by a previous compositor; locking again");
+            sink(LoginEvent::Lock);
+        }
+        let _ = announce.send(locked);
     }
-    let _ = locked_at_start.send(locked);
-    let publisher = (connection.clone(), session.clone());
-    let spawned = std::thread::Builder::new()
-        .name("glide-logind-hint".into())
-        .spawn(move || publish_hints(&publisher.0, &publisher.1, hints));
-    if let Err(err) = spawned {
-        tracing::warn!(?err, "cannot publish the locked hint; a restart while locked will come back unlocked");
-    }
+    let _ = notes.send(Note::Session(session.clone()));
     let bus = DBusProxy::new(&connection)?;
     for rule in [
         format!("type='signal',sender='{LOGIN1}',interface='{SESSION}',path='{}'", session.as_str()),
@@ -212,7 +399,7 @@ fn watch(
     if power_key.is_none() {
         tracing::warn!("no power key inhibitor; logind will act on the power button without asking");
     }
-    let mut inhibitor = inhibit(&connection, SLEEP_DELAY);
+    gate(sleep).hold(inhibit(&connection, SLEEP_DELAY));
     for message in MessageIterator::from(&connection) {
         let Ok(message) = message else {
             continue;
@@ -222,7 +409,12 @@ fn watch(
             continue;
         }
         if let Some(changed) = login1_owner_change(&message) {
-            owner = (!changed.is_empty()).then_some(changed);
+            if changed.is_empty() {
+                owner = None;
+            } else if owner.as_deref() != Some(changed.as_str()) {
+                drop(power_key);
+                return Ok(());
+            }
             continue;
         }
         let (Some(interface), Some(member), Some(path)) = (header.interface(), header.member(), header.path()) else {
@@ -235,35 +427,63 @@ fn watch(
             Some(Signal::Unlock) => sink(LoginEvent::Unlock),
             Some(Signal::PrepareForSleep) => {
                 if message.body().deserialize::<bool>().unwrap_or(false) {
-                    sink(LoginEvent::Sleep);
-                    std::thread::sleep(LOCK_GRACE);
-                    inhibitor = None;
+                    going_to_sleep(sink, sleep);
                 } else {
                     sink(LoginEvent::Wake);
-                    if inhibitor.is_none() {
-                        inhibitor = inhibit(&connection, SLEEP_DELAY);
+                    if gate(sleep).wake() {
+                        let fd = inhibit(&connection, SLEEP_DELAY);
+                        gate(sleep).hold(fd);
                     }
                 }
             }
             None => {}
         }
     }
-    drop((inhibitor, power_key));
-    Ok(())
+    drop(power_key);
+    Err(zbus::Error::Failure("the system bus closed the connection".into()))
+}
+
+fn keep_watching(
+    sink: &dyn Fn(LoginEvent), notes: &mpsc::Sender<Note>, sleep: &Gate, locked_at_start: mpsc::Sender<bool>,
+) {
+    let mut announce = Some(locked_at_start);
+    let mut delay = FIRST_RETRY;
+    let mut failures = 0_u32;
+    loop {
+        let started = Instant::now();
+        let first = announce.take();
+        match watch(sink, notes, sleep, first.as_ref()) {
+            Ok(()) => {
+                tracing::info!("logind restarted; resolving the session and taking the inhibitors again");
+                delay = FIRST_RETRY;
+                continue;
+            }
+            Err(err) if failures == 0 => tracing::warn!(
+                "logind is unavailable ({err}); loginctl lock-session and lock-on-sleep will not lock the screen, \
+                 and the power button is left to logind until it comes back"
+            ),
+            Err(err) => tracing::debug!(%err, failures, "logind is still unavailable"),
+        }
+        drop(first);
+        failures += 1;
+        if started.elapsed() >= LAST_RETRY {
+            delay = FIRST_RETRY;
+        }
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(LAST_RETRY);
+    }
 }
 
 pub fn start(sink: impl Fn(LoginEvent) + Send + 'static) -> std::io::Result<(Handle, mpsc::Receiver<bool>)> {
-    let (hints, hint_requests) = mpsc::channel();
+    let (notes, note_requests) = mpsc::channel();
     let (locked_sender, locked_at_start) = mpsc::channel();
-    std::thread::Builder::new().name("glide-logind".into()).spawn(move || {
-        if let Err(err) = watch(&sink, hint_requests, &locked_sender) {
-            tracing::warn!(
-                "logind is unavailable ({err}); loginctl lock-session and lock-on-sleep will not lock \
-                 the screen, and the power button is left to logind"
-            );
-        }
-    })?;
-    Ok((Handle::new(hints), locked_at_start))
+    let sleep = Gate::default();
+    std::thread::Builder::new().name("glide-logind-hint".into()).spawn(move || publish_hints(note_requests))?;
+    let (watch_notes, watch_sleep) = (notes.clone(), Arc::clone(&sleep));
+    std::thread::Builder::new()
+        .name("glide-logind".into())
+        .spawn(move || keep_watching(&sink, &watch_notes, &watch_sleep, locked_sender))?;
+    Ok((Handle::new(notes, sleep), locked_at_start))
 }
 
 #[cfg(test)]
@@ -272,6 +492,19 @@ mod tests {
 
     const OURS: &str = "/org/freedesktop/login1/session/_32";
     const LOGIND: Origin<'static> = Origin { sender: Some(":1.3"), owner: Some(":1.3") };
+
+    fn handle() -> (Handle, mpsc::Receiver<Note>) {
+        let (notes, published) = mpsc::channel();
+        (Handle::new(notes, Gate::default()), published)
+    }
+
+    fn fd() -> OwnedFd {
+        OwnedFd::from(std::os::fd::OwnedFd::from(std::fs::File::open("/dev/null").expect("/dev/null")))
+    }
+
+    fn path(text: &str) -> OwnedObjectPath {
+        OwnedObjectPath::try_from(text).expect("an object path")
+    }
 
     #[test]
     fn only_our_session_can_lock_or_unlock_the_screen() {
@@ -300,8 +533,7 @@ mod tests {
 
     #[test]
     fn session_hints_are_published_once_per_change() {
-        let (hints, published) = mpsc::channel();
-        let mut handle = Handle::new(hints);
+        let (mut handle, published) = handle();
         for locked in [false, true, true, false, false, true] {
             handle.set_locked(locked);
         }
@@ -309,22 +541,84 @@ mod tests {
         handle.set_idle(true);
         assert_eq!(
             published.try_iter().collect::<Vec<_>>(),
-            [Hint::Locked(true), Hint::Locked(false), Hint::Locked(true), Hint::Idle(true)]
+            [Hint::Locked(true), Hint::Locked(false), Hint::Locked(true), Hint::Idle(true)].map(Note::Hint)
         );
         assert_eq!(Hint::Locked(true).call(), ("SetLockedHint", true));
         assert_eq!(Hint::Idle(false).call(), ("SetIdleHint", false));
     }
 
     #[test]
+    fn hints_wait_for_a_session_and_the_latest_of_each_kind_is_sent() {
+        let mut pending = Hints::default();
+        for hint in [Hint::Locked(true), Hint::Idle(true), Hint::Locked(false)] {
+            pending.note(hint);
+        }
+        let known = pending;
+        assert_eq!(pending.drain(), [Hint::Locked(false), Hint::Idle(true)]);
+        assert!(pending.drain().is_empty(), "a drained hint is not sent twice");
+        let mut again = known;
+        assert_eq!(again.drain().len(), 2, "a new session is told the known state again");
+    }
+
+    #[test]
     fn a_dead_logind_thread_does_not_break_locking() {
-        let (hints, published) = mpsc::channel();
+        let (mut handle, published) = handle();
         drop(published);
-        Handle::new(hints).set_locked(true);
+        handle.set_locked(true);
+        handle.sleep_ready();
     }
 
     #[test]
     fn sleep_is_announced_by_the_manager_object() {
         assert_eq!(classify(LOGIND, MANAGER, "PrepareForSleep", MANAGER_PATH, OURS), Some(Signal::PrepareForSleep));
         assert_eq!(classify(LOGIND, MANAGER, "PrepareForSleep", OURS, OURS), None);
+    }
+
+    #[test]
+    fn the_sleep_delay_is_held_until_the_lock_screen_had_a_pass_to_draw() {
+        let (mut handle, _published) = handle();
+        gate(&handle.sleep).hold(Some(fd()));
+        handle.settle_sleep(true);
+        assert!(gate(&handle.sleep).fd.is_some(), "nothing waits, nothing is released");
+        let round = gate(&handle.sleep).begin();
+        handle.settle_sleep(false);
+        handle.settle_sleep(true);
+        assert!(gate(&handle.sleep).fd.is_some(), "the pass that locked has not drawn yet");
+        handle.settle_sleep(true);
+        assert!(gate(&handle.sleep).fd.is_none(), "the next locked pass lets the system sleep");
+        assert!(!gate(&handle.sleep).release(Some(round)), "the timeout finds nothing left to release");
+    }
+
+    #[test]
+    fn a_stale_sleep_timeout_never_drops_the_inhibitor_taken_after_waking() {
+        let mut sleep = SleepGate::default();
+        sleep.hold(Some(fd()));
+        let first = sleep.begin();
+        assert!(!sleep.wake(), "woke with the inhibitor still held");
+        assert!(!sleep.release(Some(first)), "the first round's timer is spent");
+        assert!(sleep.fd.is_some());
+        let second = sleep.begin();
+        assert!(sleep.release(Some(second)));
+        assert!(sleep.wake(), "after a sleep the inhibitor is taken again");
+    }
+
+    #[test]
+    fn a_session_with_a_seat_is_preferred_and_the_active_one_first() {
+        let candidate = |name: &str, active: bool, seated: bool| Candidate {
+            path: path(&format!("/org/freedesktop/login1/session/{name}")),
+            active,
+            seated,
+        };
+        let picked = pick_session(vec![
+            candidate("ssh", true, false),
+            candidate("idle", false, true),
+            candidate("desk", true, true),
+        ]);
+        assert_eq!(picked, Some(path("/org/freedesktop/login1/session/desk")));
+        let picked = pick_session(vec![candidate("ssh", true, false), candidate("idle", false, true)]);
+        assert_eq!(picked, Some(path("/org/freedesktop/login1/session/idle")));
+        let picked = pick_session(vec![candidate("ssh", true, false)]);
+        assert_eq!(picked, Some(path("/org/freedesktop/login1/session/ssh")));
+        assert_eq!(pick_session(Vec::new()), None);
     }
 }

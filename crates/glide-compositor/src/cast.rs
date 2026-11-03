@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use glide_cast::cast::{Discovery, Handle, Search, Source, Status};
 use glide_cast::p2p::Peer;
 use smithay::output::Output;
+use smithay::reexports::calloop::RegistrationToken;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
 use crate::i18n::{Key, t};
@@ -18,7 +19,7 @@ const FRAME_FORMAT: &str = "BGRx";
 
 #[derive(Debug)]
 pub enum Event {
-    Found(Discovery),
+    Found(u64, Discovery),
     Status(Status),
 }
 
@@ -30,6 +31,17 @@ struct Active {
     name: String,
     interval: Option<Duration>,
     last_frame: Option<Instant>,
+    timer: Option<RegistrationToken>,
+    stopping: bool,
+}
+
+impl Active {
+    fn stop(&mut self) {
+        if !self.stopping {
+            self.stopping = true;
+            self.handle.stop();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -37,6 +49,7 @@ pub struct Cast {
     send: Option<Send>,
     searching: bool,
     search: Option<Search>,
+    generation: u64,
     displays: Vec<Peer>,
     active: Option<Active>,
     options: glide_cast::cast::Options,
@@ -76,10 +89,18 @@ impl Cast {
 
     pub fn push_frame(&mut self, pixels: Vec<u8>) {
         if let Some(active) = self.active.as_mut() {
+            let Some(size) = active.output.current_mode().map(|mode| frame_size(mode.size.w, mode.size.h)) else {
+                return;
+            };
             active.last_frame = Some(Instant::now());
-            active.handle.push_frame(pixels);
+            active.handle.push_frame(pixels, size);
         }
     }
+}
+
+#[must_use]
+pub fn frame_size(width: i32, height: i32) -> (u32, u32) {
+    (u32::try_from(width).unwrap_or(0), u32::try_from(height).unwrap_or(0))
 }
 
 #[must_use]
@@ -109,11 +130,12 @@ pub fn pacing(current: Option<Duration>, fps: u32) -> (Duration, bool) {
 
 impl GlideState {
     pub fn toggle_screen_mirroring(&mut self) {
-        if let Some(active) = self.session.cast.active.as_ref() {
-            active.handle.stop();
+        if let Some(active) = self.session.cast.active.as_mut() {
+            active.stop();
             return;
         }
         if self.session.cast.searching {
+            self.cancel_cast_search();
             return;
         }
         let Some(send) = self.session.cast.send.clone() else {
@@ -121,7 +143,9 @@ impl GlideState {
         };
         self.session.cast.displays.clear();
         self.session.cast.searching = true;
-        match glide_cast::cast::discover(SEARCH_SECONDS, move |found| send(Event::Found(found))) {
+        self.session.cast.generation += 1;
+        let generation = self.session.cast.generation;
+        match glide_cast::cast::discover(SEARCH_SECONDS, move |found| send(Event::Found(generation, found))) {
             Ok(search) => self.session.cast.search = Some(search),
             Err(err) => {
                 self.session.cast.searching = false;
@@ -132,9 +156,32 @@ impl GlideState {
         self.cast_notice(t(Key::CastSearching).to_string(), t(Key::CastSearchingBody).to_string(), vec![]);
     }
 
+    fn cancel_cast_search(&mut self) {
+        if let Some(search) = self.session.cast.search.take() {
+            search.cancel();
+        }
+        self.session.cast.searching = false;
+        self.session.cast.generation += 1;
+        self.withdraw_cast_pick();
+    }
+
+    fn withdraw_cast_pick(&mut self) {
+        self.session.cast.displays.clear();
+        self.notifications.withdraw(NOTICE_ID, glide_notify::CloseReason::Revoked);
+        self.queue_redraw();
+    }
+
     pub fn handle_cast(&mut self, event: Event) {
         match event {
-            Event::Found(Discovery::Peers(peers)) if self.session.cast.active.is_none() => {
+            Event::Found(generation, found) if generation == self.session.cast.generation => self.cast_found(found),
+            Event::Found(..) => {}
+            Event::Status(status) => self.cast_status(status),
+        }
+    }
+
+    fn cast_found(&mut self, found: Discovery) {
+        match found {
+            Discovery::Peers(peers) if self.session.cast.active.is_none() => {
                 let displays: Vec<Peer> = peers.into_iter().filter(Peer::is_display).collect();
                 if displays.is_empty() || displays == self.session.cast.displays {
                     return;
@@ -148,20 +195,24 @@ impl GlideState {
                 self.session.cast.displays = displays;
                 self.cast_notice(t(Key::CastPick).to_string(), t(Key::CastPickBody).to_string(), actions);
             }
-            Event::Found(Discovery::Peers(_)) => {}
-            Event::Found(Discovery::Finished) => {
+            Discovery::Peers(_) => {}
+            Discovery::Finished => {
                 self.session.cast.searching = false;
                 self.session.cast.search = None;
-                if self.session.cast.displays.is_empty() && self.session.cast.active.is_none() {
+                if self.session.cast.active.is_some() {
+                    return;
+                }
+                if self.session.cast.displays.is_empty() {
                     self.cast_notice(t(Key::CastNone).to_string(), t(Key::CastNoneBody).to_string(), vec![]);
+                } else {
+                    self.withdraw_cast_pick();
                 }
             }
-            Event::Found(Discovery::Failed(reason)) => {
+            Discovery::Failed(reason) => {
                 self.session.cast.searching = false;
                 self.session.cast.search = None;
                 self.cast_notice(t(Key::CastUnavailable).replace("{reason}", &reason), String::new(), vec![]);
             }
-            Event::Status(status) => self.cast_status(status),
         }
     }
 
@@ -178,11 +229,16 @@ impl GlideState {
             Status::Streaming(mode) => {
                 let previous = self.session.cast.active.as_ref().and_then(|active| active.interval);
                 let (interval, first) = pacing(previous, mode.fps);
+                let timer = first.then(|| self.arm_cast_frames(interval)).flatten();
+                let present = self.cast_output_present();
                 if let Some(active) = self.session.cast.active.as_mut() {
                     active.interval = Some(interval);
-                }
-                if first {
-                    self.arm_cast_frames(interval);
+                    if timer.is_some() {
+                        active.timer = timer;
+                    }
+                    if !present {
+                        active.stop();
+                    }
                 }
                 let body = format!("{}×{}, {} fps", mode.width, mode.height, mode.fps);
                 self.cast_notice(t(Key::CastStreaming).replace("{name}", &name), body, stop());
@@ -193,7 +249,9 @@ impl GlideState {
                 self.sync_screen_capture();
             }
             Status::Ended(reason) => {
-                self.session.cast.active = None;
+                if let Some(token) = self.session.cast.active.take().and_then(|active| active.timer) {
+                    self.loop_handle.remove(token);
+                }
                 self.sync_screen_capture();
                 let summary = match &reason {
                     Some(reason) => t(Key::CastFailed).replace("{reason}", reason),
@@ -208,8 +266,8 @@ impl GlideState {
 
     pub fn cast_action(&mut self, key: &str) {
         if key == STOP {
-            if let Some(active) = self.session.cast.active.as_ref() {
-                active.handle.stop();
+            if let Some(active) = self.session.cast.active.as_mut() {
+                active.stop();
             }
             return;
         }
@@ -235,15 +293,22 @@ impl GlideState {
         let Some(mode) = output.current_mode() else {
             return;
         };
-        let size = (u32::try_from(mode.size.w).unwrap_or(0), u32::try_from(mode.size.h).unwrap_or(0));
-        let source = Source { frame_format: FRAME_FORMAT, size };
+        let source = Source { frame_format: FRAME_FORMAT, size: frame_size(mode.size.w, mode.size.h) };
         let name = peer.name.clone();
         let options = self.session.cast.options;
         let search = self.session.cast.search.clone();
         match glide_cast::cast::start(peer, source, options, search, move |status| send(Event::Status(status))) {
             Ok(handle) => {
                 tracing::info!(display = name, output = output.name(), "mirroring started");
-                self.session.cast.active = Some(Active { handle, output, name, interval: None, last_frame: None });
+                self.session.cast.active = Some(Active {
+                    handle,
+                    output,
+                    name,
+                    interval: None,
+                    last_frame: None,
+                    timer: None,
+                    stopping: false,
+                });
             }
             Err(err) => {
                 self.cast_notice(t(Key::CastUnavailable).replace("{reason}", &err.to_string()), String::new(), vec![]);
@@ -251,21 +316,35 @@ impl GlideState {
         }
     }
 
-    fn arm_cast_frames(&mut self, interval: Duration) {
+    fn cast_output_present(&self) -> bool {
+        self.session
+            .cast
+            .active
+            .as_ref()
+            .is_some_and(|active| self.space.outputs().any(|known| *known == active.output))
+    }
+
+    fn arm_cast_frames(&mut self, interval: Duration) -> Option<RegistrationToken> {
         let timer = Timer::from_duration(interval);
         let armed = self.loop_handle.insert_source(timer, move |_, (), state| {
-            let streaming = state.session.cast.active.as_ref().filter(|active| active.interval.is_some());
-            let Some((output, paused)) = streaming.map(|active| (active.output.clone(), active.handle.paused())) else {
+            let present = state.cast_output_present();
+            let streaming = state.session.cast.active.as_mut().filter(|active| active.interval.is_some());
+            let Some(active) = streaming else {
                 return TimeoutAction::Drop;
             };
-            if !paused {
+            if !present {
+                active.stop();
+            } else if !active.handle.paused() {
+                let output = active.output.clone();
                 state.queue_redraw_output(&output);
             }
             TimeoutAction::ToDuration(interval)
         });
-        if let Err(err) = armed {
-            tracing::warn!(?err, "could not pace the mirrored frames; the display updates only on screen changes");
-        }
+        armed
+            .inspect_err(|err| {
+                tracing::warn!(?err, "could not pace the mirrored frames; the display updates only on screen changes");
+            })
+            .ok()
     }
 
     fn cast_notice(&mut self, summary: String, body: String, actions: Vec<glide_notify::Action>) {
@@ -334,6 +413,12 @@ mod tests {
             assert!(frame_due(Some(interval), last, now), "tick {tick} was skipped");
             last = Some(now);
         }
+    }
+
+    #[test]
+    fn a_frame_carries_the_size_of_the_mode_it_was_read_back_at() {
+        assert_eq!(frame_size(2560, 1600), (2560, 1600));
+        assert_eq!(frame_size(-1, 1080), (0, 1080), "a broken mode gives an empty size the stream refuses");
     }
 
     #[test]

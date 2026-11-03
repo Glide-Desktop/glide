@@ -1235,7 +1235,12 @@ fn draw_diag(
     let health = status.battery.map(|info| info.health).unwrap_or_default();
     let (label, value, unit) = match index {
         0 => (Key::QsHealth, health.wear_pct.map(|pct| format!("{pct}%")), None),
-        1 => (Key::QsCycles, health.cycles.map(|cycles| cycles.to_string()), Some(t(Key::QsCyclesUnit).to_string())),
+        1 => {
+            let forms = [Key::QsCyclesOne, Key::QsCyclesFew, Key::QsCyclesMany];
+            let lang = crate::i18n::language();
+            let unit = crate::i18n::plural_key(lang, health.cycles.map_or(0, u64::from), forms).text(lang);
+            (Key::QsCycles, health.cycles.map(|cycles| cycles.to_string()), Some(unit.to_string()))
+        }
         2 => (Key::QsDraw, health.draw_dw.map(tenths), Some(t(Key::QsWatts).to_string())),
         _ => (
             Key::QsCapacity,
