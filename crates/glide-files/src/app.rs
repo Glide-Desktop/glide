@@ -53,6 +53,7 @@ const SCROLL_STEP: f32 = 32.0;
 const CONTENT_TOP: f32 = widgets::HEADER_HEIGHT + 1.0;
 const KEY_MENU_INSET: f32 = 48.0;
 const PRISTINE: Duration = Duration::from_secs(5);
+const SUBMENU_GRACE: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -155,6 +156,19 @@ pub struct Menu {
     pub offers: Vec<Offer>,
     pub open_with: bool,
     pub highlight: Option<usize>,
+    pub child: Option<(usize, Box<Menu>)>,
+}
+
+impl Menu {
+    #[must_use]
+    pub fn new(kind: MenuKind, at: Point) -> Self {
+        Self { kind, at, offers: Vec::new(), open_with: false, highlight: None, child: None }
+    }
+
+    #[must_use]
+    pub fn sub(&self) -> Option<&Menu> {
+        self.child.as_ref().map(|(_, child)| child.as_ref())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -379,6 +393,8 @@ pub enum Message {
     CloseMenu,
     KeyMenu,
     MenuHover(usize, bool),
+    SubMenuHover(usize, bool),
+    SubMenuExpired(u64),
     Menu(Box<Message>),
     MenuStay(Box<Message>),
     OpenSelection,
@@ -533,6 +549,8 @@ impl Message {
                 | Self::KeyMenu
                 | Self::ToggleOptions
                 | Self::SubMenu(_)
+                | Self::SubMenuHover(..)
+                | Self::SubMenuExpired(_)
                 | Self::Menu(_)
                 | Self::MenuStay(_)
                 | Self::Dnd(_)
@@ -819,6 +837,8 @@ pub struct App {
     column_drag: Option<ListColumn>,
     bookmark_drag: Option<PathBuf>,
     menu_at: Point,
+    submenu_closing: Option<u64>,
+    submenu_generation: u64,
     pub templates: Vec<PathBuf>,
     pub phones: Vec<crate::fs::mtp::Phone>,
     look: Look,
@@ -1040,6 +1060,8 @@ impl App {
             column_drag: None,
             bookmark_drag: None,
             menu_at: Point::ORIGIN,
+            submenu_closing: None,
+            submenu_generation: 0,
             templates: Vec::new(),
             phones: Vec::new(),
             look,
@@ -1407,7 +1429,7 @@ impl App {
                         (Vec::new(), false)
                     };
                     self.menu_at = at;
-                    self.menu = Some(Menu { kind, at, offers, open_with, highlight: None });
+                    self.menu = Some(Menu { offers, open_with, ..Menu::new(kind, at) });
                 }
             }
             Message::RunAction(offer) => return self.run_action(*offer),
@@ -1492,27 +1514,14 @@ impl App {
                 self.menu_at = widgets::menu::options_at(self.window.size);
                 self.menu = match &self.menu {
                     Some(Menu { kind: MenuKind::Options, .. }) => None,
-                    _ => Some(Menu {
-                        kind: MenuKind::Options,
-                        at: self.menu_at,
-                        offers: Vec::new(),
-                        open_with: false,
-                        highlight: None,
-                    }),
+                    _ => Some(Menu::new(MenuKind::Options, self.menu_at)),
                 };
             }
             Message::CloseMenu | Message::Window(WindowAction::Drag) => self.menu = None,
-            Message::MenuHover(index, inside) => {
-                let enabled = self.menu.as_ref().is_some_and(|menu| {
-                    widgets::menu::entries(self, menu).get(index).is_some_and(glide_sdk::menu::Item::actionable)
-                });
-                if let Some(menu) = &mut self.menu {
-                    if inside && enabled {
-                        menu.highlight = Some(index);
-                    } else if !inside && menu.highlight == Some(index) {
-                        menu.highlight = None;
-                    }
-                }
+            Message::MenuHover(index, inside) => return self.menu_hover(index, inside),
+            Message::Menu(message) if matches!(*message, Message::SubMenu(_)) => {
+                let Message::SubMenu(kind) = *message else { return Task::none() };
+                return self.open_submenu(kind, false);
             }
             Message::Menu(message) => {
                 self.menu = None;
@@ -1657,13 +1666,27 @@ impl App {
                     outcome
                 });
             }
-            Message::SubMenu(kind) => {
-                if kind == MenuKind::Templates {
-                    self.templates = templates_dir().map(|dir| templates_in(&dir)).unwrap_or_default();
+            Message::SubMenu(kind) => return self.open_submenu(kind, false),
+            Message::SubMenuHover(index, inside) => {
+                self.submenu_closing = None;
+                let enabled = self.menu.as_ref().and_then(Menu::sub).is_some_and(|child| {
+                    widgets::menu::entries(self, child).get(index).is_some_and(glide_sdk::menu::Item::actionable)
+                });
+                if let Some((_, child)) = self.menu.as_mut().and_then(|menu| menu.child.as_mut()) {
+                    if inside && enabled {
+                        child.highlight = Some(index);
+                    } else if !inside && child.highlight == Some(index) {
+                        child.highlight = None;
+                    }
                 }
-                let offers =
-                    if kind == MenuKind::OpenWith { self.open_with_offers(&self.targets()) } else { Vec::new() };
-                self.menu = Some(Menu { kind, at: self.menu_at, offers, open_with: false, highlight: None });
+            }
+            Message::SubMenuExpired(generation) => {
+                if self.submenu_closing == Some(generation) {
+                    self.submenu_closing = None;
+                    if let Some(menu) = &mut self.menu {
+                        menu.child = None;
+                    }
+                }
             }
             Message::NewFromTemplate(template) => {
                 let name = file_name(&template);
@@ -2481,7 +2504,90 @@ impl App {
         }
     }
 
+    fn open_submenu(&mut self, kind: MenuKind, keyboard: bool) -> Task<Message> {
+        let Some(menu) = &self.menu else {
+            return Task::none();
+        };
+        self.submenu_closing = None;
+        let open = menu.sub().is_some_and(|child| child.kind == kind);
+        let wanted = Message::SubMenu(kind.clone());
+        let row = widgets::menu::entries(self, menu).iter().position(|entry| entry.message() == Some(&wanted));
+        let Some(row) = row.filter(|_| !open || keyboard) else {
+            return Task::none();
+        };
+        if kind == MenuKind::Templates {
+            self.templates = templates_dir().map(|dir| templates_in(&dir)).unwrap_or_default();
+        }
+        let offers = if kind == MenuKind::OpenWith { self.open_with_offers(&self.targets()) } else { Vec::new() };
+        let mut child = Menu { offers, ..Menu::new(kind, Point::ORIGIN) };
+        if keyboard {
+            child.highlight = widgets::menu::next_highlight(&widgets::menu::entries(self, &child), None, Step::First);
+        }
+        if let Some(menu) = &mut self.menu {
+            menu.highlight = Some(row);
+            menu.child = Some((row, Box::new(child)));
+        }
+        Task::none()
+    }
+
+    fn menu_hover(&mut self, index: usize, inside: bool) -> Task<Message> {
+        let Some(menu) = &self.menu else {
+            return Task::none();
+        };
+        let entries = widgets::menu::entries(self, menu);
+        let enabled = entries.get(index).is_some_and(glide_sdk::menu::Item::actionable);
+        let opens = match entries.get(index).and_then(glide_sdk::menu::Item::message) {
+            Some(Message::SubMenu(kind)) if inside && enabled => Some(kind.clone()),
+            _ => None,
+        };
+        let leaves = inside && enabled && menu.child.as_ref().is_some_and(|(row, _)| *row != index);
+        if let Some(menu) = &mut self.menu {
+            if inside && enabled {
+                menu.highlight = Some(index);
+            } else if !inside && menu.highlight == Some(index) && menu.child.is_none() {
+                menu.highlight = None;
+            }
+        }
+        if let Some(kind) = opens {
+            return self.open_submenu(kind, false);
+        }
+        if !leaves {
+            return Task::none();
+        }
+        self.submenu_generation += 1;
+        let generation = self.submenu_generation;
+        self.submenu_closing = Some(generation);
+        Task::perform(blocking(|| std::thread::sleep(SUBMENU_GRACE)), move |_| Message::SubMenuExpired(generation))
+    }
+
+    fn close_submenu(&mut self) -> bool {
+        self.submenu_closing = None;
+        self.menu.as_mut().and_then(|menu| menu.child.take()).is_some()
+    }
+
+    fn step_submenu(&mut self, step: Step) -> Task<Message> {
+        if step == Step::Left {
+            self.close_submenu();
+            return Task::none();
+        }
+        let Some(child) = self.menu.as_ref().and_then(Menu::sub) else {
+            return Task::none();
+        };
+        let entries = widgets::menu::entries(self, child);
+        let next = widgets::menu::next_highlight(&entries, child.highlight, step);
+        if let Some((_, child)) = self.menu.as_mut().and_then(|menu| menu.child.as_mut()) {
+            child.highlight = next;
+        }
+        next.map_or_else(Task::none, |index| {
+            let (top, bottom) = widgets::menu::span(&entries, index);
+            glide_sdk::widget::reveal(Id::new(glide_sdk::menu::SUB_SCROLL), top, bottom)
+        })
+    }
+
     fn step_menu(&mut self, step: Step) -> Task<Message> {
+        if self.menu.as_ref().is_some_and(|menu| menu.child.is_some()) {
+            return self.step_submenu(step);
+        }
         let Some(menu) = &self.menu else {
             return Task::none();
         };
@@ -2511,9 +2617,10 @@ impl App {
     }
 
     fn activate_menu(&mut self) -> Task<Message> {
-        let Some(menu) = &self.menu else {
+        let Some(root) = &self.menu else {
             return Task::none();
         };
+        let menu = root.sub().unwrap_or(root);
         let highlighted = menu.highlight.and_then(|index| widgets::menu::entries(self, menu).into_iter().nth(index));
         if matches!(highlighted, Some(glide_sdk::menu::Item::Stepper { .. })) {
             return Task::none();
@@ -2523,6 +2630,9 @@ impl App {
             self.menu = None;
             return Task::none();
         };
+        if let Message::SubMenu(kind) = message {
+            return self.open_submenu(kind, true);
+        }
         let task = self.handle(Message::Menu(Box::new(message)));
         self.highlight_first();
         task
@@ -4158,7 +4268,7 @@ impl App {
             self.dismiss_modal();
             return Task::none();
         }
-        if self.menu.take().is_some() {
+        if self.close_submenu() || self.menu.take().is_some() {
             return Task::none();
         }
         if self.operations_shown() {
@@ -4393,6 +4503,70 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
 mod navigation_tests {
     use super::{App, Arrival, Listed, Message, Renaming, Step};
     use crate::fs::FileEntry;
+
+    fn background_menu() -> (App, usize) {
+        let (mut app, _) = App::new();
+        app.menu = Some(super::Menu::new(super::MenuKind::Background, iced::Point::ORIGIN));
+        let menu = app.menu.as_ref().expect("menu");
+        let wanted = Message::SubMenu(super::MenuKind::Templates);
+        let row = crate::widgets::menu::entries(&app, menu)
+            .iter()
+            .position(|entry| entry.message() == Some(&wanted))
+            .expect("New Document row");
+        (app, row)
+    }
+
+    fn submenu_kind(app: &App) -> Option<super::MenuKind> {
+        app.menu.as_ref().and_then(super::Menu::sub).map(|child| child.kind.clone())
+    }
+
+    #[test]
+    fn a_submenu_cascades_beside_its_row_and_keeps_the_parent_open() {
+        let (mut app, row) = background_menu();
+        let _ = app.update(Message::MenuHover(row, true));
+        assert_eq!(submenu_kind(&app), Some(super::MenuKind::Templates));
+        assert_eq!(app.menu.as_ref().and_then(|menu| menu.highlight), Some(row));
+        let _ = app.update(Message::Menu(Box::new(Message::SubMenu(super::MenuKind::Templates))));
+        assert_eq!(app.menu.as_ref().map(|menu| menu.kind.clone()), Some(super::MenuKind::Background));
+        assert!(submenu_kind(&app).is_some(), "clicking the row keeps its submenu, not replaces the menu");
+    }
+
+    #[test]
+    fn leaving_the_row_closes_the_submenu_only_after_a_grace_period() {
+        let (mut app, row) = background_menu();
+        let _ = app.update(Message::MenuHover(row, true));
+        let _ = app.update(Message::MenuHover(0, true));
+        let pending = app.submenu_closing.expect("close scheduled");
+        assert!(submenu_kind(&app).is_some());
+        let _ = app.update(Message::SubMenuHover(0, true));
+        let _ = app.update(Message::SubMenuExpired(pending));
+        assert!(submenu_kind(&app).is_some(), "reaching the submenu cancels the close");
+        let _ = app.update(Message::MenuHover(0, true));
+        let pending = app.submenu_closing.expect("close scheduled");
+        let _ = app.update(Message::SubMenuExpired(pending));
+        assert!(submenu_kind(&app).is_none());
+        assert!(app.menu.is_some());
+    }
+
+    #[test]
+    fn keys_walk_into_a_submenu_and_back_out() {
+        let (mut app, row) = background_menu();
+        if let Some(menu) = &mut app.menu {
+            menu.highlight = Some(row);
+        }
+        let _ = app.update(Message::Move(Step::Right, false));
+        assert_eq!(submenu_kind(&app), Some(super::MenuKind::Templates));
+        let first = app.menu.as_ref().and_then(super::Menu::sub).and_then(|child| child.highlight);
+        assert!(first.is_some(), "the keyboard lands on the first submenu row");
+        let _ = app.update(Message::Move(Step::Left, false));
+        assert!(submenu_kind(&app).is_none());
+        assert!(app.menu.is_some(), "Left leaves only the submenu");
+        let _ = app.update(Message::Move(Step::Right, false));
+        let _ = app.update(Message::Escape);
+        assert!(submenu_kind(&app).is_none() && app.menu.is_some(), "Esc closes the submenu first");
+        let _ = app.update(Message::Escape);
+        assert!(app.menu.is_none());
+    }
 
     #[test]
     fn bus_requests_reuse_only_a_window_that_just_started_empty() {

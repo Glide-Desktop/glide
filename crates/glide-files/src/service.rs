@@ -164,15 +164,15 @@ impl FileManager {
 #[zbus::interface(name = "org.freedesktop.FileManager1")]
 impl FileManager {
     fn show_folders(&self, uris: Vec<String>, startup_id: &str) {
-        self.forward(uris, startup_id,Request::Open);
+        self.forward(uris, startup_id, Request::Open);
     }
 
     fn show_items(&self, uris: Vec<String>, startup_id: &str) {
-        self.forward(uris, startup_id,Request::Reveal);
+        self.forward(uris, startup_id, Request::Reveal);
     }
 
     fn show_item_properties(&self, uris: Vec<String>, startup_id: &str) {
-        self.forward(uris, startup_id,Request::Properties);
+        self.forward(uris, startup_id, Request::Properties);
     }
 }
 

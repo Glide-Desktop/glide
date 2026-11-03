@@ -12,13 +12,15 @@ use crate::widget::{Icon, Wrapping, icon, popover, scrollable, text};
 
 pub const WIDTH: f32 = 280.0;
 pub const SCROLL: &str = "glide-menu";
+pub const SUB_SCROLL: &str = "glide-submenu";
+pub const CASCADE_GAP: f32 = 2.0;
 const ITEM: f32 = component::MENU_ITEM;
 const STEP: f32 = component::SMALL_CONTROL;
 const MARK: f32 = 14.0;
 const DOT: f32 = 10.0;
 const SWATCH: f32 = 18.0;
 const SEPARATOR: f32 = 9.0;
-const HEADING: f32 = 26.0;
+const HEADING: f32 = SP2 + SP1 + TextStyle::CAP.line_height_px;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item<M> {
@@ -625,6 +627,18 @@ pub fn place(at: Point, height: f32, width: f32, window: Size, may_flip: bool) -
 }
 
 #[must_use]
+pub fn cascade(parent: (Point, Size), row_top: f32, height: f32, width: f32, window: Size) -> (Point, Size) {
+    let (origin, size) = parent;
+    let width = width.min(window.width - 2.0 * SP2);
+    let right = origin.x + size.width + CASCADE_GAP;
+    let x = if right + width <= window.width - SP2 { right } else { origin.x - CASCADE_GAP - width };
+    let x = x.min(window.width - width - SP2).max(SP2);
+    let height = height.min(window.height - 2.0 * SP2);
+    let y = (origin.y + row_top).min(window.height - height - SP2).max(SP2);
+    (Point::new(x, y), Size::new(width, height))
+}
+
+#[must_use]
 pub fn rows<'a, M>(paint: &Paint, items: &[Item<M>], selected: Option<usize>) -> Vec<Element<'a, Event>> {
     let marks = items.iter().any(Item::checks);
     items.iter().enumerate().map(|(index, item)| item_row(paint, item, index, selected == Some(index), marks)).collect()
@@ -634,7 +648,21 @@ pub fn rows<'a, M>(paint: &Paint, items: &[Item<M>], selected: Option<usize>) ->
 pub fn layer<'a, E: Clone + 'a>(
     paint: &Paint, rows: Vec<Element<'a, E>>, at: Point, size: Size, progress: f32, dismiss: Option<E>,
 ) -> Element<'a, E> {
-    let content = scrollable(paint, iced::widget::column(rows)).id(SCROLL).height(size.height - 2.0 * SP1 - 2.0);
+    card_layer(paint, rows, SCROLL, at, size, progress, dismiss)
+}
+
+#[must_use]
+pub fn sublayer<'a, E: Clone + 'a>(
+    paint: &Paint, rows: Vec<Element<'a, E>>, at: Point, size: Size, progress: f32,
+) -> Element<'a, E> {
+    card_layer(paint, rows, SUB_SCROLL, at, size, progress, None)
+}
+
+fn card_layer<'a, E: Clone + 'a>(
+    paint: &Paint, rows: Vec<Element<'a, E>>, id: &'static str, at: Point, size: Size, progress: f32,
+    dismiss: Option<E>,
+) -> Element<'a, E> {
+    let content = scrollable(paint, iced::widget::column(rows)).id(id).height(size.height - 2.0 * SP1 - 2.0);
     let card = container(popover(paint, content)).width(size.width);
     let scale = component::POPOVER_CLOSED_SCALE + (1.0 - component::POPOVER_CLOSED_SCALE) * progress;
     let card = pin(widgets::scale(card, scale)).x(at.x).y(at.y + (1.0 - progress) * component::POPOVER_RISE);
@@ -662,6 +690,7 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
         .into(),
         Item::Heading(label) => container(text(label.clone(), TextStyle::CAP).color(paint.fg_3()))
             .padding(Padding::from([SP2, SP3]).bottom(SP1))
+            .height(HEADING)
             .into(),
         Item::Action { label, enabled, .. } | Item::Submenu { label, enabled, .. } => {
             let enabled = *enabled;
@@ -960,5 +989,25 @@ mod tests {
         assert_eq!(width(&[Item::action("x", Command::New)], 200.0), 200.0);
         let huge = vec![Item::action("x".repeat(400), Command::New)];
         assert_eq!(width(&huge, 200.0), MAX_WIDTH);
+    }
+
+    #[test]
+    fn a_heading_reserves_what_it_draws() {
+        assert_eq!(HEADING, SP2 + SP1 + TextStyle::CAP.line_height_px);
+        let items = [Item::heading("h"), Item::action("a", Command::New)];
+        assert_eq!(span(&items, 1), (HEADING, HEADING + ITEM));
+    }
+
+    #[test]
+    fn a_cascade_opens_beside_its_row_and_flips_at_the_window_edge() {
+        let window = Size::new(1000.0, 600.0);
+        let parent = (Point::new(100.0, 50.0), Size::new(250.0, 400.0));
+        let (at, size) = cascade(parent, 70.0, 200.0, 220.0, window);
+        assert_eq!(at, Point::new(352.0, 120.0), "the first row lines up with the parent row");
+        assert_eq!(size, Size::new(220.0, 200.0));
+        let near_edge = (Point::new(700.0, 50.0), Size::new(250.0, 400.0));
+        assert_eq!(cascade(near_edge, 0.0, 200.0, 220.0, window).0.x, 700.0 - CASCADE_GAP - 220.0);
+        let low = cascade(parent, 380.0, 200.0, 220.0, window);
+        assert_eq!(low.0.y, 600.0 - SP2 - 200.0, "a submenu low in the window rises to stay on screen");
     }
 }

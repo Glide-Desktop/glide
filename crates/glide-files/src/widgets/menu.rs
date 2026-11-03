@@ -14,6 +14,7 @@ use crate::theme::SP2;
 pub type Entry = sdk::Item<Message>;
 
 pub const WIDTH: f32 = 248.0;
+const SUB_WIDTH: f32 = 236.0;
 const OPTIONS_RIGHT_INSET: f32 = 2.0 * SP2 + WINDOW_CONTROL + 2.0 + GAP;
 const OPTIONS_TOP: f32 = HEADER_HEIGHT.midpoint(CONTROL) + SP2;
 
@@ -211,7 +212,7 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             entries
         }
         MenuKind::Templates => {
-            let mut entries = vec![Entry::heading(Key::NewDocument.text(app.lang))];
+            let mut entries = Vec::new();
             let root = crate::fs::templates_dir().unwrap_or_default();
             entries.extend(app.templates.iter().map(|template| {
                 let shown = template.strip_prefix(&root).unwrap_or(template).with_extension("");
@@ -246,14 +247,13 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             entries.push(item(Key::OtherApp, Message::OpenWithDialog));
             entries
         }
-        MenuKind::Columns => {
-            let mut entries = vec![Entry::heading(Key::Columns.text(app.lang))];
-            entries.extend(crate::config::ListColumn::ALL.into_iter().map(|column| {
+        MenuKind::Columns => crate::config::ListColumn::ALL
+            .into_iter()
+            .map(|column| {
                 Entry::action(super::content::column_label(column, app.lang), Message::ToggleColumn(column))
                     .checked(app.columns.contains(&column))
-            }));
-            entries
-        }
+            })
+            .collect(),
     }
 }
 
@@ -326,36 +326,50 @@ pub fn overlay<'a>(app: &'a App, menu: &'a Menu, progress: f32, live: bool) -> E
             _ => sdk::place(menu.at, height, width, window, true),
         };
         let paint = super::paint(&app.theme.faded(progress));
-        let rows = sdk::rows(&paint, &entries, menu.highlight)
-            .into_iter()
-            .zip(&entries)
-            .enumerate()
-            .map(|(index, (row, entry))| {
-                let message = entry.message().cloned().filter(|_| live);
-                let walkable = live && entry.actionable();
-                let steps = match entry {
-                    sdk::Item::Stepper { less, more, .. } => [less.clone(), more.clone()],
-                    _ => [None, None],
-                };
-                let swatches: Vec<Message> = match entry {
-                    sdk::Item::Swatches(swatches) => swatches.iter().map(|swatch| swatch.message.clone()).collect(),
-                    _ => Vec::new(),
-                };
-                let stay = move |picked: Option<Message>| {
-                    picked
-                        .filter(|_| live)
-                        .map_or(Message::MenuHover(index, false), |picked| Message::MenuStay(Box::new(picked)))
-                };
-                row.map(move |event| match (event, &message) {
-                    (Event::Picked(_), Some(message)) => Message::Menu(Box::new(message.clone())),
-                    (Event::Stepped(_, more), _) => stay(steps[usize::from(more)].clone()),
-                    (Event::Swatched(_, at), _) => stay(swatches.get(at).cloned()),
-                    (Event::Dismiss, _) => Message::CloseMenu,
-                    _ => Message::MenuHover(index, walkable),
-                })
-            })
-            .collect();
-        sdk::layer(&paint, rows, at, size, progress, live.then_some(Message::CloseMenu))
+        let root_rows = rows(&paint, &entries, menu.highlight, live, Message::MenuHover);
+        let root = sdk::layer(&paint, root_rows, at, size, progress, live.then_some(Message::CloseMenu));
+        let Some((row, child)) = &menu.child else {
+            return root;
+        };
+        let items = self::entries(app, child);
+        let row_top = sdk::span(&entries, *row).0;
+        let (sub_at, sub_size) =
+            sdk::cascade((at, size), row_top, sdk::height(&items), sdk::width(&items, SUB_WIDTH), window);
+        let sub_rows = rows(&paint, &items, child.highlight, live, Message::SubMenuHover);
+        iced::widget::stack![root, sdk::sublayer(&paint, sub_rows, sub_at, sub_size, progress)].into()
     })
     .into()
+}
+
+fn rows<'a>(
+    paint: &glide_sdk::Paint, entries: &[Entry], highlight: Option<usize>, live: bool,
+    hover: fn(usize, bool) -> Message,
+) -> Vec<Element<'a, Message>> {
+    sdk::rows(paint, entries, highlight)
+        .into_iter()
+        .zip(entries)
+        .enumerate()
+        .map(|(index, (row, entry))| {
+            let message = entry.message().cloned().filter(|_| live);
+            let walkable = live && entry.actionable();
+            let steps = match entry {
+                sdk::Item::Stepper { less, more, .. } => [less.clone(), more.clone()],
+                _ => [None, None],
+            };
+            let swatches: Vec<Message> = match entry {
+                sdk::Item::Swatches(swatches) => swatches.iter().map(|swatch| swatch.message.clone()).collect(),
+                _ => Vec::new(),
+            };
+            let stay = move |picked: Option<Message>| {
+                picked.filter(|_| live).map_or(hover(index, false), |picked| Message::MenuStay(Box::new(picked)))
+            };
+            row.map(move |event| match (event, &message) {
+                (Event::Picked(_), Some(message)) => Message::Menu(Box::new(message.clone())),
+                (Event::Stepped(_, more), _) => stay(steps[usize::from(more)].clone()),
+                (Event::Swatched(_, at), _) => stay(swatches.get(at).cloned()),
+                (Event::Dismiss, _) => Message::CloseMenu,
+                _ => hover(index, walkable),
+            })
+        })
+        .collect()
 }

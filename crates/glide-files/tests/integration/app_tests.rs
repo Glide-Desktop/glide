@@ -119,9 +119,9 @@ fn keyboard_highlight_walks_enabled_menu_rows_and_wraps() {
     assert_eq!(next_highlight(&entries, Some(1), Step::Up), Some(4));
     assert_eq!(next_highlight(&entries, Some(4), Step::Left), Some(4));
     assert_eq!(next_highlight(&[Entry::Separator], None, Step::Down), None);
-    let menu =
-        Menu { kind: MenuKind::Options, at: Point::ORIGIN, offers: Vec::new(), open_with: false, highlight: None };
+    let menu = Menu::new(MenuKind::Options, Point::ORIGIN);
     assert_eq!(menu.highlight, None);
+    assert!(menu.sub().is_none());
 }
 
 fn path(index: usize) -> std::path::PathBuf {
