@@ -478,7 +478,7 @@ fn push_charge_sheen<R>(
         return;
     };
     let charge = &mut topbar.indicators.charge;
-    let Some(progress) = charge.advance(cycle, Instant::now()) else {
+    let Some(progress) = charge.advance(cycle, glide_ui::clock::now()) else {
         return;
     };
     let Some(x) = block_layout(painter, status, topbar.theme.battery_percentage)
