@@ -102,6 +102,10 @@ glide_sdk::catalogue! {
     Reload => "Reload", "Оновити";
     SortBy => "Sort by", "Упорядкувати";
     Reversed => "Reverse Order", "У зворотному порядку";
+    SortByName => "By Name", "За назвою";
+    SortBySize => "By Size", "За розміром";
+    SortByModified => "By Date Modified", "За датою зміни";
+    SortByType => "By Type", "За типом";
     ShowHidden => "Show Hidden Files", "Приховані файли";
     PathPlaceholder => "Go to folder", "Перейти до папки";
     Create => "Create", "Створити";
@@ -191,7 +195,7 @@ glide_sdk::catalogue! {
     ZoomReset => "Normal Size", "Звичайний розмір";
     QueueOperations => "One Operation at a Time", "Операції по черзі";
     Shortcuts => "Keyboard Shortcuts", "Гарячі клавіші";
-    ShortcutsBody => "Arrows  move the selection · Shift+arrows  extend it · Enter  open · Backspace / Alt+←  back\nCtrl+L  type a path · Ctrl+F or just type  search · Ctrl+H  hidden files · Ctrl+1 / Ctrl+2  grid or list\nCtrl+C / Ctrl+X / Ctrl+V  copy, cut, paste · Ctrl+D  duplicate · Ctrl+Z  undo · F2  rename\nDelete  move to the Trash · Shift+Delete  delete for good · Ctrl+Shift+N  new folder · Alt+Enter  properties\nCtrl++ / Ctrl+- / Ctrl+0  zoom · F5  reload · Shift+F10  menu · Ctrl+N  new window · Ctrl+W  close", "Стрілки  рух виділенням · Shift+стрілки  розширити · Enter  відкрити · Backspace / Alt+←  назад\nCtrl+L  ввести шлях · Ctrl+F або просто друкуйте  пошук · Ctrl+H  приховані файли · Ctrl+1 / Ctrl+2  сітка чи список\nCtrl+C / Ctrl+X / Ctrl+V  копіювати, вирізати, вставити · Ctrl+D  дублювати · Ctrl+Z  скасувати · F2  перейменувати\nDelete  у смітник · Shift+Delete  видалити назавжди · Ctrl+Shift+N  нова папка · Alt+Enter  властивості\nCtrl++ / Ctrl+- / Ctrl+0  масштаб · F5  оновити · Shift+F10  меню · Ctrl+N  нове вікно · Ctrl+W  закрити";
+    ShortcutsBody => "Arrows  move the selection · Shift+arrows  extend it · Enter  open · Backspace / Alt+←  back\nCtrl+L  type a path · Ctrl+F or just type  search · Ctrl+H  hidden files · Ctrl+I  information panel ·Ctrl+1 / Ctrl+2  grid or list\nCtrl+C / Ctrl+X / Ctrl+V  copy, cut, paste · Ctrl+D  duplicate · Ctrl+Z  undo · F2  rename\nDelete  move to the Trash · Shift+Delete  delete for good · Ctrl+Shift+N  new folder · Alt+Enter  properties\nCtrl++ / Ctrl+- / Ctrl+0  zoom · F5  reload · Shift+F10  menu · Ctrl+N  new window · Ctrl+W  close", "Стрілки  рух виділенням · Shift+стрілки  розширити · Enter  відкрити · Backspace / Alt+←  назад\nCtrl+L  ввести шлях · Ctrl+F або просто друкуйте  пошук · Ctrl+H  приховані файли · Ctrl+I  панель інформації ·Ctrl+1 / Ctrl+2  сітка чи список\nCtrl+C / Ctrl+X / Ctrl+V  копіювати, вирізати, вставити · Ctrl+D  дублювати · Ctrl+Z  скасувати · F2  перейменувати\nDelete  у смітник · Shift+Delete  видалити назавжди · Ctrl+Shift+N  нова папка · Alt+Enter  властивості\nCtrl++ / Ctrl+- / Ctrl+0  масштаб · F5  оновити · Shift+F10  меню · Ctrl+N  нове вікно · Ctrl+W  закрити";
     Queued => "Queued", "У черзі";
     Phone => "Phone", "Телефон";
     Camera => "Camera", "Камера";
@@ -249,7 +253,7 @@ glide_sdk::catalogue! {
     MountReadOnly => "Mount Read-Only", "Змонтувати лише для читання";
     Unmount => "Unmount", "Відмонтувати";
     Eject => "Safely Remove", "Безпечно вилучити";
-    Repair => "Repair…", "Виправити…";
+    Repair => "Check and Repair…", "Перевірити й виправити…";
     RepairAction => "Repair", "Виправити";
     RepairTitle => "Repair the file system?", "Виправити файлову систему?";
     RepairPrompt => "The device will be unmounted, checked and mounted again. Don’t unplug it until the repair finishes.", "Пристрій буде відмонтовано, перевірено й змонтовано знову. Не від’єднуйте його, доки виправлення не завершиться.";
@@ -389,6 +393,14 @@ pub fn free_space(amount: &str, lang: Lang) -> String {
     match lang {
         Lang::Uk => format!("Вільно {amount}"),
         Lang::En => format!("{amount} free"),
+    }
+}
+
+#[must_use]
+pub fn free_of(free: &str, total: &str, lang: Lang) -> String {
+    match lang {
+        Lang::Uk => format!("{free} вільно з {total}"),
+        Lang::En => format!("{free} free of {total}"),
     }
 }
 

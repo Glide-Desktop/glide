@@ -187,7 +187,7 @@ pub fn action(paint: &Paint, tone: Tone, status: button::Status) -> button::Styl
 #[must_use]
 pub fn menu_item(paint: &Paint, status: button::Status) -> button::Style {
     match status {
-        button::Status::Disabled => flat(Color::TRANSPARENT, paint.fg_4(), R2),
+        button::Status::Disabled => flat(Color::TRANSPARENT, paint.fg_3(), R2),
         _ => flat(paint.layered(Color::TRANSPARENT, status), paint.fg_1(), R2),
     }
 }

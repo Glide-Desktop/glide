@@ -63,6 +63,8 @@ pub enum Icon {
     Camera,
     Check,
     FolderPlus,
+    Cut,
+    Terminal,
 }
 
 impl Icon {
@@ -138,6 +140,10 @@ impl Icon {
                 "<path d='M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z'/><circle cx='12' cy='13' r='3.5'/>"
             ),
             Self::Check => glyph!("<path d='m5 12.5 4.5 4.5L19 7.5'/>"),
+            Self::Cut => glyph!(
+                "<circle cx='6' cy='6' r='3'/><circle cx='6' cy='18' r='3'/><path d='M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12'/>"
+            ),
+            Self::Terminal => glyph!("<path d='m4 17 6-5-6-5M12 19h8'/>"),
         };
         svg::Handle::from_memory(bytes)
     }

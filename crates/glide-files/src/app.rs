@@ -380,6 +380,8 @@ pub enum Message {
     Frame(Instant),
     TerminalAt(PathBuf),
     NewWindow(Option<PathBuf>),
+    CopyPath,
+    BookmarkHere,
     RunAction(Box<Offer>),
     ExtensionsLoaded(Arc<Extensions>),
     PropertiesOf(PathBuf),
@@ -536,6 +538,8 @@ impl Message {
                 | Self::Terminal
                 | Self::TerminalAt(_)
                 | Self::NewWindow(_)
+                | Self::CopyPath
+                | Self::BookmarkHere
                 | Self::RunAction(_)
                 | Self::OpenWithDialog
                 | Self::PickApp(_)
@@ -1497,6 +1501,16 @@ impl App {
             }
             Message::PropertiesOf(path) => return self.properties_of(path),
             Message::CopyText(text) => return iced::clipboard::write(text),
+            Message::CopyPath => {
+                let paths = if self.selection.is_empty() { vec![self.current.clone()] } else { self.selected() };
+                let text = paths.iter().map(|path| path.display().to_string()).collect::<Vec<_>>().join("\n");
+                return iced::clipboard::write(text);
+            }
+            Message::BookmarkHere => {
+                if widgets::menu::bookmarkable(self, &self.current) {
+                    return self.handle(Message::AddBookmark(self.current.clone()));
+                }
+            }
             Message::AddBookmark(path) => {
                 return self.edit_bookmarks(|lines| {
                     lines.push(file_uri(&path));
@@ -4474,10 +4488,12 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
             'l' => Message::EditPath,
             'f' => Message::ToggleSearch,
             'a' => Message::SelectAll,
+            'c' if shift => Message::CopyPath,
             'c' => Message::Copy,
+            'b' => Message::BookmarkHere,
             'x' => Message::Cut,
             'v' => Message::Paste,
-            'i' => Message::Properties,
+            'i' => Message::ToggleInspector,
             'z' => Message::Undo,
             'd' => Message::Duplicate,
             '=' | '+' => Message::Zoom(1),

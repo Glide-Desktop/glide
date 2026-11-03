@@ -17,6 +17,9 @@ pub const CASCADE_GAP: f32 = 2.0;
 const ITEM: f32 = component::MENU_ITEM;
 const STEP: f32 = component::SMALL_CONTROL;
 const MARK: f32 = 14.0;
+const GLYPH: f32 = 16.0;
+const CHEVRON: f32 = 14.0;
+const KEYS: TextStyle = TextStyle { size_px: 11.0, line_height_px: 16.0, ..TextStyle::NUM };
 const DOT: f32 = 10.0;
 const SWATCH: f32 = 18.0;
 const SEPARATOR: f32 = 9.0;
@@ -33,6 +36,7 @@ pub enum Item<M> {
         more: bool,
         danger: bool,
         swatch: Option<iced::Color>,
+        glyph: Option<iced::widget::svg::Handle>,
     },
     Submenu {
         label: String,
@@ -70,7 +74,16 @@ impl<M> Item<M> {
             more: false,
             danger: false,
             swatch: None,
+            glyph: None,
         }
+    }
+
+    #[must_use]
+    pub fn glyph(mut self, handle: iced::widget::svg::Handle) -> Self {
+        if let Self::Action { glyph, .. } = &mut self {
+            *glyph = Some(handle);
+        }
+        self
     }
 
     #[must_use]
@@ -95,7 +108,7 @@ impl<M> Item<M> {
     }
 
     fn checks(&self) -> bool {
-        matches!(self, Self::Action { check: Some(_), .. })
+        matches!(self, Self::Action { check: Some(_), .. } | Self::Action { glyph: Some(_), .. })
     }
 
     #[must_use]
@@ -584,11 +597,11 @@ pub fn width<M>(items: &[Item<M>], least: f32) -> f32 {
         .iter()
         .map(|item| match item {
             Item::Action { label, shortcut, more, swatch, .. } => {
-                let keys = shortcut.as_deref().map_or(0.0, |keys| measure(keys, TextStyle::CAP) + SP3);
+                let keys = shortcut.as_deref().map_or(0.0, |keys| measure(keys, KEYS) + SP3);
                 let dot = if swatch.is_some() { DOT + SP2 } else { 0.0 };
-                measure(label, TextStyle::MENU_ITEM) + keys + dot + if *more { 12.0 + SP2 } else { 0.0 }
+                measure(label, TextStyle::MENU_ITEM) + keys + dot + if *more { CHEVRON + SP2 } else { 0.0 }
             }
-            Item::Submenu { label, .. } => measure(label, TextStyle::MENU_ITEM) + 12.0 + SP2,
+            Item::Submenu { label, .. } => measure(label, TextStyle::MENU_ITEM) + CHEVRON + SP2,
             Item::Stepper { label, value, .. } => {
                 measure(label, TextStyle::MENU_ITEM)
                     + SP3
@@ -600,7 +613,7 @@ pub fn width<M>(items: &[Item<M>], least: f32) -> f32 {
             Item::Separator => 0.0,
         })
         .fold(0.0, f32::max);
-    let mark = if items.iter().any(Item::checks) { MARK + SP2 } else { 0.0 };
+    let mark = if items.iter().any(Item::checks) { GLYPH + SP2 } else { 0.0 };
     let row_padding = 2.0 * SP2;
     let card = 2.0 * SP1 + 2.0;
     let scrollbar = 6.0 + SP1;
@@ -688,24 +701,31 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
         )
         .padding(Padding::from([SP1, SP2]))
         .into(),
-        Item::Heading(label) => container(text(label.clone(), TextStyle::CAP).color(paint.fg_3()))
+        Item::Heading(label) => container(text(label.clone(), TextStyle::CAP).color(paint.fg_2()))
             .padding(Padding::from([SP2, SP3]).bottom(SP1))
             .height(HEADING)
             .into(),
         Item::Action { label, enabled, .. } | Item::Submenu { label, enabled, .. } => {
             let enabled = *enabled;
-            let (shortcut, check, more, danger, swatch) = match item {
-                Item::Action { shortcut, check, more, danger, swatch, .. } => {
-                    (shortcut.clone(), *check, *more, *danger, *swatch)
+            let (shortcut, check, more, danger, swatch, glyph) = match item {
+                Item::Action { shortcut, check, more, danger, swatch, glyph, .. } => {
+                    (shortcut.clone(), *check, *more, *danger, *swatch, glyph.clone())
                 }
-                _ => (None, None, true, false, None),
+                _ => (None, None, true, false, None, None),
+            };
+            let ink = match (enabled, danger) {
+                (false, _) => paint.fg_3(),
+                (true, true) => paint.danger(),
+                (true, false) => paint.fg_2(),
             };
             let mut content = row![].spacing(SP2).align_y(Alignment::Center);
             if marks {
-                content = content.push(match check {
-                    Some(true) => icon(Icon::Check, MARK, if enabled { paint.acc_bg() } else { paint.fg_4() }),
-                    _ => Space::new().width(MARK).height(MARK).into(),
-                });
+                let mark: Element<'a, Event> = match (check, glyph) {
+                    (Some(true), _) => icon(Icon::Check, MARK, if enabled { paint.acc_text() } else { paint.fg_3() }),
+                    (_, Some(handle)) => crate::widget::svg_glyph(handle, GLYPH, ink),
+                    _ => Space::new().width(GLYPH).height(GLYPH).into(),
+                };
+                content = content.push(container(mark).center(GLYPH));
             }
             if let Some(color) = swatch {
                 content = content.push(
@@ -717,14 +737,10 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
                 .push(text(label.clone(), TextStyle::MENU_ITEM).wrapping(Wrapping::None))
                 .push(Space::new().width(Fill));
             if let Some(shortcut) = shortcut {
-                content = content.push(text(shortcut, TextStyle::CAP).color(if enabled {
-                    paint.fg_3()
-                } else {
-                    paint.fg_4()
-                }));
+                content = content.push(text(shortcut, KEYS).color(ink));
             }
             if more {
-                content = content.push(icon(Icon::Right, 12.0, paint.fg_3()));
+                content = content.push(icon(Icon::Right, CHEVRON, ink));
             }
             let control = button(container(content).center_y(Fill).clip(true))
                 .on_press_maybe(enabled.then_some(Event::Picked(index)))
