@@ -351,7 +351,7 @@ impl<'a> markdown::Viewer<'a, Message> for Preview {
 }
 
 fn table_view<'a>(app: &'a App, rows: &'a [Vec<String>]) -> Element<'a, Message> {
-    use glide_sdk::widget::{TABLE_HEADER, table_header, table_row};
+    use glide_sdk::widget::{TABLE_CELL, TABLE_ROW, table_header, table_row};
     let paint = app.paint;
     let Some((head, body)) = rows.split_first() else {
         return empty_note(&paint, Icon::File, "", Key::EmptyTable.text(app.lang));
@@ -364,7 +364,7 @@ fn table_view<'a>(app: &'a App, rows: &'a [Vec<String>]) -> Element<'a, Message>
                 let value = values.get(column).map_or("", String::as_str);
                 container(text(value, style).color(color).wrapping(glide_sdk::widget::Wrapping::None))
                     .width(Length::FillPortion(widths[column]))
-                    .padding(Padding::from([0.0, SP1]))
+                    .padding(Padding::from([0.0, TABLE_CELL]))
                     .clip(true)
                     .into()
             })
@@ -373,7 +373,7 @@ fn table_view<'a>(app: &'a App, rows: &'a [Vec<String>]) -> Element<'a, Message>
     let header = table_header(&paint, cells(head, true, paint.fg_2()));
     let lines = body.iter().enumerate().map(|(index, values)| {
         let content = iced::widget::Row::with_children(cells(values, false, paint.fg_1()));
-        table_row(&paint, content, 0.0, index % 2 == 1, 0.0, TABLE_HEADER)
+        table_row(&paint, content, 0.0, index % 2 == 1, 0.0, TABLE_ROW)
     });
     column![header, scrollable(&paint, iced::widget::column(lines)).height(Fill)].into()
 }

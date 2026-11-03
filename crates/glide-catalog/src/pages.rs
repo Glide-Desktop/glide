@@ -1094,11 +1094,14 @@ fn tables<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
         paint,
         vec![
             ui::HeaderCell::new(paint, shell.t("Назва", "Name"))
-                .separated(false)
                 .sorted(Some(!catalog.flipped))
                 .on_press(Some(Message::Flip))
                 .into(),
-            ui::HeaderCell::new(paint, shell.t("Розмір", "Size")).width(120).on_press(Some(Message::Flip)).into(),
+            ui::HeaderCell::new(paint, shell.t("Розмір", "Size"))
+                .width(120)
+                .end(true)
+                .on_press(Some(Message::Flip))
+                .into(),
             ui::HeaderCell::new(paint, shell.t("Змінено", "Modified")).width(160).lit(catalog.compact).into(),
         ],
     );

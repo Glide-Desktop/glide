@@ -2,7 +2,7 @@ use glide_files::app::{Field, Message, Step, ViewMode, handle_shortcut, key_mess
 use glide_files::config::Look;
 use glide_files::i18n::{self, Key, Lang};
 use glide_files::theme::ThemeState;
-use glide_files::widgets::content::{GRID_PADDING, Metrics, TILE_GAP};
+use glide_files::widgets::content::{GRID_PADDING, LIST_PADDING, Metrics, TILE_GAP};
 use glide_files::widgets::{ellipsize, menu};
 use glide_theme::{Accent, Appearance};
 use iced::keyboard::key::{Code, Named, Physical};
@@ -306,19 +306,19 @@ fn columns_that_do_not_fit_give_way_to_the_name() {
 #[test]
 fn list_columns_are_as_wide_as_their_longest_value_in_either_language() {
     use glide_files::config::ListColumn;
-    use glide_files::fs::{widest_sizes, widest_times};
+    use glide_files::fs::{widest_days, widest_sizes};
     use glide_files::widgets::content::column_width;
     use glide_sdk::theme::TextStyle;
     use glide_sdk::widget::measure;
     for lang in [Lang::En, Lang::Uk] {
         let modified = column_width(ListColumn::Modified, lang);
-        for sample in widest_times(lang) {
-            assert!(measure(&sample, TextStyle::CAP) + 16.0 <= modified, "{sample} fits");
+        for sample in widest_days(lang) {
+            assert!(measure(&sample, TextStyle::NUM) + 24.0 <= modified, "{sample} fits");
         }
         assert!(modified < 168.0, "{lang:?}: a date column no longer reserves 168 px");
         let size = column_width(ListColumn::Size, lang);
-        assert!(widest_sizes(lang).iter().all(|sample| measure(sample, TextStyle::CAP) + 16.0 <= size));
-        assert!(size < 92.0 && column_width(ListColumn::Kind, lang) < 128.0, "{lang:?}");
+        assert!(widest_sizes(lang).iter().all(|sample| measure(sample, TextStyle::NUM) + 24.0 <= size));
+        assert!(size < 112.0 && column_width(ListColumn::Kind, lang) < 140.0, "{lang:?}");
     }
 }
 
@@ -1278,7 +1278,7 @@ fn grid_geometry_matches_keyboard_navigation() {
 
     let (top, bottom) = m.span(ViewMode::List, 10, width);
     assert!(bottom > top);
-    assert_eq!(m.span(ViewMode::List, 11, width).0 - top, bottom - top - 8.0);
+    assert_eq!(m.span(ViewMode::List, 11, width).0 - top, bottom - top - 2.0 * LIST_PADDING);
 }
 
 #[test]

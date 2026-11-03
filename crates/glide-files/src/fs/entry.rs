@@ -247,6 +247,17 @@ pub fn format_time(time: SystemTime, now: SystemTime, lang: Lang) -> String {
     }
 }
 
+#[must_use]
+pub fn format_day(time: SystemTime, now: SystemTime, lang: Lang) -> String {
+    let (Some(at), Some(today)) = (LocalTime::of(time), LocalTime::of(now)) else {
+        return String::from("—");
+    };
+    match today.day_number() - at.day_number() {
+        0 | 1 => format_time(time, now, lang),
+        _ => format!("{} {} {}", at.day, i18n::month(at.month, lang), at.year),
+    }
+}
+
 fn dated(day: impl std::fmt::Display, month: u8, year: impl std::fmt::Display, clock: &str, lang: Lang) -> String {
     format!("{day} {} {year}, {clock}", i18n::month(month, lang))
 }
@@ -254,6 +265,13 @@ fn dated(day: impl std::fmt::Display, month: u8, year: impl std::fmt::Display, c
 #[must_use]
 pub fn widest_times(lang: Lang) -> Vec<String> {
     let mut samples: Vec<String> = (1..=12).map(|month| dated(28, month, 2026, "23:59", lang)).collect();
+    samples.extend([Key::Today, Key::Yesterday].map(|key| format!("{}, 23:59", key.text(lang))));
+    samples
+}
+
+#[must_use]
+pub fn widest_days(lang: Lang) -> Vec<String> {
+    let mut samples: Vec<String> = (1..=12).map(|month| format!("28 {} 2026", i18n::month(month, lang))).collect();
     samples.extend([Key::Today, Key::Yesterday].map(|key| format!("{}, 23:59", key.text(lang))));
     samples
 }

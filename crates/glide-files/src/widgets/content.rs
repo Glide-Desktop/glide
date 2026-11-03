@@ -12,7 +12,7 @@ use crate::app::{App, FILES_ID, Hover, MenuKind, Message, RENAME_ID, ViewMode};
 use crate::config::ListColumn;
 use crate::fs::tags;
 use crate::fs::{
-    FileCategory, FileEntry, SortBy, format_bytes, format_time, permissions_string, widest_sizes, widest_times,
+    FileCategory, FileEntry, SortBy, format_bytes, format_day, permissions_string, widest_days, widest_sizes,
 };
 use crate::i18n::{Key, Lang};
 use crate::icons::Icon;
@@ -20,7 +20,7 @@ use crate::theme;
 
 pub const GRID_PADDING: f32 = theme::SP4;
 pub const TILE_GAP: f32 = theme::SP3;
-pub const LIST_PADDING: f32 = theme::SP1;
+pub const LIST_PADDING: f32 = 0.0;
 const LOCATION_WIDTH: f32 = 220.0;
 const NAME_MIN: f32 = 64.0;
 const NAME_ROOM: f32 = 200.0;
@@ -29,7 +29,7 @@ const DOT_GAP: f32 = 2.0;
 const LABEL_LINES: usize = 2;
 const LINK_MARK: f32 = 11.0;
 const GRID_ICONS: [f32; crate::config::GRID_ZOOMS] = [40.0, 52.0, 60.0, 76.0, 96.0, 128.0];
-const LIST_ROWS: [(f32, f32); crate::config::LIST_ZOOMS] = [(22.0, 14.0), (26.0, 16.0), (32.0, 22.0), (40.0, 28.0)];
+const LIST_ROWS: [(f32, f32); crate::config::LIST_ZOOMS] = [(28.0, 16.0), (34.0, 22.0), (40.0, 24.0), (48.0, 32.0)];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Metrics {
@@ -149,18 +149,28 @@ pub const LIST_HEADER: f32 = glide_sdk::widget::TABLE_HEADER + 1.0;
 const TAGS_WIDTH: f32 = 140.0;
 const SORT_ARROW: f32 = 11.0 + theme::SP1;
 
+const CELL_PADDING: f32 = theme::SP3;
+
+const fn cell_style(column: ListColumn) -> TextStyle {
+    match column {
+        ListColumn::Size | ListColumn::Modified | ListColumn::Created | ListColumn::Permissions => TextStyle::NUM,
+        ListColumn::Kind | ListColumn::Tags => TextStyle::CALL,
+    }
+}
+
 #[must_use]
 pub fn column_width(column: ListColumn, lang: Lang) -> f32 {
-    let widest = |samples: &[String]| samples.iter().map(|sample| measure(sample, TextStyle::CAP)).fold(0.0, f32::max);
+    let style = cell_style(column);
+    let widest = |samples: &[String]| samples.iter().map(|sample| measure(sample, style)).fold(0.0, f32::max);
     let values = match column {
         ListColumn::Size => widest(&widest_sizes(lang)),
-        ListColumn::Modified | ListColumn::Created => widest(&widest_times(lang)),
+        ListColumn::Modified | ListColumn::Created => widest(&widest_days(lang)),
         ListColumn::Kind => widest(&FileCategory::ALL.map(|category| category.name(lang).to_string())),
-        ListColumn::Permissions => measure(&permissions_string(0o40777), TextStyle::CAP),
+        ListColumn::Permissions => measure(&permissions_string(0o40777), style),
         ListColumn::Tags => return TAGS_WIDTH,
     };
     let label = measure(&column_label(column, lang).to_uppercase(), TextStyle::MICRO) + SORT_ARROW;
-    (values.max(label) + 2.0 * theme::SP2 + 1.0).ceil()
+    (values.max(label) + 2.0 * CELL_PADDING + 1.0).ceil()
 }
 
 #[must_use]
@@ -329,11 +339,11 @@ fn list(app: &App) -> Element<'_, Message> {
         .enumerate()
         .skip(shown.start)
         .take(shown.len())
-        .map(|(index, entry)| list_row(app, entry, index % 2 == 1, now, &metrics, room, &columns));
+        .map(|(_, entry)| list_row(app, entry, now, &metrics, room, &columns));
     let body = std::iter::once(spacer(shown.start as f32 * metrics.row))
         .chain(rows)
         .chain(std::iter::once(spacer((total - shown.end) as f32 * metrics.row)));
-    let rows = Column::with_children(body).padding(Padding::from([LIST_PADDING, theme::SP2])).width(Fill);
+    let rows = Column::with_children(body).padding(Padding::ZERO.vertical(LIST_PADDING)).width(Fill);
     column![list_header(app), divider(&app.theme), files(app, rows)].into()
 }
 
@@ -357,7 +367,7 @@ fn header_cell<'a>(
     let active = sort.is_some() && sort == Some(app.sort.by);
     let mut cell = glide_sdk::widget::HeaderCell::new(&super::paint(&app.theme), label)
         .width(width)
-        .separated(column.is_some() || sort.is_none());
+        .end(column == Some(ListColumn::Size));
     if active {
         cell = cell.sort_mark(if app.sort.ascending { Icon::ArrowUp } else { Icon::ArrowDown });
     }
@@ -375,7 +385,7 @@ fn header_cell<'a>(
 
 fn column_value(app: &App, entry: &FileEntry, column: ListColumn, now: SystemTime) -> String {
     let lang = app.lang;
-    let time = |stamp: Option<SystemTime>| stamp.map_or_else(|| String::from("—"), |time| format_time(time, now, lang));
+    let time = |stamp: Option<SystemTime>| stamp.map_or_else(|| String::from("—"), |time| format_day(time, now, lang));
     match column {
         ListColumn::Size if entry.is_dir => String::from("—"),
         ListColumn::Size => format_bytes(entry.size, lang),
@@ -388,28 +398,28 @@ fn column_value(app: &App, entry: &FileEntry, column: ListColumn, now: SystemTim
 }
 
 fn list_row<'a>(
-    app: &'a App, entry: &'a FileEntry, stripe: bool, now: SystemTime, metrics: &Metrics, room: f32,
-    columns: &[(ListColumn, f32)],
+    app: &'a App, entry: &'a FileEntry, now: SystemTime, metrics: &Metrics, room: f32, columns: &[(ListColumn, f32)],
 ) -> Element<'a, Message> {
     let paint = paint(&app.theme);
     let selected = app.selected_level(&entry.path);
     let key = Hover::Entry(entry.path.clone());
     let hover = app.hover(&key);
     let secondary = item_ink(&paint, selected, true);
-    let cell = move |value: String, width: f32| {
-        container(text(value, TextStyle::CAP).color(secondary).wrapping(Wrapping::None))
-            .padding(Padding::from([0.0, theme::SP2]))
-            .width(Length::Fixed(width))
-            .clip(true)
+    let cell = move |value: String, width: f32, style: TextStyle, end: bool| {
+        let value = text(value, style).color(secondary).wrapping(Wrapping::None);
+        let value = container(value).width(Fill);
+        let value = if end { value.align_right(Fill) } else { value };
+        container(value).padding(Padding::ZERO.horizontal(CELL_PADDING)).width(Length::Fixed(width)).clip(true)
     };
 
     let editing = app.renaming.as_ref().is_some_and(|renaming| renaming.path == entry.path);
+    let style = if selected > 0.5 { TextStyle { weight: 560, ..TextStyle::CALL } } else { TextStyle::CALL };
     let title: Element<'a, Message> = if let Some(field) = rename_field(app, TextStyle::CALL).filter(|_| editing) {
         field
     } else {
         let room = room - marks_width(entry);
-        let shown = elide(&entry.name, room, TextStyle::CALL);
-        container(text(shown, TextStyle::CALL).wrapping(Wrapping::None)).max_width(room).clip(true).into()
+        let shown = elide(&entry.name, room, style);
+        container(text(shown, style).wrapping(Wrapping::None)).max_width(room).clip(true).into()
     };
     let mut name = row![file_icon(app, entry, metrics.row_icon), title].spacing(theme::SP2).align_y(Alignment::Center);
     if let Some(dots) = dots(entry) {
@@ -419,16 +429,19 @@ fn list_row<'a>(
         name = name.push(super::icon(Icon::Link, LINK_MARK, secondary));
     }
 
-    let mut cells = row![container(name).width(Fill).clip(true)].align_y(Alignment::Center);
+    let name = container(name).padding(Padding::ZERO.horizontal(CELL_PADDING)).width(Fill).clip(true);
+    let mut cells = row![name].align_y(Alignment::Center);
     for &(column, width) in columns {
-        cells = cells.push(cell(column_value(app, entry, column, now), width));
+        let value = column_value(app, entry, column, now);
+        cells = cells.push(cell(value, width, cell_style(column), column == ListColumn::Size));
     }
     if app.is_searching() {
-        let room = LOCATION_WIDTH - 2.0 * theme::SP2;
-        cells = cells.push(cell(elide(&location(app, entry), room, TextStyle::CAP), LOCATION_WIDTH));
+        let room = LOCATION_WIDTH - 2.0 * CELL_PADDING;
+        let shown = elide(&location(app, entry), room, TextStyle::CALL);
+        cells = cells.push(cell(shown, LOCATION_WIDTH, TextStyle::CALL, false));
     }
 
-    mouse_area(table_row(&paint, cells, selected, stripe, hover, metrics.row))
+    mouse_area(table_row(&paint, cells, selected, false, hover, metrics.row))
         .on_press(Message::Pressed(entry.path.clone()))
         .on_right_press(Message::Secondary(entry.path.clone()))
         .on_enter(Message::Hover(key.clone(), true))
@@ -458,7 +471,7 @@ fn location(app: &App, entry: &FileEntry) -> String {
 fn name_width(app: &App, metrics: &Metrics) -> f32 {
     let columns: f32 = sized_columns(app).iter().map(|&(_, width)| width).sum();
     let location = if app.is_searching() { LOCATION_WIDTH } else { 0.0 };
-    (app.pane.width - 5.0 * theme::SP2 - columns - location - metrics.row_icon).max(NAME_MIN)
+    (app.pane.width - 2.0 * CELL_PADDING - theme::SP2 - columns - location - metrics.row_icon).max(NAME_MIN)
 }
 
 #[must_use]
@@ -468,7 +481,7 @@ pub fn shown_columns(app: &App) -> Vec<ListColumn> {
 
 fn sized_columns(app: &App) -> Vec<(ListColumn, f32)> {
     let location = if app.is_searching() { LOCATION_WIDTH } else { 0.0 };
-    let mut room = app.pane.width - 4.0 * theme::SP2 - location - NAME_ROOM;
+    let mut room = app.pane.width - location - NAME_ROOM;
     app.columns
         .iter()
         .map(|&column| (column, column_width(column, app.lang)))

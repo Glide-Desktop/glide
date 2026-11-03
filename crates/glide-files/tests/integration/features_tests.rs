@@ -122,7 +122,8 @@ fn zoom_levels_scale_the_grid_and_list_geometry() {
     assert!(small.columns(1200.0) > normal.columns(1200.0));
     assert!(big.row > normal.row && small.row < normal.row);
     let (top, bottom) = big.span(ViewMode::List, 3, 800.0);
-    assert!((bottom - top - big.row - 8.0).abs() < f32::EPSILON);
+    assert!((bottom - top - big.row - 2.0 * glide_files::widgets::content::LIST_PADDING).abs() < f32::EPSILON);
+    assert_eq!((normal.row, normal.row_icon), (34.0, 22.0), "list rows follow table.data: 34 px, 22 px icons");
     assert_eq!(Metrics::new(99, 99), Metrics::new(5, 3), "levels clamp");
 }
 

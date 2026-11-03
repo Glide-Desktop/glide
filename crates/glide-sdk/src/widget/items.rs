@@ -56,14 +56,15 @@ pub fn table_row<'a, M: 'a>(
     let paint = *paint;
     let rest = if stripe { paint.fill_1() } else { Color::TRANSPARENT };
     let base = mix(rest, paint.acc_soft(), selected);
-    container(content)
-        .padding(Padding::from([0.0, SP2]))
+    let hover = hover * (1.0 - selected);
+    let cells = container(content).width(Fill).height(height - 1.0).align_y(Alignment::Center);
+    let rule = container(Space::new().width(Fill).height(1)).style(move |_| style::rounded(paint.line(), 0.0));
+    container(column![cells, rule])
         .width(Fill)
         .height(height)
-        .align_y(Alignment::Center)
         .style(move |_| container::Style {
             text_color: Some(item_ink(&paint, selected, false)),
-            ..style::rounded(paint.hover(base, hover), R2)
+            ..style::rounded(paint.hover(base, hover), 0.0)
         })
         .into()
 }

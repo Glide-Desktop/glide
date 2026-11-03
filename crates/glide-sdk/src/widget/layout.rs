@@ -842,15 +842,14 @@ pub fn inert<'a, M: 'a>(paint: &Paint, enabled: bool, content: impl Into<Element
     stack![content, cover].into()
 }
 
-pub const TABLE_HEADER: f32 = 26.0;
+pub const TABLE_HEADER: f32 = 32.0;
+pub const TABLE_ROW: f32 = component::CONTROL;
+pub const TABLE_CELL: f32 = SP3;
 
 #[must_use]
 pub fn table_header<'a, M: 'a>(paint: &Paint, cells: Vec<Element<'a, M>>) -> Element<'a, M> {
     let background = paint.fill_1();
-    let cells = iced::widget::Row::with_children(cells)
-        .padding(Padding::from([0.0, SP4]))
-        .height(TABLE_HEADER)
-        .align_y(Alignment::Center);
+    let cells = iced::widget::Row::with_children(cells).height(TABLE_HEADER).align_y(Alignment::Center);
     container(cells).width(Fill).style(move |_| style::rounded(background, 0.0)).into()
 }
 
@@ -859,7 +858,7 @@ pub struct HeaderCell<'a, M> {
     label: &'a str,
     mark: Option<Drawn<'a, M>>,
     width: Length,
-    separated: bool,
+    end: bool,
     lit: bool,
     target: bool,
     message: Option<M>,
@@ -873,7 +872,7 @@ impl<'a, M: Clone + 'a> HeaderCell<'a, M> {
             label,
             mark: None,
             width: Length::Fill,
-            separated: true,
+            end: false,
             lit: false,
             target: false,
             message: None,
@@ -901,8 +900,8 @@ impl<'a, M: Clone + 'a> HeaderCell<'a, M> {
     }
 
     #[must_use]
-    pub fn separated(mut self, separated: bool) -> Self {
-        self.separated = separated;
+    pub fn end(mut self, end: bool) -> Self {
+        self.end = end;
         self
     }
 
@@ -927,29 +926,29 @@ impl<'a, M: Clone + 'a> HeaderCell<'a, M> {
 
 impl<'a, M: Clone + 'a> From<HeaderCell<'a, M>> for Element<'a, M> {
     fn from(cell: HeaderCell<'a, M>) -> Self {
-        let HeaderCell { paint, label, mark, width, separated, lit, target, message } = cell;
+        let HeaderCell { paint, label, mark, width, end, lit, target, message } = cell;
+        let sorted = mark.is_some();
+        let rest = if sorted { paint.fg_1() } else { paint.fg_2() };
+        let ink = if lit || target { paint.acc_text() } else { rest };
         let mut content =
             row![text(label, TextStyle::MICRO).wrapping(Wrapping::None)].spacing(SP1).align_y(Alignment::Center);
         if let Some(mark) = mark {
-            content = content.push(Space::new().width(Fill)).push(mark(paint.fg_3()));
+            content = content.push(mark(ink));
         }
-        let padding = Padding::from([SP1, SP2]).left(if separated { SP2 } else { 0.0 });
-        let control = control(container(content).width(Fill).clip(true))
+        let content = container(content).width(Fill).clip(true);
+        let content = if end { content.align_right(Fill) } else { content };
+        let control = control(content)
             .on_press_maybe(message.clone())
-            .padding(padding)
-            .width(Fill);
+            .padding(Padding::from([SP1, TABLE_CELL]))
+            .height(TABLE_HEADER)
+            .width(width);
         let control = widgets::button(control, move |status| {
             let hovered = lit || target || matches!(status, control::Status::Hovered | control::Status::Pressed);
-            let ink = if hovered { paint.acc_text() } else { paint.fg_3() };
+            let ink = if hovered { paint.acc_text() } else { rest };
             let background = if target { paint.fill_2() } else { Color::TRANSPARENT };
-            style::flat(background, ink, glide_theme::shape::R1)
+            style::flat(background, ink, 0.0)
         });
-        let mut cell = row![].align_y(Alignment::Center).width(width);
-        if separated {
-            let rule = container(Space::new().width(1).height(14)).style(move |_| style::rounded(paint.line(), 0.0));
-            cell = cell.push(rule);
-        }
-        cell.push(activatable(&paint, control, glide_theme::shape::R1, message)).into()
+        activatable(&paint, control, 0.0, message)
     }
 }
 

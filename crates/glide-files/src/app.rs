@@ -3327,7 +3327,7 @@ impl App {
         }
         let from = self.content_point(start.x, start.y);
         let to = self.content_point(at.x, at.y);
-        let width = self.pane.width - if self.view == ViewMode::List { 16.0 } else { 0.0 };
+        let width = self.pane.width;
         let hits = self.metrics().entries_in(self.view, width, self.entries.len(), from, to);
         let mut selection = self.band.as_ref().map(|band| band.base.clone()).unwrap_or_default();
         selection.extend(hits.into_iter().map(|index| self.entries[index].path.clone()));

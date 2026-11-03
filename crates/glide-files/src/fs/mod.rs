@@ -15,8 +15,8 @@ pub mod watch;
 
 pub use actions::{Codes, DesktopApp, Extensions, Offer, Roots, Run, Target};
 pub use entry::{
-    FileCategory, FileEntry, LocalTime, days_from_civil, format_bytes, format_time, permissions_string, widest_sizes,
-    widest_times,
+    FileCategory, FileEntry, LocalTime, days_from_civil, format_bytes, format_day, format_time, permissions_string,
+    widest_days, widest_sizes, widest_times,
 };
 pub use listing::{SortBy, SortConfig, natural_cmp, read_directory, search_recursive, sort_entries};
 pub use operations::{
