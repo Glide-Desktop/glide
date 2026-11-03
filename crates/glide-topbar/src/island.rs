@@ -2188,7 +2188,7 @@ fn push_surface<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>,
     }
 }
 
-fn nine_slices(rect: LocalRect, corner: i32) -> Vec<(Rectangle<f64, Logical>, LocalRect)> {
+pub(super) fn nine_slices(rect: LocalRect, corner: i32) -> Vec<(Rectangle<f64, Logical>, LocalRect)> {
     let spans = |at: i32, length: i32| {
         [
             (0, corner, at, corner),

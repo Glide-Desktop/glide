@@ -1723,7 +1723,18 @@ impl Topbar {
         };
         let battery = self.system_status.battery_pct.map(|_| panels::battery_head_line(&self.system_status));
         let revs = (self.status_rev, self.qs_panel.rev, battery.unwrap_or_default());
-        (revs, flags, motion, hovered, self.qs_shape(Some(painter)))
+        (revs, flags, motion, hovered, QsShape { drawer: self.drawer_full(), ..self.qs_shape(Some(painter)) })
+    }
+
+    fn drawer_full(&self) -> Option<(Drawer, i32)> {
+        let drawer = self.drawer_shown?;
+        Some((drawer, qs_drawer_height(self.qs_panel.devices(drawer).len())))
+    }
+
+    fn drawer_hidden(&self) -> i32 {
+        let full = self.drawer_full().map_or(0, |(_, full)| full);
+        let visible = self.drawer_extent_now().map_or(0, |(_, visible)| visible);
+        (full - visible).max(0)
     }
 
     fn output_label(&self) -> String {
@@ -3198,16 +3209,27 @@ fn push_placed<R>(
 ) where
     R: ShellRenderer,
 {
+    push_placed_from(renderer, buffer, placed, None, scale, elements);
+}
+
+fn push_placed_from<R>(
+    renderer: &mut R, buffer: &MemoryRenderBuffer, placed: Placed, origin: Option<Point<i32, Logical>>,
+    scale: Scale<f64>, elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) where
+    R: ShellRenderer,
+{
     let progress = placed.progress.clamp(0.0, 1.0);
-    if progress <= 0.0 || placed.alpha <= 0.0 {
+    if progress <= 0.0 || placed.alpha <= 0.0 || placed.element.size.w <= 0 || placed.element.size.h <= 0 {
         return;
     }
     let alpha = (placed.alpha * progress as f32).clamp(0.0, 1.0);
+    let crop = origin.map(|at| Rectangle::new(at.to_f64(), placed.element.size.to_f64()));
     let (position, src, size) = if progress >= 1.0 {
-        (placed.element.loc.to_f64(), None, None)
+        (placed.element.loc.to_f64(), crop, crop.map(|_| placed.element.size))
     } else {
         let placement = popup_placement(placed.popup, placed.element, progress);
-        (placement.position, Some(Rectangle::from_size(placed.element.size.to_f64())), Some(placement.size))
+        let src = crop.unwrap_or_else(|| Rectangle::from_size(placed.element.size.to_f64()));
+        (placement.position, Some(src), Some(placement.size))
     };
     if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
         renderer,
@@ -4075,10 +4097,29 @@ fn push_quick_settings<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<
     }
     let (renderer, _, _, scale, output_scale, elements) = frame.parts();
     let theme = &topbar.theme;
-    if let Some(background) = topbar.qs_bg_cache.resolve((rect.size.w, rect.size.h), output_scale, || {
-        draw_qs_background((rect.size.w, rect.size.h), theme, output_scale)
-    }) {
-        push_popup_buffer(renderer, background, rect, rect, reveal, scale, elements);
+    let corner = QS_RADIUS.ceil() as i32 + 1;
+    let sliced = reveal >= 1.0 && rect.size.w >= corner * 2 && rect.size.h >= corner * 2;
+    let size = if sliced { (corner * 2 + 1, corner * 2 + 1) } else { (rect.size.w, rect.size.h) };
+    if let Some(background) =
+        topbar.qs_bg_cache.resolve(size, output_scale, || draw_qs_background(size, theme, output_scale))
+    {
+        if sliced {
+            for (src, dst) in island::nine_slices(rect, corner) {
+                if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    dst.loc.to_f64().to_physical(scale),
+                    background,
+                    None,
+                    Some(src),
+                    Some(dst.size),
+                    Kind::Unspecified,
+                ) {
+                    elements.push(element);
+                }
+            }
+        } else {
+            push_popup_buffer(renderer, background, rect, rect, reveal, scale, elements);
+        }
     }
     push_rounded_popup_shadow(topbar, renderer, (rect, QS_RADIUS), reveal, scale, output_scale, elements);
 }
@@ -4100,33 +4141,41 @@ fn push_qs_main<R: ShellRenderer>(
     let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
     let key = topbar.qs_main_key(painter);
     let (_, flags, motion, hovered, shape) = key;
+    let hidden = topbar.drawer_hidden();
     let (output, input) = (topbar.output_label(), topbar.input_label());
     let theme = &topbar.theme;
     let status = &topbar.system_status;
     let panel = &topbar.qs_panel;
+    let geometry = qs_geometry(&shape);
+    let full_h = rect.size.h + hidden;
     let Some(buffer) = topbar.qs_cache.resolve(key, output_scale, || {
         let ctx = QsRenderContext { painter, theme, hovered };
-        let mut canvas = Canvas::new(rect.size.w, rect.size.h, output_scale)?.with_icons(Some(icons));
-        let geometry = qs_geometry(&shape);
-        let draw = QsDraw { status, panel, geometry, flags, motion, labels: (&output, &input) };
+        let mut canvas = Canvas::new(rect.size.w, full_h, output_scale)?.with_icons(Some(icons));
+        let draw = QsDraw { status, panel, geometry: geometry.clone(), flags, motion, labels: (&output, &input) };
         draw_quick_settings(&mut canvas, &ctx, &draw);
         Some(canvas.finish())
     }) else {
         return;
     };
     let (shift, alpha) = qs_main_motion(slide);
-    push_placed(
-        renderer,
-        buffer,
-        Placed {
-            popup: rect,
-            element: Rectangle::new(Point::from((rect.loc.x - shift, rect.loc.y)), rect.size),
-            progress: reveal,
-            alpha,
-        },
-        scale,
-        elements,
-    );
+    let left = rect.loc.x - shift;
+    for (from, to, height) in drawer_bands(geometry.drawer.map(|area| area.rect), hidden, full_h) {
+        let element = Rectangle::new(Point::from((left, rect.loc.y + to)), Size::from((rect.size.w, height)));
+        let placed = Placed { popup: rect, element, progress: reveal, alpha };
+        let origin = (hidden > 0).then(|| Point::from((0, from)));
+        push_placed_from(renderer, buffer, placed, origin, scale, elements);
+    }
+}
+
+fn drawer_bands(drawer: Option<LocalRect>, hidden: i32, full_h: i32) -> Vec<(i32, i32, i32)> {
+    match drawer.filter(|_| hidden > 0) {
+        Some(area) => {
+            let visible_end = area.loc.y + area.size.h - hidden;
+            let below = area.loc.y + area.size.h;
+            vec![(0, 0, visible_end), (below, visible_end, full_h - below)]
+        }
+        None => vec![(0, 0, full_h)],
+    }
 }
 
 fn push_qs_power<R: ShellRenderer>(
@@ -6987,6 +7036,33 @@ mod tests {
         status.battery = Some(crate::system_info::BatteryInfo { minutes: Some(80), ..battery });
         bar.set_system_status(status);
         assert_ne!(bar.qs_main_key(&painter()), before, "the estimate is drawn on the main view");
+    }
+
+    #[test]
+    fn animating_the_qs_drawer_does_not_change_the_cache_key() {
+        let mut bar = quick_settings();
+        if motion::t2().is_zero() {
+            return;
+        }
+        assert!(bar.toggle_drawer(Drawer::Output));
+        let start = std::time::Instant::now();
+        let early = glide_ui::clock::FramePass::enter(start + motion::t2() / 4);
+        let (key, hidden) = (bar.qs_main_key(&painter()), bar.drawer_hidden());
+        drop(early);
+        let _late = glide_ui::clock::FramePass::enter(start + motion::t2() * 3 / 4);
+        assert_eq!(bar.qs_main_key(&painter()), key, "the drawer is revealed by cropping one raster");
+        assert!(hidden > bar.drawer_hidden(), "less of the drawer is hidden as it opens");
+    }
+
+    #[test]
+    fn drawer_bands_skip_the_hidden_part_of_the_drawer() {
+        assert_eq!(drawer_bands(None, 0, 500), vec![(0, 0, 500)]);
+        let drawer = Some(local_rect(25, 200, 302, 120));
+        assert_eq!(drawer_bands(drawer, 0, 500), vec![(0, 0, 500)]);
+        let bands = drawer_bands(drawer, 40, 500);
+        assert_eq!(bands, vec![(0, 0, 280), (320, 280, 180)]);
+        let shown: i32 = bands.iter().map(|(_, _, height)| height).sum();
+        assert_eq!(shown, 500 - 40);
     }
 
     #[test]
