@@ -72,16 +72,47 @@ impl Pointer {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default)]
+pub struct Sketch {
+    cache: canvas::Cache,
+    key: std::cell::Cell<Option<u64>>,
+}
+
+impl Sketch {
+    fn draw(&self, renderer: &Renderer, size: Size, key: &[f32], draw: impl FnOnce(&mut Frame)) -> Vec<Geometry> {
+        let key = fingerprint(key, size);
+        if self.key.get() != Some(key) {
+            self.cache.clear();
+            self.key.set(Some(key));
+        }
+        vec![self.cache.draw(renderer, size, draw)]
+    }
+}
+
+fn fingerprint(values: &[f32], size: Size) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    for value in values.iter().chain([size.width, size.height].iter()) {
+        value.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn colour_bits(color: Color) -> [f32; 4] {
+    [color.r, color.g, color.b, color.a]
+}
+
+#[derive(Debug)]
 pub struct Toggle {
     pointer: Pointer,
     value: Motion,
     started: bool,
+    sketch: Sketch,
 }
 
 impl Default for Toggle {
     fn default() -> Self {
-        Self { pointer: Pointer::default(), value: Motion::at(0.0), started: false }
+        Self { pointer: Pointer::default(), value: Motion::at(0.0), started: false, sketch: Sketch::default() }
     }
 }
 
@@ -143,13 +174,11 @@ impl<M> canvas::Program<M> for Switch {
         let paint = &self.paint;
         let thumb_on = state.value.value(Speed::OVERSHOOT);
         let color_on = state.value.value(Speed::COLOR);
-        let mut frame = Frame::new(renderer, bounds.size());
         let size = self.size.track();
         let origin = Point::new((bounds.width - size.width) / 2.0, (bounds.height - size.height) / 2.0);
         let off = if self.enabled { paint.fill_3() } else { paint.fill_2() };
         let on = if self.enabled { paint.acc_bg() } else { paint.acc_bg().scale_alpha(0.42) };
         let track = paint.layer(mix(off, on, color_on), state.pointer.layer());
-        frame.fill(&Path::rounded_rectangle(origin, size, (size.height / 2.0).into()), track);
         let inset = (size.height - size.height * 0.77).max(2.0) / 2.0;
         let radius = size.height / 2.0 - inset;
         let travel = size.width - 2.0 * (inset + radius);
@@ -157,21 +186,26 @@ impl<M> canvas::Program<M> for Switch {
         let x = origin.x + inset + radius + travel * thumb_on;
         let center = Point::new(x, origin.y + size.height / 2.0);
         let thumb = mix(to_iced(paint.tokens.switch_thumb()), Color::WHITE, color_on).scale_alpha(paint.alpha);
-        if stretch > 0.01 {
-            let width = 2.0 * radius + stretch;
-            let left = (x - radius - stretch * thumb_on).max(origin.x + inset);
-            frame.fill(
-                &Path::rounded_rectangle(
-                    Point::new(left, center.y - radius),
-                    Size::new(width, 2.0 * radius),
-                    radius.into(),
-                ),
-                thumb,
-            );
-        } else {
-            shadowed_circle(&mut frame, center, radius, thumb, 0.18 * paint.alpha);
-        }
-        vec![frame.into_geometry()]
+        let [tr, tg, tb, ta] = colour_bits(track);
+        let [hr, hg, hb, ha] = colour_bits(thumb);
+        let key = [thumb_on, stretch, size.width, size.height, tr, tg, tb, ta, hr, hg, hb, ha, paint.alpha];
+        state.sketch.draw(renderer, bounds.size(), &key, |frame| {
+            frame.fill(&Path::rounded_rectangle(origin, size, (size.height / 2.0).into()), track);
+            if stretch > 0.01 {
+                let width = 2.0 * radius + stretch;
+                let left = (x - radius - stretch * thumb_on).max(origin.x + inset);
+                frame.fill(
+                    &Path::rounded_rectangle(
+                        Point::new(left, center.y - radius),
+                        Size::new(width, 2.0 * radius),
+                        radius.into(),
+                    ),
+                    thumb,
+                );
+            } else {
+                shadowed_circle(frame, center, radius, thumb, 0.18 * paint.alpha);
+            }
+        })
     }
 
     fn mouse_interaction(&self, _: &Toggle, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
@@ -240,13 +274,35 @@ impl<M> canvas::Program<M> for CheckBox {
         let paint = &self.paint;
         let pop = state.value.value(Speed::OVERSHOOT);
         let fill = state.value.value(Speed::COLOR);
-        let mut frame = Frame::new(renderer, bounds.size());
+        let layer = state.pointer.layer();
+        let check = match self.check {
+            Check::Off => 0.0,
+            Check::Mixed => 2.0,
+            Check::On => 1.0,
+        };
+        let flags = [f32::from(u8::from(self.round)), f32::from(u8::from(self.enabled)), check];
+        let colours =
+            [paint.acc_bg(), paint.view_bg(), paint.fill_3(), paint.line_2(), paint.acc_fg()].map(colour_bits);
+        let mut key = vec![pop, fill, layer, paint.alpha];
+        key.extend(flags);
+        key.extend(colours.iter().flatten());
+        state.sketch.draw(renderer, bounds.size(), &key, |frame| self.paint_check(frame, bounds, (pop, fill, layer)))
+    }
+
+    fn mouse_interaction(&self, _: &Toggle, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        if self.enabled && cursor.is_over(bounds) { mouse::Interaction::Pointer } else { mouse::Interaction::default() }
+    }
+}
+
+impl CheckBox {
+    fn paint_check(&self, frame: &mut Frame, bounds: Rectangle, (pop, fill, layer): (f32, f32, f32)) {
+        let paint = &self.paint;
         let side = CHECK.min(bounds.width).min(bounds.height);
         let origin = Point::new((bounds.width - side) / 2.0, (bounds.height - side) / 2.0);
         let radius = if self.round { side / 2.0 } else { R2 / 2.0 + 1.0 };
-        let off = paint.layer(paint.view_bg(), state.pointer.layer());
+        let off = paint.layer(paint.view_bg(), layer);
         let on = if self.enabled { paint.acc_bg() } else { paint.fill_3() };
-        let on = paint.layer(on, state.pointer.layer());
+        let on = paint.layer(on, layer);
         let outer = Path::rounded_rectangle(origin, Size::new(side, side), radius.into());
         if self.round {
             frame.fill(&outer, mix(off, on, fill));
@@ -269,7 +325,7 @@ impl<M> canvas::Program<M> for CheckBox {
                 ),
                 ring,
             );
-            return vec![frame.into_geometry()];
+            return;
         }
         frame.fill(&outer, mix(off, on, fill));
         let ring = Stroke::default().with_color(paint.line_2().scale_alpha(1.0 - fill)).with_width(1.0);
@@ -302,11 +358,6 @@ impl<M> canvas::Program<M> for CheckBox {
                 frame.stroke(&mark, stroke);
             });
         }
-        vec![frame.into_geometry()]
-    }
-
-    fn mouse_interaction(&self, _: &Toggle, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
-        if self.enabled && cursor.is_over(bounds) { mouse::Interaction::Pointer } else { mouse::Interaction::default() }
     }
 }
 
@@ -607,24 +658,26 @@ impl<M> canvas::Program<M> for Chevron {
     fn draw(
         &self, state: &Toggle, renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
         let turn = state.value.value(Speed::SLIDE);
-        frame.with_save(|frame| {
-            frame.translate(Vector::new(bounds.width / 2.0, bounds.height / 2.0));
-            frame.rotate(Radians(std::f32::consts::FRAC_PI_2 * turn));
-            let mark = Path::new(|path| {
-                path.move_to(Point::new(-1.8, -4.0));
-                path.line_to(Point::new(2.2, 0.0));
-                path.line_to(Point::new(-1.8, 4.0));
+        let ink = self.paint.fg_3();
+        let [r, g, b, a] = colour_bits(ink);
+        state.sketch.draw(renderer, bounds.size(), &[turn, r, g, b, a], |frame| {
+            frame.with_save(|frame| {
+                frame.translate(Vector::new(bounds.width / 2.0, bounds.height / 2.0));
+                frame.rotate(Radians(std::f32::consts::FRAC_PI_2 * turn));
+                let mark = Path::new(|path| {
+                    path.move_to(Point::new(-1.8, -4.0));
+                    path.line_to(Point::new(2.2, 0.0));
+                    path.line_to(Point::new(-1.8, 4.0));
+                });
+                let stroke = Stroke::default()
+                    .with_color(ink)
+                    .with_width(1.6)
+                    .with_line_cap(LineCap::Round)
+                    .with_line_join(canvas::LineJoin::Round);
+                frame.stroke(&mark, stroke);
             });
-            let stroke = Stroke::default()
-                .with_color(self.paint.fg_3())
-                .with_width(1.6)
-                .with_line_cap(LineCap::Round)
-                .with_line_join(canvas::LineJoin::Round);
-            frame.stroke(&mark, stroke);
-        });
-        vec![frame.into_geometry()]
+        })
     }
 }
 
@@ -683,6 +736,25 @@ pub fn sized_spinner<'a, M: 'a>(paint: &Paint, side: f32) -> Element<'a, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sketch_tessellates_again_only_when_what_it_draws_changes() {
+        let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
+        let sketch = Sketch::default();
+        let drawn = std::cell::Cell::new(0);
+        let size = Size::new(44.0, 26.0);
+        let draw = |key: &[f32]| {
+            let _ = sketch.draw(&renderer, size, key, |frame| {
+                drawn.set(drawn.get() + 1);
+                frame.fill(&Path::circle(Point::new(10.0, 10.0), 4.0), Color::WHITE);
+            });
+        };
+        draw(&[0.0, 1.0]);
+        draw(&[0.0, 1.0]);
+        assert_eq!(drawn.get(), 1, "a window redraw for something else reuses the geometry");
+        draw(&[0.5, 1.0]);
+        assert_eq!(drawn.get(), 2);
+    }
 
     fn slider(step: f32) -> Slider<'static, f32> {
         Slider {
