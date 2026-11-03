@@ -30,11 +30,6 @@ impl WlrLayerShellHandler for GlideState {
             tracing::warn!(?err, "failed to map layer surface");
             return;
         }
-
-        if !self.screen_locked() && layer.can_receive_keyboard_focus() {
-            self.layer_focus = Some(layer);
-            self.apply_keyboard_focus();
-        }
         self.queue_redraw();
     }
 
@@ -46,15 +41,43 @@ impl WlrLayerShellHandler for GlideState {
 
         if let Some((layer, output)) = layer_and_output {
             layer_map_for_output(&output).unmap_layer(&layer);
-
+            self.session.mapped_layers.remove(layer.wl_surface());
             if self.layer_focus.as_ref() == Some(&layer) {
                 self.layer_focus = None;
-                self.apply_keyboard_focus();
             }
-
             self.sync_layout_outputs();
             self.reconcile_space();
         }
+        self.session.mapped_layers.retain(smithay::utils::IsAlive::alive);
+    }
+}
+
+impl GlideState {
+    fn sync_layer_focus(&mut self, layer: &LayerSurface) {
+        let surface = layer.wl_surface();
+        let mapped =
+            smithay::backend::renderer::utils::with_renderer_surface_state(surface, |state| state.buffer().is_some())
+                .unwrap_or(false);
+        let was_mapped = self.session.mapped_layers.contains(surface);
+        if mapped == was_mapped {
+            self.apply_keyboard_focus();
+            return;
+        }
+        if mapped {
+            self.session.mapped_layers.insert(surface.clone());
+            if !self.screen_locked()
+                && matches!(layer.layer(), Layer::Top | Layer::Overlay)
+                && layer.can_receive_keyboard_focus()
+            {
+                self.layer_focus = Some(layer.clone());
+            }
+        } else {
+            self.session.mapped_layers.remove(surface);
+            if self.layer_focus.as_ref() == Some(layer) {
+                self.layer_focus = None;
+            }
+        }
+        self.reconcile_space();
     }
 }
 
@@ -76,7 +99,8 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) -> bool {
 
     let mut map = layer_map_for_output(&output);
     let changed = map.arrange();
-    if !initial_configure_sent && let Some(layer) = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) {
+    let layer = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL).cloned();
+    if !initial_configure_sent && let Some(layer) = layer.as_ref() {
         layer.layer_surface().send_configure();
     }
     drop(map);
@@ -84,6 +108,9 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) -> bool {
     if changed {
         state.sync_layout_outputs();
         state.reconcile_space();
+    }
+    if let Some(layer) = layer {
+        state.sync_layer_focus(&layer);
     }
 
     true

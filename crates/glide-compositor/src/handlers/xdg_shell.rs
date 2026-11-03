@@ -80,6 +80,7 @@ impl XdgShellHandler for GlideState {
             handle.send_done();
         }
         self.ipc_subscribers.broadcast(&glide_ipc::Event::AppIdChanged { id: id.as_u64(), app_id });
+        self.layout.set_app(id, self.dock_key(id));
 
         self.refresh_topbar();
         if self.refresh_dock() {
@@ -91,7 +92,9 @@ impl XdgShellHandler for GlideState {
         let Some(id) = self.window_id_for_surface(surface.wl_surface()) else {
             return;
         };
-        let Some(parent) = surface.parent().and_then(|parent| self.window_id_for_surface(&parent)) else {
+        let parent = surface.parent().and_then(|parent| self.window_id_for_surface(&parent));
+        self.layout.set_parent(id, parent);
+        let Some(parent) = parent else {
             return;
         };
         let Some(target) = self.layout.window_state(parent).map(|s| s.workspace_id) else {
@@ -369,9 +372,18 @@ pub fn handle_commit(state: &mut GlideState, surface: &WlSurface) {
                 handle.send_done();
             }
 
-            if state.layout.update_window_size(id, layout_size(&window)) {
-                state.begin_window_open_animation(id, &window);
+            let placed = state.layout.update_window_size(id, layout_size(&window));
+            let has_buffer = smithay::backend::renderer::utils::with_renderer_surface_state(surface, |surface| {
+                surface.buffer().is_some()
+            })
+            .unwrap_or(false);
+            let mapping = has_buffer && !state.layout.is_mapped(id);
+            if mapping {
+                state.on_window_mapped(id);
+            }
+            if placed || mapping {
                 state.reconcile_space();
+                state.begin_window_open_animation(id, &window);
             } else {
                 state.refresh_overview();
             }
@@ -431,12 +443,14 @@ impl XdgDialogHandler for GlideState {
     fn dialog_hint_changed(&mut self, toplevel: ToplevelSurface, hint: ToplevelDialogHint) {
         tracing::info!(?hint, "toplevel dialog hint changed");
 
-        if let Some(id) = self.window_id_for_surface(toplevel.wl_surface()) {
-            if hint == ToplevelDialogHint::Modal {
-                self.session.modal_windows.insert(id);
-            } else {
-                self.session.modal_windows.remove(&id);
-            }
+        if let Some(id) = self.window_id_for_surface(toplevel.wl_surface())
+            && self.layout.set_modal(id, hint == ToplevelDialogHint::Modal)
+            && hint == ToplevelDialogHint::Modal
+            && let Some(parent) = self.layout.window_state(id).and_then(|state| state.parent)
+            && self.layout.focused_window() == Some(parent)
+            && self.layout.focus_window(id)
+        {
+            self.reconcile_space();
         }
 
         if !matches!(hint, ToplevelDialogHint::Dialog | ToplevelDialogHint::Modal) {

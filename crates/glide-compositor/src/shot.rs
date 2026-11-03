@@ -728,7 +728,8 @@ impl GlideState {
             return;
         }
         let window = self
-            .focus_history
+            .layout
+            .recent_windows()
             .iter()
             .filter_map(|id| self.window_map.get(id))
             .find(|window| self.space.element_location(window).is_some())

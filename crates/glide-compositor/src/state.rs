@@ -5,7 +5,9 @@ use std::{
 };
 
 use smithay::{
-    desktop::{LayerSurface, PopupManager, Space, WindowSurfaceType, layer_map_for_output},
+    desktop::{
+        LayerSurface, PopupKind, PopupManager, Space, WindowSurfaceType, find_popup_root_surface, layer_map_for_output,
+    },
     input::{
         Seat, SeatState,
         keyboard::{Keycode, XkbConfig},
@@ -325,7 +327,7 @@ pub struct GlideState {
     pub switcher_names: HashMap<String, Option<String>>,
     pub power_dialog: Option<crate::power_dialog::PowerDialog>,
     pub power_countdown: Option<smithay::reexports::calloop::RegistrationToken>,
-    pub focus_history: Vec<glide_layout::WindowId>,
+    pub announced_focus: Option<Option<glide_layout::WindowId>>,
     pub ipc_subscribers: crate::ipc::IpcSubscribers,
 
     pub pending_screenshot: Option<Output>,
@@ -373,8 +375,11 @@ pub struct SessionServices {
     pub logind: Option<crate::logind::Handle>,
     pub screensaver: Option<crate::screensaver::Handle>,
     pub shell_bus: Option<crate::shell_bus::Handle>,
-    pub launch_intent: Option<std::time::Instant>,
+    pub launch_intent: crate::focus_policy::LaunchIntents,
     pub last_user_input: Option<std::time::Instant>,
+    pub last_key_press: Option<std::time::Instant>,
+    pub activated_before_map: HashSet<glide_layout::WindowId>,
+    pub mapped_layers: HashSet<WlSurface>,
     pub blank_fade: Option<std::time::Instant>,
     pub screenshot_waiters: Vec<std::os::unix::net::UnixStream>,
     pub picker: Option<crate::screen_picker::Picker>,
@@ -386,7 +391,6 @@ pub struct SessionServices {
     pub search_providers_started: bool,
     pub launch_origin: Option<crate::launcher::LaunchOrigin>,
     pub quicklists: HashMap<String, crate::launcher_entry::Quicklist>,
-    pub modal_windows: std::collections::HashSet<glide_layout::WindowId>,
     pub framed_pids: crate::framed::FramedClients,
     pub capture: Option<crate::screen_picker::Capture>,
     pub qr_scan: Option<crate::qr_scan::Scan>,
@@ -492,7 +496,7 @@ impl GlideState {
             switcher_names: HashMap::new(),
             power_dialog: None,
             power_countdown: None,
-            focus_history: Vec::new(),
+            announced_focus: None,
             ipc_subscribers: crate::ipc::IpcSubscribers::default(),
             pending_screenshot: None,
             announced_workspace: None,
@@ -583,7 +587,7 @@ impl GlideState {
         let visible: Vec<glide_layout::WindowState> = self.layout.visible_windows().collect();
         let visible_ids: HashSet<glide_layout::WindowId> = visible.iter().map(|state| state.id).collect();
 
-        let focused = self.layout.focused_window();
+        let focused = self.layout.focused_window().filter(|_| self.keyboard_layer().is_none());
 
         let mapped: Vec<GlideWindow> = self.space.elements().cloned().collect();
         for window in mapped {
@@ -601,7 +605,11 @@ impl GlideState {
                 continue;
             }
             if let Some(state) = self.layout.window_state(*id) {
-                Self::configure_hidden_window(window, state);
+                if state.mapped {
+                    Self::configure_hidden_window(window, state);
+                } else {
+                    Self::apply_window_state(window, state, false, self.layout.work_area_for_window(*id));
+                }
             }
         }
 
@@ -749,50 +757,107 @@ impl GlideState {
             }
             return;
         }
-        if self.layer_focus.as_ref().is_some_and(|l| !l.alive()) {
+        if self.layer_focus.as_ref().is_some_and(|layer| !self.layer_takes_keyboard(layer)) {
             self.layer_focus = None;
         }
 
-        let target = self.layer_focus.as_ref().map(|layer| layer.wl_surface().clone()).or_else(|| {
-            self.layout
-                .focused_window()
+        let layer = self.keyboard_layer();
+        let focused_window = layer.is_none().then(|| self.layout.focused_window()).flatten();
+        let target = layer.map(|layer| layer.wl_surface().clone()).or_else(|| {
+            focused_window
+                .filter(|&id| self.layout.is_mapped(id))
                 .and_then(|id| self.window_map.get(&id))
                 .map(|window| window_surface(window).clone())
         });
 
-        if self.layer_focus.is_none()
-            && let Some(id) = self.layout.focused_window()
-            && self.focus_history.first() != Some(&id)
+        let keyboard = self.seat.get_keyboard().expect("a keyboard was added in GlideState::new");
+        let current_focus = keyboard.current_focus();
+        let current_root = current_focus.as_ref().map(|surface| self.popup_root(surface));
+        if keyboard.is_grabbed() && current_root.is_some() && current_root == target {
+            self.sync_layout_scope();
+            return;
+        }
+        if keyboard.is_grabbed()
+            && let Some(root) = current_root.as_ref().filter(|root| current_focus.as_ref() != Some(*root))
         {
-            self.focus_history.retain(|seen| *seen != id);
-            self.focus_history.insert(0, id);
+            self.end_popup_grab(root);
         }
 
-        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-        let keyboard = self.seat.get_keyboard().expect("a keyboard was added in GlideState::new");
-
-        let current_focus = keyboard.current_focus();
+        if self.announced_focus != Some(focused_window) {
+            self.announced_focus = Some(focused_window);
+            self.ipc_subscribers
+                .broadcast(&glide_ipc::Event::FocusChanged { id: focused_window.map(glide_layout::WindowId::as_u64) });
+        }
         if current_focus != target {
             self.suppressed_keys.clear();
-            let focused_window_id = self.layer_focus.is_none().then(|| self.layout.focused_window()).flatten();
-            self.ipc_subscribers.broadcast(&glide_ipc::Event::FocusChanged {
-                id: focused_window_id.map(glide_layout::WindowId::as_u64),
-            });
             let client = |surface: Option<&WlSurface>| {
                 surface.and_then(smithay::reexports::wayland_server::Resource::client).map(|client| client.id())
             };
-            if client(current_focus.as_ref()) != client(target.as_ref()) {
-                let app = focused_window_id.and_then(|id| self.dock_key(id));
+            if client(current_root.as_ref()) != client(target.as_ref()) {
+                let app = focused_window.and_then(|id| self.dock_key(id));
                 tracing::info!(
                     app = app.as_deref().unwrap_or("-"),
-                    layer = self.layer_focus.is_some(),
+                    layer = target.is_some() && focused_window.is_none(),
                     "keyboard focus moved to another client"
                 );
             }
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            keyboard.set_focus(self, target, serial);
         }
-
-        keyboard.set_focus(self, target, serial);
         self.sync_layout_scope();
+    }
+
+    #[must_use]
+    pub fn keyboard_layer(&self) -> Option<LayerSurface> {
+        self.exclusive_layer_surface()
+            .or_else(|| self.layer_focus.clone().filter(|layer| self.layer_takes_keyboard(layer)))
+    }
+
+    fn layer_takes_keyboard(&self, layer: &LayerSurface) -> bool {
+        layer.alive() && layer.can_receive_keyboard_focus() && self.session.mapped_layers.contains(layer.wl_surface())
+    }
+
+    #[must_use]
+    pub fn toplevel_window_of(&self, surface: &WlSurface) -> Option<glide_layout::WindowId> {
+        let subsurface_root = |surface: &WlSurface| {
+            let mut root = surface.clone();
+            while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+                root = parent;
+            }
+            root
+        };
+        let root = subsurface_root(&self.popup_root(&subsurface_root(surface)));
+        self.window_id_for_surface(&root)
+    }
+
+    fn popup_root(&self, surface: &WlSurface) -> WlSurface {
+        self.popups
+            .find_popup(surface)
+            .and_then(|popup| find_popup_root_surface(&popup).ok())
+            .unwrap_or_else(|| surface.clone())
+    }
+
+    fn end_popup_grab(&mut self, root: &WlSurface) {
+        let popups: Vec<PopupKind> = PopupManager::popups_for_surface(root).map(|(popup, _)| popup).collect();
+        for popup in popups.iter().rev() {
+            let _ = PopupManager::dismiss_popup(root, popup);
+        }
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.unset_grab(self);
+        }
+        if let Some(pointer) = self.seat.get_pointer()
+            && pointer.is_grabbed()
+            && pointer
+                .grab_start_data()
+                .and_then(|start| start.focus.map(|(focus, _)| focus))
+                .and_then(|focus| {
+                    smithay::wayland::seat::WaylandFocus::wl_surface(&focus).map(std::borrow::Cow::into_owned)
+                })
+                .is_some_and(|surface| self.popup_root(&surface) == *root)
+        {
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            pointer.unset_grab(self, serial, smithay::backend::input::InputTime::now());
+        }
     }
 
     #[expect(clippy::needless_pass_by_value, reason = "window ownership matches track_window caller design")]
@@ -804,16 +869,12 @@ impl GlideState {
             self.layout.set_placement_anchor(glide_layout::Point::new(at.x, at.y));
         }
 
-        if let Some(parent) = parent {
-            self.layout.add_window_with_parent(id, size, parent);
-        } else {
-            self.layout.add_window(id, size);
-        }
-
+        self.layout.admit_window(id, size, parent);
         self.layout.set_window_insets(id, glide_layout::Insets::NONE);
 
         self.window_map.insert(id, window.clone());
         self.window_to_id.insert(window.clone(), id);
+        self.layout.set_app(id, self.dock_key(id));
         self.windows_awaiting_open_animation.insert(id);
         self.ipc_subscribers.broadcast(&glide_ipc::Event::WindowOpened { id: id.as_u64() });
 
@@ -844,8 +905,8 @@ impl GlideState {
         self.window_to_id.remove(window);
         self.window_map.remove(&id);
         self.windows_awaiting_open_animation.remove(&id);
+        self.session.activated_before_map.remove(&id);
         self.session.tiled_from.remove(&id);
-        self.focus_history.retain(|seen| *seen != id);
         self.layout_memory.retain(|key| *key != crate::layout_scope::ScopeKey::Window(id.as_u64()));
         if let Some(switcher) = self.switcher.as_mut() {
             switcher.remove(id);
@@ -856,6 +917,70 @@ impl GlideState {
             self.protocols.foreign_toplevel_list_state.remove_toplevel(&handle);
         }
         self.ipc_subscribers.broadcast(&glide_ipc::Event::WindowClosed { id: id.as_u64() });
+    }
+
+    pub fn on_window_mapped(&mut self, id: glide_layout::WindowId) {
+        let Some(window) = self.window_map.get(&id).cloned() else {
+            return;
+        };
+        self.layout.set_app(id, self.dock_key(id));
+        let focused = self.layout.focused_window().filter(|&focused| focused != id && self.layout.is_mapped(focused));
+        let client = |window: &GlideWindow| {
+            window
+                .toplevel()
+                .and_then(|toplevel| smithay::reexports::wayland_server::Resource::client(toplevel.wl_surface()))
+        };
+        let pid = self.window_pid(&window);
+        let bridged = pid.is_some_and(crate::force_quit::is_x11_bridge);
+        let focused_window = focused.and_then(|focused| self.window_map.get(&focused));
+        let same_client = !bridged
+            && focused_window
+                .and_then(client)
+                .is_some_and(|other| client(&window).is_some_and(|mine| mine.id() == other.id()));
+        let spawned_by_focused = !bridged
+            && pid.zip(focused_window.and_then(|focused| self.window_pid(focused))).is_some_and(|(pid, parent)| {
+                !crate::force_quit::is_x11_bridge(parent) && crate::dock_glue::descends_from(pid, parent)
+            });
+        let app = self.layout.window_state(id).and_then(|state| state.app.clone());
+        let now = std::time::Instant::now();
+        let asked = self.session.activated_before_map.remove(&id);
+        let launched = asked
+            || self.session.launch_intent.take_for_new_window(
+                app.as_deref(),
+                |spawned| {
+                    !bridged
+                        && pid
+                            .zip(i32::try_from(spawned).ok())
+                            .is_some_and(|(pid, spawned)| crate::dock_glue::descends_from(pid, spawned))
+                },
+                now,
+            );
+        let request = crate::focus_policy::NewWindow {
+            anything_focused: focused.is_some(),
+            child_of_focused: focused
+                .is_some_and(|focused| self.layout.window_state(id).is_some_and(|state| state.parent == Some(focused))),
+            same_client_as_focused: same_client || spawned_by_focused,
+            launched,
+            typing_elsewhere: crate::focus_policy::typing_recently(self.session.last_key_press, now),
+            game_in_front: focused.is_some() && self.game_in_front(),
+        };
+        let focus = crate::focus_policy::takes_focus(request);
+        tracing::info!(window = id.0, app = app.as_deref().unwrap_or("-"), focus, ?request, "window mapped");
+        self.layout.map_window(id, focus);
+        if !focus {
+            self.demand_attention(id);
+        }
+        self.sync_ext_workspaces();
+    }
+
+    pub fn on_window_unmapped(&mut self, id: glide_layout::WindowId) {
+        if self.layout.unmap_window(id) {
+            tracing::info!(window = id.0, "window unmapped");
+            if let Some(switcher) = self.switcher.as_mut() {
+                switcher.remove(id);
+            }
+            self.reconcile_space();
+        }
     }
 
     #[must_use]
@@ -895,6 +1020,7 @@ impl GlideState {
                 .rev()
                 .find(|layer| {
                     matches!(layer.layer(), WlrLayer::Top | WlrLayer::Overlay)
+                        && self.session.mapped_layers.contains(layer.wl_surface())
                         && layer.layer_surface().with_cached_state(|state| {
                             state.keyboard_interactivity
                                 == smithay::wayland::shell::wlr_layer::KeyboardInteractivity::Exclusive
@@ -991,7 +1117,7 @@ impl GlideState {
             return;
         }
         self.finish_workspace_swipe();
-        self.layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(workspace));
+        self.layout.browse_workspace(glide_layout::WorkspaceTarget::Id(workspace));
         self.relayout_overview();
         self.reconcile_space();
         self.sync_ext_workspaces();
@@ -1000,7 +1126,7 @@ impl GlideState {
 
     pub fn overview_new_workspace(&mut self) {
         self.finish_workspace_swipe();
-        if self.layout.switch_to_workspace(glide_layout::WorkspaceTarget::New) {
+        if self.layout.browse_workspace(glide_layout::WorkspaceTarget::New) {
             self.relayout_overview();
             self.reconcile_space();
             self.sync_ext_workspaces();
@@ -1096,7 +1222,7 @@ impl GlideState {
                 .filter(|ws| *ws != self.layout.active_workspace());
             if let Some(ws) = target_workspace {
                 self.finish_workspace_swipe();
-                self.layout.switch_to_workspace(glide_layout::WorkspaceTarget::Id(ws));
+                self.layout.browse_workspace(glide_layout::WorkspaceTarget::Id(ws));
                 self.relayout_overview();
             }
             true
@@ -1250,6 +1376,7 @@ impl GlideState {
                 if let Some(id) = select {
                     self.focus_window(id);
                 } else {
+                    self.layout.commit_focus();
                     self.reconcile_space();
                 }
                 true
@@ -1407,7 +1534,7 @@ impl GlideState {
 
     fn layout_scope_key(&self) -> Option<crate::layout_scope::ScopeKey> {
         use crate::layout_scope::{LayoutScope, ScopeKey};
-        let focused = self.layer_focus.is_none().then(|| self.layout.focused_window()).flatten();
+        let focused = self.keyboard_layer().is_none().then(|| self.layout.focused_window()).flatten();
         match self.layout_memory.scope() {
             LayoutScope::Global => None,
             LayoutScope::Desktop => Some(ScopeKey::Desktop(self.layout.active_workspace().as_u64())),
@@ -2406,12 +2533,12 @@ impl GlideState {
 
     fn switcher_candidates(&self) -> Vec<crate::switcher::Candidate> {
         let mut order: Vec<glide_layout::WindowId> =
-            self.focus_history.iter().copied().filter(|id| self.layout.window_state(*id).is_some()).collect();
+            self.layout.recent_windows().iter().copied().filter(|id| self.layout.is_mapped(*id)).collect();
         let active = self.layout.active_workspace();
         let mut rest: Vec<(bool, usize, glide_layout::WindowId)> = Vec::new();
         for (ws_index, workspace) in self.layout.workspaces().enumerate() {
             for id in workspace.windows.iter().rev() {
-                if !order.contains(id) {
+                if !order.contains(id) && self.layout.is_mapped(*id) {
                     rest.push((workspace.id != active, ws_index, *id));
                 }
             }
@@ -2693,17 +2820,6 @@ impl GlideState {
     }
 
     pub fn activate_window_animated(&mut self, id: glide_layout::WindowId) {
-        let Some(state) = self.layout.window_state(id) else {
-            return;
-        };
-        let (workspace, minimized) = (state.workspace_id, state.minimized);
-        if workspace != self.layout.active_workspace() {
-            self.switch_workspace_animated(glide_layout::WorkspaceTarget::Id(workspace));
-            self.sync_ext_workspaces();
-        }
-        if minimized {
-            self.minimize_with_flight(id);
-        }
         self.focus_window(id);
     }
 
@@ -2993,12 +3109,13 @@ impl GlideState {
         }
         let destination = self.layout.window_state(id).map(|state| state.workspace_id);
         match destination.filter(|workspace| follow && *workspace != self.layout.active_workspace()) {
-            Some(workspace) => {
-                self.switch_workspace_animated(glide_layout::WorkspaceTarget::Id(workspace));
+            Some(_) => {
+                self.change_workspace_animated(|layout| {
+                    layout.focus_window(id);
+                });
                 if let Some(window) = self.window_map.get(&id) {
                     window.cancel_geometry_animation();
                 }
-                self.focus_window(id);
             }
             None => self.reconcile_space(),
         }
@@ -3006,12 +3123,18 @@ impl GlideState {
     }
 
     pub fn switch_workspace_animated(&mut self, target: glide_layout::WorkspaceTarget) {
+        self.change_workspace_animated(|layout| {
+            layout.switch_to_workspace(target);
+        });
+    }
+
+    fn change_workspace_animated(&mut self, change: impl FnOnce(&mut glide_layout::Layout)) {
         self.finish_workspace_swipe();
         let before_index = self.active_workspace_index();
         let before: Vec<(glide_layout::WindowId, Rectangle<i32, Logical>)> =
             self.layout.visible_windows().filter_map(|state| Some((state.id, self.frame_rect(state.id)?))).collect();
 
-        self.layout.switch_to_workspace(target);
+        change(&mut self.layout);
         self.reconcile_space();
 
         let after_index = self.active_workspace_index();
@@ -3074,10 +3197,12 @@ impl GlideState {
             .filter(|id| self.layout.window_state(*id).is_some_and(|s| s.minimized && s.workspace_id == active))
             .collect();
         if !restorable.is_empty() {
-            for id in restorable.iter().rev() {
-                self.minimize_with_flight(*id);
+            let recent = self.layout.recent_windows().to_vec();
+            let top = most_recent_of(&restorable, &recent);
+            for &id in &restorable {
+                self.restore_with_flight(id);
             }
-            if let Some(&top) = restorable.first() {
+            if let Some(top) = top {
                 self.focus_window(top);
             }
             return;
@@ -3099,15 +3224,7 @@ impl GlideState {
     pub fn minimize_with_flight(&mut self, id: glide_layout::WindowId) {
         let restoring = self.layout.window_state(id).is_some_and(|state| state.minimized);
         if restoring {
-            let origin = self.minimize_target(id);
-            self.layout.toggle_minimize(id);
-            self.reconcile_space();
-
-            if let (Some(origin), Some(frame), Some(window)) =
-                (origin, self.frame_rect(id), self.window_map.get(&id).cloned())
-            {
-                window.begin_open_animation(Some(origin), frame);
-            }
+            self.focus_window(id);
             return;
         }
 
@@ -3121,6 +3238,21 @@ impl GlideState {
 
         self.layout.toggle_minimize(id);
         self.reconcile_space();
+    }
+
+    fn restore_with_flight(&mut self, id: glide_layout::WindowId) {
+        let origin = self.minimize_target(id);
+        if !self.layout.set_minimized(id, false) {
+            return;
+        }
+        self.reconcile_space();
+        self.fly_back_from(id, origin);
+    }
+
+    fn fly_back_from(&self, id: glide_layout::WindowId, origin: Option<Rectangle<i32, Logical>>) {
+        if let (Some(origin), Some(frame), Some(window)) = (origin, self.frame_rect(id), self.window_map.get(&id)) {
+            window.begin_open_animation(Some(origin), frame);
+        }
     }
 
     fn minimize_target(&self, id: glide_layout::WindowId) -> Option<Rectangle<i32, Logical>> {
@@ -3239,31 +3371,26 @@ impl GlideState {
         self.relayout_overview();
     }
 
-    #[must_use]
-    pub fn modal_child_of(&self, id: glide_layout::WindowId) -> Option<glide_layout::WindowId> {
-        self.session.modal_windows.iter().copied().find(|child| {
-            *child != id
-                && self
-                    .window_map
-                    .get(child)
-                    .and_then(|window| window.toplevel()?.parent())
-                    .and_then(|parent| self.window_id_for_surface(&parent))
-                    == Some(id)
-        })
-    }
-
     pub fn focus_window(&mut self, id: glide_layout::WindowId) {
-        let mut id = id;
-        for _ in 0..8 {
-            match self.modal_child_of(id) {
-                Some(child) => id = child,
-                None => break,
-            }
-        }
-        self.layer_focus = None;
+        let Some(state) = self.layout.window_state(id).filter(|state| state.mapped) else {
+            return;
+        };
+        let (workspace, minimized) = (state.workspace_id, state.minimized);
+        let origin = minimized.then(|| self.minimize_target(id)).flatten();
         let closed = self.close_overview();
-        if self.layout.focus_window(id) || closed {
-            self.reconcile_space();
+        let released = self.layer_focus.take().is_some();
+        if workspace == self.layout.active_workspace() {
+            if self.layout.focus_window(id) || closed || released {
+                self.reconcile_space();
+            }
+        } else {
+            self.change_workspace_animated(|layout| {
+                layout.focus_window(id);
+            });
+            self.sync_ext_workspaces();
+        }
+        if minimized {
+            self.fly_back_from(id, origin);
         }
     }
 
@@ -4273,6 +4400,12 @@ fn gamma_due(last: Option<std::time::Instant>, now: std::time::Instant, animatin
     !animating || last.is_none_or(|at| now.saturating_duration_since(at) >= GAMMA_PERIOD)
 }
 
+fn most_recent_of(
+    windows: &[glide_layout::WindowId], recent: &[glide_layout::WindowId],
+) -> Option<glide_layout::WindowId> {
+    recent.iter().copied().find(|id| windows.contains(id)).or_else(|| windows.last().copied())
+}
+
 fn covers_output(frame: Rectangle<i32, Logical>, fullscreen: bool, output: Rectangle<i32, Logical>) -> bool {
     let center = Point::from((frame.loc.x + frame.size.w / 2, frame.loc.y + frame.size.h / 2));
     (fullscreen && output.contains(center)) || frame.contains_rect(output)
@@ -4457,6 +4590,14 @@ pub fn auto_output_scale(physical_mm: (i32, i32), mode_px: (i32, i32)) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_desktop_returns_focus_to_the_most_recent_of_the_hidden_windows() {
+        let [a, b, c] = [(); 3].map(|()| glide_layout::WindowId::next());
+        assert_eq!(most_recent_of(&[a, b, c], &[b, a, c]), Some(b), "not the bottom of the stack");
+        assert_eq!(most_recent_of(&[a, b], &[]), Some(b), "the top of the stack when nothing was used");
+        assert_eq!(most_recent_of(&[], &[a]), None);
+    }
 
     #[test]
     fn a_game_covers_the_output_when_fullscreen_or_borderless_over_all_of_it() {

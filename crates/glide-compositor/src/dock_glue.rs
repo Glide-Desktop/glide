@@ -15,6 +15,8 @@ use crate::{
 };
 use glide_layout::WindowId;
 
+pub const GLIDE_TERMINAL_APP: &str = "glide-terminal";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockClick {
     Launch,
@@ -221,7 +223,7 @@ impl GlideState {
         self.dock_keys.retain_windows(|id| window_map.contains_key(&id));
         self.resolve_anonymous_windows();
         let focused = self.layout.focused_window();
-        let mut ids: Vec<WindowId> = self.window_map.keys().copied().collect();
+        let mut ids: Vec<WindowId> = self.window_map.keys().copied().filter(|id| self.layout.is_mapped(*id)).collect();
         ids.sort();
 
         let mut apps: Vec<crate::dock::RunningApp> = Vec::new();
@@ -250,6 +252,7 @@ impl GlideState {
             .window_map
             .keys()
             .copied()
+            .filter(|id| self.layout.is_mapped(*id))
             .filter(|id| self.dock_key(*id).is_some_and(|candidate| candidate.eq_ignore_ascii_case(key)))
             .collect();
         windows.sort();
@@ -277,7 +280,7 @@ impl GlideState {
         let Some(item) = self.dock.items().get(index).filter(|item| item.action == DockAction::Activate) else {
             return MenuContext::default();
         };
-        let windows = most_recent_first(&self.windows_for_app(&item.app_id), &self.focus_history)
+        let windows = most_recent_first(&self.windows_for_app(&item.app_id), self.layout.recent_windows())
             .into_iter()
             .map(|id| MenuWindow {
                 id: id.as_u64(),
@@ -362,7 +365,7 @@ impl GlideState {
         let Some(item) = self.dock.items().get(index).cloned() else {
             return;
         };
-        let ordered = most_recent_first(&self.windows_for_app(&item.app_id), &self.focus_history);
+        let ordered = most_recent_first(&self.windows_for_app(&item.app_id), self.layout.recent_windows());
         let candidates: Vec<(WindowId, bool)> = ordered.iter().map(|id| (*id, self.is_minimized(*id))).collect();
         match dock_click(&candidates, self.layout.focused_window()) {
             DockClick::Activate(id) => {
@@ -493,17 +496,25 @@ impl GlideState {
             app_id: app_id.filter(|app_id| !app_id.trim().is_empty()),
             ..XdgActivationTokenData::default()
         };
+        let app = data.app_id.clone();
         let (token, data) = activation.create_external_token(data);
         crate::handlers::xdg_activation::grant(data);
-        self.session.launch_intent = Some(std::time::Instant::now());
+        self.session.launch_intent.record(app, std::time::Instant::now());
         token.as_str().to_string()
     }
 
-    pub fn take_launch_intent(&mut self) -> bool {
-        self.session
-            .launch_intent
-            .take()
-            .is_some_and(|at| at.elapsed() <= crate::handlers::xdg_activation::LAUNCH_INTENT)
+    pub fn take_launch_intent(&mut self, id: WindowId) -> bool {
+        let app = self.dock_key(id);
+        let pid = self.window_map.get(&id).and_then(|window| self.window_pid(window));
+        let bridged = pid.is_some_and(crate::force_quit::is_x11_bridge);
+        self.session.launch_intent.take_for_activation(
+            app.as_deref(),
+            |spawned| {
+                !bridged
+                    && pid.zip(i32::try_from(spawned).ok()).is_some_and(|(pid, spawned)| descends_from(pid, spawned))
+            },
+            std::time::Instant::now(),
+        )
     }
 
     pub fn activate_notification(&mut self, id: u32) {
@@ -523,7 +534,7 @@ impl GlideState {
         {
             windows = self.windows_for_app(&self.dock_key_for_desktop_id(&id));
         }
-        let ordered = most_recent_first(&windows, &self.focus_history);
+        let ordered = most_recent_first(&windows, self.layout.recent_windows());
         let candidates: Vec<(WindowId, bool)> = ordered.iter().map(|id| (*id, self.is_minimized(*id))).collect();
         if let DockClick::Activate(id) = dock_click(&candidates, self.layout.focused_window()) {
             self.activate_window_animated(id);
@@ -538,7 +549,7 @@ impl GlideState {
             let _ = self.spawn_user_command(&terminal);
             return;
         }
-        let token = self.mint_granted_token(None);
+        let token = self.mint_granted_token(Some(GLIDE_TERMINAL_APP.to_string()));
         let home = glide_config::home().unwrap_or_else(|| std::path::PathBuf::from("/"));
         let spawned = std::thread::Builder::new().name("glide-open-terminal".into()).spawn(move || {
             if glide_app::integration::open_terminal_tab(&home, &[], &token).is_ok() {
@@ -557,13 +568,17 @@ impl GlideState {
     pub fn spawn_user_command(&mut self, command: &str) -> std::io::Result<u32> {
         let token = self.mint_granted_token(None);
         let env = [("XDG_ACTIVATION_TOKEN", token.as_str()), ("DESKTOP_STARTUP_ID", token.as_str())];
-        crate::spawn_shell_command_with_env(command, &env)
+        let pid = crate::spawn_shell_command_with_env(command, &env)?;
+        self.session.launch_intent.attach_pid(pid);
+        Ok(pid)
     }
 
     pub fn spawn_user_process(&mut self, mut command: std::process::Command) -> std::io::Result<u32> {
         let token = self.mint_granted_token(None);
         command.env("XDG_ACTIVATION_TOKEN", &token).env("DESKTOP_STARTUP_ID", &token);
-        crate::spawn_detached(command)
+        let pid = crate::spawn_detached(command)?;
+        self.session.launch_intent.attach_pid(pid);
+        Ok(pid)
     }
 
     #[must_use]
@@ -597,9 +612,12 @@ impl GlideState {
         }
         let token = self.mint_granted_token(Some(app_id.to_string()));
         let env = [("XDG_ACTIVATION_TOKEN", token.as_str()), ("DESKTOP_STARTUP_ID", token.as_str())];
-        if let Err(err) = crate::spawn_shell_command_with_env(command, &env) {
-            tracing::error!(%command, ?err, "failed to launch an app");
-            return;
+        match crate::spawn_shell_command_with_env(command, &env) {
+            Ok(pid) => self.session.launch_intent.attach_pid(pid),
+            Err(err) => {
+                tracing::error!(%command, ?err, "failed to launch an app");
+                return;
+            }
         }
         let running = !self.windows_for_app(app_id).is_empty();
         if !running && self.dock.begin_launch(app_id, name, command) {

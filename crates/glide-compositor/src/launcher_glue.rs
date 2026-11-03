@@ -167,9 +167,9 @@ impl GlideState {
     #[must_use]
     pub fn open_windows_for_search(&self) -> Vec<crate::launcher::search::OpenWindow> {
         let mut order: Vec<glide_layout::WindowId> =
-            self.focus_history.iter().copied().filter(|id| self.window_map.contains_key(id)).collect();
+            self.layout.recent_windows().iter().copied().filter(|id| self.layout.is_mapped(*id)).collect();
         let mut rest: Vec<glide_layout::WindowId> =
-            self.window_map.keys().copied().filter(|id| !order.contains(id)).collect();
+            self.window_map.keys().copied().filter(|id| !order.contains(id) && self.layout.is_mapped(*id)).collect();
         rest.sort();
         order.extend(rest);
         order

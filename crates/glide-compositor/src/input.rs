@@ -1672,12 +1672,7 @@ impl GlideState {
             self.focus_lock_surface();
         }
 
-        let exclusive_layer = self.exclusive_layer_surface();
-        let exclusive = exclusive_layer.is_some();
-        if let Some(layer) = exclusive_layer {
-            self.layer_focus = Some(layer);
-            self.apply_keyboard_focus();
-        }
+        let exclusive = self.exclusive_layer_surface().is_some();
 
         let shortcuts_inhibited = {
             use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat;
@@ -1687,6 +1682,7 @@ impl GlideState {
         let keyboard = self.seat.get_keyboard().expect("a keyboard was added in GlideState::new");
         let mut osd_kind = None;
         let mut super_key = None;
+        let mut typed = false;
         let action: Option<KeyAction> =
             keyboard.input(self, keycode, key_state, serial, time, |_, modifiers, handle| {
                 let keysym = handle.modified_sym();
@@ -1781,6 +1777,8 @@ impl GlideState {
 
                     if action.is_some() {
                         suppressed_keys.push(keycode);
+                    } else {
+                        typed = true;
                     }
                     action.map_or(FilterResult::Forward, FilterResult::Intercept)
                 } else if suppressed_keys.contains(&keycode) {
@@ -1793,6 +1791,9 @@ impl GlideState {
 
         self.suppressed_keys = suppressed_keys;
         self.keybinds = keybinds;
+        if typed {
+            self.session.last_key_press = Some(std::time::Instant::now());
+        }
 
         if let Some((is_super, other_modifiers)) = super_key {
             let tapped = match key_state {
@@ -2961,13 +2962,14 @@ impl GlideState {
     }
 
     fn focus_click_target(&mut self, pos: Point<f64, Logical>) {
+        self.finish_workspace_swipe();
         let target = self.surface_under(pos).map(|(target, _)| target);
         match target {
             Some(crate::focus::PointerFocusTarget::Surface(surface)) if self.layer_for_surface(&surface).is_some() => {
                 let layer = self.layer_for_surface(&surface).expect("matched Some in the guard above");
-                if layer.can_receive_keyboard_focus() {
+                if layer.can_receive_keyboard_focus() && self.layer_focus.as_ref() != Some(&layer) {
                     self.layer_focus = Some(layer);
-                    self.apply_keyboard_focus();
+                    self.reconcile_space();
                 }
             }
             Some(crate::focus::PointerFocusTarget::Decoration(deco)) => {

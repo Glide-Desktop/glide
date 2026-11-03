@@ -22,6 +22,7 @@ mod decoration;
 mod disk_space;
 mod dock_drop;
 mod focus;
+mod focus_policy;
 mod focused_field;
 mod force_quit;
 mod framed;

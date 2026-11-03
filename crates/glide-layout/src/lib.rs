@@ -1207,4 +1207,170 @@ mod tests {
         assert!(layout.switch_to_workspace(WorkspaceTarget::Index(1)));
         assert_eq!(layout.focused_window(), Some(folded[0]), "not whichever folded window lies on top");
     }
+
+    mod focus {
+        use super::*;
+
+        fn app_window(layout: &mut Layout, app: &str) -> WindowId {
+            let id = WindowId::next();
+            layout.add_window(id, SMALL);
+            layout.set_app(id, Some(app.to_string()));
+            id
+        }
+
+        #[test]
+        fn focusing_a_window_on_another_workspace_records_no_window_in_between() {
+            let mut layout = Layout::new();
+            let (a, b, c) = (WindowId::next(), WindowId::next(), WindowId::next());
+            layout.add_window(a, SIZE);
+            layout.add_window(b, SIZE);
+            layout.add_window(c, SIZE);
+            assert!(layout.focus_window(b));
+            assert!(layout.focus_window(a));
+            assert_eq!(layout.recent_windows(), [a, b, c]);
+            assert!(layout.focus_window(c));
+            assert_eq!(layout.recent_windows(), [c, a, b], "one step: the previous window comes second");
+        }
+
+        #[test]
+        fn closing_a_dialog_returns_to_its_parent() {
+            let (mut layout, ids) = shared(2);
+            let dialog = WindowId::next();
+            layout.focus_window(ids[0]);
+            layout.focus_window(ids[1]);
+            layout.add_window_with_parent(dialog, SMALL, ids[0]);
+            assert_eq!(layout.focused_window(), Some(dialog));
+            assert!(layout.remove_window(dialog));
+            assert_eq!(layout.focused_window(), Some(ids[0]), "the parent, not the most recent other window");
+        }
+
+        #[test]
+        fn closing_a_window_prefers_the_same_app_then_the_most_recent_one() {
+            let mut layout = Layout::new();
+            layout.set_policy(NewWindowPolicy::ActiveWorkspace);
+            let editor = app_window(&mut layout, "editor");
+            let browser = app_window(&mut layout, "browser");
+            let terminal = app_window(&mut layout, "terminal");
+            let second_editor = app_window(&mut layout, "editor");
+            layout.focus_window(editor);
+            layout.focus_window(browser);
+            layout.focus_window(terminal);
+            layout.focus_window(second_editor);
+            assert!(layout.remove_window(second_editor));
+            assert_eq!(layout.focused_window(), Some(editor), "another window of the same app first");
+            assert!(layout.remove_window(editor));
+            assert_eq!(layout.focused_window(), Some(terminal), "then the most recently used one");
+        }
+
+        #[test]
+        fn minimizing_moves_to_the_same_app_and_sends_the_window_to_the_back() {
+            let mut layout = Layout::new();
+            layout.set_policy(NewWindowPolicy::ActiveWorkspace);
+            let first = app_window(&mut layout, "files");
+            let other = app_window(&mut layout, "music");
+            let second = app_window(&mut layout, "files");
+            layout.focus_window(first);
+            layout.focus_window(other);
+            layout.focus_window(second);
+            assert!(layout.set_minimized(second, true));
+            assert_eq!(layout.focused_window(), Some(first));
+            assert_eq!(layout.recent_windows().last(), Some(&second));
+        }
+
+        #[test]
+        fn a_modal_child_takes_every_fallback_and_every_focus() {
+            let (mut layout, ids) = shared(2);
+            let modal = WindowId::next();
+            layout.add_window_with_parent(modal, SMALL, ids[0]);
+            layout.set_modal(modal, true);
+            layout.focus_window(ids[1]);
+            assert!(layout.focus_window(ids[0]));
+            assert_eq!(layout.focused_window(), Some(modal), "a click on the parent lands on its modal dialog");
+            assert_eq!(visible(&layout).last(), Some(&modal), "and the dialog stays above the parent");
+            layout.focus_window(ids[1]);
+            assert!(layout.remove_window(ids[1]));
+            assert_eq!(layout.focused_window(), Some(modal));
+        }
+
+        #[test]
+        fn an_unmapped_window_gives_up_focus_and_comes_back_when_mapped() {
+            let (mut layout, ids) = shared(2);
+            layout.focus_window(ids[0]);
+            layout.focus_window(ids[1]);
+            assert!(layout.unmap_window(ids[1]));
+            assert_eq!(layout.focused_window(), Some(ids[0]));
+            assert!(!visible(&layout).contains(&ids[1]));
+            assert!(!layout.focus_window(ids[1]), "an unmapped window cannot be focused");
+            assert!(layout.map_window(ids[1], true));
+            assert_eq!(layout.focused_window(), Some(ids[1]));
+        }
+
+        #[test]
+        fn a_window_mapped_in_the_background_opens_under_the_focused_one() {
+            let (mut layout, ids) = shared(2);
+            layout.focus_window(ids[0]);
+            let late = WindowId::next();
+            let ws = layout.admit_window(late, SMALL, None);
+            assert_eq!(ws, layout.active_workspace());
+            assert_eq!(layout.focused_window(), Some(ids[0]), "admitting is not focusing");
+            assert!(layout.map_window(late, false));
+            assert_eq!(layout.focused_window(), Some(ids[0]));
+            assert_eq!(visible(&layout), [ids[1], late, ids[0]]);
+            assert_eq!(layout.recent_windows()[..2], [ids[0], late], "next in line for Alt+Tab");
+        }
+
+        #[test]
+        fn a_background_window_never_switches_to_the_workspace_made_for_it() {
+            let mut layout = Layout::new();
+            let first = WindowId::next();
+            let home = layout.add_window(first, SIZE);
+            let late = WindowId::next();
+            let made = layout.admit_window(late, SIZE, None);
+            assert_ne!(made, home);
+            layout.map_window(late, false);
+            assert_eq!(layout.active_workspace(), home);
+            assert_eq!(layout.focused_window(), Some(first));
+            assert!(layout.focus_window(late));
+            assert_eq!(layout.active_workspace(), made);
+        }
+
+        #[test]
+        fn browsing_workspaces_leaves_the_history_alone_until_committed() {
+            let mut layout = Layout::new();
+            let (a, b) = (WindowId::next(), WindowId::next());
+            layout.add_window(a, SIZE);
+            let ws_b = layout.add_window(b, SIZE);
+            layout.focus_window(a);
+            assert_eq!(layout.recent_windows(), [a, b]);
+            layout.open_overview();
+            assert!(layout.browse_workspace(WorkspaceTarget::Id(ws_b)));
+            assert_eq!(layout.focused_window(), Some(b));
+            assert_eq!(layout.recent_windows(), [a, b], "browsing is not choosing");
+            layout.close_overview();
+            assert_eq!(layout.recent_windows(), [a, b], "a window picked next is the one recorded");
+            layout.commit_focus();
+            assert_eq!(layout.recent_windows(), [b, a], "closing on the page commits it");
+        }
+
+        #[test]
+        fn switching_to_a_workspace_focuses_its_most_recent_window() {
+            let mut layout = Layout::new();
+            layout.set_policy(NewWindowPolicy::ActiveWorkspace);
+            let ids = windows(&mut layout, 3, SMALL);
+            let home = layout.active_workspace();
+            layout.focus_window(ids[1]);
+            layout.focus_window(ids[0]);
+            assert!(layout.switch_to_workspace(WorkspaceTarget::New));
+            assert!(layout.switch_to_workspace(WorkspaceTarget::Id(home)));
+            assert_eq!(layout.focused_window(), Some(ids[0]), "not the window on top of the stack");
+        }
+
+        #[test]
+        fn a_window_removed_from_the_middle_of_the_history_is_forgotten() {
+            let (mut layout, ids) = shared(3);
+            layout.remove_window(ids[1]);
+            assert!(!layout.recent_windows().contains(&ids[1]));
+            assert_eq!(layout.recent_windows().len(), 2);
+        }
+    }
 }

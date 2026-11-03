@@ -292,7 +292,7 @@ impl GlideState {
             let Some(folder) = first_folder(items) else {
                 return;
             };
-            let token = self.mint_granted_token(None);
+            let token = self.mint_granted_token(Some(crate::dock_glue::GLIDE_TERMINAL_APP.to_string()));
             let terminal = crate::global_menu::terminal_command();
             let spawned = std::thread::Builder::new().name("glide-dock-drop-open".into()).spawn(move || {
                 if glide_app::integration::open_terminal_tab(&folder, &[], &token).is_ok() {

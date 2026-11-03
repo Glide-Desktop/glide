@@ -61,6 +61,9 @@ impl CompositorHandler for GlideState {
         }
 
         on_commit_buffer_handler::<Self>(surface);
+        if let Some(id) = unmapping {
+            self.on_window_unmapped(id);
+        }
         self.queue_redraw();
         if self.drag.icon.as_ref() == Some(surface)
             && let Some(delta) = with_states(surface, |states| {
@@ -74,7 +77,7 @@ impl CompositorHandler for GlideState {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self.mapped_window(&root) {
+            if let Some(window) = self.window_id_for_surface(&root).and_then(|id| self.window_map.get(&id)) {
                 window.on_commit();
             }
         }

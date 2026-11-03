@@ -41,7 +41,7 @@ fn is_granted(data: &XdgActivationTokenData) -> bool {
     data.user_data.get::<ActivationGrant>().is_some_and(|grant| grant.0)
 }
 
-const fn activation_allowed(granted: bool, age: std::time::Duration) -> bool {
+fn activation_allowed(granted: bool, age: std::time::Duration) -> bool {
     granted && token_is_fresh_enough(age)
 }
 
@@ -56,8 +56,12 @@ fn requester_has_keyboard_focus<T: PartialEq>(requester: Option<T>, focused: Opt
     requester.zip(focused).is_some_and(|(r, f)| r == f)
 }
 
-const fn token_is_fresh_enough(age: std::time::Duration) -> bool {
-    age.as_secs() <= MAX_TOKEN_AGE.as_secs()
+fn token_is_fresh_enough(age: std::time::Duration) -> bool {
+    age <= MAX_TOKEN_AGE
+}
+
+fn serial_backs_token(serial_fresh: Option<bool>, follows_input: bool) -> bool {
+    serial_fresh.unwrap_or(follows_input)
 }
 
 impl XdgActivationHandler for GlideState {
@@ -75,11 +79,16 @@ impl XdgActivationHandler for GlideState {
             .and_then(Resource::client)
             .map(|client| client.id())
             .or_else(|| data.client_id.clone());
-        let fresh = requester_has_keyboard_focus(requester, focused_client)
-            && data.serial.as_ref().is_none_or(|(serial, seat)| {
-                let last_enter = keyboard.as_ref().and_then(KeyboardHandle::last_enter);
-                token_serial_is_fresh(self.seat.owns(seat), Some(*serial), last_enter)
-            });
+        let holds_focus = match data.surface.as_ref().and_then(|surface| self.toplevel_window_of(surface)) {
+            Some(window) => self.keyboard_layer().is_none() && self.layout.focused_window() == Some(window),
+            None => requester_has_keyboard_focus(requester, focused_client),
+        };
+        let serial_fresh = data.serial.as_ref().map(|(serial, seat)| {
+            let last_enter = keyboard.as_ref().and_then(KeyboardHandle::last_enter);
+            token_serial_is_fresh(self.seat.owns(seat), Some(*serial), last_enter)
+        });
+        let follows_input = follows_user_action(self.session.last_user_input, std::time::Instant::now());
+        let fresh = holds_focus && serial_backs_token(serial_fresh, follows_input);
         data.user_data.insert_if_missing(|| ActivationGrant(fresh));
         self.protocols.xdg_activation_state.retain_tokens(|_, data| token_is_fresh_enough(data.timestamp.elapsed()));
         true
@@ -91,15 +100,26 @@ impl XdgActivationHandler for GlideState {
         let Some(id) = self.window_id_for_surface(&surface) else {
             return;
         };
-        let granted = activation_allowed(is_granted(&token_data), token_data.timestamp.elapsed());
+        self.protocols.xdg_activation_state.remove_token(&token);
         let focused = self.layout.focused_window() == Some(id);
+        if self.screen_locked() {
+            tracing::info!(window = id.0, "activation held back: the screen is locked");
+            if !focused {
+                self.demand_attention(id);
+            }
+            return;
+        }
+        let granted = activation_allowed(is_granted(&token_data), token_data.timestamp.elapsed());
         let fresh = token_is_fresh_enough(token_data.timestamp.elapsed());
         let reacting = !granted && fresh && follows_user_action(self.session.last_user_input, token_data.timestamp);
-        let launched = !granted && !reacting && !focused && self.take_launch_intent();
+        let launched = !granted && !reacting && !focused && self.take_launch_intent(id);
         if granted || reacting || launched {
-            self.protocols.xdg_activation_state.remove_token(&token);
             tracing::info!(window = id.0, granted, reacting, launched, "activation honoured");
-            self.activate_window_animated(id);
+            if self.layout.is_mapped(id) {
+                self.activate_window_animated(id);
+            } else {
+                self.session.activated_before_map.insert(id);
+            }
             return;
         }
         if !focused {
@@ -172,6 +192,19 @@ mod tests {
     #[test]
     fn a_token_older_than_the_age_limit_is_rejected() {
         assert!(!token_is_fresh_enough(MAX_TOKEN_AGE + std::time::Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn a_token_just_past_the_age_limit_is_rejected_without_rounding_to_seconds() {
+        assert!(!token_is_fresh_enough(MAX_TOKEN_AGE + std::time::Duration::from_millis(900)));
+    }
+
+    #[test]
+    fn a_token_without_a_serial_counts_only_right_after_the_users_input() {
+        assert!(serial_backs_token(None, true), "minted in reaction to a click");
+        assert!(!serial_backs_token(None, false), "minted out of the blue");
+        assert!(serial_backs_token(Some(true), false), "a fresh serial speaks for itself");
+        assert!(!serial_backs_token(Some(false), true), "a stale serial is not saved by recent input");
     }
 
     #[test]

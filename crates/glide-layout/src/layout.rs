@@ -39,7 +39,31 @@ pub struct WindowState {
     pub minimized: bool,
     pub insets: Insets,
     pub parent: Option<WindowId>,
+    pub mapped: bool,
+    pub modal: bool,
+    pub app: Option<String>,
 }
+
+impl WindowState {
+    const fn focusable(&self) -> bool {
+        self.mapped && !self.minimized
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct Departing {
+    id: Option<WindowId>,
+    parent: Option<WindowId>,
+    app: Option<String>,
+}
+
+impl Departing {
+    fn from(state: &WindowState) -> Self {
+        Self { id: Some(state.id), parent: state.parent, app: state.app.clone() }
+    }
+}
+
+const MODAL_DEPTH: usize = 8;
 
 impl WindowState {
     #[must_use]
@@ -57,12 +81,11 @@ impl WindowState {
 pub struct Workspace {
     pub id: WorkspaceId,
     pub windows: Vec<WindowId>,
-    pub focused: Option<WindowId>,
 }
 
 impl Workspace {
-    fn new(id: WorkspaceId) -> Self {
-        Self { id, windows: Vec::new(), focused: None }
+    const fn new(id: WorkspaceId) -> Self {
+        Self { id, windows: Vec::new() }
     }
 }
 
@@ -174,6 +197,7 @@ pub struct Layout {
     recent: Vec<WorkspaceId>,
     windows: HashMap<WindowId, WindowState>,
     focused: Option<WindowId>,
+    mru: Vec<WindowId>,
     outputs: Vec<OutputInfo>,
     policy: NewWindowPolicy,
     overview_active: bool,
@@ -198,6 +222,7 @@ impl Layout {
             recent: Vec::new(),
             windows: HashMap::new(),
             focused: None,
+            mru: Vec::new(),
             outputs: Vec::new(),
             policy: NewWindowPolicy::NewWorkspace,
             overview_active: false,
@@ -322,20 +347,15 @@ impl Layout {
                 state.workspace_id = into;
             }
         }
-        let carried = last.focused.filter(|_| into != self.active);
         if let Some(target) = self.workspace_mut(into) {
             target.windows.extend(last.windows.iter().copied());
-            if carried.is_some() {
-                target.focused = carried;
-            }
         }
         if self.active == last.id {
             self.recent.retain(|&seen| seen != into);
             self.active = into;
             if !self.focused.is_some_and(|focused| last.windows.contains(&focused)) {
-                self.focused = self.pick_new_focus();
+                self.focused = self.fallback_focus(&Departing::default());
             }
-            self.remember_focus();
         }
     }
 
@@ -375,7 +395,17 @@ impl Layout {
 
     #[must_use]
     pub fn is_visible(&self, w: WindowId) -> bool {
-        self.windows.get(&w).is_some_and(|state| state.workspace_id == self.active && !state.minimized)
+        self.windows.get(&w).is_some_and(|state| state.workspace_id == self.active && state.focusable())
+    }
+
+    #[must_use]
+    pub fn is_mapped(&self, w: WindowId) -> bool {
+        self.windows.get(&w).is_some_and(|state| state.mapped)
+    }
+
+    #[must_use]
+    pub fn recent_windows(&self) -> &[WindowId] {
+        &self.mru
     }
 
     #[must_use]
@@ -397,7 +427,7 @@ impl Layout {
             .into_iter()
             .flat_map(|ws| ws.windows.iter())
             .filter_map(|id| self.windows.get(id))
-            .filter(|state| !state.minimized)
+            .filter(|state| state.focusable())
             .cloned()
             .collect()
     }
@@ -413,10 +443,19 @@ impl Layout {
 
     pub fn close_overview(&mut self) -> bool {
         let was_open = std::mem::replace(&mut self.overview_active, false);
-        if was_open && self.remove_workspace_if_empty(self.active) {
-            self.focused = self.pick_new_focus();
+        if !was_open {
+            return false;
         }
-        was_open
+        if self.remove_workspace_if_empty(self.active) {
+            self.focused = self.fallback_focus(&Departing::default());
+        }
+        true
+    }
+
+    pub fn commit_focus(&mut self) {
+        if let Some(focused) = self.focused {
+            self.touch(focused);
+        }
     }
 
     #[must_use]
@@ -425,7 +464,7 @@ impl Layout {
             .iter()
             .flat_map(|ws| ws.windows.iter())
             .filter_map(|id| self.windows.get(id))
-            .filter(|state| !state.minimized)
+            .filter(|state| state.focusable())
             .cloned()
             .collect()
     }
@@ -543,6 +582,14 @@ impl Layout {
     }
 
     pub fn switch_to_workspace(&mut self, target: WorkspaceTarget) -> bool {
+        if !self.browse_workspace(target) {
+            return false;
+        }
+        self.commit_focus();
+        true
+    }
+
+    pub fn browse_workspace(&mut self, target: WorkspaceTarget) -> bool {
         let Some(target_id) = self.resolve_or_create(target) else {
             return false;
         };
@@ -551,11 +598,10 @@ impl Layout {
             return true;
         }
 
-        self.remember_focus();
         let left = self.active;
         self.activate(target_id);
         self.leave_workspace(left);
-        self.focused = self.pick_new_focus();
+        self.focused = self.fallback_focus(&Departing::default());
         true
     }
 
@@ -582,7 +628,6 @@ impl Layout {
 
         if let Some(target_ws) = self.workspace_mut(target_id) {
             target_ws.windows.push(w);
-            target_ws.focused = Some(w);
         }
 
         let keeps_active = self.overview_active && old_ws_id == self.active;
@@ -595,38 +640,96 @@ impl Layout {
         let active_changed = old_ws_vanishes && self.remove_workspace_if_empty(old_ws_id);
 
         if active_changed || (self.focused == Some(w) && self.active != target_id) {
-            self.focused = self.pick_new_focus();
+            let departing = self.windows.get(&w).map(Departing::from).unwrap_or_default();
+            self.focused = self.fallback_focus(&departing);
         }
 
         true
     }
 
     pub fn add_window(&mut self, w: WindowId, initial_size: Size) -> WorkspaceId {
-        let ws_id = match self.policy {
-            NewWindowPolicy::NewWorkspace if self.fixed.is_none() && !self.workspace_is_empty(self.active) => {
-                let new_ws = WorkspaceId::next();
-                let at = self.active_index().unwrap_or(0) + 1;
-                self.remember_focus();
-                self.workspaces.insert(at, Workspace::new(new_ws));
-                self.activate(new_ws);
-                new_ws
-            }
-            _ => self.active,
-        };
-        self.insert_window(w, ws_id, initial_size)
+        let ws_id = self.admit_window(w, initial_size, None);
+        self.map_window(w, true);
+        ws_id
     }
 
     pub fn add_window_with_parent(&mut self, w: WindowId, initial_size: Size, parent: WindowId) -> WorkspaceId {
-        let ws_id = self.windows.get(&parent).map_or(self.active, |state| state.workspace_id);
-        let ws_id = self.insert_window(w, ws_id, initial_size);
-        let over = self.centered_over_parent(parent, initial_size, Insets::NONE);
+        let ws_id = self.admit_window(w, initial_size, Some(parent));
+        self.map_window(w, ws_id == self.active);
+        ws_id
+    }
+
+    pub fn admit_window(&mut self, w: WindowId, initial_size: Size, parent: Option<WindowId>) -> WorkspaceId {
+        let parent_ws = parent.and_then(|parent| self.windows.get(&parent)).map(|state| state.workspace_id);
+        let ws_id = match (parent_ws, self.policy) {
+            (Some(ws), _) => ws,
+            (None, NewWindowPolicy::NewWorkspace) if self.fixed.is_none() && !self.workspace_is_empty(self.active) => {
+                let new_ws = WorkspaceId::next();
+                let at = self.active_index().unwrap_or(0) + 1;
+                self.workspaces.insert(at, Workspace::new(new_ws));
+                new_ws
+            }
+            (None, _) => self.active,
+        };
+        self.insert_window(w, ws_id, initial_size);
+        let over = parent.and_then(|parent| self.centered_over_parent(parent, initial_size, Insets::NONE));
         if let Some(state) = self.windows.get_mut(&w) {
-            state.parent = Some(parent);
+            state.parent = parent;
             if let Some(geometry) = over.filter(|_| state.is_placed) {
                 state.geometry = geometry;
             }
         }
         ws_id
+    }
+
+    pub fn map_window(&mut self, w: WindowId, focus: bool) -> bool {
+        let Some(state) = self.windows.get_mut(&w).filter(|state| !state.mapped) else {
+            return false;
+        };
+        state.mapped = true;
+        let ws_id = state.workspace_id;
+        if focus {
+            self.focus_window(w);
+            return true;
+        }
+        let below = self.focused.filter(|&focused| self.windows.get(&focused).is_some_and(|s| s.workspace_id == ws_id));
+        if let (Some(below), Some(ws)) = (below, self.workspace_mut(ws_id)) {
+            ws.windows.retain(|&id| id != w);
+            let at = ws.windows.iter().position(|&id| id == below).unwrap_or(ws.windows.len());
+            ws.windows.insert(at, w);
+        }
+        self.mru.retain(|&id| id != w);
+        self.mru.insert(self.mru.len().min(1), w);
+        true
+    }
+
+    pub fn unmap_window(&mut self, w: WindowId) -> bool {
+        let Some(state) = self.windows.get_mut(&w).filter(|state| state.mapped) else {
+            return false;
+        };
+        state.mapped = false;
+        if self.focused == Some(w) {
+            let departing = self.windows.get(&w).map(Departing::from).unwrap_or_default();
+            self.focused = self.fallback_focus(&departing);
+        }
+        true
+    }
+
+    pub fn set_app(&mut self, w: WindowId, app: Option<String>) {
+        if let Some(state) = self.windows.get_mut(&w) {
+            state.app = app;
+        }
+    }
+
+    pub fn set_modal(&mut self, w: WindowId, modal: bool) -> bool {
+        self.windows.get_mut(&w).is_some_and(|state| std::mem::replace(&mut state.modal, modal) != modal)
+    }
+
+    pub fn set_parent(&mut self, w: WindowId, parent: Option<WindowId>) {
+        let parent = parent.filter(|&parent| parent != w && self.windows.contains_key(&parent));
+        if let Some(state) = self.windows.get_mut(&w) {
+            state.parent = parent;
+        }
     }
 
     fn centered_over_parent(&self, parent: WindowId, content_size: Size, insets: Insets) -> Option<Rectangle> {
@@ -637,7 +740,7 @@ impl Layout {
         Some(keep_reachable(Rectangle::new(Point::new(x, y), frame_size), self.work_area_for_window(parent)))
     }
 
-    fn insert_window(&mut self, w: WindowId, ws_id: WorkspaceId, size: Size) -> WorkspaceId {
+    fn insert_window(&mut self, w: WindowId, ws_id: WorkspaceId, size: Size) {
         let is_placed = !size.is_empty();
         let index_on_ws = self.workspace(ws_id).map_or(0, |ws| ws.windows.len());
         let geometry = if is_placed {
@@ -661,16 +764,14 @@ impl Layout {
                 minimized: false,
                 insets: Insets::NONE,
                 parent: None,
+                mapped: false,
+                modal: false,
+                app: None,
             },
         );
         if let Some(ws) = self.workspace_mut(ws_id) {
             ws.windows.push(w);
-            ws.focused = Some(w);
         }
-        if ws_id == self.active {
-            self.focused = Some(w);
-        }
-        ws_id
     }
 
     fn restored_frame(&self, w: WindowId) -> Option<Rectangle> {
@@ -781,9 +882,13 @@ impl Layout {
         }
         state.minimized = minimized;
 
-        if minimized && self.focused == Some(w) {
-            self.focused = self.pick_new_focus();
-            self.remember_focus();
+        if minimized {
+            self.mru.retain(|&id| id != w);
+            self.mru.push(w);
+            if self.focused == Some(w) {
+                let departing = self.windows.get(&w).map(Departing::from).unwrap_or_default();
+                self.focused = self.fallback_focus(&departing);
+            }
         }
         true
     }
@@ -855,42 +960,94 @@ impl Layout {
             return false;
         };
         self.anchors.remove(&w);
+        self.mru.retain(|&id| id != w);
+        for other in self.windows.values_mut() {
+            if other.parent == Some(w) {
+                other.parent = state.parent;
+            }
+        }
 
         self.detach(w, state.workspace_id);
         let active_changed = self.remove_workspace_if_empty(state.workspace_id);
 
         if active_changed || self.focused == Some(w) {
-            self.focused = self.pick_new_focus();
+            self.focused = self.fallback_focus(&Departing::from(&state));
         }
 
         true
     }
 
     pub fn focus_window(&mut self, w: WindowId) -> bool {
-        let Some(target_ws) = self.windows.get(&w).map(|state| state.workspace_id) else {
+        let target = self.resolve_modal(w);
+        let Some(target_ws) = self.windows.get(&target).filter(|state| state.mapped).map(|state| state.workspace_id)
+        else {
             return false;
         };
 
         if self.active != target_ws {
-            self.remember_focus();
             let left = self.active;
             self.activate(target_ws);
             self.leave_workspace(left);
         }
 
-        if let Some(state) = self.windows.get_mut(&w) {
+        if let Some(state) = self.windows.get_mut(&target) {
             state.minimized = false;
         }
 
-        self.focused = Some(w);
-        self.raise_window(w);
-        self.remember_focus();
+        self.focused = Some(target);
+        if target != w {
+            self.raise_window(w);
+        }
+        self.raise_window(target);
+        self.touch(target);
         true
     }
 
     pub fn clear_focus(&mut self) {
         self.focused = None;
-        self.remember_focus();
+    }
+
+    fn touch(&mut self, w: WindowId) {
+        if self.mru.first() != Some(&w) {
+            self.mru.retain(|&id| id != w);
+            self.mru.insert(0, w);
+        }
+    }
+
+    #[must_use]
+    pub fn resolve_modal(&self, w: WindowId) -> WindowId {
+        let mut current = w;
+        for _ in 0..MODAL_DEPTH {
+            let child = self
+                .windows
+                .values()
+                .filter(|state| state.parent == Some(current) && state.modal && state.focusable())
+                .map(|state| state.id)
+                .max();
+            match child {
+                Some(child) => current = child,
+                None => break,
+            }
+        }
+        current
+    }
+
+    fn fallback_focus(&self, departing: &Departing) -> Option<WindowId> {
+        let active = self.workspace(self.active)?;
+        let candidate = |id: WindowId| {
+            departing.id != Some(id)
+                && self.windows.get(&id).is_some_and(|state| state.workspace_id == self.active && state.focusable())
+        };
+        let same_app = |id: WindowId| {
+            departing.app.is_some() && self.windows.get(&id).is_some_and(|state| state.app == departing.app)
+        };
+        departing
+            .parent
+            .filter(|&parent| candidate(parent))
+            .or_else(|| self.mru.iter().copied().find(|&id| candidate(id) && same_app(id)))
+            .or_else(|| self.mru.iter().copied().find(|&id| candidate(id)))
+            .or_else(|| active.windows.iter().rev().copied().find(|&id| candidate(id)))
+            .map(|id| self.resolve_modal(id))
     }
 
     pub fn set_window_geometry(&mut self, w: WindowId, geometry: Rectangle) -> bool {
@@ -987,9 +1144,6 @@ impl Layout {
     fn detach(&mut self, w: WindowId, ws_id: WorkspaceId) {
         if let Some(ws) = self.workspace_mut(ws_id) {
             ws.windows.retain(|&id| id != w);
-            if ws.focused == Some(w) {
-                ws.focused = None;
-            }
         }
     }
 
@@ -1012,22 +1166,5 @@ impl Layout {
             }
         }
         false
-    }
-
-    fn remember_focus(&mut self) {
-        let focused = self.focused;
-        if let Some(ws) = self.workspace_mut(self.active) {
-            ws.focused = focused;
-        }
-    }
-
-    fn pick_new_focus(&self) -> Option<WindowId> {
-        let active_ws = self.workspace(self.active)?;
-        let visible = |id: WindowId| self.windows.get(&id).is_some_and(|state| !state.minimized);
-
-        active_ws
-            .focused
-            .filter(|&id| active_ws.windows.contains(&id) && visible(id))
-            .or_else(|| active_ws.windows.iter().rev().copied().find(|&id| visible(id)))
     }
 }
