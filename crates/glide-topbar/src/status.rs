@@ -93,12 +93,32 @@ type SheenKey = (i32, i32, [u32; 4], i32);
 struct ChargeSheen {
     since: Option<Instant>,
     drawn: Option<Instant>,
+    wake: Option<Instant>,
     buffers: HashMap<SheenKey, MemoryRenderBuffer>,
 }
 
 impl ChargeSheen {
     fn live(&self) -> bool {
         self.drawn.is_some_and(|at| at.elapsed() < SHEEN_LIVE)
+    }
+
+    fn stop(&mut self) {
+        self.since = None;
+        self.drawn = None;
+        self.wake = None;
+    }
+
+    fn advance(&mut self, cycle: battery::Cycle, now: Instant) -> Option<f64> {
+        let since = *self.since.get_or_insert(now);
+        let elapsed = now.saturating_duration_since(since);
+        let progress = cycle.progress(elapsed);
+        if progress.is_some() {
+            self.drawn = Some(now);
+            self.wake = None;
+        } else {
+            self.wake = Some(now + cycle.until_next(elapsed));
+        }
+        progress
     }
 }
 
@@ -117,6 +137,10 @@ impl Indicators {
 
     pub(super) fn is_animating(&self) -> bool {
         self.dots.iter().any(Anim::is_animating) || self.swap.fade.is_animating() || self.charge.live()
+    }
+
+    pub(super) const fn next_wake(&self) -> Option<Instant> {
+        self.charge.wake
     }
 
     fn reserved_count(&self) -> i32 {
@@ -450,22 +474,18 @@ fn push_charge_sheen<R>(
     let charging = status.battery_charging && status.battery_pct.is_some_and(|pct| pct < 100);
     let (Some(left), Some(pct), Some(cycle), true) = (left, status.battery_pct, battery::Cycle::current(), charging)
     else {
-        topbar.indicators.charge.since = None;
-        topbar.indicators.charge.drawn = None;
+        topbar.indicators.charge.stop();
         return;
     };
-    let now = Instant::now();
     let charge = &mut topbar.indicators.charge;
-    let since = *charge.since.get_or_insert(now);
-    charge.drawn = Some(now);
+    let Some(progress) = charge.advance(cycle, Instant::now()) else {
+        return;
+    };
     let Some(x) = block_layout(painter, status, topbar.theme.battery_percentage)
         .into_iter()
         .find(|(indicator, _, _)| *indicator == Indicator::Battery)
         .map(|(_, x, _)| x)
     else {
-        return;
-    };
-    let Some(progress) = cycle.progress(now.saturating_duration_since(since)) else {
         return;
     };
     let cell = battery_cell(left + x);
@@ -711,6 +731,18 @@ mod tests {
 
     fn laptop() -> SystemStatus {
         SystemStatus { battery_pct: Some(80), bluetooth_on: true, vpn_active: true, ..SystemStatus::default() }
+    }
+
+    #[test]
+    fn a_charging_battery_resting_between_sweeps_is_not_animating() {
+        let cycle = battery::Cycle { travel: Duration::from_millis(300), rest: Duration::from_secs(5) };
+        let start = Instant::now().checked_sub(Duration::from_secs(1)).expect("the clock is past one second");
+        let mut sheen = ChargeSheen::default();
+        assert!(sheen.advance(cycle, start).is_some());
+        assert_eq!(sheen.wake, None, "a travelling sheen keeps the frame pump itself");
+        assert!(sheen.advance(cycle, start + Duration::from_millis(400)).is_none());
+        assert!(!sheen.live(), "the rest between sweeps draws nothing, so it must not keep redrawing");
+        assert_eq!(sheen.wake, Some(start + cycle.travel + cycle.rest), "the next sweep wakes the pump");
     }
 
     #[test]

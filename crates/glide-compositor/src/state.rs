@@ -369,6 +369,7 @@ pub struct GlideState {
 #[derive(Default)]
 pub struct SessionServices {
     pub presenter: Option<((f64, f64), std::time::Instant, smithay::output::Output)>,
+    pub wake_timer: Option<(std::time::Instant, smithay::reexports::calloop::RegistrationToken)>,
     pub logind: Option<crate::logind::Handle>,
     pub screensaver: Option<crate::screensaver::Handle>,
     pub shell_bus: Option<crate::shell_bus::Handle>,
@@ -1637,6 +1638,29 @@ impl GlideState {
         }
         self.paint_night_light();
         self.queue_animation_redraw();
+    }
+
+    pub fn sync_wake_timer(&mut self) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        let wanted = self.topbar.next_wake();
+        if self.session.wake_timer.as_ref().map(|(at, _)| *at) == wanted {
+            return;
+        }
+        if let Some((_, token)) = self.session.wake_timer.take() {
+            self.loop_handle.remove(token);
+        }
+        let Some(at) = wanted else {
+            return;
+        };
+        let armed = self.loop_handle.insert_source(Timer::from_deadline(at), |_, (), state| {
+            state.session.wake_timer = None;
+            state.queue_redraw();
+            TimeoutAction::Drop
+        });
+        match armed {
+            Ok(token) => self.session.wake_timer = Some((at, token)),
+            Err(err) => tracing::warn!(?err, "failed to arm the shell wake timer"),
+        }
     }
 
     pub fn tick_night_light_fade(&mut self) -> bool {

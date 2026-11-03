@@ -990,8 +990,7 @@ impl Dock {
         at_edge || shell.contains(pos) || self.menu_rect().is_some_and(|rect| rect.to_f64().contains(pos))
     }
 
-    fn retry_missing_icons(&mut self) {
-        self.icons.expire_missing();
+    fn follow_icon_generation(&mut self) {
         let generation = self.icons.generation();
         if generation != self.icon_generation {
             self.icon_generation = generation;
@@ -2013,7 +2012,7 @@ where
     }
 
     dock.invalidate_stale_buffers();
-    dock.retry_missing_icons();
+    dock.follow_icon_generation();
     dock.settle();
     dock.sync_tooltip();
 

@@ -535,7 +535,6 @@ where
         return Vec::new();
     }
     let geometry = switcher.geometry(area);
-    icons.expire_missing();
     let key = glide_theme::Revision::new()
         .u64(switcher.raster_key(theme, geometry, backdrop))
         .u64(icons.generation())

@@ -260,6 +260,7 @@ fn run() -> anyhow::Result<()> {
         {
             state.queue_animation_redraw();
         }
+        state.sync_wake_timer();
 
         state.tick_idle();
         state.tick_session_end();
@@ -476,8 +477,10 @@ fn init_topbar_clock(event_loop: &mut EventLoop<'static, GlideState>, state: &mu
             let plates = state.tick_icon_plates();
             let power = state.tick_qs_power();
             let netbird = state.tick_netbird();
+            let dock_icons = state.dock.icons.expire_missing();
+            let shell_icons = state.launcher_icons.expire_missing();
             state.tick_keychain_idle(std::time::Instant::now());
-            if clock || expired || night || appearance || plates || power || netbird {
+            if clock || expired || night || appearance || plates || power || netbird || dock_icons || shell_icons {
                 state.queue_redraw();
             }
             TimeoutAction::ToDuration(std::time::Duration::from_secs(1))

@@ -79,12 +79,11 @@ impl IconLoader {
         self.refreshed = Some(now);
         let missing =
             self.rendered.values().any(Option::is_none) || self.symbolic_rendered.values().any(Option::is_none);
-        if !missing {
+        if !missing || !self.index.refresh() {
             return false;
         }
         self.rendered.retain(|_, pixels| pixels.is_some());
         self.symbolic_rendered.retain(|_, pixels| pixels.is_some());
-        self.index.forget_listings();
         self.generation = next_generation();
         true
     }
@@ -94,7 +93,6 @@ impl IconLoader {
     }
 
     pub fn load_named(&mut self, icon: &str, side: i32) -> Option<&[u8]> {
-        self.expire_missing();
         let theme = self.theme_name();
         let name = format!("icon:{}", cache_name(icon));
         if let Some(stale) = stamp_prefix(&format!("icon:{icon}"), &name) {
@@ -108,7 +106,6 @@ impl IconLoader {
     }
 
     pub fn load_symbolic(&mut self, icon: &str, side: i32, tint: Color) -> Option<&[u8]> {
-        self.expire_missing();
         let theme = self.theme_name();
         let name = cache_name(icon);
         if let Some(stale) = stamp_prefix(icon, &name) {
@@ -127,7 +124,6 @@ impl IconLoader {
         if app_id.trim().is_empty() {
             return None;
         }
-        self.expire_missing();
         let theme = self.theme_name();
         let index = &mut self.index;
         let key = (app_id.to_string(), side);
@@ -196,6 +192,7 @@ struct Theme {
 
 #[derive(Debug)]
 struct Listing {
+    seen: Option<SystemTime>,
     stamp: Option<SystemTime>,
     checked: u64,
     names: HashSet<String>,
@@ -203,11 +200,16 @@ struct Listing {
 
 impl Listing {
     fn read(dir: &Path, epoch: u64) -> Self {
-        let stamp = settled_mtime(dir);
+        let seen = modified(dir);
+        let stamp = seen.filter(|stamp| is_settled(*stamp));
         let names = std::fs::read_dir(dir)
             .map(|entries| entries.flatten().filter_map(|entry| entry.file_name().into_string().ok()).collect())
             .unwrap_or_default();
-        Self { stamp, checked: epoch, names }
+        Self { seen, stamp, checked: epoch, names }
+    }
+
+    fn outdated(&self, dir: &Path) -> bool {
+        (self.seen.is_some() && self.stamp.is_none()) || modified(dir) != self.seen
     }
 }
 
@@ -259,6 +261,18 @@ impl ThemeIndex {
         }
         chain.push(FALLBACK_THEME.to_string());
         chain
+    }
+
+    fn refresh(&mut self) -> bool {
+        let listings = self.listings.iter().any(|(dir, listing)| listing.outdated(dir));
+        let applications = self.applications.as_ref().is_some_and(|seen| *seen != applications_stamps());
+        let roots = self.roots();
+        let themes = self.themes.iter().any(|(name, theme)| theme.is_none() && load_theme(name, &roots).is_some());
+        let changed = listings || applications || themes;
+        if changed {
+            self.forget_listings();
+        }
+        changed
     }
 
     fn forget_listings(&mut self) {
@@ -1114,11 +1128,7 @@ mod tests {
 
     #[test]
     fn every_loader_starts_a_generation_no_earlier_loader_reached() {
-        let mut old = IconLoader::new(None);
-        let start = Instant::now();
-        old.rendered.insert(("missing".into(), 16), None);
-        assert!(!old.expire_missing_at(start));
-        assert!(old.expire_missing_at(start + NEGATIVE_TTL));
+        let old = IconLoader::new(None);
         let fresh = IconLoader::new(None);
         assert!(fresh.generation > old.generation, "a new theme must not reuse the old loader's cache keys");
         assert_ne!(IconLoader::default().generation, fresh.generation);
@@ -1207,6 +1217,35 @@ mod tests {
         assert_eq!(loader.index.resolve_named("late", "None", 16), Some(root.join("late.png")));
         assert!(!loader.expire_missing_at(start + NEGATIVE_TTL * 3));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn expiring_a_still_missing_icon_keeps_the_generation() {
+        let root = std::env::temp_dir().join(format!("glide-icon-still-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let past = SystemTime::now() - Duration::from_mins(10);
+        std::fs::File::open(&root).and_then(|dir| dir.set_modified(past)).expect("mtime");
+        let mut loader = IconLoader::with_roots("None", vec![root.clone()]);
+        let start = Instant::now();
+        assert!(!loader.expire_missing_at(start));
+        assert!(loader.load_named("never", 16).is_none());
+        let generation = loader.generation();
+        assert!(!loader.expire_missing_at(start + NEGATIVE_TTL), "nothing on disk changed, so nothing can resolve");
+        assert_eq!(loader.generation(), generation, "the dock keeps its tile rasters");
+        assert!(loader.rendered.values().any(Option::is_none), "the miss stays cached");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn loading_never_expires_the_misses_by_itself() {
+        let mut loader = IconLoader::with_roots("None", Vec::new());
+        loader.refreshed = Instant::now().checked_sub(NEGATIVE_TTL * 2);
+        assert!(loader.load_named("never", 16).is_none());
+        let generation = loader.generation();
+        assert!(loader.load_named("never", 16).is_none());
+        assert_eq!(loader.generation(), generation);
+        assert!(loader.rendered.values().any(Option::is_none));
     }
 
     #[test]

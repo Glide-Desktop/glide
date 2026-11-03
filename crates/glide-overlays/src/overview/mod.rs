@@ -1459,7 +1459,6 @@ impl OverviewUi {
             let rise = ((1.0 - t) * LABEL_RISE).round() as i32;
             let label_alpha = t.clamp(0.0, 1.0) as f32 * exit_alpha;
             if theme.label {
-                frame.icons.expire_missing();
                 for &(index, rect, active) in &tiles {
                     if !active {
                         continue;

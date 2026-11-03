@@ -1209,6 +1209,11 @@ impl Topbar {
     }
 
     #[must_use]
+    pub const fn next_wake(&self) -> Option<std::time::Instant> {
+        self.indicators.next_wake()
+    }
+
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         let popup = self.popup_reveal.is_animating(motion::t2());
         let layers = self.hover_layers.values().chain(self.press_layers.values()).any(Anim::is_animating);

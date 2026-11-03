@@ -119,11 +119,20 @@ impl Cycle {
         (!unit.is_zero()).then(|| Self { travel: unit * 3, rest: unit * 2 })
     }
 
+    fn into_period(self, elapsed: Duration) -> Duration {
+        let period = self.travel + self.rest;
+        Duration::from_nanos(u64::try_from(elapsed.as_nanos() % period.as_nanos().max(1)).unwrap_or(0))
+    }
+
     #[must_use]
     pub fn progress(self, elapsed: Duration) -> Option<f64> {
-        let period = self.travel + self.rest;
-        let into = Duration::from_nanos(u64::try_from(elapsed.as_nanos() % period.as_nanos().max(1)).unwrap_or(0));
+        let into = self.into_period(elapsed);
         (into < self.travel).then(|| E_IO.ease_f64(into.as_secs_f64() / self.travel.as_secs_f64()))
+    }
+
+    #[must_use]
+    pub fn until_next(self, elapsed: Duration) -> Duration {
+        (self.travel + self.rest).saturating_sub(self.into_period(elapsed))
     }
 }
 
@@ -157,6 +166,15 @@ mod tests {
         assert_eq!(cell.level_right(250), cell.level_right(100));
         assert!(cell.tip.loc.x > cell.body.loc.x + cell.body.size.w);
         assert_eq!(cell.tip.loc.x + cell.tip.size.w, STRIP_W);
+    }
+
+    #[test]
+    fn a_resting_cycle_names_when_the_next_sweep_starts() {
+        let cycle = Cycle { travel: Duration::from_millis(300), rest: Duration::from_millis(200) };
+        assert!(cycle.progress(Duration::from_millis(350)).is_none());
+        assert_eq!(cycle.until_next(Duration::from_millis(350)), Duration::from_millis(150));
+        assert_eq!(cycle.until_next(Duration::from_millis(850)), Duration::from_millis(150));
+        assert!(cycle.progress(Duration::from_millis(350) + cycle.until_next(Duration::from_millis(350))).is_some());
     }
 
     #[test]
