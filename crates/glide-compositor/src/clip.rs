@@ -247,6 +247,21 @@ fn clip_uniforms(
     ]
 }
 
+fn opaque_inside_clip(
+    inner: &[Rectangle<i32, Physical>], rect: [f32; 4], radii: [f32; 4],
+) -> Vec<Rectangle<i32, Physical>> {
+    let max_r = radii.iter().copied().fold(0.0f32, f32::max).ceil() as i32;
+    let x = (rect[0].round() as i32) + max_r;
+    let y = (rect[1].round() as i32) + max_r;
+    let w = (rect[2].round() as i32) - 2 * max_r;
+    let h = (rect[3].round() as i32) - 2 * max_r;
+    if w <= 0 || h <= 0 {
+        return Vec::new();
+    }
+    let inner_box = Rectangle::new(Point::from((x, y)), smithay::utils::Size::from((w, h)));
+    inner.iter().filter_map(|region| region.intersection(inner_box)).collect()
+}
+
 #[derive(Debug)]
 pub struct Clipped<E> {
     inner: E,
@@ -301,19 +316,8 @@ impl<E: Element> Element for Clipped<E> {
         if inner.is_empty() {
             return OpaqueRegions::default();
         }
-        let geom = self.geometry(scale);
-        let (rect, radii) = self.clip.resolve(geom);
-        let max_r = radii.iter().copied().fold(0.0f32, f32::max).ceil() as i32;
-        let x = (rect[0].round() as i32) + geom.loc.x + max_r;
-        let y = (rect[1].round() as i32) + geom.loc.y + max_r;
-        let w = (rect[2].round() as i32) - 2 * max_r;
-        let h = (rect[3].round() as i32) - 2 * max_r;
-        if w <= 0 || h <= 0 {
-            return OpaqueRegions::default();
-        }
-        let inner_box = Rectangle::new(Point::from((x, y)), smithay::utils::Size::from((w, h)));
-        let clipped_regions: Vec<_> = inner.iter().filter_map(|r| r.intersection(inner_box)).collect();
-        OpaqueRegions::from_slice(&clipped_regions)
+        let (rect, radii) = self.clip.resolve(self.geometry(scale));
+        OpaqueRegions::from_slice(&opaque_inside_clip(&inner, rect, radii))
     }
 
     fn alpha(&self) -> f32 {
@@ -384,6 +388,21 @@ mod tests {
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
         Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    }
+
+    #[test]
+    fn opaque_regions_stay_element_relative_and_inside_the_rounded_corners() {
+        let whole = [rect(0, 0, 800, 600)];
+        let clip = [0.0, 0.0, 800.0, 600.0];
+        let radii = [12.0; 4];
+        assert_eq!(opaque_inside_clip(&whole, clip, radii), vec![rect(12, 12, 776, 576)]);
+        let inset = [8.0, 30.0, 784.0, 562.0];
+        assert_eq!(
+            opaque_inside_clip(&whole, inset, radii),
+            vec![rect(20, 42, 760, 538)],
+            "the clip rect is in the element's own space, never shifted by where the window sits"
+        );
+        assert!(opaque_inside_clip(&whole, [0.0, 0.0, 20.0, 20.0], radii).is_empty(), "all corner");
     }
 
     #[test]

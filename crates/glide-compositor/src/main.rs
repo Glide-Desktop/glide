@@ -26,6 +26,7 @@ mod focus_policy;
 mod focused_field;
 mod force_quit;
 mod framed;
+mod gpu_log;
 mod grabs;
 mod headset;
 mod identity;
@@ -148,14 +149,8 @@ fn main() -> anyhow::Result<()> {
     tracy_client::Client::start();
     profiling::register_thread!("Main");
 
-    let log_path = logging::init();
+    let _log_path = logging::init(logging::Mode::from_args(std::env::args().skip(1)));
     logging::install_panic_hook();
-
-    tracing::info!(
-        version = env!("CARGO_PKG_VERSION"),
-        log = ?log_path,
-        "starting glide"
-    );
 
     if let Err(err) = run() {
         tracing::error!("fatal: {err:#}");

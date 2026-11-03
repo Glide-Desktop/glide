@@ -59,6 +59,7 @@ use smithay::{
     wayland::{
         compositor,
         dmabuf::{DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
+        drm_syncobj::{DrmSyncobjHandler, DrmSyncobjState, supports_syncobj_eventfd},
     },
 };
 use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
@@ -82,7 +83,7 @@ type GbmDrmOutput = DrmOutput<
     DrmDeviceFd,
 >;
 
-const SUPPORTED_FORMATS: &[Fourcc] = &[Fourcc::Abgr2101010, Fourcc::Argb2101010, Fourcc::Abgr8888, Fourcc::Argb8888];
+const SUPPORTED_FORMATS: &[Fourcc] = &[Fourcc::Xrgb8888, Fourcc::Xbgr8888, Fourcc::Argb8888, Fourcc::Abgr8888];
 
 render_elements! {
     pub GlideRenderElements<=GlesRenderer>;
@@ -250,6 +251,8 @@ struct SurfaceData {
     frame_clock: FrameClock,
     estimated_vblank: Option<RegistrationToken>,
     repaint_deadline: Option<std::time::Instant>,
+    render_errors: crate::gpu_log::Throttle,
+    flip_stalls: crate::gpu_log::Throttle,
 }
 
 pub(crate) struct DeviceData {
@@ -268,6 +271,7 @@ pub struct TtyData {
     primary_gpu_path: PathBuf,
     pub(crate) device: Option<DeviceData>,
     dmabuf_state: Option<(DmabufState, DmabufGlobal)>,
+    syncobj_state: Option<DrmSyncobjState>,
 }
 
 impl TtyData {
@@ -289,7 +293,7 @@ impl TtyData {
         let primary_gpu = DrmNode::from_path(&primary_gpu_path)
             .with_context(|| format!("{} is not a DRM node", primary_gpu_path.display()))?;
 
-        Ok(Self { session, primary_gpu, primary_gpu_path, device: None, dmabuf_state: None })
+        Ok(Self { session, primary_gpu, primary_gpu_path, device: None, dmabuf_state: None, syncobj_state: None })
     }
 }
 
@@ -511,6 +515,31 @@ const OVERVIEW_WALLPAPER_ZOOM: f64 = 1.06;
 const MIRROR_CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 const FLIP_WAIT: Duration = Duration::from_millis(100);
+
+fn report_frame_error(throttle: &mut crate::gpu_log::Throttle, output: &str, stage: &str, err: &dyn std::fmt::Debug) {
+    match throttle.hit(std::time::Instant::now()) {
+        crate::gpu_log::Report::First => tracing::error!(target: "glide::gpu", output, stage, ?err, "frame failed"),
+        crate::gpu_log::Report::Summary(count) => {
+            tracing::error!(target: "glide::gpu", output, stage, count, ?err, "frames keep failing");
+        }
+        crate::gpu_log::Report::Quiet => {}
+    }
+}
+
+fn scanout_flags(overlay_planes: bool) -> FrameFlags {
+    let base = FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
+    if overlay_planes { base | FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT } else { base }
+}
+
+fn frame_flags() -> FrameFlags {
+    static FLAGS: std::sync::OnceLock<FrameFlags> = std::sync::OnceLock::new();
+    *FLAGS.get_or_init(|| {
+        let overlay = std::env::var_os("GLIDE_OVERLAY_PLANES").is_some_and(|value| value == "1");
+        let flags = scanout_flags(overlay);
+        tracing::info!(overlay_planes = overlay, ?flags, "direct scanout policy");
+        flags
+    })
+}
 
 fn frame_stats_enabled() -> bool {
     std::env::var_os("GLIDE_FRAME_STATS").is_some_and(|value| value == "1")
@@ -748,7 +777,8 @@ impl GlideState {
             .context("failed to create an EGL display for the GBM device")?;
         let egl_context = EGLContext::new(&egl_display).context("failed to create an EGL context")?;
         // SAFETY: the context is fresh and owned by this renderer alone, which only the main thread uses.
-        let gles_renderer = unsafe { GlesRenderer::new(egl_context) }.context("failed to create the GLES renderer")?;
+        let mut gles_renderer =
+            unsafe { GlesRenderer::new(egl_context) }.context("failed to create the GLES renderer")?;
 
         let dmabuf_formats = gles_renderer.dmabuf_formats();
         let default_dmabuf_feedback = DmabufFeedbackBuilder::new(node.dev_id(), dmabuf_formats.clone())
@@ -772,6 +802,12 @@ impl GlideState {
             SUPPORTED_FORMATS.iter().copied(),
             render_formats,
         );
+
+        let import_device = drm_output_manager.device().device_fd().clone();
+        let explicit_sync = supports_syncobj_eventfd(&import_device);
+        self.backend_data.syncobj_state =
+            explicit_sync.then(|| DrmSyncobjState::new::<GlideState>(&self.display_handle, import_device.clone()));
+        crate::gpu_log::log_device(&import_device, &mut gles_renderer, explicit_sync, dmabuf_formats.indexset().len());
 
         self.backend_data.device = Some(DeviceData {
             drm_output_manager,
@@ -952,6 +988,8 @@ impl GlideState {
                 &DrmOutputRenderElements::default(),
             )
             .map_err(|err| anyhow!("failed to initialize DRM output: {err}"))?;
+        let modifiers = drm_output.with_compositor(|compositor| compositor.modifiers().to_vec());
+        crate::gpu_log::log_output(&output.name(), drm_output.format(), &modifiers);
 
         let global = output.create_global::<GlideState>(&self.display_handle);
         device.surfaces.insert(
@@ -980,6 +1018,8 @@ impl GlideState {
                 frame_clock: FrameClock::default(),
                 estimated_vblank: None,
                 repaint_deadline: None,
+                render_errors: crate::gpu_log::Throttle::default(),
+                flip_stalls: crate::gpu_log::Throttle::default(),
             },
         );
 
@@ -1306,7 +1346,25 @@ impl GlideState {
             }
             return;
         }
-        surface.flip_pending = None;
+        if let Some(since) = surface.flip_pending.take() {
+            let waited = since.elapsed();
+            match surface.flip_stalls.hit(std::time::Instant::now()) {
+                crate::gpu_log::Report::First => tracing::warn!(
+                    target: "glide::gpu",
+                    output = %surface.output.name(),
+                    ?waited,
+                    "no page-flip event within the flip wait; rendering anyway"
+                ),
+                crate::gpu_log::Report::Summary(count) => tracing::warn!(
+                    target: "glide::gpu",
+                    output = %surface.output.name(),
+                    count,
+                    ?waited,
+                    "page flips keep timing out"
+                ),
+                crate::gpu_log::Report::Quiet => {}
+            }
+        }
         let started = std::time::Instant::now();
         let late = match source {
             Origin::Vblank => surface.frame_clock.last_vblank().map(|at| started.saturating_duration_since(at)),
@@ -1836,21 +1894,20 @@ impl GlideState {
                 .into_iter()
                 .map(|element| relocate(RescaleRenderElement::from_element(element, (0, 0).into(), factor), offset))
                 .collect();
-            let failed =
-                match surface.drm_output.render_frame(gles_renderer, &copied, MIRROR_CLEAR, FrameFlags::DEFAULT) {
-                    Ok(result) if !result.is_empty => {
-                        let queued = surface.drm_output.queue_frame(None).is_ok();
-                        if queued {
-                            surface.flip_pending = Some(std::time::Instant::now());
-                        }
-                        !queued
+            let failed = match surface.drm_output.render_frame(gles_renderer, &copied, MIRROR_CLEAR, frame_flags()) {
+                Ok(result) if !result.is_empty => {
+                    let queued = surface.drm_output.queue_frame(None).is_ok();
+                    if queued {
+                        surface.flip_pending = Some(std::time::Instant::now());
                     }
-                    Ok(_) => false,
-                    Err(err) => {
-                        tracing::error!(output = %target.name(), ?err, "failed to render a mirrored frame");
-                        true
-                    }
-                };
+                    !queued
+                }
+                Ok(_) => false,
+                Err(err) => {
+                    tracing::error!(output = %target.name(), ?err, "failed to render a mirrored frame");
+                    true
+                }
+            };
             if failed {
                 self.schedule_repaint(crtc);
             }
@@ -1981,7 +2038,7 @@ impl GlideState {
         let clear_color = self.background_color.0;
 
         let built = std::time::Instant::now();
-        let render_result = surface.drm_output.render_frame(gles_renderer, &elements, clear_color, FrameFlags::DEFAULT);
+        let render_result = surface.drm_output.render_frame(gles_renderer, &elements, clear_color, frame_flags());
 
         let outcome = match render_result {
             Ok(res) if res.is_empty => FrameOutcome::NoDamage(res.states),
@@ -1996,16 +2053,19 @@ impl GlideState {
                         FrameOutcome::Queued(res.states)
                     }
                     Err(err) => {
-                        tracing::error!("failed to queue frame: {:?}", err);
+                        report_frame_error(&mut surface.render_errors, &output.name(), "queue", &err);
                         FrameOutcome::Failed
                     }
                 }
             }
             Err(err) => {
-                tracing::error!("failed to render frame: {:?}", err);
+                report_frame_error(&mut surface.render_errors, &output.name(), "render", &err);
                 FrameOutcome::Failed
             }
         };
+        if matches!(outcome, FrameOutcome::Queued(_) | FrameOutcome::NoDamage(_)) {
+            surface.render_errors.clear();
+        }
 
         if let Some(stats) = surface.stats.as_mut() {
             let now = std::time::Instant::now();
@@ -2219,6 +2279,12 @@ impl GlideState {
     }
 }
 
+impl DrmSyncobjHandler for GlideState {
+    fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {
+        self.backend_data.syncobj_state.as_mut()
+    }
+}
+
 impl DmabufHandler for GlideState {
     fn dmabuf_state(&mut self) -> &mut DmabufState {
         &mut self
@@ -2244,6 +2310,27 @@ impl DmabufHandler for GlideState {
                 notifier.failed();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod scanout_tests {
+    use super::*;
+
+    #[test]
+    fn overlay_planes_stay_off_unless_asked_for() {
+        let flags = scanout_flags(false);
+        assert!(!flags.contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT));
+        assert!(flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT), "fullscreen windows still scan out");
+        assert!(!flags.contains(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY), "only in the swapchain's format");
+        assert!(flags.contains(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT));
+        assert!(scanout_flags(true).contains(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT));
+    }
+
+    #[test]
+    fn the_swapchain_prefers_opaque_eight_bit_formats() {
+        assert_eq!(SUPPORTED_FORMATS[0], Fourcc::Xrgb8888);
+        assert!(SUPPORTED_FORMATS.iter().all(|format| !matches!(format, Fourcc::Argb2101010 | Fourcc::Abgr2101010)));
     }
 }
 

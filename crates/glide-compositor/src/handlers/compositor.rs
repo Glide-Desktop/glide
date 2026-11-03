@@ -1,16 +1,21 @@
 use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
-    reexports::wayland_server::{
-        Client,
-        protocol::{wl_buffer, wl_surface::WlSurface},
+    reexports::{
+        calloop::{EventSource, Interest},
+        wayland_server::{
+            Client, Resource,
+            protocol::{wl_buffer, wl_surface::WlSurface},
+        },
     },
     utils::{Logical, Point},
     wayland::{
         buffer::BufferHandler,
         compositor::{
             BufferAssignment, CompositorClientState, CompositorHandler, CompositorState, SurfaceAttributes,
-            add_destruction_hook, get_parent, is_sync_subsurface, with_states,
+            add_blocker, add_destruction_hook, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states,
         },
+        dmabuf::get_dmabuf,
+        drm_syncobj::DrmSyncobjCachedState,
         shm::{ShmHandler, ShmState},
     },
 };
@@ -36,6 +41,9 @@ impl CompositorHandler for GlideState {
             if state.window_id_for_surface(surface).is_some() {
                 state.untrack_window(surface);
             }
+        });
+        add_pre_commit_hook::<Self, _>(surface, |state: &mut Self, _display, surface: &WlSurface| {
+            state.wait_for_buffer(surface);
         });
     }
 
@@ -99,6 +107,56 @@ impl CompositorHandler for GlideState {
 }
 
 impl GlideState {
+    fn wait_for_buffer(&mut self, surface: &WlSurface) {
+        let mut acquire = None;
+        let dmabuf = with_states(surface, |states| {
+            acquire.clone_from(&states.cached_state.get::<DrmSyncobjCachedState>().pending().acquire_point);
+            match states.cached_state.get::<SurfaceAttributes>().pending().buffer.as_ref() {
+                Some(BufferAssignment::NewBuffer(buffer)) => get_dmabuf(buffer).cloned().ok(),
+                _ => None,
+            }
+        });
+        let Some(dmabuf) = dmabuf else {
+            return;
+        };
+        let Some(client) = surface.client() else {
+            return;
+        };
+        if let Some(acquire) = acquire {
+            match acquire.generate_blocker() {
+                Ok((blocker, source)) => {
+                    if self.unblock_when(source, client).is_ok() {
+                        add_blocker(surface, blocker);
+                    }
+                    return;
+                }
+                Err(err) => tracing::debug!(target: "glide::gpu", ?err, "cannot wait on an acquire point"),
+            }
+        }
+        match dmabuf.generate_blocker(Interest::READ) {
+            Ok((blocker, source)) => {
+                if self.unblock_when(source, client).is_ok() {
+                    add_blocker(surface, blocker);
+                }
+            }
+            Err(err) => tracing::trace!(target: "glide::gpu", ?err, "no implicit fence to wait on"),
+        }
+    }
+
+    fn unblock_when<S>(&self, source: S, client: Client) -> Result<(), ()>
+    where
+        S: EventSource<Event = (), Ret = Result<(), std::io::Error>> + 'static,
+    {
+        self.loop_handle
+            .insert_source(source, move |(), _, state| {
+                let display = state.display_handle.clone();
+                state.client_compositor_state(&client).blocker_cleared(state, &display);
+                Ok(())
+            })
+            .map(drop)
+            .map_err(|err| tracing::warn!(target: "glide::gpu", ?err, "cannot wait for a client buffer"))
+    }
+
     fn mapped_location(&self, surface: &WlSurface) -> Option<Point<i32, Logical>> {
         self.mapped_window(surface).and_then(|window| self.space.element_location(&window))
     }
