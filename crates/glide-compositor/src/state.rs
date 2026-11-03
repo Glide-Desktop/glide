@@ -343,7 +343,7 @@ pub struct GlideState {
     pub shell_palette: (glide_theme::Appearance, glide_theme::Accent),
     pub night_light: crate::config::NightLightConfig,
     pub night_light_scheduled: Option<bool>,
-    pub night_light_fade: (glide_ui::Tween, bool),
+    pub night_light_fade: (glide_ui::Tween, bool, Option<std::time::Instant>),
     pub motion: MotionPolicy,
 
     pub font_family: Option<String>,
@@ -508,7 +508,7 @@ impl GlideState {
             shell_palette: (glide_theme::Appearance::Dark, glide_theme::Accent::Blue),
             night_light: crate::config::NightLightConfig::default(),
             night_light_scheduled: None,
-            night_light_fade: (glide_ui::Tween::at(0.0), false),
+            night_light_fade: (glide_ui::Tween::at(0.0), false, None),
             motion: MotionPolicy::default(),
             active_slider_drag: None,
             font_family: None,
@@ -1668,7 +1668,11 @@ impl GlideState {
             return false;
         }
         let animating = self.night_light_fade.0.is_animating(night_light_fade_duration());
-        self.paint_night_light();
+        let now = std::time::Instant::now();
+        if gamma_due(self.night_light_fade.2, now, animating) {
+            self.night_light_fade.2 = Some(now);
+            self.paint_night_light();
+        }
         self.night_light_fade.1 = animating;
         animating
     }
@@ -4239,6 +4243,12 @@ pub fn night_light_fade_duration() -> std::time::Duration {
     glide_theme::motion::scaled(std::time::Duration::from_millis(1500))
 }
 
+const GAMMA_PERIOD: std::time::Duration = std::time::Duration::from_millis(16);
+
+fn gamma_due(last: Option<std::time::Instant>, now: std::time::Instant, animating: bool) -> bool {
+    !animating || last.is_none_or(|at| now.saturating_duration_since(at) >= GAMMA_PERIOD)
+}
+
 #[must_use]
 pub fn logical_rect(rect: glide_layout::Rectangle) -> Rectangle<i32, Logical> {
     Rectangle::new(
@@ -4418,6 +4428,15 @@ pub fn auto_output_scale(physical_mm: (i32, i32), mode_px: (i32, i32)) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gamma_is_written_at_most_once_per_refresh_period() {
+        let start = std::time::Instant::now();
+        assert!(gamma_due(None, start, true), "the first frame of a fade is painted");
+        assert!(!gamma_due(Some(start), start + GAMMA_PERIOD / 2, true), "a second loop pass in the frame waits");
+        assert!(gamma_due(Some(start), start + GAMMA_PERIOD, true));
+        assert!(gamma_due(Some(start), start + GAMMA_PERIOD / 2, false), "the final value is always painted");
+    }
 
     mod keyboard_state {
         use super::super::{layout_of, release_keyboard, replace_modifiers};

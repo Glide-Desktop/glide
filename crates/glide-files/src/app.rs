@@ -1178,9 +1178,7 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![iced::time::every(POLL).map(|_| Message::Tick)];
-        let sweeping =
-            self.jobs.iter().any(|job| job.progress.total_items == 0 && job.launch.is_none() && !job.meter.is_paused());
-        if sweeping || self.motion.is_animating(Instant::now()) {
+        if self.motion.is_animating(Instant::now()) {
             subscriptions.push(window::frames().map(Message::Frame));
         }
         subscriptions.push(Subscription::run(crate::service::requests).map(Message::Service));

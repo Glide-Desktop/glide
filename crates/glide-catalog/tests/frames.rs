@@ -70,8 +70,11 @@ fn every_page_settles_and_stops_asking_for_frames_except_live_indicators() {
         eprintln!("{page:?}: {} frames, {state}, view + layout {build:.1} ms", run.frames);
     }
     for (page, run) in runs {
-        let spinning = matches!(page, Page::Feedback | Page::Cards);
-        assert_eq!(run.settled, !spinning, "only the spinners keep animating: {page:?}");
+        let spinning = matches!(page, Page::Feedback);
+        assert_eq!(
+            run.settled, !spinning,
+            "only on-screen spinners keep animating; Cards has its below the fold: {page:?}"
+        );
         if run.settled {
             assert!(run.frames <= 30, "{page:?} settles within t4 at 60 Hz: {} frames", run.frames);
         }

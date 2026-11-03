@@ -555,7 +555,10 @@ impl<M> Widget<M, Theme, Renderer> for Spin<'_, M> {
         &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
         clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
-        if matches!(event, Event::Window(window::Event::RedrawRequested(_))) && !motion::is_disabled() {
+        if matches!(event, Event::Window(window::Event::RedrawRequested(_)))
+            && !motion::is_disabled()
+            && viewport.intersects(&layout.bounds())
+        {
             shell.request_redraw();
         }
         self.content.as_widget_mut().update(
@@ -579,9 +582,59 @@ impl<M> Widget<M, Theme, Renderer> for Spin<'_, M> {
     }
 }
 
+pub struct Onscreen<'a, M> {
+    content: Element<'a, M>,
+}
+
+#[must_use]
+pub fn onscreen<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    Element::new(Onscreen { content: content.into() })
+}
+
+#[must_use]
+pub fn wants_frame(event: &Event, layout: Layout<'_>, viewport: &Rectangle) -> bool {
+    !matches!(event, Event::Window(window::Event::RedrawRequested(_))) || viewport.intersects(&layout.bounds())
+}
+
+impl<M> Widget<M, Theme, Renderer> for Onscreen<'_, M> {
+    forward!(content: children, diff, size, layout, operate, mouse_interaction, draw, overlay<M>);
+
+    fn update(
+        &mut self, tree: &mut Tree, event: &Event, layout: Layout<'_>, cursor: mouse::Cursor, renderer: &Renderer,
+        clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
+    ) {
+        if !wants_frame(event, layout, viewport) {
+            return;
+        }
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_is_only_wanted_by_what_the_viewport_shows() {
+        let node = layout::Node::new(Size::new(20.0, 20.0)).move_to(iced::Point::new(0.0, 500.0));
+        let layout = Layout::new(&node);
+        let redraw = Event::Window(window::Event::RedrawRequested(Instant::now()));
+        let view = Rectangle::new(iced::Point::ORIGIN, Size::new(200.0, 200.0));
+        assert!(!wants_frame(&redraw, layout, &view), "a spinner scrolled away asks for no frames");
+        let below = Rectangle::new(iced::Point::new(0.0, 400.0), Size::new(200.0, 200.0));
+        assert!(wants_frame(&redraw, layout, &below));
+        let click = Event::Mouse(mouse::Event::CursorLeft);
+        assert!(wants_frame(&click, layout, &view), "only redraw events are held back");
+    }
 
     #[test]
     fn a_lingering_value_outlives_its_source_until_the_exit_is_done() {

@@ -13,7 +13,7 @@ use iced::{Color, Element, Event, Point, Radians, Rectangle, Renderer, Size, The
 
 use super::focus::{activatable, focusable};
 use super::mix;
-use crate::anim::{Motion, Speed, phase};
+use crate::anim::{Motion, Speed, onscreen, phase};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Pointer {
@@ -589,7 +589,7 @@ pub fn paused_progress<'a, M: 'a>(paint: &Paint, fraction: Option<f32>, paused: 
 
 fn bar<'a, M: 'a>(paint: &Paint, fraction: Option<f32>, paused: bool) -> Element<'a, M> {
     let fraction = fraction.map(|value| value.clamp(0.0, 1.0));
-    surface(Progress { paint: *paint, fraction, height: 6.0, paused }).width(iced::Fill).height(6).into()
+    onscreen(surface(Progress { paint: *paint, fraction, height: 6.0, paused }).width(iced::Fill).height(6))
 }
 
 struct Chevron {
@@ -677,7 +677,7 @@ pub fn spinner<'a, M: 'a>(paint: &Paint, large: bool) -> Element<'a, M> {
 
 #[must_use]
 pub fn sized_spinner<'a, M: 'a>(paint: &Paint, side: f32) -> Element<'a, M> {
-    surface(Spinner { paint: *paint }).width(side).height(side).into()
+    onscreen(surface(Spinner { paint: *paint }).width(side).height(side))
 }
 
 #[cfg(test)]
