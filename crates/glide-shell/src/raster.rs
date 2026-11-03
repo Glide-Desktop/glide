@@ -56,19 +56,64 @@ pub fn shadow(
             color: layer.color,
         })
         .collect();
-    glide_paint::draw_outset_shadow_and_border(
-        &mut canvas.buf,
-        canvas.w * scale,
-        canvas.h * scale,
-        width as f32 * factor,
-        height as f32 * factor,
-        &specs,
-        0.0,
-        Color([0.0; 4]),
-        radius * factor,
-        Some(radius * factor),
-    );
+    let (buf_w, buf_h) = (canvas.w * scale, canvas.h * scale);
+    let template = shadow_template(margin * scale, radius * factor, &specs);
+    if !template.compose(&mut canvas.buf, buf_w, buf_h) {
+        glide_paint::draw_outset_shadow_and_border(
+            &mut canvas.buf,
+            buf_w,
+            buf_h,
+            width as f32 * factor,
+            height as f32 * factor,
+            &specs,
+            0.0,
+            Color([0.0; 4]),
+            radius * factor,
+            Some(radius * factor),
+        );
+    }
     Some(canvas)
+}
+
+type ShadowKey = (i32, u32, Vec<[u32; 6]>);
+
+const SHADOW_TEMPLATES: usize = 32;
+
+thread_local! {
+    static TEMPLATES: std::cell::RefCell<Vec<(ShadowKey, std::rc::Rc<glide_paint::OutsetShadow>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn shadow_template(
+    margin: i32, radius: f32, specs: &[glide_paint::ShadowLayerSpec],
+) -> std::rc::Rc<glide_paint::OutsetShadow> {
+    let key: ShadowKey = (
+        margin,
+        radius.to_bits(),
+        specs
+            .iter()
+            .map(|spec| {
+                let [r, g, b, a] = spec.color.0.map(f32::to_bits);
+                [spec.dy.to_bits(), spec.blur.to_bits(), r, g, b, a]
+            })
+            .collect(),
+    );
+    TEMPLATES.with(|templates| {
+        let mut templates = templates.borrow_mut();
+        if let Some(index) = templates.iter().position(|(kept, _)| *kept == key) {
+            let entry = templates.remove(index);
+            let template = entry.1.clone();
+            templates.push(entry);
+            return template;
+        }
+        let template =
+            std::rc::Rc::new(glide_paint::OutsetShadow::new(margin, specs, 0.0, Color([0.0; 4]), radius, Some(radius)));
+        if templates.len() >= SHADOW_TEMPLATES {
+            templates.remove(0);
+        }
+        templates.push((key, template.clone()));
+        template
+    })
 }
 
 pub struct Backdrop<'a> {
@@ -245,5 +290,62 @@ impl<B: AsMut<[u8]>> Canvas<'_, B> {
         };
         draw(&mut glyph, rect.size.w, rect.size.h, self.scale);
         self.blit(&glyph, rect);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layers() -> Vec<glide_theme::elevation::ShadowLayer> {
+        glide_theme::elevation::layers(glide_theme::elevation::Level::El3, glide_theme::Appearance::Dark)
+            .into_iter()
+            .filter(|layer| layer.blur > 0.0)
+            .collect()
+    }
+
+    #[test]
+    fn a_templated_shadow_matches_the_direct_blur() {
+        let margin = 40;
+        for scale in [1, 2] {
+            for (w, h) in [(356, 201), (712, 84), (900, 554)] {
+                let shadow = shadow((w, h), margin, 12.0, &layers(), scale).expect("canvas");
+                let factor = scale as f32;
+                let specs: Vec<_> = layers()
+                    .iter()
+                    .map(|layer| glide_paint::ShadowLayerSpec {
+                        dy: layer.dy * factor,
+                        blur: layer.blur * factor,
+                        color: layer.color,
+                    })
+                    .collect();
+                let (buf_w, buf_h) = (shadow.w * scale, shadow.h * scale);
+                let mut direct = vec![0u8; shadow.buf.len()];
+                glide_paint::draw_outset_shadow_and_border(
+                    &mut direct,
+                    buf_w,
+                    buf_h,
+                    w as f32 * factor,
+                    h as f32 * factor,
+                    &specs,
+                    0.0,
+                    Color([0.0; 4]),
+                    12.0 * factor,
+                    Some(12.0 * factor),
+                );
+                let worst = direct.iter().zip(&shadow.buf).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+                assert!(worst <= 2, "{w}x{h}@{scale}: off by {worst}");
+            }
+        }
+    }
+
+    #[test]
+    fn one_template_serves_every_size_of_a_morph() {
+        let margin = 40;
+        let first = shadow_template(margin, 12.0, &[]);
+        for size in 300..330 {
+            assert!(shadow((size, size / 2), margin, 12.0, &[], 1).is_some());
+        }
+        assert!(std::rc::Rc::ptr_eq(&first, &shadow_template(margin, 12.0, &[])));
     }
 }
