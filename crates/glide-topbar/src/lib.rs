@@ -883,6 +883,7 @@ pub struct Topbar {
     qs_row_cache: Cache<QsPowerKey>,
     qs_confirm_cache: Cache<QsPowerKey>,
     qs_bg_cache: Cache<(i32, i32)>,
+    qs_sliders: HashMap<SliderKey, MemoryRenderBuffer>,
     qs_detail_cache: Cache<(u64, u64, Option<Slot>, Detail)>,
     headset_cache: Cache<headset_view::HeadsetKey>,
     phone_cache: Cache<phone_view::PhoneKey>,
@@ -987,6 +988,7 @@ impl Topbar {
         self.qs_row_cache.clear();
         self.qs_confirm_cache.clear();
         self.qs_bg_cache.clear();
+        self.qs_sliders.clear();
         self.qs_detail_cache.clear();
         self.headset_cache.clear();
         self.phone_cache.clear();
@@ -4139,8 +4141,16 @@ fn push_qs_main<R: ShellRenderer>(
     topbar: &mut Topbar, frame: &mut Frame<'_, R>, rect: Rectangle<i32, Logical>, (reveal, slide): (f64, f64),
 ) {
     let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
-    let key = topbar.qs_main_key(painter);
-    let (_, flags, motion, hovered, shape) = key;
+    let (revs, flags, live, hovered, shape) = topbar.qs_main_key(painter);
+    let motion = QsMotion { volume: volume_icon_step(live.volume), mic: 0, brightness: 0, ..live };
+    let key = (revs, flags, motion, hovered, shape);
+    let (shift, alpha) = qs_main_motion(slide);
+    let left = rect.loc.x - shift;
+    let visible = qs_geometry(&topbar.qs_shape(Some(painter)));
+    for (buffer, bounds) in qs_slider_layers(topbar, painter, &visible, (live, hovered, flags.dragging), output_scale) {
+        let element = Rectangle::new(Point::from((left + bounds.loc.x, rect.loc.y + bounds.loc.y)), bounds.size);
+        push_placed(renderer, &buffer, Placed { popup: rect, element, progress: reveal, alpha }, scale, elements);
+    }
     let hidden = topbar.drawer_hidden();
     let (output, input) = (topbar.output_label(), topbar.input_label());
     let theme = &topbar.theme;
@@ -4151,14 +4161,13 @@ fn push_qs_main<R: ShellRenderer>(
     let Some(buffer) = topbar.qs_cache.resolve(key, output_scale, || {
         let ctx = QsRenderContext { painter, theme, hovered };
         let mut canvas = Canvas::new(rect.size.w, full_h, output_scale)?.with_icons(Some(icons));
-        let draw = QsDraw { status, panel, geometry: geometry.clone(), flags, motion, labels: (&output, &input) };
+        let labels = (output.as_str(), input.as_str());
+        let draw = QsDraw { status, panel, geometry: geometry.clone(), flags, motion, labels, sliders: false };
         draw_quick_settings(&mut canvas, &ctx, &draw);
         Some(canvas.finish())
     }) else {
         return;
     };
-    let (shift, alpha) = qs_main_motion(slide);
-    let left = rect.loc.x - shift;
     for (from, to, height) in drawer_bands(geometry.drawer.map(|area| area.rect), hidden, full_h) {
         let element = Rectangle::new(Point::from((left, rect.loc.y + to)), Size::from((rect.size.w, height)));
         let placed = Placed { popup: rect, element, progress: reveal, alpha };
@@ -4261,6 +4270,7 @@ struct QsDraw<'a> {
     flags: QsFlags,
     motion: QsMotion,
     labels: (&'a str, &'a str),
+    sliders: bool,
 }
 
 fn percent(value: f64) -> u8 {
@@ -4405,7 +4415,7 @@ fn draw_switch(
     c.fill(knob, theme.thumb, R_ROUND);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum QsThumb {
     Rest,
     Hover,
@@ -4487,6 +4497,89 @@ fn draw_qs_track(c: &mut Canvas<'_>, theme: &TopbarTheme, rect: LocalRect, track
     let thumb = circle(side);
     c.fill(thumb, theme.thumb, R_ROUND);
     c.stroke(thumb, 1.0, R_ROUND, theme.line);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SliderKind {
+    Volume,
+    Mic,
+    Brightness,
+}
+
+type SliderKey = (SliderKind, u8, bool, bool, QsThumb, i32, u64);
+
+const SLIDER_HALO: i32 = 18;
+
+const SLIDER_LAYERS: usize = 128;
+
+const fn volume_icon_step(pct: u8) -> u8 {
+    if pct == 0 {
+        0
+    } else if pct < 33 {
+        1
+    } else if pct < 66 {
+        33
+    } else {
+        66
+    }
+}
+
+fn qs_slider_layers(
+    topbar: &mut Topbar, painter: &crate::paint::Painter, geometry: &QsGeometry,
+    (live, hovered, dragging): (QsMotion, Option<Slot>, Option<Slot>), scale: i32,
+) -> Vec<(MemoryRenderBuffer, LocalRect)> {
+    let status = &topbar.system_status;
+    let mut rows = vec![(
+        SliderKind::Volume,
+        Slot::QsVolumeTrack,
+        geometry.volume,
+        QsTrack {
+            pct: live.volume,
+            muted: status.volume_muted,
+            enabled: status.volume_available,
+            thumb: QsThumb::Rest,
+        },
+    )];
+    if let Some(mic) = geometry.mic {
+        let track = QsTrack { pct: live.mic, muted: status.mic_muted, enabled: true, thumb: QsThumb::Rest };
+        rows.push((SliderKind::Mic, Slot::QsMicTrack, mic, track));
+    }
+    let brightness =
+        QsTrack { pct: live.brightness, muted: false, enabled: status.brightness_available, thumb: QsThumb::Rest };
+    rows.push((SliderKind::Brightness, Slot::QsBrightnessTrack, geometry.brightness, brightness));
+
+    let theme = &topbar.theme;
+    let mut out = Vec::with_capacity(rows.len());
+    for (kind, slot, row, track) in rows {
+        let track = QsTrack { thumb: QsThumb::of(slot, hovered, dragging), ..track };
+        let union = row.readout.merge(row.track);
+        let bounds = local_rect(
+            union.loc.x - SLIDER_HALO,
+            union.loc.y - SLIDER_HALO,
+            union.size.w + SLIDER_HALO * 2,
+            union.size.h + SLIDER_HALO * 2,
+        );
+        let key: SliderKey =
+            (kind, track.pct, track.muted, track.enabled, track.thumb, scale, crate::paint::painter_generation());
+        if !topbar.qs_sliders.contains_key(&key) {
+            if topbar.qs_sliders.len() >= SLIDER_LAYERS {
+                topbar.qs_sliders.clear();
+            }
+            let Some(mut c) = Canvas::new(bounds.size.w, bounds.size.h, scale) else {
+                continue;
+            };
+            let shift = |rect: LocalRect| Rectangle::new(rect.loc - bounds.loc, rect.size);
+            let ctx = QsRenderContext { painter, theme, hovered };
+            let readout = track.enabled.then_some(track.pct);
+            draw_qs_readout(&mut c, &ctx, shift(row.readout), readout);
+            draw_qs_track(&mut c, theme, shift(row.track), track);
+            topbar.qs_sliders.insert(key, c.finish());
+        }
+        if let Some(buffer) = topbar.qs_sliders.get(&key) {
+            out.push((buffer.clone(), bounds));
+        }
+    }
+    out
 }
 
 fn draw_qs_readout(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, rect: LocalRect, value: Option<u8>) {
@@ -4862,9 +4955,11 @@ fn draw_qs_sliders(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<
         draw_qs_device_pill(c, ctx, volume.label, (draw.labels.0, draw.flags.drawer == Some(Drawer::Output)));
         draw_qs_drill(c, ctx, volume.drill, Slot::QsVolumeMore);
     }
-    draw_qs_readout(c, ctx, volume.readout, enabled.then_some(pct));
-    let thumb = QsThumb::of(Slot::QsVolumeTrack, ctx.hovered, draw.flags.dragging);
-    draw_qs_track(c, theme, volume.track, QsTrack { pct, muted, enabled, thumb });
+    if draw.sliders {
+        draw_qs_readout(c, ctx, volume.readout, enabled.then_some(pct));
+        let thumb = QsThumb::of(Slot::QsVolumeTrack, ctx.hovered, draw.flags.dragging);
+        draw_qs_track(c, theme, volume.track, QsTrack { pct, muted, enabled, thumb });
+    }
 
     if let Some(mic) = geometry.mic {
         draw_qs_mic_row(c, ctx, draw, mic);
@@ -4885,9 +4980,11 @@ fn draw_qs_sliders(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<
         label_colour,
         &QS_LABEL,
     );
-    draw_qs_readout(c, ctx, brightness.readout, enabled.then_some(pct));
-    let thumb = QsThumb::of(Slot::QsBrightnessTrack, ctx.hovered, draw.flags.dragging);
-    draw_qs_track(c, theme, brightness.track, QsTrack { pct, muted: false, enabled, thumb });
+    if draw.sliders {
+        draw_qs_readout(c, ctx, brightness.readout, enabled.then_some(pct));
+        let thumb = QsThumb::of(Slot::QsBrightnessTrack, ctx.hovered, draw.flags.dragging);
+        draw_qs_track(c, theme, brightness.track, QsTrack { pct, muted: false, enabled, thumb });
+    }
 }
 
 fn draw_qs_mic_glyph(c: &mut Canvas<'_>, rect: LocalRect, (muted, colour): (bool, Color)) {
@@ -4938,9 +5035,11 @@ fn draw_qs_mic_row(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<
             c.fill(dot(QS_MIC_DOT), theme.ok, R_ROUND);
         }
     }
-    draw_qs_readout(c, ctx, row.readout, Some(pct));
-    let thumb = QsThumb::of(Slot::QsMicTrack, ctx.hovered, draw.flags.dragging);
-    draw_qs_track(c, theme, row.track, QsTrack { pct, muted, enabled: true, thumb });
+    if draw.sliders {
+        draw_qs_readout(c, ctx, row.readout, Some(pct));
+        let thumb = QsThumb::of(Slot::QsMicTrack, ctx.hovered, draw.flags.dragging);
+        draw_qs_track(c, theme, row.track, QsTrack { pct, muted, enabled: true, thumb });
+    }
 }
 
 fn draw_qs_battery_card(c: &mut Canvas<'_>, ctx: &QsRenderContext<'_>, draw: &QsDraw<'_>) {
@@ -6925,8 +7024,15 @@ mod tests {
                 let flags = QsFlags { dragging: Some(Slot::QsMicTrack), ..flags };
                 let labels = (output_label.as_str(), input_label.as_str());
                 let geometry = geometry.clone();
-                let draw =
-                    QsDraw { status: bar.system_status(), panel: &bar.qs_panel, geometry, flags, motion, labels };
+                let draw = QsDraw {
+                    status: bar.system_status(),
+                    panel: &bar.qs_panel,
+                    geometry,
+                    flags,
+                    motion,
+                    labels,
+                    sliders: true,
+                };
                 draw_quick_settings(&mut canvas, &ctx, &draw);
                 draw_qs_drawer(&mut canvas, &ctx, sliver, &bar.qs_panel);
             }
@@ -6986,8 +7092,15 @@ mod tests {
                     .expect("canvas")
                     .with_icons(Some(&mut icons));
                 let labels = (output_label.as_str(), input_label.as_str());
-                let draw =
-                    QsDraw { status: bar.system_status(), panel: &bar.qs_panel, geometry, flags, motion, labels };
+                let draw = QsDraw {
+                    status: bar.system_status(),
+                    panel: &bar.qs_panel,
+                    geometry,
+                    flags,
+                    motion,
+                    labels,
+                    sliders: true,
+                };
                 draw_quick_settings(&mut canvas, &ctx, &draw);
                 let (w, h) = ((canvas.w * canvas.scale) as u32, (canvas.h * canvas.scale) as u32);
                 let image = glide_shell::image::Image::from_bgra(w, h, canvas.buf.clone()).expect("image");
@@ -7052,6 +7165,21 @@ mod tests {
         let _late = glide_ui::clock::FramePass::enter(start + motion::t2() * 3 / 4);
         assert_eq!(bar.qs_main_key(&painter()), key, "the drawer is revealed by cropping one raster");
         assert!(hidden > bar.drawer_hidden(), "less of the drawer is hidden as it opens");
+    }
+
+    #[test]
+    fn the_static_card_keeps_the_volume_icon_of_the_live_level() {
+        for muted in [false, true] {
+            for pct in 0..=100 {
+                assert_eq!(volume_icon_name(muted, volume_icon_step(pct)), volume_icon_name(muted, pct), "{pct}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_slider_layer_holds_the_dragged_thumb_and_its_ring() {
+        let reach = QS_SLIDER_THUMB_DRAG + QS_SLIDER_RING_DRAG * 2 + 2;
+        assert!(SLIDER_HALO * 2 >= reach, "a thumb at either end of the track stays inside its layer");
     }
 
     #[test]
