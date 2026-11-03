@@ -294,7 +294,7 @@ impl GlideState {
         true
     }
 
-    pub fn tick_smooth_wheel(&mut self) -> bool {
+    pub fn smooth_wheel_pending(&mut self) -> bool {
         if !self.smooth_wheel.smoother.is_animating() {
             return false;
         }
@@ -302,9 +302,22 @@ impl GlideState {
             self.smooth_wheel.clear();
             return false;
         }
-        let deltas = self.smooth_wheel.smoother.tick(Instant::now());
+        true
+    }
+
+    pub fn tick_smooth_wheel_on(&mut self, output: &smithay::output::Output) {
+        if !self.smooth_wheel.smoother.is_animating() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().map(|pointer| pointer.current_location()).unwrap_or_default();
+        if !self.space.output_geometry(output).is_some_and(|area| area.to_f64().contains(pointer)) {
+            return;
+        }
+        if !self.smooth_wheel_pending() {
+            return;
+        }
+        let deltas = self.smooth_wheel.smoother.tick(glide_ui::clock::now());
         self.send_wheel(deltas);
-        self.smooth_wheel.smoother.is_animating()
     }
 
     pub fn flush_smooth_wheel_before(&mut self, next: Option<&WlSurface>) {

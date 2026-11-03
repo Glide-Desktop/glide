@@ -1262,6 +1262,15 @@ impl GlideState {
             return;
         }
         let _pass = self.enter_frame_pass(crtc);
+        let surface_output = self
+            .backend_data
+            .device
+            .as_ref()
+            .and_then(|device| device.surfaces.get(&crtc))
+            .map(|surface| surface.output.clone());
+        if let Some(output) = surface_output {
+            self.tick_smooth_wheel_on(&output);
+        }
 
         self.reset_dead_cursor_surface();
         self.sync_topbar_home();

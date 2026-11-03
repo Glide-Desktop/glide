@@ -227,7 +227,7 @@ fn run() -> anyhow::Result<()> {
         let topbar_animating = state.topbar.is_animating();
         let flash_animating = state.screenshot_flash.tick(std::time::Instant::now());
         let osd_animating = state.session.osd.tick(std::time::Instant::now());
-        let wheel_animating = state.tick_smooth_wheel();
+        let wheel_animating = state.smooth_wheel_pending();
         let shot_animating = state.tick_shot();
         let polkit_animating = state.tick_polkit();
         let keychain_animating = state.tick_keychain_prompt();
