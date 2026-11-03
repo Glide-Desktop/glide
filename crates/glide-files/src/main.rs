@@ -15,10 +15,7 @@ fn main() -> iced::Result {
         };
         glide_files::chooser::install(request);
     } else {
-        let target = std::env::args().nth(1).and_then(|arg| glide_files::fs::path_from_arg(&arg));
-        if let glide_files::service::Claim::Forwarded = glide_files::service::claim(target.as_deref()) {
-            return Ok(());
-        }
+        let _ = glide_files::service::claim();
     }
     let (width, height) = requested_size().unwrap_or(if choosing { (900.0, 600.0) } else { (1000.0, 650.0) });
     let settings = glide_sdk::Settings::new("glide-files")

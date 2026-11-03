@@ -21,8 +21,8 @@ pub use entry::{
 pub use listing::{SortBy, SortConfig, natural_cmp, read_directory, search_recursive, sort_entries};
 pub use operations::{
     ClipboardAction, FileClipboard, create_directory, create_empty_file, create_from_template, create_link,
-    open_in_terminal, open_with_default, query_disk_space, remove_recursive, rename_item, unique_path, validate_name,
-    write_new_file,
+    open_in_terminal, open_window, open_with_default, query_disk_space, remove_recursive, rename_item, unique_path,
+    validate_name, write_new_file,
 };
 pub use places::{
     Place, bookmarks_file, home_dir, load_bookmarks, mounted_drives, standard_places, templates_dir, templates_in,

@@ -232,6 +232,22 @@ pub fn open_in_terminal(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+pub fn open_window(target: &Path, token: Option<String>) -> io::Result<()> {
+    let program =
+        std::env::current_exe().ok().filter(|program| program.exists()).unwrap_or_else(|| PathBuf::from("glide-files"));
+    let env = token.map_or_else(glide_sdk::system::launch_env, |token| {
+        vec![("XDG_ACTIVATION_TOKEN", token.clone()), ("DESKTOP_STARTUP_ID", token)]
+    });
+    let mut child = Command::new(program)
+        .arg(target)
+        .env_remove(glide_app::chooser::REQUEST_ENV)
+        .envs(env)
+        .stdin(Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
 #[must_use]
 pub fn query_disk_space(path: &Path) -> Option<(u64, u64)> {
     use std::ffi::CString;

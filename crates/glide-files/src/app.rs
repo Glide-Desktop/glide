@@ -52,6 +52,7 @@ const EDGE_SCROLL: f32 = 36.0;
 const SCROLL_STEP: f32 = 32.0;
 const CONTENT_TOP: f32 = widgets::HEADER_HEIGHT + 1.0;
 const KEY_MENU_INSET: f32 = 48.0;
+const PRISTINE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -364,6 +365,7 @@ pub enum Message {
     Hover(Hover, bool),
     Frame(Instant),
     TerminalAt(PathBuf),
+    NewWindow(Option<PathBuf>),
     RunAction(Box<Offer>),
     ExtensionsLoaded(Arc<Extensions>),
     PropertiesOf(PathBuf),
@@ -517,6 +519,7 @@ impl Message {
                 | Self::Permission(_)
                 | Self::Terminal
                 | Self::TerminalAt(_)
+                | Self::NewWindow(_)
                 | Self::RunAction(_)
                 | Self::OpenWithDialog
                 | Self::PickApp(_)
@@ -786,6 +789,7 @@ pub struct App {
     refresh_pending: bool,
     pub chooser: Option<crate::chooser::State>,
     handles: Option<dnd::Handles>,
+    pristine: Option<Instant>,
     dnd: Option<dnd::Link>,
     drag_arm: Option<DragArm>,
     scroll_y: f32,
@@ -893,6 +897,13 @@ fn expire(id: u64) -> Task<Message> {
     Task::perform(blocking(|| std::thread::sleep(NOTICE_TIMEOUT)), move |_| Message::NoticeExpired(id))
 }
 
+fn new_window(target: PathBuf, token: Option<String>, lang: Lang) -> Task<Message> {
+    run(move || Outcome {
+        text: crate::fs::open_window(&target, token).err().map(|_| Key::NoNewWindow.text(lang).to_string()),
+        ..Outcome::default()
+    })
+}
+
 fn terminal(dir: PathBuf, lang: Lang) -> Task<Message> {
     run(move || Outcome {
         text: open_in_terminal(&dir).err().map(|_| Key::NoTerminal.text(lang).to_string()),
@@ -909,6 +920,15 @@ fn requested_location() -> Option<PathBuf> {
     match crate::chooser::request() {
         Some(request) => request.current_folder.clone(),
         None => std::env::args().nth(1).and_then(|arg| path_from_arg(&arg)),
+    }
+}
+
+fn start_location(requested: Option<PathBuf>) -> (PathBuf, Option<PathBuf>) {
+    let fallback = home_dir().unwrap_or_else(|| PathBuf::from("/"));
+    match requested {
+        Some(path) if path.is_dir() => (path, None),
+        Some(path) if path.exists() => (path.parent().map_or(fallback, Path::to_path_buf), Some(path)),
+        _ => (fallback, None),
     }
 }
 
@@ -940,14 +960,8 @@ impl App {
         let trash = Trash::user();
         let prefs = config::load_prefs();
         let requested = requested_location();
-        let fallback = home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let (current, focus) = match requested {
-            Some(path) if path.is_dir() => (path, None),
-            Some(path) if path.exists() => {
-                (path.parent().map_or_else(|| fallback.clone(), Path::to_path_buf), Some(path))
-            }
-            _ => (fallback, None),
-        };
+        let pristine = requested.is_none().then(Instant::now);
+        let (current, focus) = start_location(requested);
         let mut app = Self {
             theme: look.paint(),
             icons: IconTheme::new(look.icon_theme.as_deref(), look.appearance_now(), look.accent),
@@ -996,6 +1010,7 @@ impl App {
             refresh_pending: false,
             chooser: crate::chooser::request().cloned().map(crate::chooser::State::new),
             handles: None,
+            pristine,
             dnd: None,
             drag_arm: None,
             scroll_y: 0.0,
@@ -1455,6 +1470,9 @@ impl App {
                 self.motion.set_hover(key, on, Instant::now());
             }
             Message::TerminalAt(dir) => return terminal(dir, self.lang),
+            Message::NewWindow(dir) => {
+                return new_window(dir.unwrap_or_else(|| self.current.clone()), None, self.lang);
+            }
             Message::PropertiesOf(path) => return self.properties_of(path),
             Message::CopyText(text) => return iced::clipboard::write(text),
             Message::AddBookmark(path) => {
@@ -2861,28 +2879,37 @@ impl App {
 
     fn serve(&mut self, request: crate::service::Request) -> Task<Message> {
         use crate::service::Request;
+        let here = matches!(request, Request::Properties(..)) || self.takes_requests_here(Instant::now());
+        self.pristine = None;
+        let (Request::Open(path, token) | Request::Reveal(path, token) | Request::Properties(path, token)) = &request;
+        let token = (!token.is_empty()).then(|| token.clone());
+        if !here {
+            return new_window(path.clone(), token, self.lang);
+        }
+        if let (Some(handles), Some(token)) = (self.handles, token) {
+            let _ = std::thread::Builder::new().name("glide-files-activate".into()).spawn(move || {
+                let _ = glide_app::activation::activate(handles, &token);
+            });
+        }
         let focus = Task::done(Message::Window(WindowAction::Activate));
         let task = match request {
-            Request::Open(path) if path.is_dir() => self.navigate(path),
-            Request::Open(path) | Request::Reveal(path) => match path.parent() {
+            Request::Open(path, _) if path.is_dir() => self.navigate(path),
+            Request::Open(path, _) | Request::Reveal(path, _) => match path.parent() {
                 Some(parent) if parent == self.current => self.list(parent.to_path_buf(), Arrival::Refresh, Some(path)),
                 Some(parent) => self.navigate_select(parent.to_path_buf(), Some(path)),
                 None => Task::none(),
             },
-            Request::Properties(path) => {
+            Request::Properties(path, _) => {
                 self.modal = None;
                 self.properties_of(path)
             }
-            Request::Activate(token) => {
-                if let Some(handles) = self.handles {
-                    let _ = std::thread::Builder::new().name("glide-files-activate".into()).spawn(move || {
-                        let _ = glide_app::activation::activate(handles, &token);
-                    });
-                }
-                Task::none()
-            }
         };
         Task::batch([task, focus])
+    }
+
+    #[must_use]
+    pub fn takes_requests_here(&self, now: Instant) -> bool {
+        self.history.len() == 1 && self.pristine.is_some_and(|started| now.duration_since(started) < PRISTINE)
     }
 
     fn request_thumbs(&mut self) -> Task<Message> {
@@ -4347,6 +4374,7 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
             '-' => Message::Zoom(-1),
             '0' => Message::Zoom(0),
             'n' if shift => Message::NewFolder,
+            'n' => Message::NewWindow(None),
             '1' => Message::SetView(ViewMode::Grid),
             '2' => Message::SetView(ViewMode::List),
             'w' | 'q' => Message::Quit,
@@ -4365,6 +4393,20 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
 mod navigation_tests {
     use super::{App, Arrival, Listed, Message, Renaming, Step};
     use crate::fs::FileEntry;
+
+    #[test]
+    fn bus_requests_reuse_only_a_window_that_just_started_empty() {
+        let (mut app, _) = App::new();
+        let now = std::time::Instant::now();
+        app.pristine = Some(now);
+        assert!(app.takes_requests_here(now));
+        assert!(!app.takes_requests_here(now + super::PRISTINE));
+        app.history.push(std::path::PathBuf::from("/"));
+        assert!(!app.takes_requests_here(now), "a window the user has browsed opens a new one");
+        app.history.truncate(1);
+        app.pristine = None;
+        assert!(!app.takes_requests_here(now), "a window started on a folder opens a new one");
+    }
 
     #[test]
     fn confirmation_dialogs_are_keyboard_operable_and_start_on_the_safe_choice() {

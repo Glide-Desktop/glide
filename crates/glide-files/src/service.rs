@@ -62,7 +62,7 @@ fn quicklist(requests: UnboundedSender<Request>) -> glide_app::quicklist::QuickM
     let labels = folders.iter().map(|(label, _)| label.clone()).collect();
     glide_app::quicklist::QuickMenu::new(labels, move |index| {
         if let Some((_, path)) = folders.get(index) {
-            let _ = requests.unbounded_send(Request::Open(path.clone()));
+            let _ = requests.unbounded_send(Request::Open(path.clone(), String::new()));
         }
     })
 }
@@ -138,16 +138,15 @@ impl glide_app::search_provider::Source for Folders {
     }
 
     fn activate(&self, id: &str) {
-        let _ = self.requests.unbounded_send(Request::Open(PathBuf::from(id)));
+        let _ = self.requests.unbounded_send(Request::Open(PathBuf::from(id), String::new()));
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
-    Open(PathBuf),
-    Reveal(PathBuf),
-    Properties(PathBuf),
-    Activate(String),
+    Open(PathBuf, String),
+    Reveal(PathBuf, String),
+    Properties(PathBuf, String),
 }
 
 struct FileManager {
@@ -155,28 +154,25 @@ struct FileManager {
 }
 
 impl FileManager {
-    fn forward(&self, uris: Vec<String>, startup_id: String, make: fn(PathBuf) -> Request) {
+    fn forward(&self, uris: Vec<String>, startup_id: &str, make: fn(PathBuf, String) -> Request) {
         for path in uris.into_iter().filter_map(|uri| path_from_arg(&uri)) {
-            let _ = self.requests.unbounded_send(make(path));
-        }
-        if !startup_id.is_empty() {
-            let _ = self.requests.unbounded_send(Request::Activate(startup_id));
+            let _ = self.requests.unbounded_send(make(path, startup_id.to_string()));
         }
     }
 }
 
 #[zbus::interface(name = "org.freedesktop.FileManager1")]
 impl FileManager {
-    fn show_folders(&self, uris: Vec<String>, startup_id: String) {
-        self.forward(uris, startup_id, Request::Open);
+    fn show_folders(&self, uris: Vec<String>, startup_id: &str) {
+        self.forward(uris, startup_id,Request::Open);
     }
 
-    fn show_items(&self, uris: Vec<String>, startup_id: String) {
-        self.forward(uris, startup_id, Request::Reveal);
+    fn show_items(&self, uris: Vec<String>, startup_id: &str) {
+        self.forward(uris, startup_id,Request::Reveal);
     }
 
-    fn show_item_properties(&self, uris: Vec<String>, startup_id: String) {
-        self.forward(uris, startup_id, Request::Properties);
+    fn show_item_properties(&self, uris: Vec<String>, startup_id: &str) {
+        self.forward(uris, startup_id,Request::Properties);
     }
 }
 
@@ -189,20 +185,12 @@ static SERVICE: OnceLock<Service> = OnceLock::new();
 
 pub enum Claim {
     First,
-    Forwarded,
+    Taken,
     Unavailable,
 }
 
-fn forward(connection: &Connection, target: Option<&Path>) -> bool {
-    let home = crate::fs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-    let target = target.unwrap_or(&home);
-    let method = if target.is_dir() { "ShowFolders" } else { "ShowItems" };
-    let uris = vec![crate::fs::file_uri(target)];
-    connection.call_method(Some(OWN_NAME), OBJECT, Some(FILE_MANAGER), method, &(uris, "")).is_ok()
-}
-
 #[must_use]
-pub fn claim(target: Option<&Path>) -> Claim {
+pub fn claim() -> Claim {
     let (sender, receiver) = unbounded();
     let folders = Folders { requests: sender.clone(), cache: Mutex::default() };
     let menu = quicklist(sender.clone());
@@ -217,9 +205,7 @@ pub fn claim(target: Option<&Path>) -> Claim {
     let flags = RequestNameFlags::DoNotQueue.into();
     match connection.request_name_with_flags(OWN_NAME, flags) {
         Ok(RequestNameReply::PrimaryOwner | RequestNameReply::AlreadyOwner) => {}
-        Ok(_) | Err(zbus::Error::NameTaken) => {
-            return if forward(&connection, target) { Claim::Forwarded } else { Claim::Unavailable };
-        }
+        Ok(_) | Err(zbus::Error::NameTaken) => return Claim::Taken,
         Err(_) => return Claim::Unavailable,
     }
     let _ = connection.request_name_with_flags(FILE_MANAGER, flags);

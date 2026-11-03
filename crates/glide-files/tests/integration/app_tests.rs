@@ -70,7 +70,7 @@ fn keyboard_shortcuts_map_to_intended_messages() {
     for (actual, expected) in cases {
         assert_eq!(actual, Some(expected.clone()), "{expected:?}");
     }
-    assert_eq!(chord("n", ctrl), None);
+    assert_eq!(chord("n", ctrl), Some(Message::NewWindow(None)));
 }
 
 #[test]

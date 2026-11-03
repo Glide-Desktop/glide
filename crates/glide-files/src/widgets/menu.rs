@@ -101,6 +101,7 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith)).cascades());
             }
             if single_dir {
+                entries.push(item(Key::OpenInNewWindow, Message::NewWindow(Some(selected[0].clone()))));
                 entries.push(item(Key::OpenInTerminal, Message::Terminal));
             }
             entries.extend(offered(&menu.offers));
@@ -155,6 +156,7 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
         MenuKind::Location(path) => {
             let mut entries = vec![
                 item(Key::Open, Message::Navigate(path.clone())),
+                item(Key::OpenInNewWindow, Message::NewWindow(Some(path.clone()))),
                 item(Key::OpenInTerminal, Message::TerminalAt(path.clone())).enabled(!app.trash.contains(path)),
                 item(Key::CopyPath, Message::CopyText(path.display().to_string())),
                 Entry::Separator,
@@ -291,6 +293,7 @@ fn volume_entries(app: &App, volume: &Volume) -> Vec<Entry> {
     let mut entries = match &volume.mount {
         Some(path) => vec![
             item(Key::Open, Message::Navigate(path.clone())),
+            item(Key::OpenInNewWindow, Message::NewWindow(Some(path.clone()))),
             item(Key::OpenInTerminal, Message::TerminalAt(path.clone())),
             item(Key::CopyPath, Message::CopyText(path.display().to_string())),
             Entry::Separator,
