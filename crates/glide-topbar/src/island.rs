@@ -2322,6 +2322,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nine_slices_of_the_template_reproduce_the_full_surface_pixel_for_pixel() {
+        let theme = TopbarTheme::default();
+        let (w, h, radius) = (344, 97, R2);
+        let corner = radius.ceil() as i32 + 1;
+        let side = corner * 2 + 1;
+        for scale in [1, 2] {
+            let full = Canvas::popover((w, h), scale, radius, theme.island_bg, theme.island_line).expect("full");
+            let template =
+                Canvas::popover((side, side), scale, radius, theme.island_bg, theme.island_line).expect("template");
+            let source = |at: i32, length: i32| {
+                if at < corner * scale {
+                    at
+                } else if at >= (length - corner) * scale {
+                    at - (length - side) * scale
+                } else {
+                    corner * scale
+                }
+            };
+            let mut worst = 0;
+            for y in 0..h * scale {
+                for x in 0..w * scale {
+                    let (sx, sy) = (source(x, w), source(y, h));
+                    let at = usize::try_from((y * w * scale + x) * 4).expect("index");
+                    let from = usize::try_from((sy * side * scale + sx) * 4).expect("index");
+                    for channel in 0..4 {
+                        worst = worst.max(full.buf[at + channel].abs_diff(template.buf[from + channel]));
+                    }
+                }
+            }
+            assert!(worst <= 1, "scale {scale}: a slice differs from the full surface by {worst}");
+        }
+    }
+
+    #[test]
     fn island_morph_reuses_corner_slices_across_sizes() {
         let corner = 9;
         for (w, h) in [(344, 29), (500, 120), (712, 84), (356, 201), (18, 18)] {

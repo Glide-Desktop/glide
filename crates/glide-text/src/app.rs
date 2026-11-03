@@ -1191,7 +1191,9 @@ impl App {
                 if let Some(menu) = &mut self.menu {
                     menu.reveal.settle(motion::t2());
                 }
-                self.menu.take_if(|menu| !menu.reveal.is_open() && !menu.reveal.is_visible(motion::t2()));
+                if self.menu.take_if(|menu| !menu.reveal.is_open() && !menu.reveal.is_visible(motion::t2())).is_some() {
+                    self.track_status();
+                }
                 if let Some(dialog) = &mut self.dialog {
                     dialog.reveal.settle(motion::t2());
                 }
@@ -1376,6 +1378,7 @@ impl App {
     fn open_menu(&mut self, kind: MenuKind, at: Point, keyboard: bool) {
         let selected = keyboard.then_some(0);
         self.menu = Some(Menu::new(kind, at, selected));
+        self.track_status();
     }
 
     fn dismiss_menu(&mut self) {
@@ -2818,6 +2821,21 @@ mod tests {
             },
             captured,
         )
+    }
+
+    #[test]
+    fn a_status_menu_holds_the_islands_only_while_it_is_open() {
+        let mut app = app();
+        app.window.size = iced::Size::new(1200.0, 700.0);
+        app.pointer.set(Point::new(600.0, 100.0));
+        app.open_menu(MenuKind::Syntax, Point::new(600.0, 650.0), false);
+        assert!(app.status_reveal.is_open(), "the language menu pins the islands without any pointer motion");
+        app.dismiss_menu();
+        let _ = app.update(Message::Frame);
+        std::thread::sleep(motion::t2() + std::time::Duration::from_millis(20));
+        let _ = app.update(Message::Frame);
+        assert!(app.menu.is_none());
+        assert!(!app.status_reveal.is_open(), "closing the menu lets them go with the pointer far away");
     }
 
     #[test]
