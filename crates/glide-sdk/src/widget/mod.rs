@@ -100,10 +100,36 @@ pub use strip::{Mark, Tab, TabStrip, tab_strip};
 
 type Measured = (String, u32, u16, u32, u64, u32, bool);
 
+const SHAPED_GENERATION: usize = 4096;
+
+#[derive(Debug, Default)]
+struct Generations<K, V> {
+    young: HashMap<K, V>,
+    old: HashMap<K, V>,
+}
+
+impl<K: std::hash::Hash + Eq, V: Copy> Generations<K, V> {
+    fn get(&mut self, key: &K) -> Option<V> {
+        if let Some(value) = self.young.get(key) {
+            return Some(*value);
+        }
+        let (key, value) = self.old.remove_entry(key)?;
+        self.insert(key, value);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        if self.young.len() >= SHAPED_GENERATION {
+            self.old = std::mem::take(&mut self.young);
+        }
+        self.young.insert(key, value);
+    }
+}
+
 fn shape(content: &str, style: TextStyle, wrap: Option<f32>) -> (f32, usize) {
     use iced::advanced::graphics::text::{self as graphics, cosmic_text};
     thread_local! {
-        static CACHE: RefCell<HashMap<Measured, (f32, usize)>> = RefCell::new(HashMap::new());
+        static CACHE: RefCell<Generations<Measured, (f32, usize)>> = RefCell::new(Generations::default());
     }
     let key = (
         content.to_string(),
@@ -114,7 +140,7 @@ fn shape(content: &str, style: TextStyle, wrap: Option<f32>) -> (f32, usize) {
         wrap.map_or(u32::MAX, f32::to_bits),
         style.tabular,
     );
-    if let Some(shaped) = CACHE.with_borrow(|cache| cache.get(&key).copied()) {
+    if let Some(shaped) = CACHE.with_borrow_mut(|cache| cache.get(&key)) {
         return shaped;
     }
     let mut system = graphics::font_system().write().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -128,12 +154,7 @@ fn shape(content: &str, style: TextStyle, wrap: Option<f32>) -> (f32, usize) {
     buffer.set_text(system.raw(), content, &attributes, cosmic_text::Shaping::Advanced, None);
     buffer.shape_until_scroll(system.raw(), false);
     let shaped = (graphics::measure(&buffer).0.width.ceil(), buffer.layout_runs().count().max(1));
-    CACHE.with_borrow_mut(|cache| {
-        if cache.len() > 1024 {
-            cache.clear();
-        }
-        cache.insert(key, shaped);
-    });
+    CACHE.with_borrow_mut(|cache| cache.insert(key, shaped));
     shaped
 }
 
@@ -321,6 +342,21 @@ pub fn popover<'a, M: 'a>(paint: &Paint, content: impl Into<Element<'a, M>>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_shape_cache_keeps_what_was_used_recently() {
+        let mut cache = Generations::default();
+        cache.insert(0, 0);
+        for key in 1..SHAPED_GENERATION {
+            cache.insert(key, key);
+        }
+        assert_eq!(cache.get(&0), Some(0), "a key still in use survives the first turnover");
+        for key in SHAPED_GENERATION..SHAPED_GENERATION * 2 {
+            cache.insert(key, key);
+        }
+        assert_eq!(cache.get(&0), Some(0), "touching it moved it to the young generation");
+        assert_eq!(cache.get(&1), None, "an untouched key ages out instead of every key at once");
+    }
 
     #[test]
     fn a_long_name_keeps_its_extension_and_fits_the_measured_width() {
