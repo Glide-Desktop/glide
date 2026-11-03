@@ -2,7 +2,7 @@ use super::glyphs::{Glyph, glyph};
 use super::island;
 use super::{
     Anim, Cache, E_OUT, LocalRect, Logical, MemoryRenderBuffer, Point, Rectangle, Slot, Topbar, TopbarTheme,
-    local_rect, motion, numeric_label_width, quantize, widest_digits,
+    local_rect, motion, numeric_label_width, widest_digits,
 };
 use crate::i18n::Lang;
 use crate::paint::TextAlign;
@@ -26,7 +26,6 @@ const WEEK_H: i32 = 16;
 const CELL_H: i32 = 26;
 const CELL_GAP: i32 = 2;
 const ROWS: i32 = 6;
-const SLIDE_QUANTUM: f64 = 24.0;
 const GRID_Y: i32 = HEADER_H + BLOCK_GAP + WEEK_H + BLOCK_GAP;
 pub(super) const BLOCK_W: i32 = island::WIDE - glide_theme::spacing::SP3 * 2;
 pub(super) const BLOCK_H: i32 = GRID_Y + ROWS * CELL_H + (ROWS - 1) * CELL_GAP;
@@ -36,7 +35,9 @@ const TODAY_STYLE: TextStyle = TextStyle { size_px: 9.5, line_height_px: 12.0, w
 const DAY_STYLE: TextStyle = TextStyle { size_px: 11.5, line_height_px: 14.0, weight: 500, ..TextStyle::NUM };
 const TODAY_DAY_STYLE: TextStyle = TextStyle { weight: 650, ..DAY_STYLE };
 
-type CalKey = (YearMonth, Option<YearMonth>, i32, u8, Option<(i32, u32, u32)>, FirstWeekday, Lang);
+type CalKey = (YearMonth, Option<(i32, u32, u32)>, FirstWeekday, Lang);
+
+type GridKey = (YearMonth, Option<(i32, u32, u32)>, FirstWeekday, Lang, i32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MetricsKey {
@@ -55,6 +56,7 @@ pub(super) struct CalendarView {
     dir: i32,
     slide: Anim,
     cache: Cache<CalKey>,
+    grids: std::collections::HashMap<GridKey, MemoryRenderBuffer>,
     metrics: Option<(MetricsKey, (i32, i32))>,
 }
 
@@ -69,6 +71,7 @@ impl Default for CalendarView {
             dir: 0,
             slide: Anim::at(1.0),
             cache: Cache::default(),
+            grids: std::collections::HashMap::new(),
             metrics: None,
         }
     }
@@ -77,6 +80,7 @@ impl Default for CalendarView {
 impl CalendarView {
     pub(super) fn clear(&mut self) {
         self.cache.clear();
+        self.grids.clear();
         self.metrics = None;
     }
 
@@ -223,40 +227,59 @@ impl Topbar {
     }
 }
 
+pub(super) struct Block {
+    pub header: MemoryRenderBuffer,
+    pub months: Vec<(MemoryRenderBuffer, i32)>,
+}
+
+pub(super) const GRID_TOP: i32 = GRID_Y;
+
 pub(super) fn block(
     topbar: &mut Topbar, painter: &crate::paint::Painter, icons: &mut crate::icon::IconLoader, output_scale: i32,
-) -> Option<MemoryRenderBuffer> {
+) -> Option<Block> {
     let theme = &topbar.theme;
     let view = &mut topbar.calendar;
     let slide = view.slide.value().clamp(0.0, 1.0);
-    let settled = slide >= 1.0;
-    let from = view.from.filter(|_| !settled);
-    let key: CalKey = (
-        view.month(),
-        from,
-        view.dir,
-        quantize(slide, SLIDE_QUANTUM),
-        view.today.map(|now| (now.year, now.month0, now.day)),
-        view.first,
-        view.lang,
-    );
-    let frame = Frame {
-        month: view.month(),
-        from,
-        dir: view.dir,
-        slide,
-        today: view.today,
-        first: view.first,
-        lang: view.lang,
-    };
-    view.cache.resolve(key, output_scale, || draw(painter, theme, &frame, output_scale, Some(icons))).cloned()
+    let from = view.from.filter(|_| slide < 1.0);
+    let today = view.today.map(|now| (now.year, now.month0, now.day));
+    let frame = Frame { month: view.month(), today: view.today, first: view.first, lang: view.lang };
+    let key: CalKey = (frame.month, today, frame.first, frame.lang);
+    let header = view.cache.resolve(key, output_scale, || draw(painter, theme, &frame, output_scale, Some(icons)))?;
+    let header = header.clone();
+    let mut months = Vec::with_capacity(2);
+    for (month, offset) in slide_offsets(frame.month, from, view.dir, slide) {
+        let grid_key = (month, today, frame.first, frame.lang, output_scale);
+        if !view.grids.contains_key(&grid_key) {
+            if view.grids.len() >= GRID_CACHE {
+                view.grids.clear();
+            }
+            let ctx = GridPaint { painter, theme, today: frame.today, first: frame.first };
+            let mut grid = Canvas::new(BLOCK_W, BLOCK_H - GRID_Y, output_scale)?;
+            draw_month(&mut grid, &ctx, month, 0);
+            view.grids.insert(grid_key, grid.finish());
+        }
+        if let Some(buffer) = view.grids.get(&grid_key) {
+            months.push((buffer.clone(), offset));
+        }
+    }
+    Some(Block { header, months })
+}
+
+const GRID_CACHE: usize = 6;
+
+fn slide_offsets(month: YearMonth, from: Option<YearMonth>, dir: i32, slide: f64) -> Vec<(YearMonth, i32)> {
+    let travel = f64::from(BLOCK_W);
+    let incoming = (f64::from(dir) * (1.0 - slide) * travel).round() as i32;
+    let mut out = Vec::with_capacity(2);
+    if let Some(from) = from {
+        out.push((from, incoming - (f64::from(dir) * travel).round() as i32));
+    }
+    out.push((month, incoming));
+    out
 }
 
 struct Frame {
     month: YearMonth,
-    from: Option<YearMonth>,
-    dir: i32,
-    slide: f64,
     today: Option<LocalNow>,
     first: FirstWeekday,
     lang: Lang,
@@ -297,19 +320,8 @@ fn draw(
     painter: &crate::paint::Painter, theme: &TopbarTheme, frame: &Frame, scale: i32,
     icons: Option<&mut crate::icon::IconLoader>,
 ) -> Option<MemoryRenderBuffer> {
-    let mut c = Canvas::new(BLOCK_W, BLOCK_H, scale)?.with_icons(icons);
+    let mut c = Canvas::new(BLOCK_W, GRID_Y, scale)?.with_icons(icons);
     draw_header(&mut c, painter, theme, frame);
-
-    let mut grid = Canvas::new(BLOCK_W, BLOCK_H - GRID_Y, scale)?;
-    let travel = f64::from(BLOCK_W);
-    let grid_ctx = GridPaint { painter, theme, today: frame.today, first: frame.first };
-    let incoming = (f64::from(frame.dir) * (1.0 - frame.slide) * travel).round() as i32;
-    if let Some(from) = frame.from {
-        let outgoing = incoming - (f64::from(frame.dir) * travel).round() as i32;
-        draw_month(&mut grid, &grid_ctx, from, outgoing);
-    }
-    draw_month(&mut grid, &grid_ctx, frame.month, incoming);
-    c.blit(&grid.buf, local_rect(0, GRID_Y, BLOCK_W, grid.h));
     Some(c.finish())
 }
 
@@ -494,6 +506,16 @@ pub fn month_title(lang: Lang, month: YearMonth) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_month_slide_moves_two_fixed_grids_side_by_side() {
+        let (may, june) = (YearMonth::new(2026, 4), YearMonth::new(2026, 5));
+        assert_eq!(slide_offsets(june, None, 1, 1.0), vec![(june, 0)]);
+        let half = slide_offsets(june, Some(may), 1, 0.5);
+        assert_eq!(half, vec![(may, -BLOCK_W / 2), (june, BLOCK_W / 2)]);
+        let back = slide_offsets(may, Some(june), -1, 0.25);
+        assert_eq!(back[0].1 - back[1].1, BLOCK_W, "going back, the outgoing month leaves to the right");
+    }
 
     #[test]
     fn the_drawn_grid_has_a_row_for_every_row_of_the_model() {

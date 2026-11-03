@@ -2106,8 +2106,17 @@ fn push_calendar<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>
     let height = calendar_height(topbar.nc_items.len());
     let content = spot.content(WIDE, height);
     if let Some(block) = calendar::block(topbar, painter, icons, output_scale) {
-        let block_rect = local_rect(content.loc.x + PAD, content.loc.y + CAL_TOP, WIDE - PAD * 2, calendar::BLOCK_H);
-        push_clipped(renderer, &block, (block_rect, clip), alpha, scale, elements);
+        let (left, top) = (content.loc.x + PAD, content.loc.y + CAL_TOP);
+        let header = local_rect(left, top, WIDE - PAD * 2, calendar::GRID_TOP);
+        push_clipped(renderer, &block.header, (header, clip), alpha, scale, elements);
+        let grid_area =
+            local_rect(left, top + calendar::GRID_TOP, WIDE - PAD * 2, calendar::BLOCK_H - calendar::GRID_TOP);
+        if let Some(grid_clip) = grid_area.intersection(clip) {
+            for (buffer, offset) in &block.months {
+                let month = Rectangle::new(Point::from((left + offset, grid_area.loc.y)), grid_area.size);
+                push_clipped(renderer, buffer, (month, grid_clip), alpha, scale, elements);
+            }
+        }
     }
     let first = first_item(topbar.island.first_item, topbar.nc_items.len());
     let hovered = topbar.hovered.filter(|slot| matches!(slot, Slot::NcClearAll));
