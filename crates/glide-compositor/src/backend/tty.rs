@@ -556,11 +556,13 @@ fn push_wallpaper_elements(
     ))));
 
     let fade = glide_theme::motion::t3();
-    if surface.wallpaper_old.as_ref().is_some_and(|(_, since)| fade.is_zero() || since.elapsed() >= fade) {
+    if surface.wallpaper_old.as_ref().is_some_and(|(_, since)| fade.is_zero() || glide_ui::clock::since(*since) >= fade)
+    {
         surface.wallpaper_old = None;
     }
     if let Some((buffer, since)) = surface.wallpaper_old.as_mut() {
-        let left = 1.0 - glide_theme::motion::ease_io((since.elapsed().as_secs_f64() / fade.as_secs_f64()).min(1.0));
+        let done = glide_ui::clock::since(*since).as_secs_f64() / fade.as_secs_f64();
+        let left = 1.0 - glide_theme::motion::ease_io(done.min(1.0));
         if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
             gles_renderer,
             origin,
@@ -1267,7 +1269,7 @@ impl GlideState {
         let blank_alpha = self.blank_fade_alpha();
         let pointer_location = self.seat.get_pointer().map(|pointer| pointer.current_location()).unwrap_or_default();
         let cursor_status = self.cursor_status.clone();
-        let elapsed = self.start_time.elapsed();
+        let elapsed = glide_ui::clock::since(self.start_time);
         let dock_area = self.dock_area();
         let launcher_area = self.launcher_area();
         let fullscreen_center = self.focused_fullscreen_center();
@@ -1349,7 +1351,7 @@ impl GlideState {
                 .wallpaper_key
                 .is_some_and(|(w, h, _, _, scale)| (w, h, scale) == (phys_w, phys_h, fractional.to_bits()));
             surface.wallpaper_old =
-                surface.wallpaper_buf.take().filter(|_| same_screen).map(|buffer| (buffer, std::time::Instant::now()));
+                surface.wallpaper_buf.take().filter(|_| same_screen).map(|buffer| (buffer, glide_ui::clock::now()));
             let mut buf = vec![0; usize::try_from(phys_w * phys_h * 4).unwrap_or_default()];
             glide_paint::draw_wallpaper_into(&mut buf, phys_w, phys_h, wallpaper_fit);
             let opaque_regions = wallpaper_fit
@@ -1690,7 +1692,7 @@ impl GlideState {
             prepend(&mut elements, overlay);
         }
 
-        let now = std::time::Instant::now();
+        let now = glide_ui::clock::now();
         let osd_alpha = self.session.osd.alpha(now);
         if osd_alpha > 0.0 && primary {
             let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
@@ -1952,7 +1954,7 @@ impl GlideState {
         }
         elements.drain(cursor_count..cursor_count + masks.len());
 
-        let flash = self.screenshot_flash.alpha_on(&output, std::time::Instant::now());
+        let flash = self.screenshot_flash.alpha_on(&output, glide_ui::clock::now());
         if flash > 0.0 {
             surface.screenshot_flash.update((logical_size.0, logical_size.1), [flash, flash, flash, flash]);
             elements.insert(

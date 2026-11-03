@@ -220,7 +220,7 @@ impl Landing {
         if duration.is_zero() {
             return 1.0;
         }
-        (self.started.elapsed().as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
+        (glide_ui::clock::since(self.started).as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
     }
 }
 
@@ -377,7 +377,7 @@ impl OverviewUi {
             entries: entries.to_vec(),
             hover: glide_ui::HoverAnimation::default(),
             close_hover: glide_ui::HoverAnimation::default(),
-            phase: Phase::Opening { started: Instant::now(), from: SceneFrom::ZERO },
+            phase: Phase::Opening { started: glide_ui::clock::now(), from: SceneFrom::ZERO },
             duration: theme.duration(),
             theme: theme.clone(),
             place,
@@ -430,7 +430,7 @@ impl OverviewUi {
     }
 
     pub fn watch_close(&mut self, id: WindowId, newest: WindowId) {
-        self.close_watch.ask(id, newest, Instant::now());
+        self.close_watch.ask(id, newest, glide_ui::clock::now());
     }
 
     #[must_use]
@@ -442,7 +442,7 @@ impl OverviewUi {
         if self.is_closing() {
             return None;
         }
-        self.close_watch.poll(Instant::now(), live)
+        self.close_watch.poll(glide_ui::clock::now(), live)
     }
 
     fn grid_area(&self) -> Rectangle<i32, Logical> {
@@ -639,7 +639,7 @@ impl OverviewUi {
             self.glide_from(id, rect);
         } else {
             self.landings.retain(|landing| landing.id != id);
-            self.landings.push(Landing { id, from: rect, started: Instant::now() });
+            self.landings.push(Landing { id, from: rect, started: glide_ui::clock::now() });
         }
     }
 
@@ -668,7 +668,7 @@ impl OverviewUi {
         if self.duration.is_zero() {
             return 1.0;
         }
-        let elapsed = started.elapsed().as_secs_f64();
+        let elapsed = glide_ui::clock::since(started).as_secs_f64();
         (elapsed / self.duration.as_secs_f64()).clamp(0.0, 1.0)
     }
 
@@ -701,7 +701,9 @@ impl OverviewUi {
     pub fn is_animating(&self) -> bool {
         let phase_animating = match self.phase {
             Phase::Open | Phase::Interactive { .. } => false,
-            Phase::Opening { started, .. } | Phase::Closing { started, .. } => started.elapsed() < self.duration,
+            Phase::Opening { started, .. } | Phase::Closing { started, .. } => {
+                glide_ui::clock::since(started) < self.duration
+            }
         };
         phase_animating || self.hovers_animating()
     }
@@ -719,11 +721,13 @@ impl OverviewUi {
     pub fn tick(&mut self) -> Tick {
         self.landings.retain(|landing| landing.progress() < 1.0);
         match self.phase {
-            Phase::Opening { started, .. } if started.elapsed() >= self.duration => {
+            Phase::Opening { started, .. } if glide_ui::clock::since(started) >= self.duration => {
                 self.phase = Phase::Open;
                 Tick::Running
             }
-            Phase::Closing { started, select, .. } if started.elapsed() >= self.duration => Tick::Finished { select },
+            Phase::Closing { started, select, .. } if glide_ui::clock::since(started) >= self.duration => {
+                Tick::Finished { select }
+            }
             Phase::Open | Phase::Interactive { .. } if self.hovers_animating() => Tick::Running,
             Phase::Open | Phase::Interactive { .. } => Tick::Idle,
             Phase::Opening { .. } | Phase::Closing { .. } => Tick::Running,
@@ -743,7 +747,7 @@ impl OverviewUi {
         let release = glide_theme::motion::Release::new(1.0 - current, velocity, self.theme.duration());
         let from = SceneFrom { primary: current, backdrop: self.backdrop_progress(), release: Some(release) };
         self.duration = release.duration;
-        self.phase = Phase::Opening { started: Instant::now(), from };
+        self.phase = Phase::Opening { started: glide_ui::clock::now(), from };
     }
 
     pub fn catch(&mut self) -> bool {
@@ -777,7 +781,7 @@ impl OverviewUi {
             velocity.map(|velocity| glide_theme::motion::Release::new(-primary, velocity, self.theme.duration()));
         let from = SceneFrom { primary, backdrop: self.backdrop_progress(), release };
         self.duration = release.map_or_else(|| self.scaled_duration(primary), |release| release.duration);
-        self.phase = Phase::Closing { started: Instant::now(), select, from };
+        self.phase = Phase::Closing { started: glide_ui::clock::now(), select, from };
     }
 
     fn scaled_duration(&self, fraction: f64) -> Duration {
@@ -952,7 +956,7 @@ impl OverviewUi {
         };
         self.strip.set_drop(slot);
         if let Some(drag) = self.drag.as_mut() {
-            drag.set_target(target, Instant::now());
+            drag.set_target(target, glide_ui::clock::now());
         }
         true
     }
@@ -980,7 +984,7 @@ impl OverviewUi {
     }
 
     pub fn drag_dwell(&mut self) -> Option<WorkspaceId> {
-        let side = self.drag.as_mut().filter(|drag| drag.is_lifted())?.dwell_elapsed(Instant::now())?;
+        let side = self.drag.as_mut().filter(|drag| drag.is_lifted())?.dwell_elapsed(glide_ui::clock::now())?;
         self.neighbour(if side == Side::Left { -1 } else { 1 })
     }
 

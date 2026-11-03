@@ -13,11 +13,12 @@ fn progress(born: Instant) -> f32 {
     if span.is_zero() {
         return 1.0;
     }
-    glide_theme::motion::ease_out((born.elapsed().as_secs_f64() / span.as_secs_f64()).clamp(0.0, 1.0)) as f32
+    glide_theme::motion::ease_out((glide_ui::clock::since(born).as_secs_f64() / span.as_secs_f64()).clamp(0.0, 1.0))
+        as f32
 }
 
 fn born(surface: &WlSurface) -> Instant {
-    with_states(surface, |states| states.data_map.get_or_insert(|| Born(Instant::now())).0)
+    with_states(surface, |states| states.data_map.get_or_insert(|| Born(glide_ui::clock::now())).0)
 }
 
 const POPUP_TRAVEL: f32 = 6.0;
@@ -34,7 +35,7 @@ pub fn alpha(surface: &WlSurface) -> f32 {
 
 #[must_use]
 pub fn animating(surface: &WlSurface) -> bool {
-    !span().is_zero() && born(surface).elapsed() < span()
+    !span().is_zero() && glide_ui::clock::since(born(surface)) < span()
 }
 
 #[cfg(test)]

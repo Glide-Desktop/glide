@@ -248,7 +248,7 @@ impl Switcher {
             mode,
             trigger,
             selected,
-            created: Instant::now(),
+            created: glide_ui::clock::now(),
             reveal: glide_ui::Reveal::closed().with_ease(glide_theme::motion::ease_out),
             highlight,
             swap: glide_ui::Tween::at(1.0),
@@ -386,7 +386,7 @@ impl Switcher {
     }
 
     fn show_delay_elapsed(&self) -> bool {
-        self.created.elapsed() >= glide_theme::motion::t1()
+        glide_ui::clock::since(self.created) >= glide_theme::motion::t1()
     }
 
     pub fn tick(&mut self) -> bool {

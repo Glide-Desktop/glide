@@ -186,10 +186,12 @@ impl HeaderBar {
             self.theme_rev = self.theme_rev.wrapping_add(1);
         }
         if self.focused != focused {
-            let now = std::time::Instant::now();
+            let now = glide_ui::clock::now();
             let duration = super::focus_fade();
-            let remaining =
-                self.focus_fade_started.map(|started| duration.saturating_sub(started.elapsed())).unwrap_or_default();
+            let remaining = self
+                .focus_fade_started
+                .map(|started| duration.saturating_sub(glide_ui::clock::since(started)))
+                .unwrap_or_default();
             self.focus_fade_started = Some(now.checked_sub(remaining).unwrap_or(now));
             for buffers in self.buffers.values_mut() {
                 buffers.titlebar_key = None;
@@ -255,7 +257,7 @@ impl HeaderBar {
     #[must_use]
     pub fn is_focus_fading(&self) -> bool {
         let duration = super::focus_fade();
-        !duration.is_zero() && self.focus_fade_started.is_some_and(|started| started.elapsed() < duration)
+        !duration.is_zero() && self.focus_fade_started.is_some_and(|started| glide_ui::clock::since(started) < duration)
     }
 
     fn focus_fade_t(&mut self) -> f32 {
@@ -263,7 +265,7 @@ impl HeaderBar {
             return 1.0;
         };
         let duration = super::focus_fade();
-        let elapsed = started.elapsed();
+        let elapsed = glide_ui::clock::since(started);
         if duration.is_zero() || elapsed >= duration {
             self.focus_fade_started = None;
             return 1.0;

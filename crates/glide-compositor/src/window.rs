@@ -94,7 +94,7 @@ impl GlideWindow {
             ),
             _ => (OPEN_START_SCALE, Point::from((0, 0))),
         };
-        self.store_animation(OpenAnimation { started: Instant::now(), start_scale, start_offset });
+        self.store_animation(OpenAnimation { started: glide_ui::clock::now(), start_scale, start_offset });
     }
 
     fn store_animation<T: 'static>(&self, animation: T) {
@@ -134,7 +134,7 @@ impl GlideWindow {
         {
             return;
         }
-        self.store_animation(GeometryAnimation { started: Instant::now(), duration, from, to });
+        self.store_animation(GeometryAnimation { started: glide_ui::clock::now(), duration, from, to });
     }
 
     pub(crate) fn cancel_geometry_animation(&self) {
@@ -199,7 +199,7 @@ fn frame_of(content: Size<i32, Logical>, header: i32) -> Size<i32, Logical> {
 }
 
 fn running(started: Instant, duration: Duration) -> Option<Duration> {
-    let elapsed = started.elapsed();
+    let elapsed = glide_ui::clock::since(started);
     (!duration.is_zero() && elapsed < duration).then_some(elapsed)
 }
 

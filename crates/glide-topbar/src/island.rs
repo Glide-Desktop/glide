@@ -319,7 +319,7 @@ impl Default for Island {
             nc_seen: None,
             nc_old: None,
             nc_fade: Anim::at(1.0),
-            epoch: Instant::now(),
+            epoch: glide_ui::clock::now(),
             bars_drawn: None,
             bar_ink: None,
             bars: HashMap::new(),
@@ -1259,7 +1259,7 @@ fn push_bars<R: ShellRenderer>(
     renderer: &mut R, island: &mut Island, media: &MediaWidget, (x, content, clip): (i32, LocalRect, LocalRect),
     (alpha, scale, output_scale): (f32, Scale<f64>, i32), elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
 ) {
-    let now = Instant::now();
+    let now = glide_ui::clock::now();
     let clock = bars_clock(now.saturating_duration_since(island.epoch), motion::scale());
     island.bars_drawn = (media.playing && clock.is_some()).then_some(now);
     let ink = bar_colour(media);
@@ -1826,7 +1826,7 @@ fn push_keychain<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>
     let Some(view) = topbar.island.keychain.as_ref() else {
         return;
     };
-    let now = Instant::now();
+    let now = glide_ui::clock::now();
     let motion = topbar.island.keychain_motion;
     let clip = spot.clip;
     let mut content = spot.content(keychain_view::WIDTH, layout.height);
@@ -1893,7 +1893,7 @@ fn push_polkit<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, 
     let Some(view) = topbar.island.polkit.as_ref() else {
         return;
     };
-    let now = Instant::now();
+    let now = glide_ui::clock::now();
     let motion = topbar.island.polkit_motion;
     let clip = spot.clip;
     let mut content = spot.content(polkit_view::WIDTH, layout.height);
@@ -2599,9 +2599,9 @@ mod tests {
     fn the_equaliser_pumps_frames_only_while_its_bars_are_being_drawn() {
         let mut island = Island::default();
         assert!(!island.is_animating());
-        island.bars_drawn = Some(Instant::now());
+        island.bars_drawn = Some(glide_ui::clock::now());
         assert!(island.is_animating());
-        island.bars_drawn = Instant::now().checked_sub(BARS_LIVE * 2);
+        island.bars_drawn = glide_ui::clock::now().checked_sub(BARS_LIVE * 2);
         assert!(!island.is_animating(), "a hidden or locked bar stops the pump");
     }
 

@@ -665,7 +665,7 @@ impl Launcher {
             apps,
             page: 0,
             phase: Phase::Opening,
-            started: Instant::now(),
+            started: glide_ui::clock::now(),
             from: 0.0,
             from_k: 1.0,
             release: None,
@@ -699,7 +699,7 @@ impl Launcher {
             list_scroll: 0,
             row_layers: LayerTweens::new(),
             dot_tween: glide_ui::Tween::at(0.0),
-            caret_epoch: Instant::now(),
+            caret_epoch: glide_ui::clock::now(),
             caret_timer_armed: false,
             clear_hover: glide_ui::Tween::at(0.0),
             scrim: SolidColorBuffer::default(),
@@ -837,7 +837,7 @@ impl Launcher {
     fn edit(&mut self, text_changed: bool, op: impl FnOnce(&mut field::TextField) -> bool) -> bool {
         let changed = op(&mut self.field);
         if changed {
-            self.caret_epoch = Instant::now();
+            self.caret_epoch = glide_ui::clock::now();
             self.search_field = None;
             if text_changed {
                 self.refilter();
@@ -891,7 +891,7 @@ impl Launcher {
             return false;
         }
         self.field.clear();
-        self.caret_epoch = Instant::now();
+        self.caret_epoch = glide_ui::clock::now();
         self.category = CategoryFilter::All;
         self.sync_chip_tweens();
         self.refilter();
@@ -996,7 +996,7 @@ impl Launcher {
         if half.is_zero() {
             return true;
         }
-        let phase = self.caret_epoch.elapsed().as_nanos() / half.as_nanos().max(1);
+        let phase = glide_ui::clock::since(self.caret_epoch).as_nanos() / half.as_nanos().max(1);
         phase.is_multiple_of(2)
     }
 
@@ -1006,7 +1006,7 @@ impl Launcher {
         if half.is_zero() || self.phase == Phase::Closing {
             return None;
         }
-        let elapsed = self.caret_epoch.elapsed().as_nanos();
+        let elapsed = glide_ui::clock::since(self.caret_epoch).as_nanos();
         let step = half.as_nanos().max(1);
         let next = (elapsed / step + 1) * step;
         let next = u64::try_from(next).ok()?;
@@ -1339,7 +1339,7 @@ impl Launcher {
         if duration.is_zero() {
             return 1.0;
         }
-        let elapsed = self.started.elapsed().as_secs_f64() / duration.as_secs_f64();
+        let elapsed = glide_ui::clock::since(self.started).as_secs_f64() / duration.as_secs_f64();
         elapsed.clamp(0.0, 1.0)
     }
 
@@ -1388,7 +1388,7 @@ impl Launcher {
         (self.from, self.from_k) = if release.is_some() { (p * k, 1.0) } else { (p, k) };
         self.phase = phase;
         self.release = release;
-        self.started = Instant::now();
+        self.started = glide_ui::clock::now();
     }
 
     pub fn begin_close(&mut self) {
@@ -1453,7 +1453,7 @@ impl Launcher {
 
     pub fn tick(&mut self) -> bool {
         self.settle();
-        let settled = self.started.elapsed() >= self.duration();
+        let settled = glide_ui::clock::since(self.started) >= self.duration();
         match self.phase {
             Phase::Opening if settled => {
                 self.phase = Phase::Open;
@@ -2667,7 +2667,7 @@ mod tests {
             assert_eq!(row.size, Size::from((40, 40)), "a list row hands over its 40 px icon");
             assert!(launcher.launch_rect(&Entry::Run("x".into())).is_none());
 
-            let now = Instant::now();
+            let now = glide_ui::clock::now();
             let origin = LaunchOrigin { key: "Chromium".into(), rect: row, at: now };
             assert!(origin.claims("chromium", now), "dock keys compare without case");
             assert!(!origin.claims("firefox", now));
@@ -3146,7 +3146,7 @@ mod tests {
             launcher.begin_close();
             assert_eq!(launcher.duration(), close_duration());
             assert!(close_duration() <= open_duration());
-            launcher.started = Instant::now().checked_sub(close_duration() / 2).expect("process uptime");
+            launcher.started = glide_ui::clock::now().checked_sub(close_duration() / 2).expect("process uptime");
             let halfway = launcher.layers();
             if !close_duration().is_zero() {
                 assert!(halfway.field < 1.0 && halfway.field > 0.0);
@@ -3159,7 +3159,7 @@ mod tests {
             let mut launcher = launcher(1);
             launcher.phase = Phase::Open;
             launcher.begin_close();
-            launcher.started = Instant::now().checked_sub(close_duration() / 2).expect("process uptime");
+            launcher.started = glide_ui::clock::now().checked_sub(close_duration() / 2).expect("process uptime");
             let before = launcher.progress();
             launcher.reopen();
             assert!((launcher.progress() - before).abs() < 0.05, "{before} vs {}", launcher.progress());
@@ -3182,7 +3182,7 @@ mod tests {
             let scene = Duration::from_millis(400);
             let mut launcher = launcher(1).with_scene(scene);
             assert_eq!(launcher.duration(), scene, "the overview's scene length, not a shorter one of its own");
-            launcher.started = Instant::now().checked_sub(scene / 4).expect("process uptime");
+            launcher.started = glide_ui::clock::now().checked_sub(scene / 4).expect("process uptime");
             let (content, backdrop) = (launcher.openness(), launcher.backdrop_openness());
             assert!(content > backdrop, "the backdrop eases in and out like the overview's: {content} vs {backdrop}");
             assert_eq!(open_duration(), glide_theme::motion::t4());
@@ -3231,8 +3231,9 @@ mod tests {
             assert!((launcher.progress() - 1.0).abs() < f64::EPSILON);
             launcher.begin_close();
             assert!(launcher.is_closing() && launcher.progress() <= 1.0);
-            launcher.started =
-                Instant::now().checked_sub(open_duration() * 2 + Duration::from_millis(10)).expect("process uptime");
+            launcher.started = glide_ui::clock::now()
+                .checked_sub(open_duration() * 2 + Duration::from_millis(10))
+                .expect("process uptime");
             assert!(!launcher.tick(), "a finished close must not linger");
         }
 

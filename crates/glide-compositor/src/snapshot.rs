@@ -74,13 +74,13 @@ impl Snapshot {
         if duration.is_zero() {
             return 1.0;
         }
-        let elapsed = self.started.elapsed().as_secs_f64();
+        let elapsed = glide_ui::clock::since(self.started).as_secs_f64();
         let t = (elapsed / duration.as_secs_f64()).clamp(0.0, 1.0);
         self.track.curve.ease_f64(t)
     }
 
     fn is_finished(&self) -> bool {
-        self.started.elapsed() >= self.track.duration
+        glide_ui::clock::since(self.started) >= self.track.duration
     }
 
     fn sample(&self) -> (Rectangle<i32, Logical>, f32) {
@@ -172,7 +172,7 @@ impl Snapshots {
             margin: capture.margin,
             buffer_scale: output_scale,
             track,
-            started: Instant::now(),
+            started: glide_ui::clock::now(),
         });
         true
     }

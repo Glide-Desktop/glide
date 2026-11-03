@@ -291,7 +291,7 @@ impl TileSlide {
 }
 
 fn settled_stamp() -> Instant {
-    let now = Instant::now();
+    let now = glide_ui::clock::now();
     now.checked_sub(t3()).unwrap_or(now)
 }
 
@@ -369,7 +369,7 @@ fn departure(started: Instant, now: Instant) -> f64 {
 fn push_departures<R: ShellRenderer>(
     dock: &mut Dock, frame: &mut Frame<'_, R>, first: Option<Rectangle<i32, Logical>>, opacity: f32,
 ) {
-    let now = Instant::now();
+    let now = glide_ui::clock::now();
     dock.departures.retain(|gone| now.saturating_duration_since(gone.started) < t2());
     let Some(first) = first else { return };
     let theme = frame.theme;
@@ -780,7 +780,7 @@ impl Dock {
                 app_id: app_id.to_string(),
                 name: name.to_string(),
                 command: command.to_string(),
-                started: Instant::now(),
+                started: glide_ui::clock::now(),
             },
         );
         true
@@ -795,7 +795,7 @@ impl Dock {
             if self.urgent.contains_key(&key) {
                 return false;
             }
-            self.urgent.insert(key, Instant::now());
+            self.urgent.insert(key, glide_ui::clock::now());
             true
         } else {
             self.urgent.remove(&key).is_some()
@@ -822,7 +822,7 @@ impl Dock {
         if !self.is_enabled() {
             return;
         }
-        let until = Instant::now() + duration;
+        let until = glide_ui::clock::now() + duration;
         if self.reveal_until.is_none_or(|current| current < until) {
             self.reveal_until = Some(until);
         }
@@ -934,7 +934,7 @@ impl Dock {
         if pointer_in_zone || self.is_engaged() {
             return false;
         }
-        if self.reveal_until.is_some_and(|until| Instant::now() < until) {
+        if self.reveal_until.is_some_and(|until| glide_ui::clock::now() < until) {
             return false;
         }
         match self.autohide {
@@ -945,7 +945,7 @@ impl Dock {
     }
 
     pub fn update_autohide(&mut self, obstructed: bool, pointer_in_zone: bool) -> bool {
-        let now = Instant::now();
+        let now = glide_ui::clock::now();
         if self.reveal_until.is_some_and(|until| now >= until) {
             self.reveal_until = None;
         }
@@ -1046,7 +1046,7 @@ impl Dock {
     }
 
     fn expire_signals(&mut self, running: &[RunningApp]) {
-        let now = Instant::now();
+        let now = glide_ui::clock::now();
         self.launching.retain(|key, launch| {
             !running.iter().any(|app| app.app_id.eq_ignore_ascii_case(key))
                 && now.saturating_duration_since(launch.started) < LAUNCH_TIMEOUT
@@ -1137,7 +1137,7 @@ impl Dock {
         self.run_changed = self.run_change_stamps(&items, &run);
 
         if layout_changed {
-            let now = Instant::now();
+            let now = glide_ui::clock::now();
             for (old, tile) in self.items.iter().zip(self.tiles.drain(..)) {
                 if items.iter().any(|new| new.app_id == old.app_id) {
                     continue;
@@ -1180,7 +1180,7 @@ impl Dock {
     }
 
     fn run_change_stamps(&self, items: &[DockItem], run: &[RunState]) -> Vec<Instant> {
-        let now = Instant::now();
+        let now = glide_ui::clock::now();
         let settled = settled_stamp();
         items
             .iter()
@@ -1542,7 +1542,7 @@ impl Dock {
     pub fn set_hover(&mut self, index: Option<usize>) -> bool {
         let changed = self.hover.set_with(index, t2());
         if changed {
-            self.hover_since = index.map(|_| Instant::now());
+            self.hover_since = index.map(|_| glide_ui::clock::now());
             let target = index.and_then(|index| self.items.get(index)).map(|item| item.app_id.clone());
             focus_layer(&mut self.hover_layers, target, t1());
             if self.tooltip.as_ref().is_some_and(|tooltip| Some(tooltip.index) != index) {
@@ -1629,7 +1629,7 @@ impl Dock {
         if !self.is_enabled() {
             return false;
         }
-        let now = Instant::now();
+        let now = glide_ui::clock::now();
         let run = t3();
         let tooltip_pending = self.menu.is_none()
             && self.drag.is_none()
@@ -1647,7 +1647,7 @@ impl Dock {
             || self.badge_fades_animating()
             || self.hover.is_animating(t2())
             || tooltip_pending
-            || (!run.is_zero() && self.run_changed.iter().any(|stamp| stamp.elapsed() < run))
+            || (!run.is_zero() && self.run_changed.iter().any(|stamp| glide_ui::clock::since(*stamp) < run))
             || self.slides.values().any(|tile| tile.is_moving(now, t2()))
             || self.arrivals.values().any(|born| now.saturating_duration_since(*born) < t2())
             || self.departures.iter().any(|gone| now.saturating_duration_since(gone.started) < t2())
@@ -1671,7 +1671,7 @@ impl Dock {
         let glued = dragged.and_then(|(index, position)| {
             order.iter().position(|candidate| *candidate == index).map(|slot| (slot, position.x))
         });
-        let now = Instant::now();
+        let now = glide_ui::clock::now();
         note_arrivals(&mut self.arrivals, &self.slides, &targets, now);
         settle_slides(&mut self.slides, &targets, glued, now, t2())
             .into_iter()
@@ -1748,7 +1748,7 @@ impl Dock {
         };
         fade_all(&mut self.press_layers, t1());
         if drag.active {
-            self.frame_until = Some(Instant::now() + DROP_FRAME_GRACE);
+            self.frame_until = Some(glide_ui::clock::now() + DROP_FRAME_GRACE);
             if !self.drop_changes_pins(&drag, area) {
                 return PressOutcome::Nothing;
             }
@@ -2093,7 +2093,7 @@ fn push_tiles<R: ShellRenderer>(
     dragged: Option<(usize, Point<f64, Logical>)>, opacity: f32,
 ) {
     let theme = frame.theme;
-    let now = Instant::now();
+    let now = glide_ui::clock::now();
     for (&index, rect) in order.iter().zip(drawn_rects) {
         let app_id = &dock.items[index].app_id;
         let arrive = arrival(&dock.arrivals, app_id, now);
@@ -2959,7 +2959,7 @@ mod tests {
 
         #[test]
         fn leaving_the_edge_restarts_a_fixed_dwell() {
-            let start = Instant::now();
+            let start = glide_ui::clock::now();
             assert!(!dwell_elapsed(start, start));
             assert!(!dwell_elapsed(start, start + REVEAL_DWELL / 2));
             assert!(dwell_elapsed(start, start + REVEAL_DWELL));
@@ -2985,7 +2985,7 @@ mod tests {
             dock.reveal_for(ATTENTION_REVEAL);
             assert!(dock.update_autohide(false, false));
             assert!(!dock.is_hidden());
-            dock.reveal_until = Instant::now().checked_sub(Duration::from_millis(1));
+            dock.reveal_until = glide_ui::clock::now().checked_sub(Duration::from_millis(1));
             settle_hidden(&mut dock, false, false);
             assert!(dock.is_hidden(), "it hides again once the reveal lapses");
         }
@@ -2996,7 +2996,7 @@ mod tests {
             assert!(!dock.is_animating());
             dock.reveal_for(ATTENTION_REVEAL);
             assert!(dock.is_animating(), "a reveal still running wakes the pump to end it");
-            dock.reveal_until = Instant::now().checked_sub(Duration::from_millis(1));
+            dock.reveal_until = glide_ui::clock::now().checked_sub(Duration::from_millis(1));
             assert!(dock.reveal_until.is_some(), "nothing has cleared the lapsed reveal yet");
             assert!(!dock.is_animating());
         }
@@ -3009,7 +3009,7 @@ mod tests {
             assert!(!dock.is_enabled());
             dock.reveal_for(ATTENTION_REVEAL);
             assert_eq!(dock.reveal_until, None, "a dock that is not drawn has nothing to reveal");
-            dock.reveal_until = Some(Instant::now() + ATTENTION_REVEAL);
+            dock.reveal_until = Some(glide_ui::clock::now() + ATTENTION_REVEAL);
             assert!(dock.begin_launch("app 0", "App 0", "true"));
             assert!(dock.set_urgent("app 1", true));
             assert!(!dock.is_animating());
@@ -3073,7 +3073,7 @@ mod tests {
         #[test]
         fn a_tile_that_leaves_fades_out_where_it_was_drawn() {
             let mut dock = dock_with_one_running();
-            let x = dock.settle_slides(&[("firefox", 240)], None, Instant::now(), Duration::ZERO)[0];
+            let x = dock.settle_slides(&[("firefox", 240)], None, glide_ui::clock::now(), Duration::ZERO)[0];
             dock.set_running(&[]);
             assert_eq!(dock.departures.len(), 1, "the closed app's tile lingers for its fade");
             assert!((f64::from(dock.departures[0].x) - x).abs() < f64::EPSILON);
@@ -3445,7 +3445,7 @@ mod tests {
             dock.press_layers.clear();
             dock.hover_layers.clear();
             assert!(dock.is_animating(), "nothing else is moving, so only the request keeps the frame pump alive");
-            dock.frame_until = Instant::now().checked_sub(Duration::from_millis(1));
+            dock.frame_until = glide_ui::clock::now().checked_sub(Duration::from_millis(1));
             assert!(!dock.is_animating(), "the request lapses on its own");
         }
 
@@ -3525,7 +3525,7 @@ mod tests {
             dock.set_hover(Some(1));
             assert_eq!(dock.tooltip_index(), None, "too early");
             assert!(dock.is_animating(), "the frame pump must stay alive");
-            dock.hover_since = Instant::now().checked_sub(TOOLTIP_DELAY);
+            dock.hover_since = glide_ui::clock::now().checked_sub(TOOLTIP_DELAY);
             assert_eq!(dock.tooltip_index(), Some(1));
 
             let rects = dock.item_rects(area());
@@ -3665,9 +3665,9 @@ mod tests {
             let config = always_hidden();
             let mut dock = Dock::new(&config);
             dock.hide = AutohideFade { tween: glide_ui::Tween::at(1.0) };
-            dock.hide_pending = Some(Instant::now());
-            dock.edge_since = Some(Instant::now());
-            dock.reveal_until = Some(Instant::now() + ATTENTION_REVEAL);
+            dock.hide_pending = Some(glide_ui::clock::now());
+            dock.edge_since = Some(glide_ui::clock::now());
+            dock.reveal_until = Some(glide_ui::clock::now() + ATTENTION_REVEAL);
 
             dock.reconfigure(&config);
 
@@ -3715,7 +3715,7 @@ mod tests {
             dock.set_running(&[running("app 0", true)]);
             assert!(dock.set_badge("app 0", Badge { count: Some(2), progress: None }));
             dock.settle();
-            dock.settle_slides(&[("app 0", 100)], None, Instant::now(), Duration::ZERO);
+            dock.settle_slides(&[("app 0", 100)], None, glide_ui::clock::now(), Duration::ZERO);
             let carried = |dock: &Dock| {
                 dock.run_alphas.contains_key("app 0")
                     && dock.focus_wells.contains_key("app 0")
@@ -3738,7 +3738,7 @@ mod tests {
 
         #[test]
         fn only_tiles_added_after_the_first_build_fade_in() {
-            let now = Instant::now();
+            let now = glide_ui::clock::now();
             let mut arrivals = HashMap::new();
             let mut slides = HashMap::new();
             note_arrivals(&mut arrivals, &slides, &targets(&[("a", 100)]), now);
@@ -3754,7 +3754,7 @@ mod tests {
         #[test]
         fn a_slot_change_eases_from_the_previous_x_and_keeps_the_frame_pump_alive() {
             let mut dock = Dock::new(&config(1));
-            let start = Instant::now();
+            let start = glide_ui::clock::now();
             let duration = Duration::from_millis(200);
 
             let first = dock.settle_slides(&targets(&[("a", 100)]), None, start, duration);
@@ -3775,7 +3775,7 @@ mod tests {
         #[test]
         fn a_zero_duration_slide_lands_instantly() {
             let mut dock = Dock::new(&config(1));
-            let now = Instant::now();
+            let now = glide_ui::clock::now();
             dock.settle_slides(&targets(&[("a", 100)]), None, now, Duration::ZERO);
             let moved = dock.settle_slides(&targets(&[("a", 160)]), None, now, Duration::ZERO);
             assert_eq!(moved, vec![160.0]);
@@ -3785,7 +3785,7 @@ mod tests {
         #[test]
         fn slide_state_is_keyed_by_app_and_vanished_apps_are_dropped() {
             let mut dock = Dock::new(&config(1));
-            let start = Instant::now();
+            let start = glide_ui::clock::now();
             let duration = Duration::from_millis(200);
             dock.settle_slides(&targets(&[("app 0", 100), ("firefox", 160)]), None, start, duration);
             dock.settle_slides(&targets(&[("firefox", 100), ("app 0", 160)]), None, start, duration);
@@ -3800,7 +3800,7 @@ mod tests {
         #[test]
         fn the_dragged_tile_is_glued_to_the_pointer_and_slides_home_after_the_drop() {
             let mut dock = Dock::new(&config(1));
-            let start = Instant::now();
+            let start = glide_ui::clock::now();
             let duration = Duration::from_millis(200);
             dock.settle_slides(&targets(&[("a", 100)]), None, start, duration);
 
@@ -3827,7 +3827,7 @@ mod tests {
         let launcher = dock.items.iter().position(|item| item.action == DockAction::OpenLauncher).expect("launcher");
         dock.set_hover(Some(index));
         assert_eq!(dock.preview_candidate(), None, "not before the dwell");
-        dock.hover_since = Instant::now().checked_sub(crate::preview::dwell());
+        dock.hover_since = glide_ui::clock::now().checked_sub(crate::preview::dwell());
         assert_eq!(dock.preview_candidate(), Some(index));
         assert_eq!(dock.tooltip_index(), Some(index));
 
@@ -3843,7 +3843,7 @@ mod tests {
         assert!(dock.hide_preview() && !dock.preview_open());
 
         dock.set_hover(Some(launcher));
-        dock.hover_since = Instant::now().checked_sub(crate::preview::dwell());
+        dock.hover_since = glide_ui::clock::now().checked_sub(crate::preview::dwell());
         assert_eq!(dock.preview_candidate(), None, "the launcher keeps its tooltip");
     }
 
@@ -4103,10 +4103,10 @@ mod tests {
         #[test]
         fn a_bouncing_tile_keeps_the_frame_pump_alive() {
             let mut dock = Dock::new(&config(1));
-            assert!(!dock.is_bouncing(Instant::now()));
+            assert!(!dock.is_bouncing(glide_ui::clock::now()));
             dock.begin_launch("app 0", "App 0", "true");
             dock.set_running(&[]);
-            assert_eq!(dock.is_bouncing(Instant::now()), !t4().is_zero());
+            assert_eq!(dock.is_bouncing(glide_ui::clock::now()), !t4().is_zero());
         }
 
         #[test]
