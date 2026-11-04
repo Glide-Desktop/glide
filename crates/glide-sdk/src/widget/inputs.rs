@@ -148,6 +148,14 @@ pub fn hinted_search_input<'a, M: Clone + 'a>(
     paint: &Paint, input: text_input::TextInput<'a, M>, on_clear: Option<M>, clear_label: &'a str,
     hint: Option<Element<'a, M>>,
 ) -> Element<'a, M> {
+    sized_search_input(paint, input, on_clear, clear_label, hint, component::CONTROL, SP3)
+}
+
+#[must_use]
+pub fn sized_search_input<'a, M: Clone + 'a>(
+    paint: &Paint, input: text_input::TextInput<'a, M>, on_clear: Option<M>, clear_label: &'a str,
+    hint: Option<Element<'a, M>>, height: f32, inset: f32,
+) -> Element<'a, M> {
     let lead = icon(Icon::Search, 14.0, paint.fg_3());
     let mut content = row![lead, styled(paint, input)].spacing(SP2).align_y(Alignment::Center);
     if let Some(on_clear) = on_clear {
@@ -155,8 +163,7 @@ pub fn hinted_search_input<'a, M: Clone + 'a>(
     } else if let Some(hint) = hint {
         content = content.push(hint);
     }
-    let inner =
-        container(content).height(component::CONTROL).padding(Padding::from([0.0, SP3])).center_y(component::CONTROL);
+    let inner = container(content).height(height).padding(Padding::from([0.0, inset])).center_y(height);
     widgets::search_field(inner, paint)
 }
 

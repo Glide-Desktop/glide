@@ -773,8 +773,7 @@ fn cards<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Mes
     );
     let header = ui::page_header(
         paint,
-        Icon::Folder,
-        green,
+        ui::icon_tile(Icon::Folder, green, 44.0),
         Some(shell.t("Система", "System")),
         shell.t("Сховище", "Storage"),
         Some(shell.t("Заголовок сторінки", "A page header")),

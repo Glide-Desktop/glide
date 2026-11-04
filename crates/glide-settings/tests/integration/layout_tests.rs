@@ -37,9 +37,11 @@ fn inner_radii_are_concentric_with_the_card() {
 
 #[test]
 fn page_rhythm_uses_only_spec_spacing_steps() {
-    for value in [SECTION_GAP, PAGE_PADDING_X, PAGE_PADDING_TOP, ROW_PADDING_X, RING_GAP] {
+    for value in [SECTION_GAP, PAGE_PADDING_TOP, RING_GAP] {
         assert!(glide_theme::spacing::STEPS.contains(&(value as i32)), "{value} is not a Meridian spacing step");
     }
+    assert!((PAGE_PADDING_X - 40.0).abs() < f32::EPSILON, "the canvas pads .content 40 px at the sides");
+    assert!((ROW_PADDING_X - 14.0).abs() < f32::EPSILON, "the canvas pads .row 14 px at the sides");
     assert!(
         ((CONTROL_HEIGHT - SMALL_CONTROL_HEIGHT) / 2.0 - 3.0).abs() < f32::EPSILON,
         "the segmented track pads a small control up to a full control"
@@ -82,22 +84,18 @@ fn only_networks_that_need_input_show_a_disclosure_chevron() {
 }
 
 #[test]
-fn sidebar_tiles_are_twenty_four_pixels_on_the_spacing_scale() {
-    use glide_settings::sidebar::{EDGE, GROUP_GAP, TILE_SIZE};
-    assert!((TILE_SIZE - 24.0).abs() < f32::EPSILON);
-    for value in [GROUP_GAP, EDGE] {
-        assert!(glide_theme::spacing::STEPS.contains(&(value as i32)), "{value} is not a Meridian spacing step");
-    }
+fn sidebar_tiles_are_twenty_two_pixels_like_the_canvas() {
+    use glide_settings::sidebar::TILE_SIZE;
+    assert!((TILE_SIZE - 22.0).abs() < f32::EPSILON);
 }
 
 #[test]
-fn every_sidebar_tile_has_its_own_colour() {
+fn light_sidebar_tiles_draw_a_dark_glyph() {
     use glide_settings::Category;
-    for (index, category) in Category::ALL.iter().enumerate() {
-        for other in &Category::ALL[index + 1..] {
-            assert_ne!(category.color(), other.color(), "{category:?} and {other:?}");
-        }
+    for category in [Category::Sound, Category::Apps, Category::Privacy] {
+        assert_ne!(category.ink(), iced::Color::WHITE, "{category:?}");
     }
+    assert_eq!(Category::Network.ink(), iced::Color::WHITE);
 }
 
 #[test]

@@ -56,8 +56,18 @@ pub fn action_card<'a, M: Clone + 'a>(paint: &Paint, content: impl Into<Element<
     activatable(&paint, control, R3, Some(message))
 }
 
-pub const ROW_HEIGHT: f32 = 44.0;
-const ROW_PAD_Y: f32 = (ROW_HEIGHT - component::CONTROL) / 2.0;
+pub const ROW_HEIGHT: f32 = 52.0;
+const ROW_PAD_Y: f32 = 8.0;
+const ROW_PAD_X: f32 = 14.0;
+pub const ROW_TITLE: TextStyle = TextStyle { size_px: 13.5, line_height_px: 20.0, weight: 500, ..TextStyle::BODY };
+pub const ROW_NOTE: TextStyle = TextStyle { size_px: 12.0, line_height_px: 17.0, weight: 400, ..TextStyle::CAP };
+pub const SECTION_NOTE: TextStyle = TextStyle { size_px: 12.5, line_height_px: 18.0, ..TextStyle::CALL };
+
+#[must_use]
+pub fn row_icon<'a, M: 'a>(paint: &Paint, glyph: impl super::Glyph) -> Element<'a, M> {
+    let well = paint.fill_1();
+    container(icon(glyph, 16.0, paint.fg_2())).center(28).style(move |_| style::rounded(well, R2)).into()
+}
 
 #[must_use]
 pub fn list<'a, M: 'a>(paint: &Paint, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
@@ -142,18 +152,15 @@ impl<'a, M: 'a> From<Group<'a, M>> for Element<'a, M> {
         let Group { paint, title, description, suffix, rows } = group;
         let mut outer = Column::new().spacing(SP2);
         if title.is_some() || description.is_some() || suffix.is_some() {
-            let mut heading = Column::new().spacing(2).width(Fill);
-            if let Some(title) = title {
-                heading = heading.push(text(title, TextStyle::HEAD));
-            }
+            let heading = text(title.unwrap_or_default(), TextStyle::HEAD).width(Fill);
+            let mut header = row![heading].spacing(SP3).align_y(Alignment::End);
             if let Some(description) = description {
-                heading = heading.push(text(description, TextStyle::CALL).color(paint.fg_2()));
+                header = header.push(text(description, SECTION_NOTE).color(paint.fg_2()));
             }
-            let mut header = row![heading].spacing(SP3).align_y(Alignment::Center);
             if let Some(suffix) = suffix {
                 header = header.push(suffix);
             }
-            outer = outer.push(container(header).padding(Padding::ZERO.left(SP1)));
+            outer = outer.push(container(header).padding(Padding::from([0, 2])));
         }
         if !rows.is_empty() {
             outer = outer.push(list(&paint, rows));
@@ -290,7 +297,7 @@ impl<'a, M: Clone + 'a> From<ListRow<'a, M>> for Element<'a, M> {
             TitleInk::Dimmed => paint.fg_3(),
             TitleInk::Accent => paint.acc_text(),
         };
-        let style = if strong { TextStyle::HEAD } else { TextStyle::BODY };
+        let style = if strong { TextStyle::HEAD } else { ROW_TITLE };
         let mut head = row![].spacing(SP2).align_y(Alignment::Center);
         if changed {
             head = head.push(super::popping(super::feedback::dot(paint.acc_bg(), CHANGED_MARK)));
@@ -301,7 +308,7 @@ impl<'a, M: Clone + 'a> From<ListRow<'a, M>> for Element<'a, M> {
         }
         let mut labels = column![head].spacing(1).width(Fill);
         if let Some(subtitle) = subtitle {
-            labels = labels.push(text(subtitle, TextStyle::CAP).color(paint.fg_2()));
+            labels = labels.push(text(subtitle, ROW_NOTE).color(paint.fg_2()));
         }
         let mut line = row![].spacing(SP3).align_y(Alignment::Center);
         if let Some(prefix) = prefix {
@@ -312,16 +319,16 @@ impl<'a, M: Clone + 'a> From<ListRow<'a, M>> for Element<'a, M> {
         if let Some(suffix) = suffix {
             if stacked { below = Some(suffix) } else { line = line.push(suffix) }
         }
-        let line = row![Space::new().height(component::CONTROL), line].align_y(Alignment::Center);
+        let line = row![Space::new().height(ROW_HEIGHT - 2.0 * ROW_PAD_Y), line].align_y(Alignment::Center);
         let mut content = Column::new().spacing(SP2).push(line);
         if let Some(suffix) = below {
             content = content.push(container(suffix).padding(Padding::ZERO.bottom(ROW_PAD_Y)));
         }
-        let body = container(content).padding(Padding::from([ROW_PAD_Y, SP3])).width(Fill);
+        let body = container(content).padding(Padding::from([ROW_PAD_Y, ROW_PAD_X])).width(Fill);
         let Some(message) = message else { return body.into() };
         let control = control(body).on_press(message.clone()).padding(0).width(Fill);
         let control = widgets::button(control, move |status| {
-            style::flat(paint.layered(Color::TRANSPARENT, status), paint.fg_1(), R2)
+            style::flat(paint.layered(Color::TRANSPARENT, status), paint.fg_1(), 0.0)
         });
         focusable(&paint, control, R2).inset().on_activate(Some(message)).into()
     }
@@ -563,29 +570,20 @@ pub fn profile_card<'a, M: Clone + 'a>(
     paint: &Paint, avatar: impl Into<Element<'a, M>>, name: &str, subtitle: &str, selected: bool, message: M,
 ) -> Element<'a, M> {
     let paint = *paint;
-    let (ink, soft, mark) = if selected {
-        (paint.acc_soft_fg(), paint.acc_soft_fg(), paint.acc_soft_fg())
-    } else {
-        (paint.fg_1(), paint.fg_2(), paint.fg_3())
-    };
+    let (ink, soft) = if selected { (paint.acc_soft_fg(), paint.acc_soft_fg()) } else { (paint.fg_1(), paint.fg_3()) };
     let labels = column![
-        text(name.to_string(), TextStyle::HEAD).color(ink).wrapping(Wrapping::None),
+        text(name.to_string(), TextStyle { weight: 600, ..ROW_TITLE }).color(ink).wrapping(Wrapping::None),
         text(subtitle.to_string(), TextStyle::CAP).color(soft).wrapping(Wrapping::None),
     ]
-    .spacing(1)
     .width(Fill)
     .clip(true);
-    let content =
-        row![avatar.into(), labels, icon(Icon::Right, 12.0, mark)].spacing(SP2 + 2.0).align_y(Alignment::Center);
-    let card = control(content).on_press(message.clone()).padding(Padding::from([SP2, SP2 + 2.0])).width(Fill);
+    let content = row![avatar.into(), labels].spacing(SP2 + 2.0).align_y(Alignment::Center);
+    let card = control(content).on_press(message.clone()).padding(Padding::from([6.0, SP2])).width(Fill);
     let card = widgets::button(card, move |status| {
-        let base = if selected { paint.acc_soft() } else { paint.card_bg() };
-        control::Style {
-            border: Border { color: paint.line(), width: 1.0, radius: R3.into() },
-            ..style::flat(paint.layered(base, status), ink, R3)
-        }
+        let base = if selected { paint.acc_soft() } else { Color::TRANSPARENT };
+        style::flat(paint.layered(base, status), ink, R2)
     });
-    activatable(&paint, card, R3, Some(message))
+    activatable(&paint, card, R2, Some(message))
 }
 
 #[must_use]
@@ -617,9 +615,11 @@ pub struct SidebarItem<'a, M> {
     current: bool,
     hovered: bool,
     held: bool,
+    dense: bool,
 }
 
 pub const SIDEBAR_METER_ROW: f32 = 44.0;
+pub const SIDEBAR_DENSE_ROW: f32 = 29.0;
 const METER_WARN: f32 = 0.85;
 
 impl<'a, M: Clone + 'a> SidebarItem<'a, M> {
@@ -640,7 +640,14 @@ impl<'a, M: Clone + 'a> SidebarItem<'a, M> {
             current: false,
             hovered: false,
             held: false,
+            dense: false,
         }
+    }
+
+    #[must_use]
+    pub const fn dense(mut self) -> Self {
+        self.dense = true;
+        self
     }
 
     #[must_use]
@@ -724,6 +731,19 @@ impl<'a, M: Clone + 'a> SidebarItem<'a, M> {
     }
 }
 
+const fn sidebar_metrics(dense: bool, meter: bool, accessory: bool) -> (f32, f32, f32, f32) {
+    let height = match (meter, dense) {
+        (true, _) => SIDEBAR_METER_ROW,
+        (false, true) => SIDEBAR_DENSE_ROW,
+        (false, false) => component::CONTROL,
+    };
+    match (dense, accessory) {
+        (true, _) => (height, 7.0, SP2, 9.0),
+        (false, true) => (height, SP3, SP1, SP2 + 2.0),
+        (false, false) => (height, SP3, SP3, SP2 + 2.0),
+    }
+}
+
 impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
     fn from(item: SidebarItem<'a, M>) -> Self {
         let SidebarItem {
@@ -741,11 +761,11 @@ impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
             current,
             hovered,
             held,
+            dense,
         } = item;
-        let height = if meter.is_some() { SIDEBAR_METER_ROW } else { component::CONTROL };
+        let (height, lead, trailing, gap) = sidebar_metrics(dense, meter.is_some(), accessory.is_some());
         animate(if selected { 1.0 } else { 0.0 }, Speed::COLOR, move |value| {
-            let trailing = if accessory.is_some() { SP1 } else { SP3 };
-            let mut content = row![].spacing(SP2 + 2.0).align_y(Alignment::Center);
+            let mut content = row![].spacing(gap).align_y(Alignment::Center);
             if let Some(leading) = leading {
                 content = content.push(leading);
             } else if let Some((glyph, tint)) = glyph {
@@ -794,7 +814,7 @@ impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
                 .on_press_maybe(message.clone())
                 .width(Fill)
                 .height(height)
-                .padding(Padding::from([0.0, SP3]).right(trailing));
+                .padding(Padding::from([0.0, lead]).right(trailing));
             let value = value.clone();
             let item = widgets::button(control, move |status| {
                 let status = match status {
@@ -804,17 +824,21 @@ impl<'a, M: Clone + 'a> From<SidebarItem<'a, M>> for Element<'a, M> {
                     other => other,
                 };
                 let amount = value.get().clamp(0.0, 1.0);
-                let rest = if matches!(status, control::Status::Active) { paint.fg_2() } else { paint.fg_1() };
+                let rest =
+                    if !dense && matches!(status, control::Status::Active) { paint.fg_2() } else { paint.fg_1() };
                 let background = mix(paint.layered(Color::TRANSPARENT, status), paint.acc_soft(), amount);
                 style::flat(background, mix(rest, paint.acc_soft_fg(), amount), R2)
             });
             let item = focusable(&paint, item, R2).inset().on_activate(message);
+            if dense {
+                return Element::from(item);
+            }
             let bar = animate(if current { 1.0 } else { 0.0 }, Speed::GROW, |_| {
                 container(Space::new().width(3).height(18)).style(move |_| style::rounded(paint.acc_bg(), 2.0))
             })
             .from(0.0)
             .scale(|value| value.max(0.0));
-            stack![item, container(bar).height(height).center_y(height)]
+            stack![item, container(bar).height(height).center_y(height)].into()
         })
         .into()
     }
@@ -972,10 +996,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_row_fits_one_control_and_its_hover_is_concentric_with_the_card() {
-        assert!((ROW_HEIGHT - 44.0).abs() < f32::EPSILON);
-        assert!((ROW_HEIGHT - 2.0 * ROW_PAD_Y - component::CONTROL).abs() < f32::EPSILON);
-        assert!((R3 - SP1 - R2).abs() < f32::EPSILON, "rows sit SP1 inside the card, so R2 follows R3");
+    fn a_boxed_row_is_fifty_two_pixels_with_room_for_one_control() {
+        assert!((ROW_HEIGHT - 52.0).abs() < f32::EPSILON);
+        assert!(ROW_HEIGHT - 2.0 * ROW_PAD_Y >= component::CONTROL);
     }
 
     #[test]

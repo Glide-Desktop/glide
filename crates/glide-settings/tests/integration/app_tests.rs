@@ -30,12 +30,11 @@ fn only_micro_labels_may_be_uppercase() {
 }
 
 #[test]
-fn vpn_and_netbird_share_one_page_while_other_merged_entries_keep_tabs() {
+fn every_merged_entry_is_one_page_like_the_canvas() {
     let app = app("").with_netbird(true);
-    assert!(Category::Vpn.stacked());
     assert_eq!(app.category_panels(Category::Vpn), [Panel::Vpn, Panel::Netbird]);
-    for category in Category::ALL.iter().filter(|category| **category != Category::Vpn) {
-        assert!(!category.stacked(), "{category:?} keeps its tabs");
+    for category in Category::ALL {
+        assert_eq!(category.stacked(), category.panels().len() > 1, "{category:?}");
     }
     let without = self::app("").with_netbird(false);
     assert_eq!(without.category_panels(Category::Vpn), [Panel::Vpn], "no NetBird section without NetBird");

@@ -39,8 +39,8 @@ pub use buttons::{
     toggle_button, tonal, tone_ink,
 };
 pub use cards::{
-    choice_card, compare_card, grid, hero_card, legend, page_header, preview_card, preview_ring_style, sample_well,
-    stat_tile, tinted_card, tinted_card_style, usage_bar, usage_card,
+    HERO_TITLE, PAGE_LEAD, PAGE_TITLE, choice_card, compare_card, grid, hero_card, legend, page_header, preview_card,
+    preview_ring_style, sample_well, stat_tile, tinted_card, tinted_card_style, usage_bar, usage_card,
 };
 pub use controls::{
     CHECK, Check, SwitchSize, ZOOM_TRACK, check_box, chevron, paused_progress, progress, radio_indicator, radio_mark,
@@ -52,7 +52,7 @@ pub use editor::{
 };
 pub use feedback::{
     Severity, Task, avatar, badge, banner, busy_label, count_badge, dot, empty_note, empty_state, icon_tile, initials,
-    key_combo, keycap, letter_tile, noted_banner, skeleton, status_badge, task_card, task_row,
+    inked_tile, key_combo, keycap, letter_tile, noted_banner, skeleton, status_badge, task_card, task_row,
 };
 pub use find::{
     FIND_FIELD, FindBar, INFO_BAR, arriving, arriving_over, bar_strip, find_bar, info_bar, popping, rising, swapped,
@@ -61,8 +61,8 @@ pub use focus::{Focus, RING, focusable};
 pub use form::{action_bar, boxed_input, form_row, hint_line, key_values, sheet};
 pub use inputs::{
     Validity, bare_text_area_style, field, field_with, hinted_search_input, inline_field, inline_style, input_style,
-    password_field, search_field, search_input, secret_input, secret_input_with, stepper, text_area_style, text_field,
-    validated_field,
+    password_field, search_field, search_input, secret_input, secret_input_with, sized_search_input, stepper,
+    text_area_style, text_field, validated_field,
 };
 pub use insight::{
     Glance, INFO_BUTTON, Issue, Stage, applies_chip, choice_tiles, fact_grid, info_button, labelled_switch,
@@ -71,10 +71,11 @@ pub use insight::{
 pub use inspector::{INSPECTOR_PREVIEW, INSPECTOR_WIDTH, Inspector};
 pub use items::{corner_badge, item_ink, item_tile, section_title, selection_band, table_row};
 pub use layout::{
-    CHANGED_MARK, Group, HeaderCell, ISLAND_GAP, ISLAND_TRAVEL, ListRow, ROW_HEIGHT, STATUS_BAR, SidebarItem,
-    TABLE_CELL, TABLE_HEADER, TABLE_ROW, TREE_INDENT, TREE_ROW, action_card, action_row, card, card_style, disclosure,
-    expander, facts, inert, island_motion, list, list_row, profile_card, section, select_row, sidebar, sidebar_item,
-    status_bar, status_button, status_islands, status_strip, surface, switch_row, table_header, tree_row, well,
+    CHANGED_MARK, Group, HeaderCell, ISLAND_GAP, ISLAND_TRAVEL, ListRow, ROW_HEIGHT, ROW_NOTE, ROW_TITLE, SECTION_NOTE,
+    SIDEBAR_DENSE_ROW, STATUS_BAR, SidebarItem, TABLE_CELL, TABLE_HEADER, TABLE_ROW, TREE_INDENT, TREE_ROW,
+    action_card, action_row, card, card_style, disclosure, expander, facts, inert, island_motion, list, list_row,
+    profile_card, row_icon, section, select_row, sidebar, sidebar_item, status_bar, status_button, status_islands,
+    status_strip, surface, switch_row, table_header, tree_row, well,
 };
 pub use media::{
     Art, art, captioned_picture, frame_button, level_control, level_meter, photo, photo_button, picture, range_slider,

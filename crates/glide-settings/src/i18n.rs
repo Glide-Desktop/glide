@@ -3,7 +3,9 @@ pub use glide_sdk::i18n::{Lang, Text};
 
 catalogue! {
     Settings => "Settings", "Налаштування";
-    SearchPlaceholder => "Search", "Пошук";
+    SearchPlaceholder => "Search settings", "Пошук налаштувань";
+    RoleAdministrator => "administrator", "адміністратор";
+    RoleStandard => "standard user", "звичайний користувач";
     NoResults => "No results", "Нічого не знайдено";
     User => "User", "Користувач";
     Loading => "Loading…", "Завантаження…";
@@ -55,7 +57,7 @@ catalogue! {
     PanelStorage => "Storage", "Сховище";
     PanelPrinters => "Printers", "Принтери";
 
-    GroupConnections => "Connections", "З'єднання";
+    GroupConnections => "Connections", "З’єднання";
     GroupAlerts => "Notifications & sound", "Сповіщення й звук";
     GroupPersonalisation => "Personalisation", "Персоналізація";
     GroupHardware => "Screen & devices", "Екран і пристрої";
@@ -64,13 +66,6 @@ catalogue! {
     GroupPeople => "Security & people", "Безпека й люди";
     GroupSystem => "System", "Система";
 
-    CategoryDesktop => "Desktop", "Робочий стіл";
-    AboutCategoryVpn => "Private networks, WireGuard tunnels and the NetBird mesh", "Приватні мережі, тунелі WireGuard і mesh-мережа NetBird";
-    AboutCategoryAppearance => "Style, accent colour, wallpaper, fonts and motion", "Стиль, колір акценту, шпалери, шрифти й рух";
-    AboutCategoryDesktop => "Dock, top bar, windows, workspaces and the overview", "Док, верхня панель, вікна, робочі простори й огляд";
-    AboutCategoryDisplays => "Arrangement, resolution, scale and night light", "Розташування, роздільність, масштаб і нічне світло";
-    AboutCategoryKeyboard => "Input sources, special keys and keyboard shortcuts", "Розкладки, спеціальні клавіші й комбінації клавіш";
-    AboutCategoryMouse => "Pointer speed, scrolling, tapping and touchpad gestures", "Швидкість вказівника, прокручування, дотики й жести тачпада";
 
     AboutNetwork => "Wi-Fi, wired connections and saved networks", "Wi-Fi, дротові з'єднання та збережені мережі";
     AboutBluetooth => "Pair and connect wireless devices", "Під'єднання та сполучення бездротових пристроїв";
@@ -332,7 +327,6 @@ catalogue! {
     ConfigFile => "Configuration", "Конфігурація";
     CompositorOnline => "Glide running", "Glide працює";
     CompositorOffline => "Glide not running", "Glide не запущено";
-    LocalAccount => "Local account", "Локальний обліковий запис";
     ResultOne => "result", "результат";
     ResultFew => "results", "результати";
     ResultMany => "results", "результатів";

@@ -19,6 +19,12 @@ impl sdk::Glyph for Icon {
     }
 }
 
+impl sdk::Glyph for crate::icons::Tile {
+    fn draw<'a, M: 'a>(self, side: f32, tint: Color) -> Element<'a, M> {
+        sdk::svg_glyph(iced::widget::svg::Handle::from_memory(self.0.as_bytes()), side, tint)
+    }
+}
+
 #[must_use]
 pub fn paint(t: &ThemeState) -> glide_sdk::Paint {
     t.paint
@@ -362,12 +368,4 @@ pub fn link<'a, M: Clone + 'a>(
     t: ThemeState, label: impl text::IntoFragment<'a>, message: Option<M>,
 ) -> Element<'a, M> {
     sdk::link(&paint(&t), label.into_fragment(), message)
-}
-
-#[must_use]
-pub fn page_title<'a, M: 'a>(
-    t: ThemeState, glyph: Icon, color: Color, eyebrow: Option<&str>, heading: impl text::IntoFragment<'a>,
-    description: Option<&'a str>, trailing: Option<Element<'a, M>>,
-) -> Element<'a, M> {
-    sdk::page_header(&paint(&t), glyph, color, eyebrow, heading.into_fragment(), description, trailing)
 }

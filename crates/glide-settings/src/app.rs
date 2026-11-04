@@ -512,21 +512,16 @@ impl App {
 
         let panel = self.active_panel;
         let category = self.active_category();
-        let mut body = column![widgets::page_title(
-            t,
-            category.icon(),
-            category.color(),
+        let paint = t.paint;
+        let mut body = column![glide_sdk::widget::page_header(
+            &paint,
+            glide_sdk::widget::inked_tile(category.icon(), category.color(), category.ink(), 44.0),
             Some(c.t(category.group().title.unwrap_or(K::Settings))),
             category.label(self.lang),
             Some(category.description(self.lang)),
             None,
         )]
         .spacing(theme::SECTION_GAP);
-        let tabs = self.category_panels(category);
-        if tabs.len() > 1 && !category.stacked() {
-            let options: Vec<(Panel, &str)> = tabs.iter().map(|tab| (*tab, tab.label(self.lang))).collect();
-            body = body.push(glide_sdk::widget::tabs(&widgets::paint(&t), &options, panel, Message::PanelSelected));
-        }
         if let Some(error) = self.config.error() {
             let lead = match self.config.fault() {
                 Some(ConfigFault::Io) => K::ConfigUnreadable,
@@ -550,8 +545,7 @@ impl App {
 
         let clamp = container(body.max_width(theme::CONTENT_MAX_WIDTH))
             .padding(
-                iced::Padding::from([theme::PAGE_PADDING_TOP, theme::PAGE_PADDING_X])
-                    .bottom(theme::PAGE_PADDING_X * 2.0),
+                iced::Padding::from([theme::PAGE_PADDING_TOP, theme::PAGE_PADDING_X]).bottom(theme::PAGE_PADDING_X),
             )
             .center_x(Fill);
 

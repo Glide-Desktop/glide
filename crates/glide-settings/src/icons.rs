@@ -12,6 +12,25 @@ macro_rules! glyph {
     };
 }
 
+macro_rules! tile_svg {
+    ($width:literal, $attrs:literal, $body:literal) => {
+        concat!(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='",
+            $width,
+            "' ",
+            $attrs,
+            ">",
+            $body,
+            "</svg>"
+        )
+    };
+}
+
+pub(crate) use tile_svg;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tile(pub &'static str);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
     Search,

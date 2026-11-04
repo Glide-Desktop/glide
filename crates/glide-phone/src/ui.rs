@@ -463,8 +463,7 @@ impl App for PhoneApp {
 
         let header = widget::page_header(
             paint,
-            Icon::Phone,
-            paint.acc_bg(),
+            widget::icon_tile(Icon::Phone, paint.acc_bg(), 44.0),
             Some(shell.t("ПРИСТРОЇ", "DEVICES")),
             shell.t("Підключення телефону", "Phone Link"),
             Some(shell.t(

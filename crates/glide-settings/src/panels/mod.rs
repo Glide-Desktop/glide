@@ -40,7 +40,7 @@ use iced::{Color, Element, Subscription, Task};
 use crate::i18n::{Key, Lang, Text};
 use crate::icons::Icon;
 use crate::services::config::ConfigStore;
-use crate::theme::{Accent, ThemeState, ramp_color};
+use crate::theme::{Accent, ThemeState, ramp_color, to_iced_color};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Ctx {
@@ -372,7 +372,7 @@ impl Category {
 
     #[must_use]
     pub const fn stacked(self) -> bool {
-        matches!(self, Self::Vpn)
+        self.panels().len() > 1
     }
 
     #[must_use]
@@ -403,36 +403,37 @@ impl Category {
 
     #[must_use]
     pub const fn label(self, lang: Lang) -> &'static str {
-        match self {
-            Self::Desktop => Key::CategoryDesktop.text(lang),
-            _ => self.first().label(lang),
+        let meta = self.meta();
+        match lang {
+            Lang::Uk => meta.uk,
+            Lang::En => meta.en,
         }
     }
 
     #[must_use]
     pub const fn description(self, lang: Lang) -> &'static str {
-        match self {
-            Self::Vpn => Key::AboutCategoryVpn.text(lang),
-            Self::Appearance => Key::AboutCategoryAppearance.text(lang),
-            Self::Desktop => Key::AboutCategoryDesktop.text(lang),
-            Self::Displays => Key::AboutCategoryDisplays.text(lang),
-            Self::Keyboard => Key::AboutCategoryKeyboard.text(lang),
-            Self::Mouse => Key::AboutCategoryMouse.text(lang),
-            _ => self.first().description(lang),
+        let meta = self.meta();
+        match lang {
+            Lang::Uk => meta.about_uk,
+            Lang::En => meta.about_en,
         }
     }
 
     #[must_use]
-    pub const fn icon(self) -> Icon {
-        match self {
-            Self::Desktop => Icon::Desktop,
-            _ => self.first().icon(),
-        }
+    pub const fn icon(self) -> crate::icons::Tile {
+        crate::icons::Tile(self.meta().glyph)
     }
 
     #[must_use]
     pub fn color(self) -> Color {
-        self.first().color()
+        let meta = self.meta();
+        to_iced_color(meta.accent.ramp()[meta.step])
+    }
+
+    #[must_use]
+    pub fn ink(self) -> Color {
+        let meta = self.meta();
+        if meta.dark { to_iced_color(meta.accent.ramp()[5]) } else { Color::WHITE }
     }
 
     #[must_use]
@@ -515,4 +516,96 @@ impl Panel {
         let query = query.trim().to_lowercase();
         query.is_empty() || self.label_matches(&query) || self.keywords().iter().any(|word| word.contains(&query))
     }
+}
+
+pub struct Meta {
+    en: &'static str,
+    uk: &'static str,
+    about_en: &'static str,
+    about_uk: &'static str,
+    accent: glide_sdk::theme::Accent,
+    step: usize,
+    dark: bool,
+    glyph: &'static str,
+}
+
+macro_rules! category_meta {
+    ($($category:ident: $en:literal, $uk:literal, $about_en:literal, $about_uk:literal, $accent:ident $step:literal $dark:literal, $glyph:expr;)*) => {
+        impl Category {
+            #[must_use]
+            pub const fn meta(self) -> &'static Meta {
+                match self {
+                    $(Self::$category => &Meta {
+                        en: $en,
+                        uk: $uk,
+                        about_en: $about_en,
+                        about_uk: $about_uk,
+                        accent: glide_sdk::theme::Accent::$accent,
+                        step: $step,
+                        dark: $dark,
+                        glyph: $glyph,
+                    },)*
+                }
+            }
+        }
+    };
+}
+
+use crate::icons::tile_svg;
+
+category_meta! {
+    Home: "Overview", "Огляд", "This computer at a glance. Every tile leads to its section.", "Стан комп’ютера одним поглядом. Кожна плитка веде до свого розділу.", Blue 3 false,
+        tile_svg!("2.2", "stroke-linejoin='round'", "<path d='M3 11l9-8 9 8v10h-6v-6H9v6H3z'/>");
+    Network: "Network", "Мережа", "Wi-Fi, wired connection, hotspot and proxy.", "Wi-Fi, дротове підключення, точка доступу й проксі.", Blue 2 false,
+        tile_svg!("2.4", "stroke-linecap='round'", "<path d='M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01'/>");
+    Bluetooth: "Bluetooth", "Bluetooth", "Headphones, mice, keyboards and phones nearby.", "Навушники, миші, клавіатури й телефони поруч.", Blue 3 false,
+        tile_svg!("2.4", "stroke-linecap='round' stroke-linejoin='round'", "<path d='M7 7l10 10-5 5V2l5 5L7 17'/>");
+    Vpn: "VPN", "VPN", "NetworkManager tunnels and the NetBird mesh in one place.", "Захищені тунелі NetworkManager і mesh-мережа NetBird в одному місці.", Blue 4 false,
+        tile_svg!("2.2", "stroke-linejoin='round'", "<path d='M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z'/>");
+    Notifications: "Notifications", "Сповіщення", "Banners in the island at the top of the screen, sounds and Do Not Disturb.", "Банери в острові вгорі екрана, звуки й режим «Не турбувати».", Red 2 false,
+        tile_svg!("2.2", "stroke-linejoin='round'", "<path d='M6 16v-5a6 6 0 0 1 12 0v5l2 2H4zM10 21h4'/>");
+    Sound: "Sound", "Звук", "Where sound goes, where the microphone comes from and each app’s volume.", "Куди йде звук, звідки береться мікрофон і гучність кожної програми.", Red 1 true,
+        tile_svg!("2.2", "stroke-linejoin='round'", "<path d='M4 9h4l5-4v14l-5-4H4zM16 9a4 4 0 0 1 0 6'/>");
+    Appearance: "Appearance", "Вигляд", "Theme, accent, wallpaper, fonts and motion. Applies to the shell, Glide apps, GTK and Qt.", "Тема, акцент, шпалери, шрифти й рух. Діє на оболонку, програми Glide, GTK і Qt.", Purple 2 false,
+        tile_svg!("2.2", "", "<circle cx='12' cy='12' r='8.5'/><path d='M12 3.5a8.5 8.5 0 0 0 0 17z' fill='black'/>");
+    Desktop: "Desktop", "Робочий стіл", "Dock, top bar, windows, workspaces and the overview.", "Док, верхня панель, вікна, робочі простори й огляд.", Purple 3 false,
+        tile_svg!("2.2", "", "<rect x='3' y='3' width='18' height='13' rx='2'/><path d='M3 7.5h18M8 20h8'/>");
+    Displays: "Displays", "Дисплеї", "Arrangement, resolution, scale and night light. A mode change reverts by itself after 15 s unless you keep it.", "Розташування, роздільність, масштаб і нічне світло. Зміна режиму сама повертається через 15 с, якщо її не підтвердити.", Teal 3 false,
+        tile_svg!("2.2", "", "<rect x='3' y='4' width='18' height='12' rx='2'/><path d='M8 20h8M12 16v4'/>");
+    Power: "Power & Battery", "Живлення й батарея", "Power mode, sleep when idle, charging, the lid and the power button.", "Режим живлення, сон за бездіяльності, заряджання, кришка й кнопка живлення.", Green 3 false,
+        tile_svg!("2.2", "", "<rect x='2.5' y='7' width='17' height='10' rx='2'/><path d='M22 11v2'/>");
+    ScreenShare: "Screen Sharing", "Трансляція екрана", "Who sees your screen: sharing in calls, screen recording, third-party screenshot apps.", "Хто бачить ваш екран: демонстрація в дзвінках, запис відео, сторонні програми знімків.", Orange 3 false,
+        tile_svg!("2.2", "stroke-linecap='round' stroke-linejoin='round'", "<rect x='3' y='4' width='18' height='13' rx='2'/><path d='M12 14V8M9 10.5l3-3 3 3M8 21h8'/>");
+    Miracast: "Wireless Display", "Бездротовий дисплей", "Show the screen on a TV or projector with Miracast, with no cable and no shared network.", "Показати екран на телевізорі чи проєкторі з Miracast, без кабелю й без спільної мережі.", Orange 2 false,
+        tile_svg!("2.2", "stroke-linecap='round' stroke-linejoin='round'", "<rect x='2' y='7' width='20' height='13' rx='2'/><path d='M8 3l4 4 4-4'/>");
+    Printers: "Printers", "Принтери", "Printers, network scanners and the print queue.", "Принтери, сканери в мережі та черга друку.", Graphite 4 false,
+        tile_svg!("2.2", "stroke-linejoin='round'", "<path d='M6 9V3h12v6M6 17H3V9h18v8h-3M7 14h10v7H7z'/>");
+    Keyboard: "Keyboard", "Клавіатура", "Layouts, special keys, key repeat and keyboard shortcuts.", "Розкладки, спеціальні клавіші, повтор і комбінації клавіш.", Graphite 3 false,
+        tile_svg!("2.2", "stroke-linecap='round'", "<rect x='2' y='6' width='20' height='12' rx='2'/><path d='M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10'/>");
+    Mouse: "Mouse & Touchpad", "Миша й тачпад", "Speed, scrolling, tapping and multi-finger gestures.", "Швидкість, прокручування, дотики й жести кількома пальцями.", Orange 3 false,
+        tile_svg!("2.2", "", "<rect x='6' y='3' width='12' height='18' rx='6'/><path d='M12 7v3'/>");
+    Search: "Search & Launcher", "Пошук і лаунчер", "What the launcher finds, in what order, and how to open it.", "Що знаходить лаунчер, у якому порядку, і як його відкрити.", Blue 3 false,
+        tile_svg!("2.4", "stroke-linecap='round'", "<circle cx='11' cy='11' r='6'/><path d='M20 20l-4.5-4.5'/>");
+    Apps: "Default Apps", "Типові програми", "What opens links, mail, files and the terminal.", "Чим відкриваються посилання, пошта, файли й термінал.", Amber 2 true,
+        tile_svg!("0", "", "<g fill='black' stroke='none'><circle cx='7.5' cy='7.5' r='3'/><circle cx='16.5' cy='7.5' r='3'/><circle cx='7.5' cy='16.5' r='3'/><circle cx='16.5' cy='16.5' r='3'/></g>");
+    Startup: "Startup Apps", "Автозапуск", "What opens by itself when you sign in.", "Що відкривається само, коли ви входите в систему.", Orange 4 false,
+        tile_svg!("2.2", "stroke-linejoin='round'", "<path d='M5 15c-1 1-1 4-1 4s3 0 4-1M9 15l-3-3c2-5 7-9 12-9 0 5-4 10-9 12z'/>");
+    LockScreen: "Lock Screen", "Екран блокування", "When the session locks and what the lock screen shows.", "Коли сеанс блокується і що видно на заблокованому екрані.", Purple 5 false,
+        tile_svg!("2.2", "", "<rect x='5' y='11' width='14' height='10' rx='2'/><path d='M8 11V7a4 4 0 0 1 8 0v4'/>");
+    Privacy: "Privacy", "Конфіденційність", "What apps see and what stays on disk after you.", "Що програми бачать і що лишається на диску після вас.", Purple 1 true,
+        tile_svg!("2.2", "", "<path d='M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z'/><circle cx='12' cy='12' r='3'/>");
+    Passwords: "Passwords & Autofill", "Паролі й автозаповнення", "How Glide offers saved passwords and codes and how it protects the vaults.", "Як Glide пропонує збережені паролі й коди та як захищає сховища.", Amber 4 false,
+        tile_svg!("2.2", "stroke-linecap='round'", "<circle cx='8' cy='15' r='4'/><path d='M11 12l9-9M17 6l3 3'/>");
+    Accessibility: "Accessibility", "Спеціальні можливості", "Easier to see, point and read. GTK apps follow these settings too.", "Легше бачити, вказувати й читати. GTK-програми теж ці налаштування підхоплюють.", Green 2 false,
+        tile_svg!("2.2", "stroke-linecap='round'", "<circle cx='12' cy='4.5' r='1.5'/><path d='M5 8.5h14M12 8.5v5M8.5 21l3.5-7.5 3.5 7.5'/>");
+    Users: "Users", "Користувачі", "Your account and the other people on this computer.", "Ваш обліковий запис і інші люди на цьому комп’ютері.", Red 3 false,
+        tile_svg!("2.2", "stroke-linecap='round'", "<circle cx='9' cy='8' r='4'/><path d='M2 21a7 7 0 0 1 14 0M17 4a4 4 0 0 1 0 8M22 21a6 6 0 0 0-4-5.6'/>");
+    DateTime: "Date & Time", "Дата й час", "Time zone, synchronisation and how the clock looks.", "Часовий пояс, синхронізація і вигляд годинника.", Red 4 false,
+        tile_svg!("2.2", "stroke-linecap='round'", "<circle cx='12' cy='12' r='8.5'/><path d='M12 7v5l3 2'/>");
+    Region: "Region & Language", "Регіон і мова", "The interface language and the formats of dates, numbers and money.", "Мова інтерфейсу та формати дат, чисел і грошей.", Green 4 false,
+        tile_svg!("2.2", "", "<circle cx='12' cy='12' r='8.5'/><path d='M3.5 12h17M12 3.5a13 13 0 0 1 0 17M12 3.5a13 13 0 0 0 0 17'/>");
+    Storage: "Storage", "Сховище", "What takes up disk space and what can be freed.", "Що займає місце на диску і що можна звільнити.", Green 5 false,
+        tile_svg!("2.2", "stroke-linejoin='round'", "<path d='M3 13l3-8h12l3 8v6H3zM3 13h18M7 16.5h.01'/>");
+    About: "About", "Про систему", "This computer and the software on it.", "Цей комп’ютер і програмне забезпечення на ньому.", Amber 5 false,
+        tile_svg!("2.2", "stroke-linecap='round'", "<circle cx='12' cy='12' r='8.5'/><path d='M12 11v6M12 7.5h.01'/>");
 }

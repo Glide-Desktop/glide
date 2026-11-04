@@ -227,6 +227,11 @@ pub fn letter_tile<'a, M: 'a>(paint: &Paint, name: &str, side: f32) -> Element<'
 
 #[must_use]
 pub fn icon_tile<'a, M: 'a>(glyph: impl super::Glyph, color: Color, side: f32) -> Element<'a, M> {
+    inked_tile(glyph, color, Color::WHITE, side)
+}
+
+#[must_use]
+pub fn inked_tile<'a, M: 'a>(glyph: impl super::Glyph, color: Color, ink: Color, side: f32) -> Element<'a, M> {
     use glide_theme::shape::{R3, R4};
     let radius = if side <= 32.0 {
         R2
@@ -235,22 +240,8 @@ pub fn icon_tile<'a, M: 'a>(glyph: impl super::Glyph, color: Color, side: f32) -
     } else {
         R4
     };
-    let top = super::mix(color, Color::WHITE, motion::ST_DRAG);
-    container(icon(glyph, (side * 0.66).round(), Color::WHITE))
-        .center(side)
-        .style(move |_| container::Style {
-            background: Some(Background::Gradient(Gradient::Linear(
-                Linear::new(std::f32::consts::PI).add_stop(0.0, top).add_stop(1.0, color),
-            ))),
-            border: Border { color: Color { a: 0.12, ..Color::BLACK }, width: 0.5, radius: radius.into() },
-            shadow: iced::Shadow {
-                color: Color { a: 0.18, ..Color::BLACK },
-                offset: iced::Vector::new(0.0, 1.0),
-                blur_radius: 2.0,
-            },
-            ..container::Style::default()
-        })
-        .into()
+    let glyph_side = (side * if side <= 24.0 { 0.64 } else { 0.55 }).round();
+    container(icon(glyph, glyph_side, ink)).center(side).style(move |_| style::rounded(color, radius)).into()
 }
 
 pub struct Task<'a, M> {
@@ -333,11 +324,12 @@ pub fn skeleton<'a, M: 'a>(paint: &Paint, width: impl Into<Length>, height: f32)
 #[must_use]
 pub fn keycap<'a, M: 'a>(paint: &Paint, label: impl Into<std::borrow::Cow<'a, str>>) -> Element<'a, M> {
     let paint = *paint;
-    container(text(label, TextStyle::CAP).color(paint.fg_2()).wrapping(Wrapping::None))
-        .padding(Padding::from([1.0, SP1 + 2.0]))
+    let face = TextStyle { size_px: 10.5, line_height_px: 16.0, weight: 400, ..TextStyle::CAP };
+    container(text(label, face).font(iced::Font::MONOSPACE).color(paint.fg_3()).wrapping(Wrapping::None))
+        .padding(Padding::from([0.0, 5.0]))
         .style(move |_| container::Style {
             border: Border { color: paint.line_2(), width: 1.0, radius: R1.into() },
-            ..style::rounded(paint.fill_1(), R1)
+            ..container::Style::default()
         })
         .into()
 }

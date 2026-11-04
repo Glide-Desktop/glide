@@ -1,5 +1,5 @@
 use glide_iced::Paint;
-use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4, SP5};
+use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4};
 use glide_iced::widgets;
 use glide_theme::elevation::Level;
 use glide_theme::shape::R1;
@@ -238,37 +238,41 @@ pub fn hero_card<'a, M: 'a>(
 ) -> Element<'a, M> {
     let paint = *paint;
     let mut labels = column![
-        text(heading, TextStyle::T2).wrapping(Wrapping::WordOrGlyph),
-        text(description, TextStyle::CALL).color(paint.fg_2()),
+        text(heading, HERO_TITLE).wrapping(Wrapping::WordOrGlyph),
+        text(description, TextStyle::CAP).color(paint.fg_3()),
     ]
-    .spacing(SP1)
     .width(Fill);
     let mut end = None;
     match trailing {
         Some(trailing) if stacked => labels = labels.push(container(trailing).padding(Padding::ZERO.top(SP1))),
         other => end = other,
     }
-    let mut line = row![icon_tile(glyph, color, 64.0), labels].spacing(SP4 + 2.0).align_y(Alignment::Center);
+    let mut line = row![icon_tile(glyph, color, 52.0), labels].spacing(18).align_y(Alignment::Center);
     if let Some(trailing) = end {
         line = line.push(trailing);
     }
-    container(line).padding(SP5 - 4.0).width(Fill).style(move |_| tinted_card_style(&paint, color)).into()
+    widgets::surface(container(line).padding(18).width(Fill).style(move |_| card_style(&paint)), &paint, Level::El1, R3)
 }
+
+pub const HERO_TITLE: TextStyle = TextStyle { size_px: 20.0, line_height_px: 26.0, weight: 650, ..TextStyle::T2 };
+pub const PAGE_TITLE: TextStyle =
+    TextStyle { size_px: 24.0, line_height_px: 30.0, weight: 680, tracking_em: -0.025, ..TextStyle::T1 };
+pub const PAGE_LEAD: TextStyle = TextStyle { size_px: 13.5, line_height_px: 20.0, ..TextStyle::BODY };
 
 #[must_use]
 pub fn page_header<'a, M: 'a>(
-    paint: &Paint, glyph: impl Glyph, color: Color, eyebrow: Option<&str>,
+    paint: &Paint, tile: impl Into<Element<'a, M>>, eyebrow: Option<&str>,
     heading: impl Into<std::borrow::Cow<'a, str>>, description: Option<&'a str>, trailing: Option<Element<'a, M>>,
 ) -> Element<'a, M> {
-    let mut labels = Column::new().spacing(2).width(Fill);
+    let mut labels = Column::new().width(Fill);
     if let Some(eyebrow) = eyebrow.filter(|text| !text.is_empty()) {
         labels = labels.push(text(eyebrow.to_string(), TextStyle::MICRO).color(paint.fg_3()));
     }
-    labels = labels.push(text(heading, TextStyle::T1));
+    labels = labels.push(text(heading, PAGE_TITLE));
     if let Some(description) = description.filter(|text| !text.is_empty()) {
-        labels = labels.push(text(description, TextStyle::BODY).color(paint.fg_2()));
+        labels = labels.push(container(text(description, PAGE_LEAD).color(paint.fg_2())).padding(Padding::ZERO.top(2)));
     }
-    let mut line = row![icon_tile(glyph, color, 52.0), labels].spacing(SP4).align_y(Alignment::Center);
+    let mut line = row![tile.into(), labels].spacing(14).align_y(Alignment::Center);
     if let Some(trailing) = trailing {
         line = line.push(trailing);
     }

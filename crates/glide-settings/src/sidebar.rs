@@ -11,11 +11,12 @@ use crate::panels::{Category, Ctx, Panel};
 use crate::theme;
 use crate::widgets;
 
-pub const TILE_SIZE: f32 = 24.0;
-pub(crate) const AVATAR_SIZE: f32 = 40.0;
-pub const GROUP_GAP: f32 = 16.0;
-pub const ITEM_GAP: f32 = 2.0;
+pub const TILE_SIZE: f32 = 22.0;
+pub(crate) const AVATAR_SIZE: f32 = 36.0;
+pub const GROUP_GAP: f32 = 9.0;
+pub const ITEM_GAP: f32 = 1.0;
 pub const EDGE: f32 = 12.0;
+const STATUS: TextStyle = TextStyle { size_px: 11.5, line_height_px: 16.0, weight: 450, ..TextStyle::CAP };
 
 #[must_use]
 pub fn highlight(label: &str, query: &str) -> Option<(usize, usize)> {
@@ -48,8 +49,8 @@ fn search_field<'a>(c: &Ctx, query: &'a str) -> Element<'a, Message> {
         .on_input(Message::SearchChanged)
         .on_submit(Message::SearchSubmitted);
     let clear = (!query.is_empty()).then_some(Message::ClearSearch);
-    let hint = widgets::key_combo(c.theme, "Ctrl+F");
-    sdk::hinted_search_input(&widgets::paint(&c.theme), input, clear, "", Some(hint))
+    let paint = c.theme.paint;
+    sdk::sized_search_input(&paint, input, clear, "", Some(sdk::keycap(&paint, "Ctrl F")), 32.0, 10.0)
 }
 
 fn account_card<'a>(app: &'a App, c: &Ctx, selected: bool, user: &'a str, login: &'a str) -> Element<'a, Message> {
@@ -58,12 +59,13 @@ fn account_card<'a>(app: &'a App, c: &Ctx, selected: bool, user: &'a str, login:
     let user = me.map_or(user, |me| me.display_name());
     let login = me.map_or(login, |me| me.user_name.as_str());
     let name = [user, login].into_iter().find(|name| !name.trim().is_empty()).unwrap_or(c.t(K::User));
-    let subtitle = if login.is_empty() || login == name { c.t(K::LocalAccount) } else { login };
+    let role = c.t(if me.is_some_and(|me| me.administrator) { K::RoleAdministrator } else { K::RoleStandard });
+    let subtitle = if login.is_empty() { role.to_string() } else { format!("{login} · {role}") };
     let avatar = match me {
         Some(me) => crate::panels::users::portrait(t, me, AVATAR_SIZE),
         None => widgets::avatar(t, name, AVATAR_SIZE),
     };
-    sdk::profile_card(&widgets::paint(&t), avatar, name, subtitle, selected, Message::PanelSelected(Panel::Users))
+    sdk::profile_card(&t.paint, avatar, name, &subtitle, selected, Message::PanelSelected(Panel::Users))
 }
 
 fn hit_label(category: Category, query: &str, lang: Lang) -> Option<String> {
@@ -82,21 +84,25 @@ fn item<'a>(app: &'a App, c: &Ctx, category: Category, first_hit: bool) -> Eleme
     let query = app.search_query();
     let searching = !query.trim().is_empty();
     let selected = app.active_category() == category;
-    let trailing_color = if selected { t.acc_soft_fg() } else { t.fg_3() };
+    let trailing_color = if selected { iced::Color { a: 0.8, ..t.acc_soft_fg() } } else { t.fg_3() };
     let label = category.label(c.lang);
     let mut trailing = Row::new().spacing(SP1 + 2.0).align_y(Alignment::Center);
     if searching {
         if let Some(word) = hit_label(category, query, c.lang).filter(|word| !word.is_empty()) {
-            trailing = trailing.push(text(word, TextStyle::CAP).color(trailing_color).wrapping(Wrapping::None));
+            trailing = trailing.push(text(word, STATUS).color(trailing_color).wrapping(Wrapping::None));
         }
         if first_hit {
             trailing = trailing.push(widgets::key_cap(t, "↵"));
         }
     } else if let Some(status) = app.category_status(category) {
-        trailing = trailing.push(text(status, TextStyle::CAP).color(trailing_color).wrapping(Wrapping::None));
+        let warn = category == Category::Home;
+        let (style, color) =
+            if warn { (TextStyle { weight: 600, ..STATUS }, t.warn()) } else { (STATUS, trailing_color) };
+        trailing = trailing.push(text(status, style).color(color).wrapping(Wrapping::None));
     }
     sdk::SidebarItem::new(&paint, label)
-        .leading(widgets::tile(category.icon(), category.color(), TILE_SIZE))
+        .dense()
+        .leading(sdk::inked_tile(category.icon(), category.color(), category.ink(), TILE_SIZE))
         .matched(highlight(label, query))
         .accessory(trailing)
         .selected(selected)
@@ -144,12 +150,12 @@ pub fn view<'a>(app: &'a App, c: Ctx, user: &'a str, login: &'a str) -> Element<
     }
 
     let top = column![search_field(&c, query), account_card(app, &c, app.active_panel() == Panel::Users, user, login),]
-        .spacing(EDGE)
+        .spacing(10)
         .padding(Padding::from([EDGE, EDGE]).bottom(0));
 
     let paint = widgets::paint(&t);
     let list =
-        sdk::scrollable(&paint, container(groups).padding(Padding::from([EDGE + 4.0, EDGE]).bottom(EDGE))).height(Fill);
+        sdk::scrollable(&paint, container(groups).padding(Padding::from([10.0, EDGE]).bottom(EDGE))).height(Fill);
     let body = column![top, list].width(Length::Fixed(theme::SIDEBAR_WIDTH));
     sdk::pane(t.sidebar_bg(), 0.0, body).width(Length::Shrink).into()
 }
