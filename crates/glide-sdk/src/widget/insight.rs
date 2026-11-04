@@ -112,6 +112,79 @@ pub fn fact_grid<'a, M: 'a>(paint: &Paint, facts: Vec<(String, String)>, per_lin
     widgets::surface(boxed, &paint, Level::El1, R3)
 }
 
+pub const FACT_LABEL: TextStyle = TextStyle { size_px: 11.5, line_height_px: 20.0, ..TextStyle::CAP };
+const FACT_MONO: TextStyle = TextStyle { size_px: 12.0, ..super::ROW_TITLE };
+const FACT_PAD_Y: f32 = SP2 + 2.0;
+const FACT_CELL: f32 = 2.0 * FACT_PAD_Y + FACT_LABEL.line_height_px + 1.0 + super::ROW_TITLE.line_height_px;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fact {
+    label: String,
+    value: String,
+    mono: bool,
+}
+
+impl Fact {
+    #[must_use]
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self { label: label.into(), value: value.into(), mono: false }
+    }
+
+    #[must_use]
+    pub const fn mono(mut self) -> Self {
+        self.mono = true;
+        self
+    }
+}
+
+#[must_use]
+pub fn kv_grid<'a, M: 'a>(paint: &Paint, facts: Vec<Fact>, per_line: usize) -> Element<'a, M> {
+    let paint = *paint;
+    let per_line = per_line.max(1);
+    let cell = move |Fact { label, value, mono }: Fact| -> Element<'a, M> {
+        let value =
+            if mono { text(value, FACT_MONO).font(iced::Font::MONOSPACE) } else { text(value, super::ROW_TITLE) };
+        container(
+            column![
+                text(label, FACT_LABEL).color(paint.fg_3()).wrapping(Wrapping::None),
+                value.wrapping(Wrapping::None)
+            ]
+            .spacing(1),
+        )
+        .padding(Padding::from([FACT_PAD_Y, SP3 + 2.0]))
+        .width(Fill)
+        .clip(true)
+        .into()
+    };
+    let mut lines = Column::new().width(Fill);
+    let mut facts = facts.into_iter().peekable();
+    let mut first = true;
+    while facts.peek().is_some() {
+        if !first {
+            lines = lines.push(separator(&paint));
+        }
+        first = false;
+        let mut line = Row::new().height(FACT_CELL);
+        for index in 0..per_line {
+            line = match facts.next() {
+                Some(fact) if index > 0 => line.push(super::vertical_separator(&paint)).push(cell(fact)),
+                Some(fact) => line.push(cell(fact)),
+                None => line.push(Space::new().width(Fill)),
+            };
+        }
+        lines = lines.push(line);
+    }
+    lines.into()
+}
+
+#[must_use]
+pub fn status_text<'a, M: 'a>(paint: &Paint, color: Color, label: impl Into<Cow<'a, str>>) -> Element<'a, M> {
+    row![dot(color, 7.0), text(label, super::SECTION_NOTE).color(paint.fg_2()).wrapping(Wrapping::None)]
+        .spacing(SP1 + 2.0)
+        .align_y(Alignment::Center)
+        .into()
+}
+
 #[must_use]
 pub fn signal_bars<'a, M: 'a>(paint: &Paint, level: u8, steps: u8) -> Element<'a, M> {
     let steps = steps.max(1);

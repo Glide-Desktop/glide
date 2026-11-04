@@ -203,10 +203,9 @@ fn network_tile(c: &Ctx, state: &NetworkState) -> Element<'static, Msg> {
     let paint = widgets::paint(&c.theme);
     let tile = glance(c, Panel::Network, T::Network);
     if let Some(active) = state.active() {
-        let level = active.signal.div_ceil(25).min(4);
         let secured = if active.secured { format!(" · {}", c.t(T::Secured)) } else { String::new() };
         return tile
-            .aside(sdk::signal_bars(&paint, level, 4))
+            .aside(sdk::signal_bars(&paint, active.bars(), 4))
             .headline(active.ssid.clone())
             .detail(format!("{} {} %{secured}", c.t(T::Signal), active.signal))
             .build();

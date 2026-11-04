@@ -1,7 +1,5 @@
 use glide_settings::icons::Icon;
-use glide_settings::panels::network::expands;
 use glide_settings::panels::sound::device_icon;
-use glide_settings::services::network::AccessPoint;
 use glide_settings::theme::{
     self, Accent, Appearance, CONTROL_HEIGHT, PAGE_PADDING_TOP, PAGE_PADDING_X, R2, R3, RING_GAP, ROW_PADDING_X,
     SECTION_GAP, SMALL_CONTROL_HEIGHT, ThemeState,
@@ -65,22 +63,6 @@ fn every_panel_has_a_page_description_in_both_languages() {
             assert_ne!(panel.description(lang), panel.label(lang));
         }
     }
-}
-
-#[test]
-fn only_networks_that_need_input_show_a_disclosure_chevron() {
-    let point = |in_use, secured, known| AccessPoint {
-        ssid: String::from("home"),
-        signal: 80,
-        secured,
-        in_use,
-        known,
-        profile: None,
-    };
-    assert!(expands(&point(true, false, true)));
-    assert!(expands(&point(false, true, false)));
-    assert!(!expands(&point(false, true, true)));
-    assert!(!expands(&point(false, false, false)));
 }
 
 #[test]

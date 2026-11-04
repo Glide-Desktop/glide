@@ -165,9 +165,10 @@ fn nmcli_devices_pick_wifi_and_usable_ethernet() {
     let text = "wlan0:wifi:connected:Home\nlo:loopback:connected (externally):lo\nenp2s0:ethernet:unavailable:\nenp3s0:ethernet:connected:Wired 1\n";
     let (wifi, wired) = network::parse_devices(text);
     assert_eq!(wifi.as_deref(), Some("wlan0"));
-    assert_eq!(wired.len(), 1);
-    assert_eq!(wired[0].device, "enp3s0");
-    assert!(wired[0].connected);
+    assert_eq!(wired.len(), 2, "an unplugged port still shows as “no cable”");
+    assert!(!wired[0].cable && !wired[0].connected);
+    assert_eq!(wired[1].device, "enp3s0");
+    assert!(wired[1].cable && wired[1].connected);
 }
 
 #[test]

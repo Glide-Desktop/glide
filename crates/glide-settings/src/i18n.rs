@@ -237,27 +237,13 @@ catalogue! {
 
     NetworkUnavailable => "Networking is unavailable", "Мережа недоступна";
     NetworkUnavailableHint => "NetworkManager and nmcli are needed for network settings", "Для налаштувань мережі потрібні NetworkManager і nmcli";
-    WifiOff => "Off", "Вимкнено";
-    ConnectedTo => "Connected to", "Під'єднано до";
     NotConnected => "Not connected", "Не під'єднано";
-    Wired => "Wired", "Дротова";
-    CableUnplugged => "Cable unplugged", "Кабель від'єднано";
-    Networks => "Networks nearby", "Мережі поруч";
-    NoNetworks => "No networks in range", "Немає мереж поблизу";
-    Scanning => "Scanning…", "Пошук…";
     Connecting => "Connecting…", "Під'єднання…";
     Connected => "Connected", "Під'єднано";
     Disconnected => "Disconnected", "Від'єднано";
-    Saved => "Saved", "Збережена";
-    Secured => "Secured", "Захищена";
-    Open => "Open", "Відкрита";
     Connect => "Connect", "Під'єднати";
     Disconnect => "Disconnect", "Від'єднати";
     Forget => "Forget", "Забути";
-    Signal => "Signal", "Сигнал";
-    NetworkManageHint => "Forgetting removes the saved password", "«Забути» видаляє збережений пароль";
-    Password => "Password", "Пароль";
-    PasswordHint => "The network is protected", "Мережа захищена";
     Cancel => "Cancel", "Скасувати";
 
     BluetoothUnavailable => "Bluetooth is unavailable", "Bluetooth недоступний";

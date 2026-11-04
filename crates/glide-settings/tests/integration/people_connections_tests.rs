@@ -108,14 +108,14 @@ fn hidden_network_and_hotspot_forms_validate_before_connecting() {
 }
 
 #[test]
-fn switching_the_proxy_off_does_not_need_a_port() {
+fn a_proxy_mode_takes_effect_at_once_and_a_failed_write_restores_it() {
     use glide_settings::panels::network::{Msg, Page};
     let mut page = Page::default();
     let _ = page.update(Msg::ProxyMode(network::ProxyMode::Manual));
-    let _ = page.update(Msg::ProxyPort(0, "80a80".to_string()));
-    assert_eq!(page.proxy_draft().http.port, "8080");
-    let _ = page.update(Msg::ProxyMode(network::ProxyMode::None));
-    assert_eq!(page.proxy_draft().mode, network::ProxyMode::None);
+    assert_eq!(page.proxy().mode, network::ProxyMode::Manual);
+    let before = network::ProxySettings::default();
+    let _ = page.update(Msg::ProxyApplied(before, Some(Err("gsettings failed".to_string()))));
+    assert_eq!(page.proxy().mode, network::ProxyMode::None);
 }
 
 #[test]
@@ -193,8 +193,6 @@ fn connections_parse_with_activity_and_autoconnect() {
     assert!(profiles[0].active);
     assert_eq!(profiles[2].name, "Office:5G");
     let state = network::NetworkState { profiles, ..network::NetworkState::default() };
-    let saved: Vec<&str> = state.saved_wifi().map(|p| p.name.as_str()).collect();
-    assert_eq!(saved, vec!["Home", "Office:5G"]);
     assert!(state.hotspot().is_none());
     assert_eq!(state.active_profile("wlan0").map(|p| p.uuid.as_str()), Some("1111"));
 }
@@ -225,7 +223,6 @@ fn device_details_collect_addresses_and_skip_link_local_ipv6() {
          IP6.GATEWAY:\n",
     );
     assert_eq!(details.mac, "50:FE:0C:12:B7:87");
-    assert_eq!(details.speed, "780 Mb/s");
     assert_eq!(details.ipv4, vec!["192.168.89.233/24"]);
     assert_eq!(details.gateway, "192.168.89.1");
     assert_eq!(details.dns, vec!["192.168.89.1"]);
@@ -244,8 +241,6 @@ fn profile_settings_parse_metered_and_custom_dns() {
     );
     assert_eq!(settings.metered, network::Metered::Yes);
     assert!(!settings.autoconnect);
-    assert!(settings.hidden);
-    assert_eq!(settings.key_mgmt, "sae");
     assert_eq!(settings.custom_dns, vec!["1.1.1.1", "9.9.9.9"]);
     assert_eq!(network::Metered::parse("unknown"), network::Metered::Auto);
     assert_eq!(network::Metered::Auto.key(), "unknown");
@@ -262,12 +257,26 @@ fn dns_lists_accept_only_ip_addresses() {
 }
 
 #[test]
-fn the_active_radio_line_gives_frequency_channel_and_security() {
-    assert_eq!(
-        network::parse_active_radio(" :2417 MHz:2:WPA2\n*:5180 MHz:36:WPA2 WPA3\n"),
-        Some(("5180 MHz".to_string(), "36".to_string(), "WPA2 WPA3".to_string()))
+fn the_radio_columns_give_band_channel_rate_and_security() {
+    let networks = network::parse_networks(
+        " :Home:70:WPA2:2417 MHz:2:65 Mbit/s\n\
+         *:Home:60:WPA2 WPA3:5180 MHz:36:866 Mbit/s\n\
+         :Office:50:WPA2 802.1X:5745 MHz:149:540 Mbit/s\n\
+         :Cafe:30::2437 MHz:6:54 Mbit/s\n",
+        &[],
     );
-    assert_eq!(network::parse_active_radio(" :2417 MHz:2:WPA2\n"), None);
+    let home = &networks[0];
+    assert!(home.in_use);
+    assert_eq!(home.signal, 70);
+    assert_eq!((home.frequency, home.channel, home.rate), (5180, 36, 866), "the radio of the joined BSSID wins");
+    assert_eq!(home.band(), Some(network::Band::Ghz5));
+    assert_eq!(home.protocol(), Some("WPA3"));
+    let office = networks.iter().find(|n| n.ssid == "Office").expect("office");
+    assert!(office.enterprise());
+    let cafe = networks.iter().find(|n| n.ssid == "Cafe").expect("cafe");
+    assert!(!cafe.secured);
+    assert_eq!(cafe.protocol(), None);
+    assert_eq!(cafe.band(), Some(network::Band::Ghz2));
 }
 
 #[test]

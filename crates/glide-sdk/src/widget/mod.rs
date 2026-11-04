@@ -43,8 +43,8 @@ pub use cards::{
     preview_ring_style, sample_well, stat_tile, tinted_card, tinted_card_style, usage_bar, usage_card,
 };
 pub use controls::{
-    CHECK, Check, SwitchSize, ZOOM_TRACK, check_box, chevron, paused_progress, progress, radio_indicator, radio_mark,
-    sized_spinner, sized_switch, slider, spinner, stepped_slider, switch, zoom_control,
+    CHECK, Check, SwitchSize, ZOOM_TRACK, check_box, chevron, fold_chevron, paused_progress, progress, radio_indicator,
+    radio_mark, sized_spinner, sized_switch, slider, spinner, stepped_slider, switch, zoom_control,
 };
 pub use editor::{
     EDITOR_BAR, EditorContent, EditorRenderer, ScrolledEditor, View as EditorView, editor, editor_track,
@@ -65,17 +65,17 @@ pub use inputs::{
     text_area_style, text_field, validated_field,
 };
 pub use insight::{
-    Glance, INFO_BUTTON, Issue, Stage, applies_chip, choice_tiles, fact_grid, info_button, labelled_switch,
-    reset_action, section_heading, signal_bars, stage_track, status_chips,
+    FACT_LABEL, Fact, Glance, INFO_BUTTON, Issue, Stage, applies_chip, choice_tiles, fact_grid, info_button, kv_grid,
+    labelled_switch, reset_action, section_heading, signal_bars, stage_track, status_chips, status_text,
 };
 pub use inspector::{INSPECTOR_PREVIEW, INSPECTOR_WIDTH, Inspector};
 pub use items::{corner_badge, item_ink, item_tile, section_title, selection_band, table_row};
 pub use layout::{
     CHANGED_MARK, Group, HeaderCell, ISLAND_GAP, ISLAND_TRAVEL, ListRow, ROW_HEIGHT, ROW_NOTE, ROW_TITLE, SECTION_NOTE,
     SIDEBAR_DENSE_ROW, STATUS_BAR, SidebarItem, TABLE_CELL, TABLE_HEADER, TABLE_ROW, TREE_INDENT, TREE_ROW,
-    action_card, action_row, card, card_style, disclosure, expander, facts, inert, island_motion, list, list_row,
-    profile_card, row_icon, section, select_row, sidebar, sidebar_item, status_bar, status_button, status_islands,
-    status_strip, surface, switch_row, table_header, tree_row, well,
+    action_card, action_row, card, card_style, detail_band, disclosure, expander, facts, inert, island_motion, list,
+    list_row, profile_card, row_icon, section, select_row, sidebar, sidebar_item, split_actions, status_bar,
+    status_button, status_islands, status_strip, surface, switch_row, table_header, tree_row, well,
 };
 pub use media::{
     Art, art, captioned_picture, frame_button, level_control, level_meter, photo, photo_button, picture, range_slider,

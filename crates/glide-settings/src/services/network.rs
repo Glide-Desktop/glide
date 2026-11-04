@@ -14,11 +14,59 @@ pub struct AccessPoint {
     pub in_use: bool,
     pub known: bool,
     pub profile: Option<String>,
+    pub security: String,
+    pub frequency: u32,
+    pub channel: u32,
+    pub rate: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Band {
+    Ghz2,
+    Ghz5,
+    Ghz6,
+}
+
+impl AccessPoint {
+    #[must_use]
+    pub const fn bars(&self) -> u8 {
+        match self.signal {
+            81.. => 4,
+            56..=80 => 3,
+            31..=55 => 2,
+            _ => 1,
+        }
+    }
+
+    #[must_use]
+    pub fn enterprise(&self) -> bool {
+        self.security.split_whitespace().any(|token| token == "802.1X" || token == "EAP")
+    }
+
+    #[must_use]
+    pub fn protocol(&self) -> Option<&'static str> {
+        let tokens: Vec<&str> = self.security.split_whitespace().collect();
+        ["WPA3", "WPA2", "WPA1", "WEP", "OWE"]
+            .into_iter()
+            .find(|name| tokens.contains(name))
+            .map(|name| if name == "WPA1" { "WPA" } else { name })
+    }
+
+    #[must_use]
+    pub const fn band(&self) -> Option<Band> {
+        match self.frequency {
+            2400..=2500 => Some(Band::Ghz2),
+            4900..=5900 => Some(Band::Ghz5),
+            5925..=7125 => Some(Band::Ghz6),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wired {
     pub device: String,
+    pub cable: bool,
     pub connected: bool,
     pub connection: String,
 }
@@ -36,6 +84,7 @@ pub struct NetworkState {
     pub hotspot_ssid: Option<String>,
     pub airplane: bool,
     pub rfkill: bool,
+    pub internet: bool,
 }
 
 impl NetworkState {
@@ -52,10 +101,6 @@ impl NetworkState {
     #[must_use]
     pub fn active_profile(&self, device: &str) -> Option<&Profile> {
         self.profiles.iter().find(|profile| profile.active && profile.device == device)
-    }
-
-    pub fn saved_wifi(&self) -> impl Iterator<Item = &Profile> {
-        self.profiles.iter().filter(|profile| profile.kind == WIFI_KIND && profile.name != HOTSPOT_NAME)
     }
 }
 
@@ -176,10 +221,6 @@ impl Metered {
 pub struct ProfileSettings {
     pub metered: Metered,
     pub autoconnect: bool,
-    pub hidden: bool,
-    pub key_mgmt: String,
-    pub mode: String,
-    pub ipv4_method: String,
     pub custom_dns: Vec<String>,
 }
 
@@ -187,14 +228,10 @@ pub struct ProfileSettings {
 pub struct Details {
     pub device: String,
     pub mac: String,
-    pub speed: String,
     pub ipv4: Vec<String>,
     pub gateway: String,
     pub dns: Vec<String>,
     pub ipv6: Vec<String>,
-    pub frequency: String,
-    pub channel: String,
-    pub security: String,
     pub settings: Option<ProfileSettings>,
 }
 
@@ -244,7 +281,6 @@ pub fn parse_device_show(text: &str) -> Details {
         match key {
             "GENERAL.DEVICE" => details.device = value.to_string(),
             "GENERAL.HWADDR" => details.mac = known(value),
-            "CAPABILITIES.SPEED" => details.speed = known(value),
             "IP4.ADDRESS" => details.ipv4.extend(list(value)),
             "IP4.GATEWAY" => details.gateway = known(value),
             "IP4.DNS" | "IP6.DNS" => details.dns.extend(list(value)),
@@ -263,10 +299,6 @@ pub fn parse_profile_settings(text: &str) -> ProfileSettings {
         match key {
             "connection.metered" => settings.metered = Metered::parse(value),
             "connection.autoconnect" => settings.autoconnect = value == "yes",
-            "802-11-wireless.hidden" => settings.hidden = value == "yes",
-            "802-11-wireless.mode" => settings.mode = known(value),
-            "802-11-wireless-security.key-mgmt" => settings.key_mgmt = known(value),
-            "ipv4.method" => settings.ipv4_method = known(value),
             "ipv4.dns" => settings.custom_dns = list(value),
             _ => {}
         }
@@ -275,58 +307,15 @@ pub fn parse_profile_settings(text: &str) -> ProfileSettings {
 }
 
 #[must_use]
-pub fn parse_active_radio(text: &str) -> Option<(String, String, String)> {
-    text.lines().find_map(|line| match split_terse(line).as_slice() {
-        [in_use, frequency, channel, security] if in_use.trim() == "*" => {
-            Some((known(frequency), known(channel), known(security)))
-        }
-        _ => None,
-    })
-}
-
-#[must_use]
-pub(crate) fn read_details(device: Option<&str>, uuid: Option<&str>, wifi: bool) -> Details {
-    let mut details = device
-        .and_then(|device| {
-            run::output(
-                "nmcli",
-                &[
-                    "-t",
-                    "-f",
-                    "GENERAL.DEVICE,GENERAL.HWADDR,CAPABILITIES.SPEED,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,IP6.ADDRESS,IP6.DNS",
-                    "device",
-                    "show",
-                    device,
-                ],
-            )
-        })
+pub(crate) fn read_details(device: &str, uuid: Option<&str>) -> Details {
+    const DEVICE_FIELDS: &str = "GENERAL.DEVICE,GENERAL.HWADDR,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,IP6.ADDRESS,IP6.DNS";
+    let mut details = run::output("nmcli", &["-t", "-f", DEVICE_FIELDS, "device", "show", device])
         .map(|text| parse_device_show(&text))
         .unwrap_or_default();
-    if wifi
-        && device.is_some()
-        && let Some((frequency, channel, security)) =
-            run::output("nmcli", &["-t", "-f", "IN-USE,FREQ,CHAN,SECURITY", "device", "wifi", "list", "--rescan", "no"])
-                .as_deref()
-                .and_then(parse_active_radio)
-    {
-        details.frequency = frequency;
-        details.channel = channel;
-        details.security = security;
-    }
     details.settings = uuid.and_then(|uuid| {
-        run::output(
-            "nmcli",
-            &[
-                "-t",
-                "-f",
-                "connection.metered,connection.autoconnect,802-11-wireless.hidden,802-11-wireless.mode,802-11-wireless-security.key-mgmt,ipv4.method,ipv4.dns",
-                "connection",
-                "show",
-                "uuid",
-                uuid,
-            ],
-        )
-        .map(|text| parse_profile_settings(&text))
+        let fields = "connection.metered,connection.autoconnect,ipv4.dns";
+        run::output("nmcli", &["-t", "-f", fields, "connection", "show", "uuid", uuid])
+            .map(|text| parse_profile_settings(&text))
     });
     details
 }
@@ -377,12 +366,6 @@ pub(crate) fn set_dns(uuid: &str, device: Option<&str>, servers: &[String]) -> R
         Some(device) => run::status("nmcli", &["device", "reapply", device]),
         None => Ok(String::new()),
     }
-}
-
-pub(crate) fn reveal_password(uuid: &str) -> Result<String, String> {
-    let secret =
-        run::status("nmcli", &["-s", "-g", "802-11-wireless-security.psk", "connection", "show", "uuid", uuid])?;
-    if secret.is_empty() { Err("NetworkManager returned no password for this network".to_string()) } else { Ok(secret) }
 }
 
 pub(crate) fn stop_profile(uuid: &str) -> Result<String, String> {
@@ -476,23 +459,35 @@ pub fn parse_networks(text: &str, known: &[KnownNetwork]) -> Vec<AccessPoint> {
     let mut networks: Vec<AccessPoint> = Vec::new();
     for line in text.lines() {
         let fields = split_terse(line);
-        let [in_use, ssid, signal, security] = fields.as_slice() else {
+        let [in_use, ssid, signal, security, radio @ ..] = fields.as_slice() else {
             continue;
         };
         if ssid.is_empty() {
             continue;
         }
+        let number = |index: usize| {
+            radio.get(index).and_then(|field| field.split_whitespace().next()?.parse().ok()).unwrap_or(0)
+        };
         let profile = known.iter().find(|network| network.ssid == *ssid).map(|network| network.uuid.clone());
+        let security = if security.trim() == "--" { String::new() } else { security.trim().to_string() };
         let point = AccessPoint {
             ssid: ssid.clone(),
             signal: signal.trim().parse().unwrap_or(0),
-            secured: !security.trim().is_empty() && security.trim() != "--",
+            secured: !security.is_empty(),
             in_use: in_use.trim() == "*",
             known: profile.is_some(),
             profile,
+            security,
+            frequency: number(0),
+            channel: number(1),
+            rate: number(2),
         };
         match networks.iter_mut().find(|other| other.ssid == point.ssid) {
             Some(other) => {
+                if point.in_use || (!other.in_use && point.signal > other.signal) {
+                    (other.security, other.frequency, other.channel, other.rate) =
+                        (point.security, point.frequency, point.channel, point.rate);
+                }
                 other.in_use |= point.in_use;
                 other.signal = other.signal.max(point.signal);
             }
@@ -516,8 +511,9 @@ pub fn parse_devices(text: &str) -> (Option<String>, Vec<Wired>) {
         };
         match kind.as_str() {
             "wifi" if wifi.is_none() => wifi = Some(device.clone()),
-            "ethernet" if state != "unavailable" && state != "unmanaged" => wired.push(Wired {
+            "ethernet" if state != "unmanaged" => wired.push(Wired {
                 device: device.clone(),
+                cable: state != "unavailable",
                 connected: state == "connected",
                 connection: connection.clone(),
             }),
@@ -565,7 +561,16 @@ pub fn read(rescan: Rescan) -> NetworkState {
     let networks = if wifi_enabled {
         run::output(
             "nmcli",
-            &["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan", rescan.arg()],
+            &[
+                "-t",
+                "-f",
+                "IN-USE,SSID,SIGNAL,SECURITY,FREQ,CHAN,RATE",
+                "device",
+                "wifi",
+                "list",
+                "--rescan",
+                rescan.arg(),
+            ],
         )
         .map(|text| parse_networks(&text, &known))
         .unwrap_or_default()
@@ -583,6 +588,8 @@ pub fn read(rescan: Rescan) -> NetworkState {
         hotspot_ssid,
         airplane: airplane_mode(&rfkill),
         rfkill: !rfkill.is_empty(),
+        internet: run::output("nmcli", &["-t", "-f", "CONNECTIVITY", "general"])
+            .is_some_and(|text| text.trim() == "full"),
     }
 }
 
@@ -898,6 +905,10 @@ fn wait_for_activation(bus: &Connection, device: &OwnedObjectPath, active: &Owne
         }
         std::thread::sleep(POLL);
     }
+}
+
+pub(crate) fn open_connection_editor() -> Result<String, String> {
+    run::status("nm-connection-editor", &["--create", "--type=802-11-wireless"])
 }
 
 pub fn disconnect(device: &str) -> Result<String, String> {

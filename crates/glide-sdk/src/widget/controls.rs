@@ -646,6 +646,7 @@ fn bar<'a, M: 'a>(paint: &Paint, fraction: Option<f32>, paused: bool) -> Element
 struct Chevron {
     paint: Paint,
     open: bool,
+    fold: bool,
 }
 
 impl<M> canvas::Program<M> for Chevron {
@@ -664,7 +665,12 @@ impl<M> canvas::Program<M> for Chevron {
         state.sketch.draw(renderer, bounds.size(), &[turn, r, g, b, a], |frame| {
             frame.with_save(|frame| {
                 frame.translate(Vector::new(bounds.width / 2.0, bounds.height / 2.0));
-                frame.rotate(Radians(std::f32::consts::FRAC_PI_2 * turn));
+                let angle = if self.fold {
+                    std::f32::consts::FRAC_PI_2 - std::f32::consts::PI * turn
+                } else {
+                    std::f32::consts::FRAC_PI_2 * turn
+                };
+                frame.rotate(Radians(angle));
                 let mark = Path::new(|path| {
                     path.move_to(Point::new(-1.8, -4.0));
                     path.line_to(Point::new(2.2, 0.0));
@@ -683,7 +689,12 @@ impl<M> canvas::Program<M> for Chevron {
 
 #[must_use]
 pub fn chevron<'a, M: 'a>(paint: &Paint, open: bool) -> Element<'a, M> {
-    surface(Chevron { paint: *paint, open }).width(16).height(16).into()
+    surface(Chevron { paint: *paint, open, fold: false }).width(16).height(16).into()
+}
+
+#[must_use]
+pub fn fold_chevron<'a, M: 'a>(paint: &Paint, open: bool) -> Element<'a, M> {
+    surface(Chevron { paint: *paint, open, fold: true }).width(16).height(16).into()
 }
 
 struct Spinner {

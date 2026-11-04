@@ -36,9 +36,6 @@ pub enum Icon {
     Search,
     Wifi,
     WifiOff,
-    Wifi1,
-    Wifi2,
-    Wifi3,
     Bluetooth,
     Appearance,
     Display,
@@ -130,15 +127,6 @@ impl Icon {
             Self::Search => glyph!("<circle cx='11' cy='11' r='7'/><path d='M16.5 16.5 21 21'/>"),
             Self::Wifi => glyph!(
                 "<path d='M2 8.8a15 15 0 0 1 20 0'/><path d='M5 12.3a10 10 0 0 1 14 0'/><path d='M8.5 15.8a5 5 0 0 1 7 0'/><circle cx='12' cy='19.5' r='1' fill='black'/>"
-            ),
-            Self::Wifi3 => glyph!(
-                "<path d='M2 8.8a15 15 0 0 1 20 0' stroke-opacity='0.3'/><path d='M5 12.3a10 10 0 0 1 14 0'/><path d='M8.5 15.8a5 5 0 0 1 7 0'/><circle cx='12' cy='19.5' r='1' fill='black'/>"
-            ),
-            Self::Wifi2 => glyph!(
-                "<path d='M2 8.8a15 15 0 0 1 20 0' stroke-opacity='0.3'/><path d='M5 12.3a10 10 0 0 1 14 0' stroke-opacity='0.3'/><path d='M8.5 15.8a5 5 0 0 1 7 0'/><circle cx='12' cy='19.5' r='1' fill='black'/>"
-            ),
-            Self::Wifi1 => glyph!(
-                "<path d='M2 8.8a15 15 0 0 1 20 0' stroke-opacity='0.3'/><path d='M5 12.3a10 10 0 0 1 14 0' stroke-opacity='0.3'/><path d='M8.5 15.8a5 5 0 0 1 7 0' stroke-opacity='0.3'/><circle cx='12' cy='19.5' r='1' fill='black'/>"
             ),
             Self::WifiOff => glyph!(
                 "<path d='M2 8.8a15 15 0 0 1 4.2-2.9M10.7 4.6A15 15 0 0 1 22 8.8'/><path d='M5 12.3a10 10 0 0 1 5-2.6'/><path d='M8.5 15.8a5 5 0 0 1 7 0'/><path d='M3 3l18 18'/>"
@@ -344,16 +332,6 @@ impl Icon {
     #[must_use]
     pub fn handle(self) -> svg::Handle {
         svg::Handle::from_memory(self.bytes())
-    }
-
-    #[must_use]
-    pub(crate) fn for_signal(signal: u8) -> Self {
-        match signal {
-            75.. => Self::Wifi,
-            50..=74 => Self::Wifi3,
-            25..=49 => Self::Wifi2,
-            _ => Self::Wifi1,
-        }
     }
 
     #[must_use]

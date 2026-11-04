@@ -3,7 +3,7 @@ use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4, SP5};
 use glide_iced::widgets;
 use glide_theme::elevation::Level;
 use glide_theme::{TextStyle, component};
-use iced::widget::{Column, Space, button as control, column, container, mouse_area, row, stack};
+use iced::widget::{Column, Row, Space, button as control, column, container, mouse_area, row, stack};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding, Vector, mouse};
 
 use super::controls::{chevron, switch_face};
@@ -332,6 +332,28 @@ impl<'a, M: Clone + 'a> From<ListRow<'a, M>> for Element<'a, M> {
         });
         focusable(&paint, control, R2).inset().on_activate(Some(message)).into()
     }
+}
+
+#[must_use]
+pub fn detail_band<'a, M: 'a>(paint: &Paint, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let paint = *paint;
+    let mut items = Column::new();
+    for (index, item) in rows.into_iter().enumerate() {
+        if index > 0 {
+            items = items.push(separator(&paint));
+        }
+        items = items.push(item);
+    }
+    super::rising(container(items).width(Fill).style(move |_| style::rounded(paint.fill_1(), 0.0)))
+}
+
+#[must_use]
+pub fn split_actions<'a, M: 'a>(leading: Vec<Element<'a, M>>, trailing: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let side = |buttons: Vec<Element<'a, M>>| Row::with_children(buttons).spacing(SP2).align_y(Alignment::Center);
+    let line = row![Space::new().height(ROW_HEIGHT - 2.0 * ROW_PAD_Y), side(leading), Space::new().width(Fill)]
+        .push(side(trailing))
+        .align_y(Alignment::Center);
+    container(line).padding(Padding::from([ROW_PAD_Y, ROW_PAD_X])).width(Fill).into()
 }
 
 #[must_use]
