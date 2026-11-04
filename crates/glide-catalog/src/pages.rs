@@ -856,12 +856,12 @@ fn insight<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
     let ramp = |step: usize| glide_sdk::theme::to_iced(paint.tokens.ramp[step]);
     let issue = disk_issue(catalog, shell);
     let glances = row![
-        ui::Glance::new(paint, Icon::Folder, ramp(3), shell.t("Сховище", "Storage"))
+        ui::Glance::new(paint, ui::icon_tile(Icon::Folder, ramp(3), 22.0), shell.t("Сховище", "Storage"))
             .headline(shell.t("212 ГБ вільно", "212 GB free"))
             .meter(0.55, paint.acc_bg())
             .detail(shell.t("з 476 ГБ", "of 476 GB"))
             .on_press(Message::Said(shell.t("Сховище", "Storage"))),
-        ui::Glance::new(paint, Icon::Bell, ramp(4), "Wi-Fi")
+        ui::Glance::new(paint, ui::icon_tile(Icon::Bell, ramp(4), 22.0), "Wi-Fi")
             .headline("Home")
             .aside(ui::signal_bars(paint, 3, 4))
             .detail(shell.t("Підключено", "Connected")),

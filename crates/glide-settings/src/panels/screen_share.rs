@@ -233,13 +233,16 @@ impl Pane for Page {
         let how =
             Column::new().spacing(8).push(sdk::section_heading(&widgets::paint(&t), c.t(T::How))).push(sdk::grid(
                 vec![
-                    sdk::Glance::new(&widgets::paint(&t), Icon::Window, ramp_color(Accent::Azurit, 3), c.t(T::Portal))
-                        .detail(c.t(T::PortalHint))
-                        .build(),
                     sdk::Glance::new(
                         &widgets::paint(&t),
-                        Icon::Terminal,
-                        ramp_color(Accent::Graphite, 3),
+                        sdk::icon_tile(Icon::Window, ramp_color(Accent::Azurit, 3), 22.0),
+                        c.t(T::Portal),
+                    )
+                    .detail(c.t(T::PortalHint))
+                    .build(),
+                    sdk::Glance::new(
+                        &widgets::paint(&t),
+                        sdk::icon_tile(Icon::Terminal, ramp_color(Accent::Graphite, 3), 22.0),
                         c.t(T::Direct),
                     )
                     .detail(c.t(T::DirectHint))

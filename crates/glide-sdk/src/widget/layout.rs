@@ -998,7 +998,7 @@ mod tests {
     #[test]
     fn a_boxed_row_is_fifty_two_pixels_with_room_for_one_control() {
         assert!((ROW_HEIGHT - 52.0).abs() < f32::EPSILON);
-        assert!(ROW_HEIGHT - 2.0 * ROW_PAD_Y >= component::CONTROL);
+        const { assert!(ROW_HEIGHT - 2.0 * ROW_PAD_Y >= component::CONTROL) };
     }
 
     #[test]

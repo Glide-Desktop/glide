@@ -3,8 +3,7 @@ use glide_sdk::widget::{self as sdk, Glance, Issue, Severity};
 use iced::widget::Column;
 use iced::{Element, Task};
 
-use super::{Ctx, Pane, Panel};
-use crate::icons::Icon;
+use super::{Category, Ctx, Pane, Panel};
 use crate::services::audio::{self, AudioState};
 use crate::services::config::ConfigStore;
 use crate::services::network::{self, NetworkState, Rescan};
@@ -56,9 +55,11 @@ mod tr {
         HoursShort => "h", "год";
         MinutesShort => "min", "хв";
         Free => "free", "вільно";
-        Of => "of", "з";
-        Health => "Battery health", "Стан батареї";
+        Health => "battery health", "стан батареї";
         Loading => "Loading…", "Завантаження…";
+        Saver => "Power Saver", "Економія";
+        Balanced => "Balanced", "Збалансований";
+        Performance => "Performance", "Продуктивність";
     }
 }
 
@@ -182,15 +183,25 @@ fn issue<'a>(c: &Ctx, config: &'a ConfigStore, problem: Problem, open: bool) -> 
         .toggle(Msg::Toggle(problem), c.t(T::More), c.t(T::Less))
         .severity(severity);
     if let Some(panel) = target {
-        item = item.action(widgets::secondary(c.theme, c.t(T::Open), Some(Msg::Open(panel))));
+        let open = sdk::sized_button(&paint, c.t(T::Open), sdk::Tone::Tonal, sdk::Size::Small, Some(Msg::Open(panel)));
+        item = item.action(open);
     }
     item.build()
 }
 
+fn glance(c: &Ctx, panel: Panel, title: T) -> Glance<'static, Msg> {
+    let category = Category::of(panel);
+    let lead = sdk::inked_tile(category.icon(), category.color(), category.ink(), 22.0);
+    Glance::new(&c.theme.paint, lead, c.t(title)).on_press(Msg::Open(panel))
+}
+
+fn aside(c: &Ctx, value: String) -> Element<'static, Msg> {
+    sdk::text(value, sdk::SECTION_NOTE).color(c.theme.fg_2()).into()
+}
+
 fn network_tile(c: &Ctx, state: &NetworkState) -> Element<'static, Msg> {
     let paint = widgets::paint(&c.theme);
-    let tile =
-        Glance::new(&paint, Icon::Wifi, Panel::Network.color(), c.t(T::Network)).on_press(Msg::Open(Panel::Network));
+    let tile = glance(c, Panel::Network, T::Network);
     if let Some(active) = state.active() {
         let level = active.signal.div_ceil(25).min(4);
         let secured = if active.secured { format!(" · {}", c.t(T::Secured)) } else { String::new() };
@@ -208,22 +219,20 @@ fn network_tile(c: &Ctx, state: &NetworkState) -> Element<'static, Msg> {
 }
 
 fn sound_tile(c: &Ctx, state: &AudioState) -> Element<'static, Msg> {
-    let paint = widgets::paint(&c.theme);
-    let tile = Glance::new(&paint, Icon::Volume, Panel::Sound.color(), c.t(T::Sound)).on_press(Msg::Open(Panel::Sound));
+    let tile = glance(c, Panel::Sound, T::Sound);
     let Some(sink) = state.default_sink() else { return tile.headline(c.t(T::NoSound)).build() };
     let tile = tile.headline(sink.name.clone());
     match state.output {
-        Some(level) if level.muted => tile.detail(c.t(T::Muted)).build(),
+        Some(level) if level.muted => tile.aside(aside(c, c.t(T::Muted).to_string())).build(),
         Some(level) => tile
+            .aside(aside(c, format!("{} %", (level.volume * 100.0).round())))
             .meter(level.volume.min(1.0), c.theme.acc_bg())
-            .detail(format!("{} %", (level.volume * 100.0).round()))
             .build(),
         None => tile.build(),
     }
 }
 
 fn power_tile(c: &Ctx, state: &PowerState) -> Option<Element<'static, Msg>> {
-    let paint = widgets::paint(&c.theme);
     let battery = state.battery?;
     let mut headline = format!("{} %", battery.percent);
     if let Some(hours) = state.details.as_ref().and_then(power::BatteryDetails::hours_left).filter(|_| !battery.full) {
@@ -244,24 +253,24 @@ fn power_tile(c: &Ctx, state: &PowerState) -> Option<Element<'static, Msg>> {
         detail = format!("{detail} · {} {} %", c.t(T::Health), health.round());
     }
     let color = if battery.percent <= 20 { c.theme.danger() } else { c.theme.ok() };
-    Some(
-        Glance::new(&paint, Icon::Battery, Panel::Power.color(), c.t(T::Power))
-            .headline(headline)
-            .meter(f32::from(battery.percent) / 100.0, color)
-            .detail(detail)
-            .on_press(Msg::Open(Panel::Power))
-            .build(),
-    )
+    let mut tile = glance(c, Panel::Power, T::Power);
+    if let Some(profile) = state.profile {
+        let name = match profile {
+            power::Profile::PowerSaver => T::Saver,
+            power::Profile::Balanced => T::Balanced,
+            power::Profile::Performance => T::Performance,
+        };
+        tile = tile.aside(aside(c, c.t(name).to_string()));
+    }
+    Some(tile.headline(headline).meter(f32::from(battery.percent) / 100.0, color).detail(detail).build())
 }
 
 fn storage_tile(c: &Ctx, disk: &Volume) -> Element<'static, Msg> {
-    let paint = widgets::paint(&c.theme);
     let color = if disk.fraction() >= LOW_DISK { c.theme.danger() } else { c.theme.acc_bg() };
-    Glance::new(&paint, Icon::Drive, Panel::Storage.color(), c.t(T::Storage))
+    glance(c, Panel::Storage, T::Storage)
+        .aside(aside(c, format_bytes(disk.total, c.lang)))
         .headline(format!("{} {}", format_bytes(disk.avail, c.lang), c.t(T::Free)))
         .meter(disk.fraction(), color)
-        .detail(format!("{} {}", c.t(T::Of), format_bytes(disk.total, c.lang)))
-        .on_press(Msg::Open(Panel::Storage))
         .build()
 }
 

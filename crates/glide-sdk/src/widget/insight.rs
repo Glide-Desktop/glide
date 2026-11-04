@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use glide_iced::Paint;
-use glide_iced::style::{self, R2, R3, SP1, SP2, SP3};
+use glide_iced::style::{self, R2, R3, SP1, SP2, SP3, SP4};
 use glide_iced::widgets;
 use glide_theme::TextStyle;
 use glide_theme::elevation::Level;
@@ -11,9 +11,9 @@ use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding,
 
 use super::buttons::{Tone, link, sized_button};
 use super::cards::grid;
-use super::feedback::{Severity, dot, icon_tile};
+use super::feedback::{Severity, dot};
 use super::layout::{action_card, card, card_style};
-use super::{Glyph, Icon, Wrapping, icon, separator, text};
+use super::{Icon, Wrapping, icon, separator, text};
 
 pub const INFO_BUTTON: f32 = 22.0;
 
@@ -198,33 +198,41 @@ impl<'a, M: Clone + 'a> From<Issue<'a, M>> for Element<'a, M> {
             Severity::Warn => (paint.warn_soft(), paint.warn()),
         };
         let mark = container(icon(Icon::Warning, 16.0, ink)).center(28).style(move |_| style::rounded(well, R2));
-        let mut body = Column::new().spacing(2).width(Fill).push(text(title, TextStyle::BODY));
+        let mut body = Column::new().spacing(1).width(Fill).push(text(title, super::ROW_TITLE));
         if let Some(summary) = summary {
-            body = body.push(text(summary, TextStyle::CAP).color(paint.fg_2()));
+            body = body.push(text(summary, super::ROW_NOTE).color(paint.fg_2()));
         }
         if !details.is_empty()
             && let Some((message, more, less)) = toggle
         {
             body = body.push(
-                container(link(&paint, if open { less } else { more }, Some(message))).padding(Padding::ZERO.top(2)),
+                container(link(&paint, if open { less } else { more }, Some(message))).padding(Padding::ZERO.top(4)),
             );
         }
         if open && !details.is_empty() {
-            let lines = details.into_iter().map(|line| text(line, TextStyle::CAP).color(paint.fg_2()).into());
+            let note = TextStyle { line_height_px: 18.0, ..super::ROW_NOTE };
+            let lines = details.into_iter().map(|line| text(line, note).color(paint.fg_2()).into());
             body = body.push(
-                container(Column::with_children(lines).spacing(SP1))
-                    .padding(Padding::from([SP2, SP2 + 2.0]))
-                    .width(Fill)
-                    .style(move |_| style::rounded(paint.fill_1(), R2)),
+                container(
+                    container(Column::with_children(lines).spacing(SP1))
+                        .padding(Padding::from([SP2, SP2 + 2.0]))
+                        .width(Fill)
+                        .style(move |_| style::rounded(paint.fill_1(), R2)),
+                )
+                .padding(Padding::ZERO.top(6)),
             );
         }
         let mut line = row![mark, body].spacing(SP3).align_y(Alignment::Start);
         if let Some(action) = action {
             line = line.push(action);
         }
-        container(line).padding(Padding::from([SP2 + 2.0, SP3])).width(Fill).into()
+        container(line).padding(Padding::from([SP2, 14.0])).width(Fill).into()
     }
 }
+
+pub const GLANCE_HEIGHT: f32 = 150.0;
+pub const GLANCE_HEADLINE: TextStyle =
+    TextStyle { size_px: 19.0, line_height_px: 24.0, weight: 640, tracking_em: -0.018, ..TextStyle::T2 };
 
 pub struct Glance<'a, M> {
     paint: Paint,
@@ -239,10 +247,10 @@ pub struct Glance<'a, M> {
 
 impl<'a, M: Clone + 'a> Glance<'a, M> {
     #[must_use]
-    pub fn new(paint: &Paint, glyph: impl Glyph, color: Color, title: impl Into<String>) -> Self {
+    pub fn new(paint: &Paint, lead: impl Into<Element<'a, M>>, title: impl Into<String>) -> Self {
         Self {
             paint: *paint,
-            tile: icon_tile(glyph, color, 24.0),
+            tile: lead.into(),
             title: title.into(),
             aside: None,
             headline: String::new(),
@@ -294,22 +302,23 @@ impl<'a, M: Clone + 'a> Glance<'a, M> {
 impl<'a, M: Clone + 'a> From<Glance<'a, M>> for Element<'a, M> {
     fn from(glance: Glance<'a, M>) -> Self {
         let Glance { paint, tile, title, aside, headline, detail, meter, message } = glance;
-        let mut top = row![tile, text(title, TextStyle { weight: 600, ..TextStyle::BODY }).width(Fill)]
+        let mut top = row![tile, text(title, TextStyle { weight: 600, ..super::ROW_TITLE }).width(Fill)]
             .spacing(SP2)
             .align_y(Alignment::Center);
         if let Some(aside) = aside {
             top = top.push(aside);
         }
-        let mut content = Column::new().spacing(SP2).push(top);
+        let mut content = Column::new().spacing(10).push(top);
         if !headline.is_empty() {
-            content = content.push(text(headline, TextStyle::T3).wrapping(Wrapping::WordOrGlyph));
+            content = content.push(text(headline, GLANCE_HEADLINE).wrapping(Wrapping::WordOrGlyph));
         }
         if let Some((fraction, color)) = meter {
             content = content.push(super::cards::usage_bar(&paint, &[(fraction, color)], 6.0));
         }
         if let Some(detail) = detail {
-            content = content.push(text(detail, TextStyle::CAP).color(paint.fg_2()));
+            content = content.push(text(detail, super::SECTION_NOTE).color(paint.fg_2()));
         }
+        let content = container(content).height(Length::Fixed(GLANCE_HEIGHT - 2.0 * SP4 - 2.0));
         match message {
             Some(message) => action_card(&paint, content, message),
             None => card(&paint, content),
@@ -415,7 +424,7 @@ pub fn labelled_switch<'a, M: Clone + 'a>(
 
 #[must_use]
 pub fn section_heading<'a, M: 'a>(paint: &Paint, title: impl Into<Cow<'a, str>>) -> Element<'a, M> {
-    container(text(title, TextStyle::HEAD).color(paint.fg_1())).padding(Padding::ZERO.left(SP1)).into()
+    container(text(title, TextStyle::HEAD).color(paint.fg_1())).padding(Padding::from([0, 2])).into()
 }
 
 #[cfg(test)]
