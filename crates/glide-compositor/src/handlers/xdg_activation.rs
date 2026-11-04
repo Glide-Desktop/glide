@@ -30,6 +30,14 @@ pub fn follows_user_action(last_input: Option<std::time::Instant>, token_created
         .is_some_and(|input| input <= token_created && token_created.saturating_duration_since(input) <= USER_ACTION)
 }
 
+#[must_use]
+pub fn reacts_to_client_press(
+    client_press: Option<std::time::Instant>, any_press: Option<std::time::Instant>, token_created: std::time::Instant,
+) -> bool {
+    let last_press_was_the_clients = client_press.zip(any_press).is_none_or(|(client, any)| client >= any);
+    last_press_was_the_clients && follows_user_action(client_press, token_created)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActivationGrant(bool);
 
@@ -111,7 +119,13 @@ impl XdgActivationHandler for GlideState {
         }
         let granted = activation_allowed(is_granted(&token_data), token_data.timestamp.elapsed());
         let fresh = token_is_fresh_enough(token_data.timestamp.elapsed());
-        let reacting = !granted && fresh && follows_user_action(self.session.last_user_input, token_data.timestamp);
+        let reacting = !granted
+            && fresh
+            && reacts_to_client_press(
+                self.session.last_client_press,
+                self.session.last_user_input,
+                token_data.timestamp,
+            );
         let launched = !granted && !reacting && !focused && self.take_launch_intent(id);
         if granted || reacting || launched {
             tracing::info!(window = id.0, granted, reacting, launched, "activation honoured");
@@ -145,6 +159,32 @@ mod tests {
         assert!(!follows_user_action(None, token), "no input yet means nobody asked for it");
         assert!(!follows_user_action(Some(token + std::time::Duration::from_millis(10)), token), "the user moved on");
         assert!(!follows_user_action(Some(click), click + USER_ACTION + std::time::Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn a_background_app_cannot_ride_on_a_swipe_or_a_desktop_click() {
+        let ms = std::time::Duration::from_millis;
+        let typed_into_chrome = std::time::Instant::now();
+        let swipe = typed_into_chrome + ms(700);
+        let desktop_click = swipe + ms(1500);
+        let chrome_token = desktop_click + ms(20);
+        assert!(
+            !reacts_to_client_press(Some(typed_into_chrome), Some(desktop_click), chrome_token),
+            "the last press went to the shell, so it says nothing about the app that asks"
+        );
+        assert!(!reacts_to_client_press(None, Some(desktop_click), chrome_token), "no press ever reached an app");
+    }
+
+    #[test]
+    fn a_link_clicked_in_another_app_still_raises_the_browser() {
+        let any_press = std::time::Instant::now();
+        let click_in_messenger = any_press + std::time::Duration::from_millis(1);
+        let browser_token = click_in_messenger + std::time::Duration::from_millis(400);
+        assert!(reacts_to_client_press(Some(click_in_messenger), Some(any_press), browser_token));
+        assert!(
+            !reacts_to_client_press(Some(click_in_messenger), Some(any_press), browser_token + USER_ACTION),
+            "too long after the click"
+        );
     }
 
     #[test]

@@ -377,6 +377,7 @@ pub struct SessionServices {
     pub shell_bus: Option<crate::shell_bus::Handle>,
     pub launch_intent: crate::focus_policy::LaunchIntents,
     pub last_user_input: Option<std::time::Instant>,
+    pub last_client_press: Option<std::time::Instant>,
     pub last_key_press: Option<std::time::Instant>,
     pub activated_before_map: HashSet<glide_layout::WindowId>,
     pub mapped_layers: HashSet<WlSurface>,

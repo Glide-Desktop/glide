@@ -1578,6 +1578,9 @@ impl GlideState {
             self.surface_under(position)
                 .and_then(|(target, loc)| Some((target.wl_surface()?.into_owned(), loc.to_f64())))
         };
+        if under.is_some() && !self.screen_locked() {
+            self.session.last_client_press = Some(std::time::Instant::now());
+        }
         touch.down(self, under, &DownEvent { slot: event.slot(), location: position, serial, time: event.time() });
     }
 
@@ -1792,7 +1795,9 @@ impl GlideState {
         self.suppressed_keys = suppressed_keys;
         self.keybinds = keybinds;
         if typed {
-            self.session.last_key_press = Some(std::time::Instant::now());
+            let now = std::time::Instant::now();
+            self.session.last_key_press = Some(now);
+            self.session.last_client_press = Some(now);
         }
 
         if let Some((is_super, other_modifiers)) = super_key {
@@ -2584,6 +2589,9 @@ impl GlideState {
                     pointer.button(self, &ButtonEvent { button, state: button_state, serial, time: event.time() });
                     pointer.frame(self);
                     return;
+                }
+                if matches!(pointer.current_focus(), Some(crate::focus::PointerFocusTarget::Surface(_))) {
+                    self.session.last_client_press = Some(std::time::Instant::now());
                 }
             }
         }
