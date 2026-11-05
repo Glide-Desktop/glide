@@ -141,8 +141,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-`scripts/test-tty.sh` runs a debug build from a free VT and checks the log.
-Project rules are in `AGENTS.md`.
+To try a debug build, run `cargo build` and start `target/debug/glide` from a
+free VT; the log is `~/.local/state/glide/glide.log`.
 
 ## Writing apps for Glide
 
