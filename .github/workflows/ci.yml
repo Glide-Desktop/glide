@@ -16,12 +16,10 @@ jobs:
             gst-plugins-bad gst-plugins-ugly
           ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 
-      - name: Toolchain
-        run: |
-          rustup default stable
-          rustup component add rustfmt clippy
-
       - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: rustup toolchain install
 
       - uses: actions/cache@v4
         with:
