@@ -465,25 +465,30 @@ fn cached_cursor_buffer(
 fn resolve_magnified_cursor(
     cursor: &mut Cursor, cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>, icon: CursorIcon,
     scale: u32, elapsed: Duration,
-) -> (MemoryRenderBuffer, Point<f64, Logical>, smithay::utils::Size<i32, Logical>) {
+) -> (MemoryRenderBuffer, Point<f64, Logical>, crate::cursor::CursorView) {
     let scale = scale.max(1);
     let base = cursor.image(icon, scale, elapsed);
     let wanted = (f64::from(cursor.nominal_size(scale)) * crate::find_cursor::MAGNIFY).ceil() as u32;
     let image = cursor.image_sized(icon, wanted, elapsed);
-    let (shown, logical) = magnified_geometry(&base, &image, scale);
-    (cached_cursor_buffer(cursor_buffers, image, scale), shown, logical)
+    let (shown, view) = magnified_geometry(&base, &image, scale);
+    (cached_cursor_buffer(cursor_buffers, image, scale), shown, view)
 }
 
 fn magnified_geometry(
     base: &xcursor::parser::Image, large: &xcursor::parser::Image, scale: u32,
-) -> (Point<f64, Logical>, smithay::utils::Size<i32, Logical>) {
-    let ratio = f64::from(base.width) / f64::from(large.width.max(1)) / f64::from(scale.max(1));
+) -> (Point<f64, Logical>, crate::cursor::CursorView) {
+    let buffer_scale = f64::from(scale.max(1));
+    let ratio = f64::from(base.width) / f64::from(large.width.max(1)) / buffer_scale;
     let hotspot = Point::from((f64::from(large.xhot) * ratio, f64::from(large.yhot) * ratio));
     let size = smithay::utils::Size::from((
         (f64::from(large.width) * ratio).round() as i32,
         (f64::from(large.height) * ratio).round() as i32,
     ));
-    (hotspot, size)
+    let src = Rectangle::from_size(smithay::utils::Size::from((
+        f64::from(large.width) / buffer_scale,
+        f64::from(large.height) / buffer_scale,
+    )));
+    (hotspot, crate::cursor::CursorView { src, size })
 }
 
 enum FrameOutcome {
@@ -1449,17 +1454,17 @@ impl GlideState {
         };
         let magnify = self.session.find_cursor.scale(glide_ui::clock::now());
         let magnified = magnify > 1.0 + 1e-3;
-        let (cursor_buffer, named, cursor_size) = if magnified {
-            let (buffer, hotspot, size) =
+        let (cursor_buffer, named, cursor_view) = if magnified {
+            let (buffer, hotspot, view) =
                 resolve_magnified_cursor(cursor, cursor_buffers, icon, integer_scale.cast_unsigned(), elapsed);
-            (buffer, hotspot, Some(size))
+            (buffer, hotspot, Some(view))
         } else {
             let (buffer, hotspot) =
                 resolve_cursor_buffer(cursor, cursor_buffers, icon, integer_scale.cast_unsigned(), elapsed);
             (buffer, hotspot, None)
         };
         let cursor_hotspot = cursor_hotspot(&cursor_status, named);
-        pointer_element.set_buffer(cursor_buffer, cursor_size);
+        pointer_element.set_buffer(cursor_buffer, cursor_view);
         pointer_element.set_kind(if magnified { Kind::Unspecified } else { Kind::Cursor });
         pointer_element.set_status(cursor_status);
 
@@ -2440,9 +2445,16 @@ mod tests {
     #[test]
     fn a_magnified_cursor_draws_the_large_image_at_the_normal_size_before_rescaling() {
         for scale in [1, 2] {
-            let (hotspot, size) = magnified_geometry(&text_beam(scale), &text_beam(3 * scale), scale);
+            let large = text_beam(3 * scale);
+            let (hotspot, view) = magnified_geometry(&text_beam(scale), &large, scale);
             assert_eq!(hotspot, named_hotspot(&text_beam(scale), scale), "the hotspot stays where it was");
-            assert_eq!(size, smithay::utils::Size::from((24, 24)));
+            assert_eq!(view.size, smithay::utils::Size::from((24, 24)));
+            let sampled = view.src.to_buffer(f64::from(scale), Transform::Normal, &view.size.to_f64());
+            assert_eq!(
+                sampled,
+                Rectangle::from_size(smithay::utils::Size::from((f64::from(large.width), f64::from(large.height)))),
+                "the whole large image is sampled, not the corner the normal size covers"
+            );
         }
     }
 

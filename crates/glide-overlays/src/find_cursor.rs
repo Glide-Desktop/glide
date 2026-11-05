@@ -2,9 +2,11 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 const WINDOW: Duration = Duration::from_secs(1);
-const HOLD: Duration = Duration::from_millis(350);
-const SHAKE_RATIO: f64 = 4.0;
-const MIN_SPAN: f64 = 100.0;
+const LINGER: Duration = Duration::from_secs(1);
+const REST: Duration = Duration::from_millis(600);
+const LIMIT: Duration = Duration::from_millis(2500);
+const SHAKE_RATIO: f64 = 3.0;
+const MIN_SPAN: f64 = 80.0;
 pub const MAGNIFY: f64 = 3.0;
 
 #[derive(Debug, Clone, Copy)]
@@ -32,12 +34,13 @@ pub struct Finder {
     position: (f64, f64),
     history: VecDeque<(Instant, (f64, f64))>,
     grow: Option<Track>,
+    shook: Option<Instant>,
     release: Option<Instant>,
 }
 
 impl Default for Finder {
     fn default() -> Self {
-        Self { enabled: true, position: (0.0, 0.0), history: VecDeque::new(), grow: None, release: None }
+        Self { enabled: true, position: (0.0, 0.0), history: VecDeque::new(), grow: None, shook: None, release: None }
     }
 }
 
@@ -51,8 +54,13 @@ impl Finder {
         if !enabled {
             self.history.clear();
             self.grow = None;
+            self.shook = None;
             self.release = None;
         }
+    }
+
+    pub fn interrupt(&mut self) {
+        self.history.clear();
     }
 
     #[must_use]
@@ -66,12 +74,10 @@ impl Finder {
             return false;
         }
         self.position = (self.position.0 + delta.0, self.position.1 + delta.1);
-        self.record(now);
-        if !self.shaking() {
-            return false;
-        }
+        let turned = self.record(now);
         let held = self.release.is_some_and(|release| now < release);
-        if !held {
+        let triggered = !held && self.shaking();
+        if triggered {
             let from = self.scale(now);
             self.grow = Some(Track {
                 from,
@@ -81,11 +87,16 @@ impl Finder {
                 curve: glide_theme::motion::ease_over,
             });
         }
-        self.release = Some(now + HOLD);
-        !held
+        if triggered || (held && turned && self.shaking()) {
+            self.shook = Some(now);
+        }
+        if let Some(shook) = self.shook.filter(|_| triggered || held) {
+            self.release = Some((shook + LINGER).max(now + REST).min(shook + LIMIT));
+        }
+        triggered
     }
 
-    fn record(&mut self, now: Instant) {
+    fn record(&mut self, now: Instant) -> bool {
         while self.history.front().is_some_and(|(at, _)| now.saturating_duration_since(*at) > WINDOW) {
             self.history.pop_front();
         }
@@ -98,10 +109,11 @@ impl Finder {
                 && same_direction(last.1 - before.1, position.1 - last.1)
             {
                 self.history[len - 1] = (now, position);
-                return;
+                return false;
             }
         }
         self.history.push_back((now, position));
+        true
     }
 
     fn shaking(&self) -> bool {
@@ -152,6 +164,7 @@ impl Finder {
         };
         if now >= release + glide_theme::motion::t3() {
             self.grow = None;
+            self.shook = None;
             self.release = None;
             return false;
         }
@@ -209,15 +222,55 @@ mod tests {
     }
 
     #[test]
-    fn it_shrinks_back_after_the_shaking_stops() {
+    fn a_short_quick_shake_is_enough() {
+        let mut finder = Finder::default();
+        let (triggered, _) = stroke(&mut finder, Instant::now(), 4, 200.0, Duration::from_millis(100));
+        assert!(triggered, "four quick strokes find the pointer");
+    }
+
+    #[test]
+    fn it_stays_big_for_a_while_after_the_shaking_stops_then_shrinks() {
         let mut finder = Finder::default();
         let (triggered, now) = stroke(&mut finder, Instant::now(), 6, 300.0, Duration::from_millis(120));
         assert!(triggered);
-        assert!(finder.tick(now + HOLD));
-        let gone = now + HOLD + glide_theme::motion::t3();
+        let release = now + LINGER;
+        let almost = now + LINGER.saturating_sub(Duration::from_millis(150));
+        assert!(finder.is_magnified(almost), "a resting pointer stays big for about a second");
+        assert!(finder.tick(release));
+        let gone = release + glide_theme::motion::t3();
         assert!((finder.scale(gone) - 1.0).abs() < 1e-9);
         assert!(!finder.tick(gone));
         assert!(!finder.is_magnified(gone));
+    }
+
+    #[test]
+    fn moving_on_after_a_shake_keeps_it_big_until_the_pointer_rests() {
+        let mut finder = Finder::default();
+        let (triggered, shook) = stroke(&mut finder, Instant::now(), 6, 300.0, Duration::from_millis(120));
+        assert!(triggered);
+        let mut now = shook;
+        while now < shook + Duration::from_millis(1800) {
+            now += Duration::from_millis(8);
+            finder.motion((4.0, 1.0), now);
+        }
+        let almost = now + REST.saturating_sub(Duration::from_millis(1));
+        assert!(finder.is_magnified(almost), "still big while it is being moved");
+        let rested = now + REST + glide_theme::motion::t3();
+        assert!(!finder.is_magnified(rested), "and back to normal once it rests");
+    }
+
+    #[test]
+    fn moving_on_forever_does_not_keep_it_big_forever() {
+        let mut finder = Finder::default();
+        let (triggered, shook) = stroke(&mut finder, Instant::now(), 6, 300.0, Duration::from_millis(120));
+        assert!(triggered);
+        let mut now = shook;
+        let end = shook + LIMIT + glide_theme::motion::t3() + Duration::from_millis(100);
+        while now < end {
+            now += Duration::from_millis(8);
+            finder.motion((4.0, 1.0), now);
+        }
+        assert!(!finder.is_magnified(now));
     }
 
     #[test]
@@ -228,7 +281,17 @@ mod tests {
         assert!(triggered);
         let (again, later) = stroke(&mut finder, now, 6, 300.0, Duration::from_millis(120));
         assert!(!again, "a shake that goes on only extends the hold");
-        assert!(finder.is_magnified(later + HOLD / 2));
+        assert!(finder.is_magnified(later + LINGER / 2));
+    }
+
+    #[test]
+    fn an_interrupted_shake_starts_over() {
+        let mut finder = Finder::default();
+        let start = Instant::now();
+        let (_, now) = stroke(&mut finder, start, 2, 300.0, Duration::from_millis(100));
+        finder.interrupt();
+        let (triggered, _) = stroke(&mut finder, now, 2, 300.0, Duration::from_millis(100));
+        assert!(!triggered, "strokes made while a button was held do not count");
     }
 
     #[test]

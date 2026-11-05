@@ -11,7 +11,7 @@ use smithay::{
     },
     input::pointer::{CursorIcon, CursorImageStatus},
     render_elements,
-    utils::{Logical, Physical, Point, Scale, Size},
+    utils::{Logical, Physical, Point, Rectangle, Scale, Size},
 };
 use xcursor::{
     CursorTheme,
@@ -196,16 +196,22 @@ impl<R: Renderer> std::fmt::Debug for PointerRenderElement<R> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CursorView {
+    pub src: Rectangle<f64, Logical>,
+    pub size: Size<i32, Logical>,
+}
+
 pub struct PointerElement {
     buffer: Option<MemoryRenderBuffer>,
-    size: Option<Size<i32, Logical>>,
+    view: Option<CursorView>,
     kind: Kind,
     status: CursorImageStatus,
 }
 
 impl Default for PointerElement {
     fn default() -> Self {
-        Self { buffer: None, size: None, kind: Kind::Cursor, status: CursorImageStatus::default_named() }
+        Self { buffer: None, view: None, kind: Kind::Cursor, status: CursorImageStatus::default_named() }
     }
 }
 
@@ -214,9 +220,9 @@ impl PointerElement {
         self.status = status;
     }
 
-    pub fn set_buffer(&mut self, buffer: MemoryRenderBuffer, size: Option<Size<i32, Logical>>) {
+    pub fn set_buffer(&mut self, buffer: MemoryRenderBuffer, view: Option<CursorView>) {
         self.buffer = Some(buffer);
-        self.size = size;
+        self.view = view;
     }
 
     pub fn set_kind(&mut self, kind: Kind) {
@@ -241,8 +247,8 @@ where
                     location.to_f64(),
                     buffer,
                     None,
-                    None,
-                    self.size,
+                    self.view.map(|view| view.src),
+                    self.view.map(|view| view.size),
                     self.kind,
                 )
                 .map(|element| vec![E::from(PointerRenderElement::Memory(element))])

@@ -2533,6 +2533,10 @@ impl GlideState {
     }
 
     fn find_cursor_motion(&mut self, delta: Point<f64, Logical>) {
+        if self.seat.get_pointer().is_some_and(|pointer| pointer.is_grabbed()) {
+            self.session.find_cursor.interrupt();
+            return;
+        }
         if self.session.find_cursor.enabled()
             && !self.pointer_constrained()
             && self.session.find_cursor.motion((delta.x, delta.y), std::time::Instant::now())
