@@ -502,7 +502,16 @@ impl App {
         let c = self.ctx();
         let t = c.theme;
         let shown = self.shown_panels();
-        let panel_view: Element<'_, Message> = if shown.len() > 1 {
+        let panel_view: Element<'_, Message> = if self.active_category() == Category::Appearance {
+            column![
+                appearance::Page::view_before_wallpaper(&c, &self.config).map(Message::Appearance),
+                self.pages.wallpaper.view_primary(&c, &self.config).map(Message::Wallpaper),
+                self.pages.appearance.view_after_wallpaper(&c, &self.config).map(Message::Appearance),
+                self.pages.wallpaper.view_additional(&c, &self.config).map(Message::Wallpaper),
+            ]
+            .spacing(theme::SECTION_GAP)
+            .into()
+        } else if shown.len() > 1 {
             iced::widget::Column::with_children(shown.iter().map(|panel| self.view_panel(*panel, c)))
                 .spacing(theme::SECTION_GAP * 2.0)
                 .into()

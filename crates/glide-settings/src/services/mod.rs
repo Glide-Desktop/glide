@@ -7,6 +7,7 @@ pub mod config;
 pub mod display;
 pub mod dock;
 pub mod gsettings;
+pub mod history;
 pub mod input;
 pub mod ipc;
 pub mod keybinds;

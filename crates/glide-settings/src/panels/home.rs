@@ -55,6 +55,7 @@ mod tr {
         HoursShort => "h", "год";
         MinutesShort => "min", "хв";
         Free => "free", "вільно";
+        Used => "Used", "Зайнято";
         Health => "battery health", "стан батареї";
         Loading => "Loading…", "Завантаження…";
         Saver => "Power Saver", "Економія";
@@ -203,11 +204,10 @@ fn network_tile(c: &Ctx, state: &NetworkState) -> Element<'static, Msg> {
     let paint = widgets::paint(&c.theme);
     let tile = glance(c, Panel::Network, T::Network);
     if let Some(active) = state.active() {
-        let secured = if active.secured { format!(" · {}", c.t(T::Secured)) } else { String::new() };
         return tile
             .aside(sdk::signal_bars(&paint, active.bars(), 4))
             .headline(active.ssid.clone())
-            .detail(format!("{} {} %{secured}", c.t(T::Signal), active.signal))
+            .detail(network_detail(c, active))
             .build();
     }
     if let Some(wired) = state.wired.iter().find(|wired| wired.connected) {
@@ -215,6 +215,21 @@ fn network_tile(c: &Ctx, state: &NetworkState) -> Element<'static, Msg> {
     }
     let headline = if state.wifi_enabled { T::Offline } else { T::WifiOff };
     tile.headline(c.t(headline)).build()
+}
+
+fn network_detail(c: &Ctx, active: &network::AccessPoint) -> String {
+    let mut detail = Vec::new();
+    if let Some(band) = active.band() {
+        detail.push(format!("Wi-Fi {}", super::network::band_label(c, band)));
+    }
+    if let Some(rate) = super::network::rate_label(c, active) {
+        detail.push(rate);
+    }
+    detail.push(format!("{} {} %", c.t(T::Signal), active.signal));
+    if active.secured {
+        detail.push(c.t(T::Secured).to_string());
+    }
+    detail.join(" · ")
 }
 
 fn sound_tile(c: &Ctx, state: &AudioState) -> Element<'static, Msg> {
@@ -270,7 +285,12 @@ fn storage_tile(c: &Ctx, disk: &Volume) -> Element<'static, Msg> {
         .aside(aside(c, format_bytes(disk.total, c.lang)))
         .headline(format!("{} {}", format_bytes(disk.avail, c.lang), c.t(T::Free)))
         .meter(disk.fraction(), color)
+        .detail(storage_detail(c, disk))
         .build()
+}
+
+fn storage_detail(c: &Ctx, disk: &Volume) -> String {
+    format!("{}: {}", c.t(T::Used), format_bytes(disk.used, c.lang))
 }
 
 impl Page {
@@ -338,22 +358,29 @@ impl Pane for Page {
         let t = c.theme;
         let problems = self.problems(config);
         let attention = if problems.is_empty() {
-            Group::new(t)
-                .title(c.t(T::Attention))
-                .push(
-                    Row::new(t, c.t(T::AllGood))
-                        .subtitle(c.t(T::AllGoodHint))
-                        .prefix(widgets::status_dot(t.ok(), 10.0))
-                        .build(),
-                )
-                .build()
+            self.snapshot.as_ref().map(|_| {
+                Group::new(t)
+                    .title(c.t(T::Attention))
+                    .push(
+                        Row::new(t, c.t(T::AllGood))
+                            .subtitle(c.t(T::AllGoodHint))
+                            .prefix(widgets::status_dot(t.ok(), 10.0))
+                            .build(),
+                    )
+                    .build()
+            })
         } else {
-            Group::new(t)
-                .title(c.t(T::Attention))
-                .extend(problems.iter().map(|problem| issue(&c, config, *problem, self.open.contains(problem))))
-                .build()
+            Some(
+                Group::new(t)
+                    .title(c.t(T::Attention))
+                    .extend(problems.iter().map(|problem| issue(&c, config, *problem, self.open.contains(problem))))
+                    .build(),
+            )
         };
-        let page = Column::new().spacing(theme::SECTION_GAP).push(attention);
+        let mut page = Column::new().spacing(theme::SECTION_GAP);
+        if let Some(attention) = attention {
+            page = page.push(attention);
+        }
         let Some(snapshot) = &self.snapshot else {
             return page.push(widgets::spinner_label(t, c.t(T::Loading))).into();
         };
@@ -366,5 +393,116 @@ impl Pane for Page {
             .push(sdk::section_heading(&widgets::paint(&t), c.t(T::Now)))
             .push(sdk::grid(tiles, per_line, 12.0));
         page.push(now).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::Lang;
+    use crate::theme::{Accent, Appearance, ThemeState};
+
+    fn context(appearance: Appearance) -> Ctx {
+        Ctx { theme: ThemeState::new(appearance, Accent::Azurit), lang: Lang::Uk, writable: true, online: true }
+    }
+
+    fn access_point() -> network::AccessPoint {
+        network::AccessPoint {
+            ssid: "Домашня".into(),
+            signal: 85,
+            secured: true,
+            in_use: true,
+            known: true,
+            profile: None,
+            security: "WPA2".into(),
+            frequency: 5180,
+            channel: 36,
+            rate: 600,
+        }
+    }
+
+    fn disk() -> Volume {
+        Volume {
+            source: "/dev/preview".into(),
+            fstype: "ext4".into(),
+            mount: "/".into(),
+            total: 476_000_000_000,
+            used: 264_000_000_000,
+            avail: 200_000_000_000,
+        }
+    }
+
+    #[test]
+    fn network_summary_uses_real_band_and_rate_and_omits_unknown_values() {
+        let c = context(Appearance::Light);
+        let mut point = access_point();
+        assert_eq!(network_detail(&c, &point), "Wi-Fi 5 ГГц · 600 Мбіт/с · Сигнал 85 % · захищена");
+        let english = Ctx { lang: Lang::En, ..c };
+        assert_eq!(network_detail(&english, &point), "Wi-Fi 5 GHz · 600 Mbit/s · Signal 85 % · secured");
+        point.frequency = 0;
+        point.rate = 0;
+        point.secured = false;
+        assert_eq!(network_detail(&c, &point), "Сигнал 85 %");
+    }
+
+    #[test]
+    fn storage_summary_uses_reported_usage_not_total_minus_available() {
+        let c = context(Appearance::Light);
+        assert_eq!(storage_detail(&c, &disk()), "Зайнято: 264,0 ГБ");
+        assert_eq!(storage_detail(&Ctx { lang: Lang::En, ..c }, &disk()), "Used: 264.0 GB");
+    }
+
+    #[test]
+    #[ignore = "writes a populated overview preview"]
+    fn preview_populated_overview() {
+        use iced::advanced::renderer::{self, Headless};
+        use iced::advanced::widget::Tree;
+        use iced::advanced::{Layout, layout};
+        use iced::{Font, Pixels, Rectangle, Renderer, Size, mouse};
+
+        glide_sdk::theme::motion::set_scale(0.0);
+        glide_sdk::theme::use_ui_family(None);
+        let appearance = if std::env::var("GLIDE_SETTINGS_APPEARANCE").as_deref() == Ok("dark") {
+            Appearance::Dark
+        } else {
+            Appearance::Light
+        };
+        let c = context(appearance);
+        let snapshot = Snapshot {
+            network: NetworkState { networks: vec![access_point()], wifi_enabled: true, ..NetworkState::default() },
+            audio: AudioState {
+                sinks: vec![audio::Device { id: 1, name: "Навушники".into(), is_default: true }],
+                output: Some(audio::Level { volume: 0.62, muted: false }),
+                ..AudioState::default()
+            },
+            power: PowerState {
+                battery: Some(power::Battery { percent: 82, charging: false, full: false }),
+                profile: Some(power::Profile::Balanced),
+                ..PowerState::default()
+            },
+            disk: Some(disk()),
+            toolkits: None,
+        };
+        let page = Page { snapshot: Some(snapshot), ..Page::default() };
+        let config = ConfigStore::parse("");
+        let mut element = page.view(c, &config);
+        let mut tree = Tree::new(&element);
+        let mut renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(Font::DEFAULT, Pixels(14.0)));
+        let size = Size::new(880.0, 700.0);
+        let node = element.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        element.as_widget().draw(
+            &tree,
+            &mut renderer,
+            &c.theme.paint.iced_theme(),
+            &renderer::Style { text_color: c.theme.fg_1() },
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &Rectangle::with_size(size),
+        );
+        let Renderer::Secondary(renderer) = &mut renderer else { unreachable!() };
+        let rgba = renderer.screenshot(Size::new(880, 700), 1.0, c.theme.win_bg());
+        let path = std::env::var_os("GLIDE_HOME_PREVIEW")
+            .map_or_else(|| std::path::PathBuf::from("/tmp/opencode/home-populated.png"), std::path::PathBuf::from);
+        image::save_buffer(path, &rgba, 880, 700, image::ColorType::Rgba8).expect("preview is saved");
     }
 }

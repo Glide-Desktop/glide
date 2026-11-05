@@ -800,7 +800,7 @@ fn quoted(c: &Ctx, name: &str) -> String {
     if c.lang == Lang::Uk { format!("«{name}»") } else { format!("“{name}”") }
 }
 
-fn band_label(c: &Ctx, band: Band) -> &'static str {
+pub(super) fn band_label(c: &Ctx, band: Band) -> &'static str {
     c.t(match band {
         Band::Ghz2 => T::Ghz2,
         Band::Ghz5 => T::Ghz5,
@@ -808,7 +808,7 @@ fn band_label(c: &Ctx, band: Band) -> &'static str {
     })
 }
 
-fn rate_label(c: &Ctx, point: &AccessPoint) -> Option<String> {
+pub(super) fn rate_label(c: &Ctx, point: &AccessPoint) -> Option<String> {
     (point.rate > 0).then(|| format!("{} {}", point.rate, c.t(T::Mbps)))
 }
 

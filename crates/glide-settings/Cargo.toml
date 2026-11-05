@@ -41,3 +41,4 @@ zbus.workspace = true
 
 [dev-dependencies]
 glide-theme = { path = "../glide-theme" }
+iced_tiny_skia = { version = "0.14", default-features = false }

@@ -5,7 +5,7 @@ use glide_config::toolkits::{QtTheme, Support};
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::text;
 use iced::widget::{column, container, row, space};
-use iced::{Alignment, Element, Fill, Task};
+use iced::{Alignment, Element, Fill, Length, Task};
 
 use super::common::{gated, switch_row, toggle};
 use super::{Ctx, Pane};
@@ -39,9 +39,11 @@ mod tr {
         Auto => "Automatic", "Автоматично";
         Schedule => "Switching automatically", "Автоматичне перемикання";
         ScheduleHint => "Light from 7:00, dark from 19:00", "Світла з 7:00, темна з 19:00";
-        LightSpan => "Light 07:00–19:00", "Світла 07:00–19:00";
-        DarkSpan => "Dark 19:00–07:00", "Темна 19:00–07:00";
+        DarkHours => "Dark theme", "Темна тема";
+        FixedHours => "Fixed hours in local time", "Фіксований час за місцевим годинником";
         FontsIcons => "Fonts and icons", "Шрифти й іконки";
+        ShowSamples => "Show font and icon samples", "Показати зразки шрифту й іконок";
+        HideSamples => "Hide font and icon samples", "Сховати зразки шрифту й іконок";
         Changed => "changed", "змінено";
         Reset => "Reset", "Скинути";
         CursorThemeHint => "Some apps pick it up when they start again", "Деякі програми підхоплять її після перезапуску";
@@ -52,6 +54,8 @@ mod tr {
         Instant => "Everything appears instantly", "Усе з'являється миттєво";
         SpeedNormal => "Standard speed", "Стандартна швидкість";
         OtherApps => "Other apps", "Інші програми";
+        CheckingToolkits => "Checking support…", "Перевіряємо підтримку…";
+        ToolkitsUnavailable => "Support could not be checked", "Не вдалося перевірити підтримку";
         OtherAppsHint => "How GTK and Qt apps take Glide's colours and shapes; install what is missing with your package manager", "Як програми GTK і Qt беруть кольори й форми Glide; відсутнє встановіть менеджером пакетів";
         Gtk4 => "GTK 4 and libadwaita", "GTK 4 і libadwaita";
         Gtk4Hint => "Follow Glide without extra packages", "Слідують за Glide без додаткових пакетів";
@@ -94,6 +98,7 @@ pub enum Msg {
     RenderingApplied(Result<String, String>),
     Toolkits(Option<Support>),
     ResetFonts,
+    ToggleSamples,
     ToggleInfo,
 }
 
@@ -115,6 +120,14 @@ fn choices(default_label: &str, values: &[String]) -> Vec<Choice> {
         .collect()
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+enum ToolkitStatus {
+    #[default]
+    Checking,
+    Unavailable,
+    Ready(Support),
+}
+
 #[derive(Debug, Default)]
 pub struct Page {
     icon_themes: Vec<String>,
@@ -128,7 +141,13 @@ pub struct Page {
     preview: Vec<PathBuf>,
     rendering: Option<FontRendering>,
     rendering_error: Option<String>,
-    toolkits: Option<Support>,
+    toolkits: ToolkitStatus,
+    disclosure: Disclosure,
+}
+
+#[derive(Debug, Default)]
+struct Disclosure {
+    samples: bool,
     info: bool,
 }
 
@@ -245,7 +264,9 @@ impl Pane for Page {
                 return apply_rendering(move || look::set_hinting(mode));
             }
             Msg::RenderingApplied(result) => self.rendering_error = result.err(),
-            Msg::Toolkits(toolkits) => self.toolkits = toolkits,
+            Msg::Toolkits(toolkits) => {
+                self.toolkits = toolkits.map_or(ToolkitStatus::Unavailable, ToolkitStatus::Ready);
+            }
             Msg::ResetFonts => {
                 for (table, key) in FONT_KEYS {
                     config.remove(table, key);
@@ -263,26 +284,210 @@ impl Pane for Page {
                 }
                 return Task::batch(tasks);
             }
-            Msg::ToggleInfo => self.info = !self.info,
+            Msg::ToggleSamples => self.disclosure.samples = !self.disclosure.samples,
+            Msg::ToggleInfo => self.disclosure.info = !self.disclosure.info,
         }
         Task::none()
     }
 
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
-        let mut page = column![
-            container(glide_sdk::widget::mock::desktop(widgets::paint(&c.theme), 220.0)).width(Fill),
-            Self::theme_group(&c, config),
-        ]
-        .spacing(theme::SECTION_GAP);
-        if config.appearance_scheduled() {
-            page = page.push(schedule_group(&c));
-        }
-        page.push(Self::accent_group(&c, config))
-            .push(self.fonts_group(&c, config))
-            .push(self.motion_group(&c, config))
-            .push(self.toolkits.map(|toolkits| self.toolkits_group(&c, toolkits)))
+        column![Self::view_before_wallpaper(&c, config), self.view_after_wallpaper(&c, config)]
+            .spacing(theme::SECTION_GAP)
             .into()
     }
+}
+
+impl Page {
+    pub(crate) fn view_before_wallpaper<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+        let mut page = column![desktop_preview(c), Self::theme_group(c, config),].spacing(theme::SECTION_GAP);
+        if config.appearance_scheduled() {
+            page = page.push(schedule_group(c));
+        }
+        page.push(Self::accent_group(c, config)).into()
+    }
+
+    pub(crate) fn view_after_wallpaper<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+        column![self.fonts_group(c, config), self.motion_group(c, config)]
+            .spacing(theme::SECTION_GAP)
+            .push(match self.toolkits {
+                ToolkitStatus::Ready(toolkits) => self.toolkits_group(c, toolkits),
+                state => Group::new(c.theme)
+                    .push(
+                        Row::new(c.theme, c.t(tr::Key::OtherApps))
+                            .suffix(
+                                text(
+                                    c.t(if matches!(state, ToolkitStatus::Checking) {
+                                        tr::Key::CheckingToolkits
+                                    } else {
+                                        tr::Key::ToolkitsUnavailable
+                                    }),
+                                    TextStyle::CAP,
+                                )
+                                .color(c.theme.fg_2()),
+                            )
+                            .build(),
+                    )
+                    .build(),
+            })
+            .into()
+    }
+}
+
+fn desktop_preview<'a>(c: &Ctx) -> Element<'a, Msg> {
+    use glide_sdk::widget::mock::{at, block, bottom, dock, window};
+    use iced::{Background, Border, Color, Gradient, Padding, Shadow, Vector};
+
+    let paint = c.theme.paint;
+    let bg = paint.win_bg();
+    let (left, right) = (preview_tint(bg, paint.acc_bg()), preview_tint(bg, Accent::Amethyst.sample_color()));
+    let width = if c.theme.compact { 300.0 } else { 560.0 };
+    let line = |width| block(paint.fill_3(), width, 5.0, glide_sdk::theme::R1);
+    let body = column![
+        line(width * 0.40),
+        line(width * 0.30),
+        line(width * 0.35),
+        space::vertical(),
+        row![space::horizontal(), block(paint.acc_bg(), 50.0, 14.0, glide_sdk::theme::R1)],
+    ]
+    .spacing(6)
+    .padding(10);
+    let header = container(space::Space::new().width(Fill).height(16)).style(move |_| iced::widget::container::Style {
+        background: Some(paint.bar_bg().into()),
+        border: Border {
+            radius: iced::border::Radius {
+                top_left: glide_sdk::theme::R2,
+                top_right: glide_sdk::theme::R2,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let front =
+        container(column![header, body].height(Fill)).width(width * 0.66).height(108).clip(true).style(move |_| {
+            iced::widget::container::Style {
+                background: Some(bg.into()),
+                border: Border { color: paint.line_2(), width: 1.0, radius: glide_sdk::theme::R2.into() },
+                shadow: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.2),
+                    offset: Vector::new(0.0, 6.0),
+                    blur_radius: 16.0,
+                },
+                ..iced::widget::container::Style::default()
+            }
+        });
+    let windows = iced::widget::Stack::with_children([
+        at(width * 0.50, 20.0, window(paint, width * 0.42, 80.0)),
+        at(0.0, 0.0, front),
+    ])
+    .width(width)
+    .height(128);
+    let bar = container(block(paint.acc_bg(), 48.0, 5.0, glide_sdk::theme::R1))
+        .width(Fill)
+        .height(16)
+        .center_x(Fill)
+        .center_y(16)
+        .style(move |_| iced::widget::container::Style {
+            background: Some(paint.bar_bg().into()),
+            border: Border {
+                radius: iced::border::Radius {
+                    top_left: glide_sdk::theme::R2,
+                    top_right: glide_sdk::theme::R2,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    let tiles = row([Accent::Azurit, Accent::Amber, Accent::Malachite, Accent::Cinnabar, Accent::Graphite]
+        .into_iter()
+        .map(|accent| block(accent.sample_color(), 14.0, 14.0, glide_sdk::theme::R1)))
+    .spacing(4);
+    let layers = iced::widget::Stack::with_children([
+        container(space::Space::new().width(Fill).height(220)).into(),
+        bar.into(),
+        container(windows).center_x(Fill).padding(Padding::ZERO.top(38.0)).into(),
+        bottom(8.0, dock(paint, tiles)),
+    ]);
+    container(layers)
+        .width(Fill)
+        .height(220)
+        .clip(true)
+        .style(move |_| iced::widget::container::Style {
+            background: Some(Background::Gradient(Gradient::Linear(
+                iced::gradient::Linear::new(std::f32::consts::FRAC_PI_2).add_stop(0.0, left).add_stop(1.0, right),
+            ))),
+            border: Border { color: paint.line_2(), width: 1.0, radius: glide_sdk::theme::R2.into() },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn preview_tint(bg: iced::Color, color: iced::Color) -> iced::Color {
+    iced::Color {
+        r: bg.r * 0.76 + color.r * 0.24,
+        g: bg.g * 0.76 + color.g * 0.24,
+        b: bg.b * 0.76 + color.b * 0.24,
+        a: 1.0,
+    }
+}
+
+fn theme_sample<'a>(appearance: Appearance, accent: Accent) -> Element<'a, Msg> {
+    let paint = ThemeState::new(appearance, accent).paint;
+    let left = preview_tint(paint.win_bg(), paint.acc_bg());
+    let right = preview_tint(paint.win_bg(), Accent::Amethyst.sample_color());
+    let window = container(space::Space::new().width(120).height(32)).style(move |_| iced::widget::container::Style {
+        background: Some(paint.card_bg().into()),
+        border: iced::Border { radius: glide_sdk::theme::R1.into(), ..Default::default() },
+        ..Default::default()
+    });
+    container(window)
+        .center_x(Fill)
+        .center_y(SAMPLE_HEIGHT)
+        .clip(true)
+        .style(move |_| iced::widget::container::Style {
+            background: Some(iced::Background::Gradient(iced::Gradient::Linear(
+                iced::gradient::Linear::new(std::f32::consts::FRAC_PI_2).add_stop(0.0, left).add_stop(1.0, right),
+            ))),
+            border: iced::Border { radius: glide_sdk::theme::R2.into(), ..Default::default() },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn automatic_theme_sample<'a>(accent: Accent) -> Element<'a, Msg> {
+    let light = ThemeState::new(Appearance::Light, accent).paint;
+    let dark = ThemeState::new(Appearance::Dark, accent).paint;
+    let half = |color, width, height, radius, left| {
+        container(space::Space::new().width(width).height(height)).style(move |_| iced::widget::container::Style {
+            background: Some(color),
+            border: iced::Border {
+                radius: iced::border::Radius {
+                    top_left: if left { radius } else { 0.0 },
+                    bottom_left: if left { radius } else { 0.0 },
+                    top_right: if left { 0.0 } else { radius },
+                    bottom_right: if left { 0.0 } else { radius },
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    };
+    let background = row![
+        half(preview_tint(light.win_bg(), light.acc_bg()).into(), Fill, SAMPLE_HEIGHT, glide_sdk::theme::R2, true),
+        half(
+            preview_tint(dark.win_bg(), Accent::Amethyst.sample_color()).into(),
+            Fill,
+            SAMPLE_HEIGHT,
+            glide_sdk::theme::R2,
+            false
+        ),
+    ];
+    let window = container(row![
+        half(light.card_bg().into(), Length::Fixed(60.0), 32.0, glide_sdk::theme::R1, true),
+        half(dark.card_bg().into(), Length::Fixed(60.0), 32.0, glide_sdk::theme::R1, false)
+    ]);
+    container(iced::widget::stack![background, container(window).center_x(Fill).center_y(SAMPLE_HEIGHT)]).into()
 }
 
 fn apply_rendering(job: impl FnOnce() -> Result<String, String> + Send + 'static) -> Task<Msg> {
@@ -310,70 +515,96 @@ impl Page {
     }
 
     fn theme_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
-        use glide_sdk::widget::mock;
         let scheduled = config.appearance_scheduled();
         let current = config.appearance();
         let accent = config.accent();
         let t = c.theme;
-        let sample = |appearance: Appearance| ThemeState::new(appearance, accent).paint;
-        let (width, height) = (SAMPLE_WIDTH, SAMPLE_HEIGHT);
-        let option = |appearance: Appearance, label: &'static str| -> Element<'a, Msg> {
-            widgets::preview_card(
-                t,
-                mock::theme_sample(sample(appearance), width, height),
-                label,
-                !scheduled && current == appearance,
-                Some(Msg::SetAppearance(appearance)),
+        let paint = t.paint;
+        let option = |preview: Element<'a, Msg>, label: &'static str, selected: bool, message: Msg| {
+            let content =
+                column![container(preview).center_x(Fill), text(label, TextStyle::CAP).color(paint.fg_1())].spacing(6);
+            let width = if t.compact { Length::Fixed(SAMPLE_WIDTH + 16.0) } else { Fill };
+            let button = iced::widget::button(content).padding(8).width(width).on_press(message.clone()).style(
+                move |_, status| iced::widget::button::Style {
+                    background: Some(paint.layered(paint.card_bg(), status).into()),
+                    text_color: paint.fg_1(),
+                    border: iced::Border {
+                        color: if selected { paint.acc_bg() } else { paint.line() },
+                        width: if selected { 2.0 } else { 1.0 },
+                        radius: glide_sdk::theme::R3.into(),
+                    },
+                    ..iced::widget::button::Style::default()
+                },
+            );
+            Element::from(
+                glide_sdk::widget::focusable(&paint, button, glide_sdk::theme::R3).inset().on_activate(Some(message)),
             )
         };
-        let auto = widgets::preview_card(
-            t,
-            mock::split_theme_sample(sample(Appearance::Light), sample(Appearance::Dark), width, height),
-            c.t(tr::Key::Auto),
-            scheduled,
-            Some(Msg::Schedule(true)),
-        );
-        let options = row![option(Appearance::Light, c.t(K::Light)), option(Appearance::Dark, c.t(K::Dark)), auto]
-            .spacing(16)
-            .wrap();
-        Group::new(t)
-            .title(c.t(tr::Key::Theme))
-            .description(c.t(tr::Key::ThemeHint))
-            .push(container(gated(*c, options)).padding([16, 12]).center_x(Fill))
-            .build()
+        let preview = |appearance| theme_sample(appearance, accent);
+        let options = row![
+            option(
+                preview(Appearance::Light),
+                c.t(K::Light),
+                !scheduled && current == Appearance::Light,
+                Msg::SetAppearance(Appearance::Light)
+            ),
+            option(
+                preview(Appearance::Dark),
+                c.t(K::Dark),
+                !scheduled && current == Appearance::Dark,
+                Msg::SetAppearance(Appearance::Dark)
+            ),
+            option(automatic_theme_sample(accent), c.t(tr::Key::Auto), scheduled, Msg::Schedule(true)),
+        ]
+        .spacing(10);
+        let options: Element<'a, Msg> = if t.compact { options.wrap().into() } else { options.into() };
+        let heading = row![
+            text(c.t(tr::Key::Theme), TextStyle::HEAD).color(t.fg_1()),
+            space::horizontal(),
+            text(c.t(tr::Key::ThemeHint), TextStyle::CAP).color(t.fg_2()),
+        ]
+        .align_y(Alignment::Center);
+        column![heading, gated(*c, options)].spacing(8).into()
     }
 
     fn accent_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
         let current = config.accent();
-        let swatches = row(Accent::ALL.iter().map(|&accent| {
-            widgets::colour_swatch(
-                t,
-                accent.sample_color(),
-                accent == current,
-                Some(Msg::SetAccent(accent)),
-                SWATCH_SIZE,
-            )
+        let paint = t.paint;
+        let options = row(Accent::ALL.iter().map(|&accent| {
+            let name = match c.lang {
+                crate::i18n::Lang::Uk => accent.name_uk(),
+                crate::i18n::Lang::En => accent.name(),
+            };
+            let selected = accent == current;
+            let dot = widgets::status_dot(accent.sample_color(), 14.0);
+            let content = row![dot, text(name, TextStyle::CAP)].spacing(6).align_y(Alignment::Center);
+            let button = iced::widget::button(content).padding([5, 8]).on_press(Msg::SetAccent(accent)).style(
+                move |_, status| iced::widget::button::Style {
+                    background: Some(paint.layered(paint.card_bg(), status).into()),
+                    text_color: paint.fg_1(),
+                    border: iced::Border {
+                        color: if selected { paint.acc_bg() } else { paint.line() },
+                        width: if selected { 2.0 } else { 1.0 },
+                        radius: glide_sdk::theme::R2.into(),
+                    },
+                    ..iced::widget::button::Style::default()
+                },
+            );
+            glide_sdk::widget::focusable(&paint, button, glide_sdk::theme::R2)
+                .inset()
+                .on_activate(Some(Msg::SetAccent(accent)))
+                .into()
         }))
-        .spacing(2)
-        .align_y(Alignment::Center);
-        let name = match c.lang {
-            crate::i18n::Lang::Uk => current.name_uk(),
-            crate::i18n::Lang::En => current.name(),
-        };
-        let sample = row![
-            widgets::primary(t, name, Some(Msg::SetAccent(current))),
-            widgets::switch(t, true, move |_| Msg::SetAccent(current)),
-            widgets::pill(t, theme::Tone::Accent, current.primary_hex()),
+        .spacing(6)
+        .wrap();
+        let heading = row![
+            text(c.t(K::AccentColor), TextStyle::HEAD).color(t.fg_1()),
+            space::horizontal(),
+            text(c.t(K::AccentHint), TextStyle::CAP).color(t.fg_2()),
         ]
-        .spacing(12)
         .align_y(Alignment::Center);
-        Group::new(t)
-            .title(c.t(K::AccentColor))
-            .description(c.t(K::AccentHint))
-            .push(container(gated(*c, swatches.wrap())).padding([10.0, theme::ROW_PADDING_X]))
-            .push(container(sample).padding([8.0, theme::ROW_PADDING_X]))
-            .build()
+        column![heading, gated(*c, options)].spacing(8).into()
     }
 
     fn fonts_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
@@ -398,32 +629,73 @@ impl Page {
             .into_iter()
             .filter(|changed| *changed)
             .count();
-        let mut group = Group::new(t).title(c.t(tr::Key::FontsIcons));
-        if changed > 0 {
-            group = group.suffix(glide_sdk::widget::reset_action(
+        let reset = (changed > 0).then(|| {
+            glide_sdk::widget::reset_action(
                 &widgets::paint(&t),
                 format!("{changed} {}", c.t(tr::Key::Changed)),
                 c.t(tr::Key::Reset),
                 c.writable.then_some(Msg::ResetFonts),
-            ));
-        }
-        group = group
+            )
+        });
+        let samples = glide_sdk::widget::focusable(
+            &t.paint,
+            glide_sdk::widget::info_button(&t.paint, self.disclosure.samples, Msg::ToggleSamples),
+            theme::R2,
+        )
+        .on_activate(Some(Msg::ToggleSamples));
+        let samples = glide_sdk::widget::tooltip(
+            &t.paint,
+            samples,
+            c.t(if self.disclosure.samples { tr::Key::HideSamples } else { tr::Key::ShowSamples }),
+        );
+        let actions = row![samples, reset].spacing(8).align_y(Alignment::Center);
+        let mut group = Group::new(t)
+            .title(c.t(tr::Key::FontsIcons))
+            .suffix(actions)
             .push(
                 Row::new(t, c.t(K::IconTheme))
                     .subtitle(c.t(K::IconThemeHint))
                     .changed(icon_theme.is_some())
-                    .suffix(gated(*c, widgets::dropdown(t, options, selected, Msg::IconTheme, 240.0)))
+                    .suffix(
+                        container(gated(
+                            *c,
+                            glide_sdk::widget::dropdown_compact(&t.paint, options, selected, Msg::IconTheme, 180.0),
+                        ))
+                        .width(180),
+                    )
                     .build(),
             )
-            .push(widgets::sample_well(t, container(strip).center_x(Fill)))
             .push(
                 Row::new(t, c.t(K::InterfaceFont))
                     .subtitle(c.t(K::InterfaceFontHint))
                     .changed(family.is_some())
-                    .suffix(gated(*c, widgets::dropdown(t, fonts, font_choice, Msg::Font, 240.0)))
+                    .suffix(
+                        container(gated(
+                            *c,
+                            glide_sdk::widget::dropdown_compact(&t.paint, fonts, font_choice, Msg::Font, 180.0),
+                        ))
+                        .width(180),
+                    )
                     .build(),
             )
-            .push(widgets::sample_well(
+            .push(
+                Row::new(t, c.t(tr::Key::CursorTheme))
+                    .subtitle(c.t(tr::Key::CursorThemeHint))
+                    .changed(cursor_theme.is_some())
+                    .suffix(
+                        container(gated(
+                            *c,
+                            glide_sdk::widget::dropdown_compact(&t.paint, cursors, cursor, Msg::CursorTheme, 180.0),
+                        ))
+                        .width(180),
+                    )
+                    .build(),
+            );
+        if let Some(rendering) = self.rendering {
+            group = self.rendering_rows(c, group, rendering);
+        }
+        if self.disclosure.samples {
+            group = group.push(widgets::sample_well(t, container(strip).center_x(Fill))).push(widgets::sample_well(
                 t,
                 column![
                     text("Aa", TextStyle { size_px: 30.0, line_height_px: 36.0, weight: 400, ..TextStyle::T1 })
@@ -432,16 +704,7 @@ impl Page {
                     text(c.t(tr::Key::FontSample), TextStyle::BODY).font(font).color(t.fg_2()),
                 ]
                 .spacing(4),
-            ))
-            .push(
-                Row::new(t, c.t(tr::Key::CursorTheme))
-                    .subtitle(c.t(tr::Key::CursorThemeHint))
-                    .changed(cursor_theme.is_some())
-                    .suffix(gated(*c, widgets::dropdown(t, cursors, cursor, Msg::CursorTheme, 240.0)))
-                    .build(),
-            );
-        if let Some(rendering) = self.rendering {
-            group = self.rendering_rows(c, group, rendering);
+            ));
         }
         group.build()
     }
@@ -487,12 +750,9 @@ impl Page {
         let t = c.theme;
         let enabled = config.animations_enabled();
         let speed = self.speed.unwrap_or_else(|| speed_from_multiplier(config.animation_speed()));
-        let mut group = Group::new(t).title(c.t(K::Motion)).push(
-            Row::new(t, c.t(K::Animations))
-                .subtitle(if enabled { c.t(K::AnimationsHint) } else { c.t(tr::Key::Instant) })
-                .suffix(toggle(*c, enabled, Msg::Animations))
-                .build(),
-        );
+        let animation = Row::new(t, c.t(K::Animations)).suffix(toggle(*c, enabled, Msg::Animations));
+        let animation = if enabled { animation } else { animation.subtitle(c.t(tr::Key::Instant)) };
+        let mut group = Group::new(t).title(c.t(K::Motion)).push(animation.build());
         if enabled {
             let label = if (speed - 1.0).abs() < 0.01 {
                 c.t(tr::Key::SpeedNormal).to_string()
@@ -523,8 +783,6 @@ impl Page {
             .build()
     }
 }
-
-pub(crate) const SWATCH_SIZE: f32 = 24.0;
 
 type ToolkitRow = (tr::Key, tr::Key, theme::Tone, tr::Key);
 
@@ -582,7 +840,7 @@ impl Page {
             .suffix(
                 row![
                     glide_sdk::widget::status_chips(&paint, chips.collect()),
-                    glide_sdk::widget::info_button(&paint, self.info, Msg::ToggleInfo),
+                    glide_sdk::widget::info_button(&paint, self.disclosure.info, Msg::ToggleInfo),
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
@@ -593,7 +851,7 @@ impl Page {
         let relogin = needs_relogin(toolkits.qt_platform_theme(), session.as_deref())
             .then(|| Row::new(t, c.t(tr::Key::Relogin)).build());
         let mut group = Group::new(t).push(summary);
-        if self.info {
+        if self.disclosure.info {
             group = group
                 .push(Row::new(t, c.t(tr::Key::Intro)).subtitle(c.t(tr::Key::OtherAppsHint)).dimmed(false).build())
                 .extend(rows.map(|(label, hint, tone, status)| {
@@ -606,25 +864,15 @@ impl Page {
 
 fn schedule_group<'a>(c: &Ctx) -> Element<'a, Msg> {
     let t = c.theme;
-    let day = |hours: u16| hours * 60;
-    let (dark, light) =
-        (ThemeState::new(Appearance::Dark, Accent::default()), ThemeState::new(Appearance::Light, Accent::default()));
-    let bar = glide_sdk::widget::mock::schedule_bar(
-        &[(0, day(7)), (day(19), day(24))],
-        day(24),
-        dark.win_bg(),
-        light.win_bg(),
-        12.0,
-    );
-    let legend = row![
-        text(c.t(tr::Key::LightSpan), TextStyle::CAP).color(t.fg_2()),
-        space().width(Fill),
-        text(c.t(tr::Key::DarkSpan), TextStyle::CAP).color(t.fg_2()),
-    ];
     Group::new(t)
         .title(c.t(tr::Key::Schedule))
         .description(c.t(tr::Key::ScheduleHint))
-        .push(widgets::sample_well(t, column![bar, legend].spacing(8)))
+        .push(
+            Row::new(t, c.t(tr::Key::DarkHours))
+                .subtitle(c.t(tr::Key::FixedHours))
+                .suffix(text("19:00 – 07:00", TextStyle::CALL).color(t.fg_2()))
+                .build(),
+        )
         .build()
 }
 
@@ -653,7 +901,7 @@ fn interned(name: &str) -> &'static str {
 }
 
 const SAMPLE_WIDTH: f32 = 196.0;
-const SAMPLE_HEIGHT: f32 = 124.0;
+const SAMPLE_HEIGHT: f32 = 56.0;
 
 #[cfg(test)]
 mod tests {

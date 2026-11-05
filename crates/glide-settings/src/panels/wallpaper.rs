@@ -11,7 +11,7 @@ use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::services::config::{ConfigStore, WallpaperFit};
 use crate::services::run::blocking;
-use crate::services::wallpaper::{self, Gallery, Source, Thumbnail};
+use crate::services::wallpaper::{self, Gallery, Thumbnail};
 use crate::theme::{self, Accent, ThemeState};
 use crate::widgets::{self, Group, Row};
 use glide_sdk::widget::mock as sketch;
@@ -64,6 +64,7 @@ pub enum Msg {
     ApplySolidHex,
     SolidReady([u8; 3], Result<PathBuf, String>),
     Backdrop([u8; 3]),
+    BackdropHex(String),
     OpenFolder,
     FolderOpened(Result<(), String>),
 }
@@ -78,6 +79,7 @@ pub struct Page {
     custom_invalid: bool,
     solid_hex: String,
     solid_invalid: bool,
+    backdrop_edit: Option<String>,
     error: Option<(tr::Key, String)>,
 }
 
@@ -196,13 +198,23 @@ impl Pane for Page {
             },
             Msg::SolidReady(rgb, Ok(path)) => {
                 self.error = None;
+                self.backdrop_edit = None;
                 config.set_wallpaper(Some(&path));
                 config.set_str("general", "background", &wallpaper::hex(rgb));
             }
             Msg::SolidReady(_, Err(err)) => {
                 self.error = Some((tr::Key::SolidFailed, err));
             }
-            Msg::Backdrop(rgb) => config.set_str("general", "background", &wallpaper::hex(rgb)),
+            Msg::Backdrop(rgb) => {
+                self.backdrop_edit = None;
+                config.set_str("general", "background", &wallpaper::hex(rgb));
+            }
+            Msg::BackdropHex(value) => {
+                if let Some(rgb) = wallpaper::parse_hex(&value) {
+                    config.set_str("general", "background", &wallpaper::hex(rgb));
+                }
+                self.backdrop_edit = Some(value);
+            }
             Msg::OpenFolder => {
                 return Task::perform(blocking(wallpaper::open_user_folder), |result| {
                     Msg::FolderOpened(result.unwrap_or_else(|| Err(String::new())))
@@ -216,22 +228,27 @@ impl Pane for Page {
     }
 
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+        column![self.view_primary(&c, config), self.view_additional(&c, config)].spacing(theme::SECTION_GAP).into()
+    }
+}
+
+impl Page {
+    pub(crate) fn view_primary<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let current = config.wallpaper();
         let current = current.as_deref();
         let error = self.error.as_ref().map(|(key, detail)| {
             let message = format!("{} {detail}", c.t(*key));
             widgets::banner(c.theme, crate::theme::Tone::Danger, Icon::Warning, message, None)
         });
-        column![
-            self.hero(&c, config, current),
-            error,
-            self.fit_group(&c, config, current),
-            self.gallery_group(&c, current),
-            self.colours_group(&c, current),
-            self.custom_group(&c),
-        ]
-        .spacing(theme::SECTION_GAP)
-        .into()
+        column![error, self.gallery_group(c, current), self.fit_group(c, config)].spacing(theme::SECTION_GAP).into()
+    }
+
+    pub(crate) fn view_additional<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+        let current = config.wallpaper();
+        let current = current.as_deref();
+        column![self.hero(c, config, current), self.colours_group(c, current), self.custom_group(c)]
+            .spacing(theme::SECTION_GAP)
+            .into()
     }
 }
 
@@ -308,69 +325,72 @@ impl Page {
             .build()
     }
 
-    fn fit_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore, current: Option<&Path>) -> Element<'a, Msg> {
+    fn fit_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
         let fit = config.wallpaper_fit();
-        let look = self.look(current);
         let colour = backdrop(config);
-        let cards = IcedRow::with_children(WallpaperFit::ALL.iter().map(|&option| {
-            let (label, hint) = fit_keys(option);
-            column![
-                widgets::preview_card(
-                    t,
-                    render(&t, &look, option, colour, FIT_W, FIT_H),
-                    c.t(label),
-                    option == fit,
-                    Some(Msg::SetFit(option)),
-                ),
-                text(c.t(hint), TextStyle::CAP).color(t.fg_3()),
-            ]
-            .spacing(2)
-            .align_x(Alignment::Center)
-            .width(Length::FillPortion(1))
-            .into()
-        }))
-        .spacing(12);
-        let mut group = Group::new(t)
-            .title(c.t(K::WallpaperFit))
-            .description(c.t(tr::Key::FitHint))
-            .push(container(gated(*c, cards)).padding([14, 8]));
+        let choices = |options: &[WallpaperFit]| {
+            let options = options.iter().map(|&option| (option, c.t(fit_keys(option).0).to_string())).collect();
+            gated(*c, widgets::segmented(t, options, fit, Msg::SetFit))
+        };
+        let label = Row::new(t, c.t(K::WallpaperFit)).subtitle(c.t(tr::Key::FitHint));
+        let mut group = if t.compact {
+            Group::new(t)
+                .push(label.build())
+                .push(container(choices(&WallpaperFit::ALL[..2])).padding([4.0, theme::ROW_PADDING_X]))
+                .push(container(choices(&WallpaperFit::ALL[2..])).padding([4.0, theme::ROW_PADDING_X]))
+        } else {
+            Group::new(t).push(label.suffix(choices(WallpaperFit::ALL)).build())
+        };
+        let formatted = wallpaper::hex(colour);
+        let value = self
+            .backdrop_edit
+            .as_deref()
+            .filter(|value| wallpaper::parse_hex(value).is_none_or(|rgb| rgb == colour))
+            .unwrap_or(&formatted);
+        let field = widgets::field(t, "#222c3c", value, Msg::BackdropHex, None, wallpaper::parse_hex(value).is_none())
+            .width(110);
+        let swatch = container(iced::widget::space::Space::new().width(24).height(24)).style(move |_| {
+            iced::widget::container::Style {
+                background: Some(to_color(colour).into()),
+                border: iced::Border { radius: theme::R1.into(), ..Default::default() },
+                ..Default::default()
+            }
+        });
+        let controls = container(gated(*c, row![swatch, field].spacing(10).align_y(Alignment::Center))).width(144);
+        group = group
+            .push(Row::new(t, c.t(tr::Key::Backdrop)).subtitle(c.t(tr::Key::BackdropHint)).suffix(controls).build());
         if matches!(fit, WallpaperFit::Contain | WallpaperFit::Center) {
             let swatches = swatches(&t, 2.0, 18.0, |rgb| rgb == colour, Msg::Backdrop);
-            group = group
-                .push(Row::new(t, c.t(tr::Key::Backdrop)).subtitle(c.t(tr::Key::BackdropHint)).build())
-                .push(container(gated(*c, swatches)).padding([4.0, theme::ROW_PADDING_X]));
+            group = group.push(container(gated(*c, swatches)).padding([4.0, theme::ROW_PADDING_X]));
         }
         group.build()
     }
 
     fn gallery_group<'a>(&'a self, c: &Ctx, current: Option<&Path>) -> Element<'a, Msg> {
         let t = c.theme;
-        let pick = |thumb: &Thumbnail| {
-            tile(&t, current == Some(thumb.path.as_path()), Msg::Pick(thumb.path.clone()), picture(thumb, None, &t))
+        let pick = |thumb: &Thumbnail, background| {
+            tile(
+                &t,
+                current == Some(thumb.path.as_path()),
+                Msg::Pick(thumb.path.clone()),
+                picture(thumb, None, &t, background),
+            )
         };
         let builtin = self.gallery.builtin.as_ref().map(|builtin| {
-            tile(&t, current.is_none(), Msg::UseBuiltin, picture(builtin, Some(c.t(tr::Key::Builtin)), &t))
+            tile(&t, current.is_none(), Msg::UseBuiltin, picture(builtin, Some(c.t(tr::Key::Builtin)), &t, t.win_bg()))
         });
-        let own_pictures = self.gallery.from(Source::Yours);
-        let empty = (self.loaded && own_pictures.is_empty())
+        let empty = (self.loaded && self.gallery.items.is_empty() && self.gallery.builtin.is_none())
             .then(|| widgets::list_empty(t, Icon::Image, c.t(tr::Key::NoYours), c.t(tr::Key::NoYoursHint)));
-        let yours = builtin.into_iter().chain(own_pictures.into_iter().map(pick)).collect();
-        let own = Group::new(t)
-            .title(c.t(tr::Key::Yours))
-            .description(c.t(tr::Key::YoursHint))
-            .suffix(widgets::secondary(t, c.t(tr::Key::OpenFolder), Some(Msg::OpenFolder)))
-            .push(gated(*c, grid(yours)))
-            .extend(empty);
-        let system: Vec<Element<'a, Msg>> = self.gallery.from(Source::System).into_iter().map(pick).collect();
-        let system = (!system.is_empty()).then(|| {
-            Group::new(t)
-                .title(c.t(tr::Key::System))
-                .description(c.t(tr::Key::SystemHint))
-                .push(gated(*c, grid(system)))
-                .build()
-        });
-        column![own.build(), system].spacing(theme::SECTION_GAP).into()
+        let pictures =
+            builtin.into_iter().chain(self.gallery.items.iter().map(|thumb| pick(thumb, t.win_bg()))).collect();
+        let heading = row![
+            text(c.t(K::Wallpaper), TextStyle::HEAD).color(t.fg_1()),
+            iced::widget::space::horizontal(),
+            widgets::link(t, c.t(tr::Key::OpenFolder), Some(Msg::OpenFolder)),
+        ]
+        .align_y(Alignment::Center);
+        column![heading, gated(*c, grid(pictures, t.compact)), empty].spacing(8).into()
     }
 
     fn colours_group<'a>(&'a self, c: &Ctx, current: Option<&Path>) -> Element<'a, Msg> {
@@ -440,8 +460,6 @@ fn swatches<'a>(
 
 pub(crate) const HERO_W: f32 = 400.0;
 pub(crate) const HERO_H: f32 = 225.0;
-pub(crate) const FIT_W: f32 = 96.0;
-pub(crate) const FIT_H: f32 = 54.0;
 pub(crate) const REFERENCE_WIDTH: f32 = 1920.0;
 
 const fn fit_keys(fit: WallpaperFit) -> (K, tr::Key) {
@@ -481,8 +499,47 @@ fn render<'a>(
     sketch::wallpaper(*t, &wallpaper, fit, to_color(backdrop), width, height, REFERENCE_WIDTH)
 }
 
-fn picture<'a>(thumb: &Thumbnail, badge: Option<&'a str>, t: &ThemeState) -> Element<'a, Msg> {
-    glide_sdk::widget::captioned_picture(&widgets::paint(t), thumb.handle.clone(), TILE_H, theme::R2, badge)
+fn picture<'a>(thumb: &Thumbnail, badge: Option<&'a str>, t: &ThemeState, background: Color) -> Element<'a, Msg> {
+    glide_sdk::anim::collapse(
+        true,
+        container(iced::widget::stack![
+            glide_sdk::widget::captioned_picture(&widgets::paint(t), thumb.handle.clone(), TILE_H, theme::R2, badge),
+            iced::widget::canvas::Canvas::new(Corners(background)).width(Fill).height(TILE_H),
+        ])
+        .width(Fill)
+        .height(TILE_H),
+    )
+}
+
+struct Corners(Color);
+
+impl iced::widget::canvas::Program<Msg> for Corners {
+    type State = ();
+
+    fn draw(
+        &self, (): &(), renderer: &iced::Renderer, _: &iced::Theme, bounds: iced::Rectangle, _: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{Frame, Path};
+        let mut frame = Frame::new(renderer, bounds.size());
+        let radius = theme::R2.min(bounds.width / 2.0).min(bounds.height / 2.0);
+        for (x, y, sx, sy) in [
+            (0.0, 0.0, 1.0, 1.0),
+            (bounds.width, 0.0, -1.0, 1.0),
+            (0.0, bounds.height, 1.0, -1.0),
+            (bounds.width, bounds.height, -1.0, -1.0),
+        ] {
+            let point = |dx: f32, dy: f32| iced::Point::new(x + sx * dx, y + sy * dy);
+            let path = Path::new(|p| {
+                p.move_to(point(radius, 0.0));
+                p.line_to(point(0.0, 0.0));
+                p.line_to(point(0.0, radius));
+                p.bezier_curve_to(point(0.0, radius * 0.447_715), point(radius * 0.447_715, 0.0), point(radius, 0.0));
+                p.close();
+            });
+            frame.fill(&path, self.0);
+        }
+        vec![frame.into_geometry()]
+    }
 }
 
 pub const TILE_H: f32 = 84.0;
@@ -493,6 +550,6 @@ fn tile<'a>(t: &ThemeState, selected: bool, message: Msg, content: Element<'a, M
         .into()
 }
 
-fn grid(tiles: Vec<Element<'_, Msg>>) -> Element<'_, Msg> {
-    container(widgets::grid(tiles, 4, 10.0)).padding([theme::ROW_PADDING_X, theme::ROW_PADDING_X]).into()
+fn grid(tiles: Vec<Element<'_, Msg>>, compact: bool) -> Element<'_, Msg> {
+    widgets::grid(tiles, if compact { 3 } else { 6 }, 8.0)
 }

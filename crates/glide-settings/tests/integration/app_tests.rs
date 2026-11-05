@@ -189,6 +189,19 @@ fn appearance_changes_retheme_the_app_immediately() {
 }
 
 #[test]
+fn theme_choices_keep_automatic_and_manual_selection_exclusive() {
+    let mut app = app("");
+    let _ = app.update(Message::Appearance(appearance::Msg::Schedule(true)));
+    assert_eq!(app.config().get_bool("topbar", "appearance-schedule"), Some(true));
+    let _ = app.update(Message::Appearance(appearance::Msg::SetAppearance(Appearance::Dark)));
+    assert_eq!(app.config().get_bool("topbar", "appearance-schedule"), Some(false));
+    assert_eq!(app.config().appearance(), Appearance::Dark);
+    let _ = app.update(Message::Appearance(appearance::Msg::SetAppearance(Appearance::Light)));
+    assert_eq!(app.config().get_bool("topbar", "appearance-schedule"), Some(false));
+    assert_eq!(app.config().appearance(), Appearance::Light);
+}
+
+#[test]
 fn a_look_from_the_host_rethemes_the_app_and_falls_back_to_the_stored_language() {
     let mut app = App::with_config(ConfigStore::parse("").with_system_language(Lang::Uk));
     let look = glide_sdk::look::Look::parse("[topbar]\nappearance = \"light\"\n", false);
@@ -658,6 +671,8 @@ fn wallpaper_panel_writes_general_keys() {
     use glide_settings::panels::wallpaper::Msg;
     use glide_settings::services::config::WallpaperFit;
     let mut app = app("[general]\nwallpaper = \"/tmp/old.png\"\n");
+    let _ = app.update(Message::PanelSelected(Panel::Appearance));
+    assert_eq!(app.active_category(), Category::Appearance);
     let _ = app.update(Message::Wallpaper(Msg::SetFit(WallpaperFit::Contain)));
     let _ = app.update(Message::Wallpaper(Msg::Backdrop([0x10, 0x20, 0x30])));
     let _ = app.update(Message::Wallpaper(Msg::Pick("/tmp/new.jpg".into())));
@@ -665,6 +680,10 @@ fn wallpaper_panel_writes_general_keys() {
     assert_eq!(config.get_str("general", "wallpaper-fit"), Some("contain"));
     assert_eq!(config.get_str("general", "background"), Some("#102030"));
     assert_eq!(config.get_str("general", "wallpaper"), Some("/tmp/new.jpg"));
+    let _ = app.update(Message::Wallpaper(Msg::BackdropHex("#abc".into())));
+    assert_eq!(app.config().get_str("general", "background"), Some("#102030"));
+    let _ = app.update(Message::Wallpaper(Msg::BackdropHex("#A1b2C3".into())));
+    assert_eq!(app.config().get_str("general", "background"), Some("#a1b2c3"));
     let _ = app.update(Message::Wallpaper(Msg::SolidReady([1, 2, 3], Ok("/tmp/solid-010203.png".into()))));
     assert_eq!(app.config().get_str("general", "wallpaper"), Some("/tmp/solid-010203.png"));
     assert_eq!(
