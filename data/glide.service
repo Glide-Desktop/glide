@@ -1,6 +1,6 @@
 [Unit]
 Description=Glide Wayland compositor
-Documentation=https://github.com/glide
+Documentation=https://github.com/Glide-Desktop/glide
 BindsTo=graphical-session.target
 Before=graphical-session.target
 Wants=graphical-session-pre.target

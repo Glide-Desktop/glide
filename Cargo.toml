@@ -49,7 +49,7 @@ members = [
 edition = "2024"
 rust-version = "1.96"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/artem/glide"
+repository = "https://github.com/Glide-Desktop/glide"
 
 [profile.release]
 debug = "line-tables-only"

@@ -15,7 +15,7 @@ you can override it with `[general] language` in `~/.config/glide/glide.toml`.
   Mesa. The proprietary NVIDIA driver needs `nvidia-drm.modeset=1` and a
   driver with GBM support (495 or newer).
 - `systemd-logind` or `seatd`, `udev`, Mesa EGL/GLES.
-- Rust 1.89 or newer. Install it with [rustup](https://rustup.rs); distribution
+- Rust 1.96 or newer. Install it with [rustup](https://rustup.rs); distribution
   packages are often too old.
 
 ### Build dependencies
