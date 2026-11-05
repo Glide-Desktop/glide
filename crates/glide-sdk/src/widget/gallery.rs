@@ -11,7 +11,7 @@ use iced::{
     Size, Theme, Vector, mouse,
 };
 
-use super::{slider, text, tooltip};
+use super::{stepped_slider, text, tooltip};
 
 pub const GLASS: Color = Color { r: 24.0 / 255.0, g: 23.0 / 255.0, b: 27.0 / 255.0, a: 0.64 };
 pub const GLASS_INK: Color = Color { r: 242.0 / 255.0, g: 240.0 / 255.0, b: 237.0 / 255.0, a: 1.0 };
@@ -347,7 +347,8 @@ pub fn exif_strip<'a, M: 'a>(paint: &Paint, cells: Vec<String>) -> Element<'a, M
 
 #[must_use]
 pub fn adjust_slider<'a, M: Clone + 'a>(
-    paint: &Paint, label: &'a str, value: i32, min: i32, on_change: impl Fn(i32) -> M + 'a, reset: Option<(M, &'a str)>,
+    paint: &Paint, label: &'a str, value: i32, min: i32, on_change: impl Fn(i32) -> M + 'a, on_release: Option<M>,
+    reset: Option<(M, &'a str)>,
 ) -> Element<'a, M> {
     let changed = value != 0;
     let shown = if value > 0 && min < 0 { format!("+{value}") } else { value.to_string() };
@@ -366,9 +367,15 @@ pub fn adjust_slider<'a, M: Clone + 'a>(
             .width(34)
             .align_right(34),
     );
-    column![head, slider(paint, min as f32..=100.0, value as f32, move |v| on_change(v.round() as i32))]
-        .spacing(SP1)
-        .into()
+    let control = stepped_slider(
+        paint,
+        min as f32..=100.0,
+        value as f32,
+        1.0,
+        Some(move |v: f32| on_change(v.round() as i32)),
+        on_release,
+    );
+    column![head, control].spacing(SP1).into()
 }
 
 struct Histogram {

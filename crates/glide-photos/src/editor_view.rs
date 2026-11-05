@@ -129,14 +129,13 @@ fn stage<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
             None => ui::sized_spinner(&paint, 34.0),
         }
     };
-    let compare = mouse_area(ui::glass_button(
-        &paint,
-        ui::text(app.t(Key::Compare), TextStyle::CAP).color(ui::GLASS_INK),
-        "",
-        Some(Message::Ignore),
+    let compare = mouse_area(ui::glass(
+        container(ui::text(app.t(Key::Compare), TextStyle::CAP).color(ui::GLASS_INK)).padding([6.0, 10.0]),
     ))
+    .interaction(iced::mouse::Interaction::Pointer)
     .on_press(event(EditorEvent::Compare(true)))
-    .on_release(event(EditorEvent::Compare(false)));
+    .on_release(event(EditorEvent::Compare(false)))
+    .on_exit(event(EditorEvent::Compare(false)));
     let hint = row![
         compare,
         ui::text(app.t(Key::Or), TextStyle::CAP).color(Color { a: 0.72, ..ui::GLASS_INK }),
@@ -173,6 +172,7 @@ fn sliders<'a>(app: &'a App, editor: &'a Editor, title: Key, list: &[Slider]) ->
             editor.edit.get(slider),
             slider.min(),
             move |value| event(EditorEvent::Slider(slider, value)),
+            Some(event(EditorEvent::Release)),
             Some((event(EditorEvent::Reset(slider)), app.t(Key::Reset))),
         ));
     }
@@ -270,6 +270,7 @@ fn filters<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
             editor.edit.strength,
             0,
             |value| event(EditorEvent::Strength(value)),
+            Some(event(EditorEvent::Release)),
             None
         ),
         ui::text(app.t(Key::FilterNote), TextStyle::CALL).color(paint.fg_2()),

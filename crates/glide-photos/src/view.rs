@@ -774,21 +774,19 @@ fn trash(app: &App) -> Element<'_, Message> {
     for chunk in app.trash.chunks(columns) {
         rows = rows.push(
             Row::with_children(chunk.iter().map(|item| {
-                let picture = Some(iced::widget::image::Handle::from_path(&item.file));
-                let tile = ui::photo_tile(
+                ui::photo_tile(
                     &paint,
                     Tile {
-                        picture,
+                        picture: app.thumb(&item.file),
                         side,
                         badge: None,
                         favourite: false,
                         picked: None,
-                        on_press: None,
-                        on_right: Some(Message::Restore(item.clone())),
+                        on_press: Some(Message::TrashMenu(item.clone())),
+                        on_right: Some(Message::TrashMenu(item.clone())),
                         label: "",
                     },
-                );
-                ui::tooltip(&paint, tile, app.t(Key::Restore))
+                )
             }))
             .spacing(GAP),
         );

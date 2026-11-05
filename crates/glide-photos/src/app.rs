@@ -54,6 +54,7 @@ pub const ZOOM_SIDES: [f32; 6] = [88.0, 112.0, 140.0, 176.0, 220.0, 280.0];
 pub const SLIDE: Duration = Duration::from_secs(4);
 pub const IDLE_CHROME: Duration = Duration::from_secs(2);
 const THUMB_WORKERS: usize = 3;
+const CARD_POLL_TICKS: u32 = 20;
 const VIEW_SIDE: u32 = 4096;
 const EDIT_SIDE: u32 = 1600;
 
@@ -154,6 +155,7 @@ pub enum Message {
     Window(Action),
     Close,
     Scanned(Vec<Photo>),
+    CardScanned(Vec<Photo>),
     Thumb(PathBuf, Thumb),
     Go(Place),
     Scale(Scale),
@@ -185,6 +187,9 @@ pub enum Message {
     UndoTrash(Vec<Trashed>),
     TrashList(Vec<Trashed>),
     Restore(Trashed),
+    TrashMenu(Trashed),
+    Purge(Trashed),
+    TrashRefresh,
     Rescan,
     AskEmptyTrash,
     EmptyTrash,
@@ -309,6 +314,7 @@ pub struct App {
     pub generation: u64,
     pub today: library::Date,
     pub now: u64,
+    pub ticks: u32,
 }
 
 async fn work<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -390,6 +396,7 @@ impl App {
             generation: 0,
             today: library::today(),
             now: unix_now(),
+            ticks: 0,
         }
     }
 
@@ -483,7 +490,7 @@ impl App {
             }
             Place::Smart(smart) => all.filter(|&i| smart.holds(&self.photos[i], now)).collect(),
             Place::Folder(root) => all.filter(|&i| self.photos[i].path.starts_with(root)).collect(),
-            Place::Card(_) => Vec::new(),
+            Place::Card(dcim) => all.filter(|&i| self.photos[i].path.starts_with(dcim)).collect(),
         }
     }
 
@@ -753,6 +760,47 @@ impl App {
         ]
     }
 
+    fn replace_photos(&mut self, mut photos: Vec<Photo>) {
+        let viewing: Option<(Vec<PathBuf>, usize)> = self
+            .viewer
+            .as_ref()
+            .map(|viewer| (viewer.list.iter().map(|&i| self.photos[i].path.clone()).collect(), viewer.at));
+        let editing = self.editor.as_ref().map(|editor| self.photos[editor.photo].path.clone());
+        if let Some((paths, _)) = &viewing {
+            for path in paths {
+                if !photos.iter().any(|photo| &photo.path == path)
+                    && let Some(kept) = self.photos.iter().find(|photo| &photo.path == path && path.is_file())
+                {
+                    photos.push(kept.clone());
+                }
+            }
+        }
+        library::sort(&mut photos);
+        self.photos = photos;
+        let find = |photos: &[Photo], path: &PathBuf| photos.iter().position(|photo| &photo.path == path);
+        if let Some((paths, at)) = viewing {
+            let current = paths.get(at).cloned();
+            let list: Vec<usize> = paths.iter().filter_map(|path| find(&self.photos, path)).collect();
+            if list.is_empty() {
+                self.viewer = None;
+            } else if let Some(viewer) = self.viewer.as_mut() {
+                let here = current.and_then(|path| find(&self.photos, &path));
+                viewer.at = here.and_then(|index| list.iter().position(|&i| i == index)).unwrap_or(0);
+                viewer.list = list;
+            }
+        }
+        if let Some(path) = editing {
+            match find(&self.photos, &path) {
+                Some(index) => {
+                    if let Some(editor) = self.editor.as_mut() {
+                        editor.photo = index;
+                    }
+                }
+                None => self.editor = None,
+            }
+        }
+    }
+
     fn forget_paths(&mut self, gone: &[PathBuf]) {
         let listed: Option<(Vec<PathBuf>, usize)> = self
             .viewer
@@ -787,11 +835,22 @@ impl App {
             Message::Window(action) => shell.window_action(action),
             Message::Close => shell.exit(),
             Message::Scanned(photos) => {
-                self.photos = photos;
+                self.replace_photos(photos);
                 self.scanned = true;
                 self.now = unix_now();
                 self.today = library::today();
                 let paths: Vec<PathBuf> = self.photos.iter().map(|photo| photo.path.clone()).collect();
+                return self.want_thumbs(paths);
+            }
+            Message::CardScanned(found) => {
+                let fresh: Vec<Photo> = found
+                    .into_iter()
+                    .filter(|photo| !self.photos.iter().any(|known| known.path == photo.path))
+                    .collect();
+                let paths: Vec<PathBuf> = fresh.iter().map(|photo| photo.path.clone()).collect();
+                let mut all = std::mem::take(&mut self.photos);
+                all.extend(fresh);
+                self.replace_photos(all);
                 return self.want_thumbs(paths);
             }
             Message::Thumb(path, thumb) => {
@@ -818,10 +877,9 @@ impl App {
                         move || {
                             let mut found = Vec::new();
                             card_walk(&dcim, offset, &mut found);
-                            library::sort(&mut found);
                             found
                         },
-                        Message::Scanned,
+                        Message::CardScanned,
                     );
                 }
             }
@@ -1021,7 +1079,21 @@ impl App {
                 );
             }
             Message::Rescan => return self.rescan(),
-            Message::TrashList(items) => self.trash = items,
+            Message::TrashList(items) => {
+                let files: Vec<PathBuf> = items.iter().map(|item| item.file.clone()).collect();
+                self.trash = items;
+                return self.want_thumbs(files);
+            }
+            Message::TrashMenu(item) => shell.context_menu(vec![
+                Item::action(self.t(Key::Restore), Message::Restore(item.clone())),
+                Item::separator(),
+                Item::action(self.t(Key::DeleteForever), Message::Purge(item)).danger(),
+            ]),
+            Message::Purge(item) => {
+                shell.close_menu();
+                return later(move || trash::purge(&item).is_ok(), |_| Message::TrashRefresh);
+            }
+            Message::TrashRefresh => return Self::refresh_trash(),
             Message::Restore(item) => {
                 return later(
                     move || trash::restore(&item).is_ok(),
@@ -1312,7 +1384,8 @@ impl App {
             self.today = today;
             self.now = unix_now();
         }
-        if self.viewer.is_none() && self.editor.is_none() && self.modal.is_none() {
+        self.ticks = self.ticks.wrapping_add(1);
+        if self.ticks.is_multiple_of(CARD_POLL_TICKS) && self.viewer.is_none() && self.editor.is_none() {
             tasks.push(Self::poll_cards());
         }
         Task::batch(tasks)
@@ -1618,9 +1691,16 @@ impl App {
         {
             return self.update(Message::Editor(EditorEvent::Compare(false)), shell);
         }
-        let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+        let keyboard::Event::KeyPressed { key, modifiers, physical_key, .. } = event else {
             return Task::none();
         };
+        if !captured
+            && self.modal.is_none()
+            && !shell.has_dialog()
+            && let Some(message) = glide_sdk::menu::shortcut(&self.menus(), key, *physical_key, *modifiers)
+        {
+            return self.update(message, shell);
+        }
         if captured || self.modal.is_some() || shell.has_dialog() {
             if matches!(key, keyboard::Key::Named(Named::Escape)) && self.modal.is_some() {
                 self.modal = None;
@@ -1773,6 +1853,13 @@ impl App {
                     Item::action(self.t(Key::Slideshow), Message::Viewer(ViewerEvent::Slideshow))
                         .shortcut("F5")
                         .enabled(viewing),
+                    Item::separator(),
+                    Item::action(self.t(Key::RotateLeft), Message::Rotate(targets.clone().unwrap_or_default(), 3))
+                        .shortcut("Ctrl+[")
+                        .enabled(has(&targets) && !editing),
+                    Item::action(self.t(Key::RotateRight), Message::Rotate(targets.clone().unwrap_or_default(), 1))
+                        .shortcut("Ctrl+]")
+                        .enabled(has(&targets) && !editing),
                 ],
             ),
         ]
@@ -2033,6 +2120,35 @@ mod tests {
         let viewer = app.app().viewer.as_ref().expect("viewer stays");
         assert_eq!(viewer.list.len(), 3);
         assert!(viewer.current().is_some_and(|index| app.app().photos[index].path != gone.path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rescan_keeps_the_viewer_on_the_same_photo_and_cards_add_to_the_library() {
+        let (dir, photos) = library("rescan");
+        let first = photos[0].path.clone();
+        let mut app = harness(photos.clone());
+        app.message(Message::Tile(2));
+        let current = |app: &glide_sdk::Harness<App>| {
+            let viewer = app.app().viewer.as_ref().unwrap();
+            app.app().photos[viewer.current().unwrap()].path.clone()
+        };
+        let watched = current(&app);
+        let shorter: Vec<Photo> = photos.iter().filter(|photo| photo.path != first).cloned().collect();
+        std::fs::remove_file(&first).unwrap();
+        app.message(Message::Scanned(shorter));
+        let _ = app.view();
+        assert_eq!(current(&app), watched);
+        assert_eq!(app.app().viewer.as_ref().unwrap().list.len(), 3);
+        app.message(Message::Viewer(ViewerEvent::Back));
+        let card = dir.join("card/DCIM");
+        std::fs::create_dir_all(&card).unwrap();
+        image::RgbImage::new(8, 8).save(card.join("IMG_0001.png")).unwrap();
+        let found = library::scan(std::slice::from_ref(&card));
+        app.message(Message::CardScanned(found));
+        assert_eq!(app.app().photos.len(), 4);
+        app.message(Message::Go(Place::Card(card)));
+        assert_eq!(app.app().shown().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

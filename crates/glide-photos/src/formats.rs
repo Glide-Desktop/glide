@@ -208,6 +208,7 @@ pub struct Request<'a> {
     pub animate: bool,
 }
 
+const FRAME_SIDE: u32 = 1600;
 const EXTERNAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 fn run_converter(program: &str, args: &[&std::ffi::OsStr]) -> bool {
@@ -265,6 +266,7 @@ fn external(path: &Path, name: &str, page: u32) -> Option<DynamicImage> {
     });
     let image = decoded.then(|| image::open(&output).ok()).flatten();
     let _ = std::fs::remove_file(&output);
+    let _ = std::fs::remove_dir(&dir);
     image
 }
 
@@ -350,7 +352,8 @@ fn animation(request: &Request<'_>) -> Option<Decoded> {
         .map(|frame| {
             let (numer, denom) = frame.delay().numer_denom_ms();
             let delay_ms = numer.checked_div(denom).map_or(100, |delay| delay.max(20));
-            let image = fit(DynamicImage::ImageRgba8(frame.into_buffer()), request.max_side).into_rgba8();
+            let side = Some(request.max_side.unwrap_or(FRAME_SIDE).min(FRAME_SIDE));
+            let image = fit(DynamicImage::ImageRgba8(frame.into_buffer()), side).into_rgba8();
             Frame { image, delay_ms }
         })
         .collect();
