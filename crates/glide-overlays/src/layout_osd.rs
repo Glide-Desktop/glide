@@ -19,7 +19,6 @@ const PILL: i32 = 22;
 const DOTS_Y: i32 = PAD + ROW + 32;
 const WINDOW: (i32, i32) = (2, DOTS_Y - 10);
 const FADE: i32 = 14;
-const STRIP: i32 = 1;
 const TRAVEL: f64 = 16.0;
 const CODE: glide_theme::TextStyle = glide_theme::TextStyle {
     size_px: 72.0,
@@ -74,6 +73,7 @@ pub struct LayoutOsd {
     slots: Cache<(i32, usize)>,
     dots: Cache<i32>,
     pill: Cache<i32>,
+    fades: Cache<(i32, bool)>,
 }
 
 fn step(from: usize, to: usize, count: usize) -> i64 {
@@ -215,23 +215,33 @@ impl LayoutOsd {
             });
         }
         let inner = WIDTH - 2 * PAD;
-        for (index, offset) in self.slots(now) {
+        let slots = self.slots(now);
+        if slots.iter().any(|(_, offset)| offset.abs() > 1e-6) {
+            for (upper, y) in [(true, WINDOW.0), (false, WINDOW.1 - FADE)] {
+                if let Some(fade) = self.fade_buffer(upper, &palette, tokens, scale) {
+                    let at = origin + Point::from((f64::from(PAD), f64::from(y)));
+                    pieces.push(Piece { buffer: fade, at, src: None, size: None, alpha });
+                }
+            }
+        }
+        for (index, offset) in slots {
             let Some(buffer) = self.slot_buffer(index, &palette, painter, tokens, scale) else {
                 continue;
             };
             let top = f64::from(PAD) + offset * f64::from(ROW);
-            for (y, height, mask) in strips(top) {
-                pieces.push(Piece {
-                    buffer: buffer.clone(),
-                    at: origin + Point::from((f64::from(PAD), f64::from(y))),
-                    src: Some(Rectangle::new(
-                        Point::from((0.0, f64::from(y) - top)),
-                        Size::from((f64::from(inner), f64::from(height))),
-                    )),
-                    size: Some(Size::from((inner, height))),
-                    alpha: alpha * slot_alpha(offset) * mask,
-                });
-            }
+            let Some((y, height)) = clip(top) else {
+                continue;
+            };
+            pieces.push(Piece {
+                buffer,
+                at: origin + Point::from((f64::from(PAD), f64::from(y))),
+                src: Some(Rectangle::new(
+                    Point::from((0.0, f64::from(y) - top)),
+                    Size::from((f64::from(inner), f64::from(height))),
+                )),
+                size: Some(Size::from((inner, height))),
+                alpha: alpha * slot_alpha(offset),
+            });
         }
         if let Some(panel) = self.panel_buffer(&palette, tokens, scale) {
             pieces.push(Piece { buffer: panel, at: origin, src: None, size: None, alpha });
@@ -281,6 +291,42 @@ impl LayoutOsd {
         }
         self.pill.get(&scale).map(|(_, buffer)| buffer.clone())
     }
+
+    fn fade_buffer(
+        &mut self, upper: bool, palette: &str, tokens: &glide_theme::Tokens, scale: i32,
+    ) -> Option<MemoryRenderBuffer> {
+        let key = glide_theme::Revision::new().str(palette).finish();
+        if self.fades.get(&(scale, upper)).is_none_or(|(cached, _)| *cached != key) {
+            self.fades.insert((scale, upper), (key, fade_canvas(upper, tokens, scale)?.finish()));
+        }
+        self.fades.get(&(scale, upper)).map(|(_, buffer)| buffer.clone())
+    }
+}
+
+fn fade_canvas(upper: bool, tokens: &glide_theme::Tokens, scale: i32) -> Option<Canvas<'static>> {
+    let mut canvas = Canvas::new(WIDTH - 2 * PAD, FADE, scale)?;
+    let rows = FADE * scale;
+    let row_bytes = (canvas.w * scale * 4) as usize;
+    let [blue, green, red, alpha] = tokens.popover_bg.to_buffer_bytes();
+    for (row, line) in canvas.buf.chunks_exact_mut(row_bytes).enumerate() {
+        let toward_content = (row as f32 + 0.5) / rows as f32;
+        let cover = edge_cover(if upper { toward_content } else { 1.0 - toward_content });
+        let premultiply = |channel: u8| (f32::from(channel) * cover * f32::from(alpha) / 255.0).round() as u8;
+        let pixel = [premultiply(blue), premultiply(green), premultiply(red), (f32::from(alpha) * cover).round() as u8];
+        line.chunks_exact_mut(4).for_each(|target| target.copy_from_slice(&pixel));
+    }
+    Some(canvas)
+}
+
+fn edge_cover(toward_content: f32) -> f32 {
+    let t = 1.0 - toward_content.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn clip(top: f64) -> Option<(i32, i32)> {
+    let start = (top.ceil() as i32).max(WINDOW.0);
+    let end = ((top + f64::from(ROW)).floor() as i32).min(WINDOW.1);
+    (end > start).then_some((start, end - start))
 }
 
 fn panel_canvas(tokens: &glide_theme::Tokens, scale: i32) -> Option<Canvas<'static>> {
@@ -317,33 +363,6 @@ fn pill_canvas(tokens: &glide_theme::Tokens, scale: i32) -> Option<Canvas<'stati
     let mut canvas = Canvas::new(PILL, DOT, scale)?;
     canvas.fill(rect(0, 0, PILL, DOT), tokens.acc_bg, DOT as f32 / 2.0);
     Some(canvas)
-}
-
-fn strips(top: f64) -> Vec<(i32, i32, f32)> {
-    let (window_top, window_bottom) = WINDOW;
-    let start = (top.ceil() as i32).max(window_top);
-    let end = ((top + f64::from(ROW)).floor() as i32).min(window_bottom);
-    let mut strips = Vec::new();
-    let mut y = start;
-    while y < end {
-        let next = if y < window_top + FADE {
-            (y + STRIP).min(window_top + FADE)
-        } else if y < window_bottom - FADE {
-            window_bottom - FADE
-        } else {
-            y + STRIP
-        };
-        let next = next.clamp(y + 1, end);
-        let middle = f64::from(y + next) / 2.0;
-        let mask = ((middle - f64::from(window_top)) / f64::from(FADE))
-            .min((f64::from(window_bottom) - middle) / f64::from(FADE))
-            .clamp(0.0, 1.0);
-        if mask > 0.0 {
-            strips.push((y, next - y, mask as f32));
-        }
-        y = next;
-    }
-    strips
 }
 
 fn slot_alpha(offset: f64) -> f32 {
@@ -424,13 +443,13 @@ mod tests {
 
     #[test]
     fn a_resting_code_is_drawn_whole_and_a_rolling_one_fades_at_the_window_edge() {
-        assert_eq!(strips(f64::from(PAD)), vec![(PAD, ROW, 1.0)]);
-        let rolling = strips(f64::from(PAD) + 0.6 * f64::from(ROW));
-        let last = rolling.last().copied().unwrap_or_default();
-        assert_eq!(last.0 + last.1, WINDOW.1, "clipped at the bottom of the window");
-        assert!(last.2 < 0.2, "and faded out there: {last:?}");
-        assert!(rolling.windows(2).all(|pair| pair[0].0 + pair[0].1 == pair[1].0), "no gaps between strips");
+        assert_eq!(clip(f64::from(PAD)), Some((PAD, ROW)));
+        assert!(PAD + ROW <= WINDOW.1 - FADE && PAD >= WINDOW.0 + FADE, "a code at rest is clear of both fades");
+        assert_eq!(clip(f64::from(PAD) + 0.6 * f64::from(ROW)).map(|(y, h)| y + h), Some(WINDOW.1));
+        assert_eq!(clip(f64::from(WINDOW.1)), None);
         assert!(WINDOW.1 <= DOTS_Y - 8, "the codes never run over the dots");
+        assert!((edge_cover(0.0) - 1.0).abs() < f32::EPSILON, "the edge itself is panel colour");
+        assert!(edge_cover(1.0).abs() < f32::EPSILON, "and the content side is clear");
     }
 
     const _PILL_CLEARS_THE_NEXT_DOT: () = assert!(PITCH - DOT / 2 - PILL / 2 >= 6);
@@ -542,14 +561,21 @@ mod tests {
                 let top = PAD * scale;
                 let whole = (0, cell_h);
                 blend(&mut frame, frame_width, &panel_canvas(&tokens, scale).expect("panel"), (left, top), whole);
-                for (index, offset) in osd.slots(now) {
+                let slots = osd.slots(now);
+                for &(index, offset) in &slots {
                     let slot = slot_canvas(&three[index], &painter, &tokens, scale).expect("slot");
                     let slot_top = f64::from(PAD) + offset * f64::from(ROW);
                     let y = top + (slot_top * f64::from(scale)).round() as i32;
-                    for (strip, height, mask) in strips(slot_top) {
-                        let clip = (top + strip * scale, top + (strip + height) * scale);
-                        let fade = slot_alpha(offset) * mask;
-                        blend_faded(&mut frame, frame_width, &slot, (left + PAD * scale, y), clip, fade);
+                    let Some((visible, height)) = clip(slot_top) else {
+                        continue;
+                    };
+                    let window = (top + visible * scale, top + (visible + height) * scale);
+                    blend_faded(&mut frame, frame_width, &slot, (left + PAD * scale, y), window, slot_alpha(offset));
+                }
+                if slots.iter().any(|(_, offset)| offset.abs() > 1e-6) {
+                    for (upper, y) in [(true, WINDOW.0), (false, WINDOW.1 - FADE)] {
+                        let fade = fade_canvas(upper, &tokens, scale).expect("fade");
+                        blend(&mut frame, frame_width, &fade, (left + PAD * scale, top + y * scale), whole);
                     }
                 }
                 let dots = dots_canvas(three.len(), &tokens, scale).expect("dots");
