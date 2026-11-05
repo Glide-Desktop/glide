@@ -75,10 +75,6 @@ scripts/build.sh               # as your user; never as root
 sudo scripts/install.sh        # installs to /usr/local
 ```
 
-`build.sh` compiles through `scripts/ai-cargo.sh`: one job, 35 % of the CPU
-and boost off, so a laptop stays cool but the build takes longer. Pass
-`--fast` (also accepted by `install-session.sh`) to use every core.
-
 Then log out and choose **Glide** in your display manager (GDM, SDDM,
 LightDM, greetd…). From a bare TTY, run `glide-session`.
 

@@ -1,17 +1,22 @@
 /target
 /dist
 
-# The design/library web app (React + Mantine): installed packages and build output.
-/design/library/node_modules
-/design/library/dist
+# Packaging output.
+*.pkg.tar.*
+
+# Editors and local environment.
+.vscode/
+.idea/
+.env
 
 # Agent/session artifacts.
 #
 # These are scratch output from AI coding sessions (transcripts, per-agent
-# briefing/handoff notes, tool configs). They are not project sources and
-# were committed by accident once already — keep them out of the tree.
+# briefing/handoff notes, tool configs, review reports). They are not project
+# sources and were committed by accident once already — keep them out of the tree.
 .agents/
 .opencode/
+.claude/
 .geminirules
 AGENTS.md
 GEMINI.md
@@ -20,6 +25,11 @@ session_export.json
 session_opencode.md
 TEST_INFRA.md
 TEST_READY.md
+user_plan.md
+docs/*_REVIEW*.md
+docs/*_REPORT.md
+docs/overhaul-log.md
+docs/ROADMAP.md
 
 # Scratch files from debugging sessions: one-off reproducers, stray patches.
 fix.patch

@@ -321,16 +321,16 @@ mod tests {
     fn passwd_keeps_only_login_users_in_the_regular_uid_range() {
         let passwd = "root:x:0:0:root:/root:/bin/bash\n\
             greeter:x:964:964::/var/lib/greetd:/bin/false\n\
-            artem:x:1000:1000:Артем Іванов,,,:/home/artem:/bin/zsh\n\
+            olena:x:1000:1000:Олена Коваль,,,:/home/olena:/bin/zsh\n\
             svc:x:1001:1001::/:/usr/bin/nologin\n\
             nobody:x:65534:65534:Nobody:/:/usr/bin/nologin\n\
             dyn:x:61184:61184::/:/bin/sh\n\
             bob:x:1002:1002::/home/bob:/bin/bash\n";
         let users = parse_passwd(passwd);
         let names: Vec<&str> = users.iter().map(|u| u.username.as_str()).collect();
-        assert_eq!(names, ["artem", "bob"]);
-        assert_eq!(users[0].display_name, "Артем Іванов");
-        assert_eq!(users[0].initial, 'А');
+        assert_eq!(names, ["olena", "bob"]);
+        assert_eq!(users[0].display_name, "Олена Коваль");
+        assert_eq!(users[0].initial, 'О');
         assert_eq!(users[1].display_name, "bob");
         assert_eq!(users[1].initial, 'B');
     }

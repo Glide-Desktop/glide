@@ -1,25 +1,22 @@
 #!/bin/sh
 # Build Glide from source: checks the toolchain and system libraries first,
 # then compiles every binary with the versions pinned in Cargo.lock.
-# The build runs through scripts/ai-cargo.sh (one job, 35 % CPU, boost off)
-# so the machine stays cool; --fast uses plain cargo and every core.
 #
-# Usage: scripts/build.sh [--debug] [--skip-checks] [--fast]
+# Usage: scripts/build.sh [--debug] [--skip-checks]
 set -eu
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILE=release
 CHECKS=1
-CARGO="$REPO/scripts/ai-cargo.sh"
+CARGO=cargo
 MIN_RUST=1.96
 
 for arg in "$@"; do
     case "$arg" in
         --debug) PROFILE=dev ;;
         --skip-checks) CHECKS=0 ;;
-        --fast) CARGO=cargo ;;
         -h|--help)
-            sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac

@@ -2,7 +2,7 @@
 # Kept for existing muscle memory: builds as the calling user, then installs
 # system-wide with display manager and PAM integration.
 # See scripts/build.sh and scripts/install.sh.
-# Flags for build.sh (--fast, --debug, --skip-checks) are forwarded to build.sh;
+# Flags for build.sh (--debug, --skip-checks) are forwarded to build.sh;
 # all other arguments go to scripts/install.sh.
 set -eu
 
@@ -13,14 +13,13 @@ DEBUG=0
 
 for arg in "$@"; do
     case "$arg" in
-        --fast) BUILD_FLAGS="$BUILD_FLAGS --fast" ;;
         --skip-checks) BUILD_FLAGS="$BUILD_FLAGS --skip-checks" ;;
         --debug)
             BUILD_FLAGS="$BUILD_FLAGS --debug"
             DEBUG=1
             ;;
         -h|--help)
-            echo "Usage: $0 [--fast] [--debug] [--skip-checks] [--prefix DIR] [--destdir DIR] [--no-dm] [--no-pam]"
+            echo "Usage: $0 [--debug] [--skip-checks] [--prefix DIR] [--destdir DIR] [--no-dm] [--no-pam]"
             echo "Builds Glide and installs it system-wide with greetd and PAM integration."
             exit 0
             ;;

@@ -214,8 +214,8 @@ fn system_parsers_read_proc_formats() {
     assert_eq!(system::parse_meminfo("MemTotal:       16000000 kB\n"), 16_000_000 * 1024);
     assert_eq!(system::parse_df("1B-blocks Avail\n512000 128000\n"), (512_000, 128_000));
     assert_eq!(
-        system::parse_passwd_name("artem:x:1000:1000:Artem T,,,:/home/artem:/bin/zsh\n", "artem").as_deref(),
-        Some("Artem T")
+        system::parse_passwd_name("olena:x:1000:1000:Olena K,,,:/home/olena:/bin/zsh\n", "olena").as_deref(),
+        Some("Olena K")
     );
     assert_eq!(system::parse_passwd_name("root:x:0:0::/root:/bin/sh\n", "root"), None);
 }
