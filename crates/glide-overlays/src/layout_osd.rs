@@ -10,15 +10,16 @@ use crate::osd::{Envelope, anchor_bottom};
 use crate::raster::{Canvas, rect};
 
 pub const WIDTH: i32 = 296;
-pub const HEIGHT: i32 = 184;
+pub const HEIGHT: i32 = DOTS_Y + DOT + PAD + 2;
 const PAD: i32 = glide_theme::spacing::SP4;
+const INNER: i32 = WIDTH - 2 * PAD;
 const ROW: i32 = 112;
 const DOT: i32 = 6;
 const PITCH: i32 = 22;
 const PILL: i32 = 22;
-const DOTS_Y: i32 = PAD + ROW + 32;
-const WINDOW: (i32, i32) = (2, DOTS_Y - 10);
-const FADE: i32 = 14;
+const DOTS_Y: i32 = PAD + ROW + 16;
+const WINDOW: (i32, i32) = (2, WIDTH - 2);
+const FADE: i32 = 48;
 const TRAVEL: f64 = 16.0;
 const CODE: glide_theme::TextStyle = glide_theme::TextStyle {
     size_px: 72.0,
@@ -214,13 +215,13 @@ impl LayoutOsd {
                 alpha,
             });
         }
-        let inner = WIDTH - 2 * PAD;
         let slots = self.slots(now);
-        if slots.iter().any(|(_, offset)| offset.abs() > 1e-6) {
-            for (upper, y) in [(true, WINDOW.0), (false, WINDOW.1 - FADE)] {
-                if let Some(fade) = self.fade_buffer(upper, &palette, tokens, scale) {
-                    let at = origin + Point::from((f64::from(PAD), f64::from(y)));
-                    pieces.push(Piece { buffer: fade, at, src: None, size: None, alpha });
+        let edges = edge_alpha(&slots);
+        if edges > 0.0 {
+            for (leading, x) in [(true, WINDOW.0), (false, WINDOW.1 - FADE)] {
+                if let Some(fade) = self.fade_buffer(leading, &palette, tokens, scale) {
+                    let at = origin + Point::from((f64::from(x), f64::from(PAD)));
+                    pieces.push(Piece { buffer: fade, at, src: None, size: None, alpha: alpha * edges });
                 }
             }
         }
@@ -228,18 +229,18 @@ impl LayoutOsd {
             let Some(buffer) = self.slot_buffer(index, &palette, painter, tokens, scale) else {
                 continue;
             };
-            let top = f64::from(PAD) + offset * f64::from(ROW);
-            let Some((y, height)) = clip(top) else {
+            let left = slot_left(offset);
+            let Some((x, width)) = clip(left) else {
                 continue;
             };
             pieces.push(Piece {
                 buffer,
-                at: origin + Point::from((f64::from(PAD), f64::from(y))),
+                at: origin + Point::from((f64::from(x), f64::from(PAD))),
                 src: Some(Rectangle::new(
-                    Point::from((0.0, f64::from(y) - top)),
-                    Size::from((f64::from(inner), f64::from(height))),
+                    Point::from((f64::from(x) - left, 0.0)),
+                    Size::from((f64::from(width), f64::from(ROW))),
                 )),
-                size: Some(Size::from((inner, height))),
+                size: Some(Size::from((width, ROW))),
                 alpha: alpha * slot_alpha(offset),
             });
         }
@@ -293,29 +294,38 @@ impl LayoutOsd {
     }
 
     fn fade_buffer(
-        &mut self, upper: bool, palette: &str, tokens: &glide_theme::Tokens, scale: i32,
+        &mut self, leading: bool, palette: &str, tokens: &glide_theme::Tokens, scale: i32,
     ) -> Option<MemoryRenderBuffer> {
         let key = glide_theme::Revision::new().str(palette).finish();
-        if self.fades.get(&(scale, upper)).is_none_or(|(cached, _)| *cached != key) {
-            self.fades.insert((scale, upper), (key, fade_canvas(upper, tokens, scale)?.finish()));
+        if self.fades.get(&(scale, leading)).is_none_or(|(cached, _)| *cached != key) {
+            self.fades.insert((scale, leading), (key, fade_canvas(leading, tokens, scale)?.finish()));
         }
-        self.fades.get(&(scale, upper)).map(|(_, buffer)| buffer.clone())
+        self.fades.get(&(scale, leading)).map(|(_, buffer)| buffer.clone())
     }
 }
 
-fn fade_canvas(upper: bool, tokens: &glide_theme::Tokens, scale: i32) -> Option<Canvas<'static>> {
-    let mut canvas = Canvas::new(WIDTH - 2 * PAD, FADE, scale)?;
-    let rows = FADE * scale;
-    let row_bytes = (canvas.w * scale * 4) as usize;
+fn fade_canvas(leading: bool, tokens: &glide_theme::Tokens, scale: i32) -> Option<Canvas<'static>> {
+    let mut canvas = Canvas::new(FADE, ROW, scale)?;
+    let columns = FADE * scale;
     let [blue, green, red, alpha] = tokens.popover_bg.to_buffer_bytes();
-    for (row, line) in canvas.buf.chunks_exact_mut(row_bytes).enumerate() {
-        let toward_content = (row as f32 + 0.5) / rows as f32;
-        let cover = edge_cover(if upper { toward_content } else { 1.0 - toward_content });
-        let premultiply = |channel: u8| (f32::from(channel) * cover * f32::from(alpha) / 255.0).round() as u8;
-        let pixel = [premultiply(blue), premultiply(green), premultiply(red), (f32::from(alpha) * cover).round() as u8];
-        line.chunks_exact_mut(4).for_each(|target| target.copy_from_slice(&pixel));
+    let strip: Vec<[u8; 4]> = (0..columns)
+        .map(|column| {
+            let toward_content = (column as f32 + 0.5) / columns as f32;
+            let cover = edge_cover(if leading { toward_content } else { 1.0 - toward_content });
+            let premultiply = |channel: u8| (f32::from(channel) * cover * f32::from(alpha) / 255.0).round() as u8;
+            [premultiply(blue), premultiply(green), premultiply(red), (f32::from(alpha) * cover).round() as u8]
+        })
+        .collect();
+    for line in canvas.buf.chunks_exact_mut((columns * 4) as usize) {
+        for (target, pixel) in line.chunks_exact_mut(4).zip(&strip) {
+            target.copy_from_slice(pixel);
+        }
     }
     Some(canvas)
+}
+
+fn slot_left(offset: f64) -> f64 {
+    f64::from(PAD) + offset * f64::from(INNER)
 }
 
 fn edge_cover(toward_content: f32) -> f32 {
@@ -323,9 +333,9 @@ fn edge_cover(toward_content: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn clip(top: f64) -> Option<(i32, i32)> {
-    let start = (top.ceil() as i32).max(WINDOW.0);
-    let end = ((top + f64::from(ROW)).floor() as i32).min(WINDOW.1);
+fn clip(left: f64) -> Option<(i32, i32)> {
+    let start = (left.ceil() as i32).max(WINDOW.0);
+    let end = ((left + f64::from(INNER)).floor() as i32).min(WINDOW.1);
     (end > start).then_some((start, end - start))
 }
 
@@ -336,7 +346,7 @@ fn panel_canvas(tokens: &glide_theme::Tokens, scale: i32) -> Option<Canvas<'stat
 fn slot_canvas(
     layout: &Layout, painter: &crate::paint::Painter, tokens: &glide_theme::Tokens, scale: i32,
 ) -> Option<Canvas<'static>> {
-    let inner = WIDTH - 2 * PAD;
+    let inner = INNER;
     let mut canvas = Canvas::new(inner, ROW, scale)?;
     let code_bottom = CODE.line_height_px.ceil() as i32 + 4;
     canvas.text(painter, (0, inner, 4, code_bottom), crate::paint::TextAlign::Center, &layout.code, tokens.fg_1, &CODE);
@@ -363,6 +373,11 @@ fn pill_canvas(tokens: &glide_theme::Tokens, scale: i32) -> Option<Canvas<'stati
     let mut canvas = Canvas::new(PILL, DOT, scale)?;
     canvas.fill(rect(0, 0, PILL, DOT), tokens.acc_bg, DOT as f32 / 2.0);
     Some(canvas)
+}
+
+fn edge_alpha(slots: &[(usize, f64)]) -> f32 {
+    let rest = slots.iter().map(|(_, offset)| offset.abs()).fold(1.0, f64::min);
+    if slots.is_empty() { 0.0 } else { glide_theme::motion::assist(rest * 2.0) as f32 }
 }
 
 fn slot_alpha(offset: f64) -> f32 {
@@ -410,8 +425,14 @@ mod tests {
             let midway = now + glide_theme::motion::t1() + glide_theme::motion::t3() / 3;
             let slots = osd.slots(midway);
             assert_eq!(slots.len(), 2, "both codes are on screen while it rolls: {slots:?}");
-            assert!(slots.iter().any(|(index, offset)| *index == 0 && *offset < 0.0), "the old one leaves upwards");
-            assert!(slots.iter().any(|(index, offset)| *index == 1 && *offset > 0.0), "the new one comes from below");
+            assert!(
+                slots.iter().any(|(index, offset)| *index == 0 && slot_left(*offset) < f64::from(PAD)),
+                "the old one leaves to the left"
+            );
+            assert!(
+                slots.iter().any(|(index, offset)| *index == 1 && slot_left(*offset) > f64::from(PAD)),
+                "the new one comes in from the right, the way the pill travels"
+            );
         }
         assert_eq!(osd.slots(settled(now)), vec![(1, 0.0)]);
     }
@@ -443,16 +464,19 @@ mod tests {
 
     #[test]
     fn a_resting_code_is_drawn_whole_and_a_rolling_one_fades_at_the_window_edge() {
-        assert_eq!(clip(f64::from(PAD)), Some((PAD, ROW)));
-        assert!(PAD + ROW <= WINDOW.1 - FADE && PAD >= WINDOW.0 + FADE, "a code at rest is clear of both fades");
-        assert_eq!(clip(f64::from(PAD) + 0.6 * f64::from(ROW)).map(|(y, h)| y + h), Some(WINDOW.1));
+        assert_eq!(clip(slot_left(0.0)), Some((PAD, INNER)));
+        assert!(edge_alpha(&[(0, 0.0)]).abs() < f32::EPSILON, "a code at rest is drawn without the edge fades");
+        assert!((edge_alpha(&[(0, -0.5), (1, 0.5)]) - 1.0).abs() < f32::EPSILON, "they are full while it rolls");
+        assert!(edge_alpha(&[(0, -0.05), (1, 0.95)]) < 0.3, "and come and go with the roll");
+        assert_eq!(clip(slot_left(0.6)).map(|(x, w)| x + w), Some(WINDOW.1));
+        assert_eq!(clip(slot_left(-0.6)).map(|(x, _)| x), Some(WINDOW.0));
         assert_eq!(clip(f64::from(WINDOW.1)), None);
-        assert!(WINDOW.1 <= DOTS_Y - 8, "the codes never run over the dots");
         assert!((edge_cover(0.0) - 1.0).abs() < f32::EPSILON, "the edge itself is panel colour");
         assert!(edge_cover(1.0).abs() < f32::EPSILON, "and the content side is clear");
     }
 
     const _PILL_CLEARS_THE_NEXT_DOT: () = assert!(PITCH - DOT / 2 - PILL / 2 >= 6);
+    const _CODES_CLEAR_THE_DOTS: () = assert!(PAD + ROW <= DOTS_Y - 8);
 
     #[test]
     fn a_step_takes_the_short_way_round() {
@@ -501,8 +525,8 @@ mod tests {
         assert!(big.size.h >= 3 * small.size.h, "a big overlay, not another pill");
     }
 
-    fn blend(frame: &mut [u8], frame_width: i32, source: &Canvas<'_>, at: (i32, i32), clip: (i32, i32)) {
-        blend_faded(frame, frame_width, source, at, clip, 1.0);
+    fn blend(frame: &mut [u8], frame_width: i32, source: &Canvas<'_>, at: (i32, i32)) {
+        blend_faded(frame, frame_width, source, at, (0, frame_width), 1.0);
     }
 
     fn blend_faded(
@@ -512,10 +536,10 @@ mod tests {
         let (width, height) = (source.w * scale, source.h * scale);
         for y in 0..height {
             let target_y = at.1 + y;
-            if target_y < clip.0 || target_y >= clip.1 {
-                continue;
-            }
             for x in 0..width {
+                if at.0 + x < clip.0 || at.0 + x >= clip.1 {
+                    continue;
+                }
                 let from = ((y * width + x) * 4) as usize;
                 let to = ((target_y * frame_width + at.0 + x) * 4) as usize;
                 let faded = |channel: usize| (f32::from(source.buf[from + channel]) * fade).round() as u32;
@@ -559,30 +583,31 @@ mod tests {
                 osd.shown = Some(Envelope { since: now, updated: now });
                 let left = cell as i32 * cell_w + PAD * scale;
                 let top = PAD * scale;
-                let whole = (0, cell_h);
-                blend(&mut frame, frame_width, &panel_canvas(&tokens, scale).expect("panel"), (left, top), whole);
+                blend(&mut frame, frame_width, &panel_canvas(&tokens, scale).expect("panel"), (left, top));
                 let slots = osd.slots(now);
                 for &(index, offset) in &slots {
                     let slot = slot_canvas(&three[index], &painter, &tokens, scale).expect("slot");
-                    let slot_top = f64::from(PAD) + offset * f64::from(ROW);
-                    let y = top + (slot_top * f64::from(scale)).round() as i32;
-                    let Some((visible, height)) = clip(slot_top) else {
+                    let slot_x = slot_left(offset);
+                    let x = left + (slot_x * f64::from(scale)).round() as i32;
+                    let Some((visible, width)) = clip(slot_x) else {
                         continue;
                     };
-                    let window = (top + visible * scale, top + (visible + height) * scale);
-                    blend_faded(&mut frame, frame_width, &slot, (left + PAD * scale, y), window, slot_alpha(offset));
+                    let window = (left + visible * scale, left + (visible + width) * scale);
+                    blend_faded(&mut frame, frame_width, &slot, (x, top + PAD * scale), window, slot_alpha(offset));
                 }
-                if slots.iter().any(|(_, offset)| offset.abs() > 1e-6) {
-                    for (upper, y) in [(true, WINDOW.0), (false, WINDOW.1 - FADE)] {
-                        let fade = fade_canvas(upper, &tokens, scale).expect("fade");
-                        blend(&mut frame, frame_width, &fade, (left + PAD * scale, top + y * scale), whole);
+                let edges = edge_alpha(&slots);
+                if edges > 0.0 {
+                    for (leading, x) in [(true, WINDOW.0), (false, WINDOW.1 - FADE)] {
+                        let fade = fade_canvas(leading, &tokens, scale).expect("fade");
+                        let at = (left + x * scale, top + PAD * scale);
+                        blend_faded(&mut frame, frame_width, &fade, at, (0, frame_width), edges);
                     }
                 }
                 let dots = dots_canvas(three.len(), &tokens, scale).expect("dots");
-                blend(&mut frame, frame_width, &dots, (left + dots_left(3) * scale, top + DOTS_Y * scale), whole);
+                blend(&mut frame, frame_width, &dots, (left + dots_left(3) * scale, top + DOTS_Y * scale));
                 let pill_x = (osd.pill_x(now).expect("pill") * f64::from(scale)).round() as i32;
                 let pill = pill_canvas(&tokens, scale).expect("pill");
-                blend(&mut frame, frame_width, &pill, (left + pill_x, top + DOTS_Y * scale), whole);
+                blend(&mut frame, frame_width, &pill, (left + pill_x, top + DOTS_Y * scale));
             }
             let image = glide_shell::image::Image::from_bgra(frame_width as u32, cell_h as u32, frame).expect("image");
             let file = format!("layout-osd-{appearance:?}.png").to_ascii_lowercase();
