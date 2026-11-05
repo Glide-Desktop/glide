@@ -1,0 +1,56 @@
+[package]
+name = "glide-photos"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Photo library, viewer and basic editor for Glide"
+
+[lib]
+name = "glide_photos"
+path = "src/lib.rs"
+
+[[bin]]
+name = "glide-photos"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+iced = { version = "0.14.0", default-features = false, features = [
+    "wgpu",
+    "tiny-skia",
+    "crisp",
+    "wayland",
+    "tokio",
+    "svg",
+    "image",
+    "web-colors",
+    "advanced",
+    "canvas",
+] }
+glide-config = { path = "../glide-config" }
+glide-sdk = { path = "../glide-sdk" }
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",
+    "gif",
+    "bmp",
+    "ico",
+    "tiff",
+    "tga",
+    "pnm",
+    "qoi",
+    "hdr",
+    "exr",
+    "dds",
+] }
+resvg = { version = "0.48.1", default-features = false }
+kamadak-exif = "0.6"
+tiff = "0.11"
