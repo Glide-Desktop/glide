@@ -151,11 +151,20 @@ pub fn trail(app: &App) -> Vec<Crumb> {
     let budget = crumb_room(app);
     if crumbs.iter().map(width).sum::<f32>() > budget {
         let mut hidden = None;
-        while crumbs.len() > 2 && CRUMB_CHROME + crumbs.iter().map(width).sum::<f32>() > budget {
+        while crumbs.len() > 2 && CRUMB_CHROME + CRUMB_GLYPH + crumbs.iter().map(width).sum::<f32>() > budget {
             hidden = Some(crumbs.remove(1).path);
         }
         if let Some(path) = hidden {
             crumbs.insert(1, Crumb { glyph: Some(Icon::More), label: String::new(), path });
+        }
+    }
+    if crumbs.len() > 2 && crumbs.iter().map(width).sum::<f32>() > budget {
+        let rest: f32 = crumbs[1..].iter().map(width).sum();
+        let root = &mut crumbs[0];
+        let label_room = budget - rest - (width(root) - measure(&root.label, CURRENT));
+        root.label = elide(&root.label, label_room, CURRENT);
+        if measure(&root.label, CURRENT) > label_room {
+            root.label.clear();
         }
     }
     if crumbs.len() > 1 && crumbs.iter().map(width).sum::<f32>() > budget {
@@ -228,7 +237,7 @@ pub(crate) fn crumbs_row(app: &App) -> Element<'_, Message> {
 
 #[cfg(test)]
 mod tests {
-    use super::{crumb_room, face, trail};
+    use super::{crumb_room, face, trail, width};
     use glide_sdk::window::{Frame, Window};
 
     #[test]
@@ -240,5 +249,24 @@ mod tests {
         assert_eq!(crumbs.len(), 1);
         assert!(crumbs[0].label.contains('…'));
         assert!(face(&crumbs[0]) <= crumb_room(&app));
+    }
+
+    #[test]
+    fn collapsed_paths_fit_and_keep_the_root_when_its_icon_and_ellipsis_fit() {
+        let (mut app, _) = crate::App::new();
+        app.current = "/srv/projects/customer-archive/two-thousand-twenty-six/quarterly-reports/october".into();
+        for window_width in (900..=1400).step_by(10) {
+            app.follow_window(Window {
+                size: iced::Size::new(window_width as f32, 600.0),
+                focused: true,
+                frame: Frame::Floating,
+            });
+            let crumbs = trail(&app);
+            assert!(crumbs.iter().map(width).sum::<f32>() <= crumb_room(&app));
+            if crumbs.len() > 1 {
+                assert_eq!(crumbs[0].path, std::path::Path::new("/"));
+                assert_eq!(crumbs.last().map(|crumb| &crumb.path), Some(&app.current));
+            }
+        }
     }
 }

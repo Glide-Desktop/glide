@@ -341,7 +341,12 @@ fn a_collapsed_path_bar_keeps_a_way_to_the_hidden_folders() {
     assert!(trail(&app).iter().all(|crumb| crumb.glyph != Some(Icon::More)), "a wide bar shows every folder");
     sized(&mut app, 1000.0);
     let crumbs = trail(&app);
-    assert_eq!(crumbs[0].path, std::path::PathBuf::from("/"));
+    assert_eq!(
+        crumbs[0].path,
+        std::path::PathBuf::from("/"),
+        "breadcrumb budget: {}",
+        glide_files::widgets::header::crumb_room(&app)
+    );
     assert_eq!(crumbs[1].glyph, Some(Icon::More), "hidden folders leave an ellipsis instead of vanishing");
     assert_eq!(crumbs.last().map(|crumb| &crumb.path), Some(&app.current));
     assert_eq!(Some(crumbs[1].path.as_path()), crumbs[2].path.parent(), "the ellipsis opens the deepest hidden folder");
