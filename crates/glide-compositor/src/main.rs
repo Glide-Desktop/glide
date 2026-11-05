@@ -87,7 +87,7 @@ use backend::tty::TtyData;
 use glide_dock::{self as dock, preview as dock_preview};
 use glide_greeter::{self as greeter, handoff};
 use glide_launcher as launcher;
-use glide_overlays::{find_cursor, osd, power_dialog, switcher};
+use glide_overlays::{find_cursor, layout_osd, osd, power_dialog, switcher};
 #[cfg(test)]
 use glide_services::test_bus;
 use glide_services::{app_index, logind, oneshot, polkit_agent, polkit_helper, screensaver, x11_menus, xdg_autostart};

@@ -1530,8 +1530,33 @@ impl GlideState {
     }
 
     pub fn cycle_keyboard_layout(&mut self) {
+        let before = self.active_layout_index();
         #[allow(clippy::redundant_closure_for_method_calls)] // the method path is not late-bound
         self.edit_layout(|context| context.cycle_next_layout());
+        self.announce_layout_switch(before);
+    }
+
+    pub fn announce_layout_switch(&mut self, before: Option<usize>) {
+        if !self.input_config.layout_indicator {
+            return;
+        }
+        let (Some(before), Some(keyboard)) = (before, self.seat.get_keyboard()) else {
+            return;
+        };
+        let (layouts, active) = keyboard.with_xkb_state(self, |context| {
+            let xkb = context.xkb().lock().expect("single-threaded event loop, this lock is never poisoned");
+            let layouts = xkb
+                .layouts()
+                .map(|layout| {
+                    let name = xkb.layout_name(layout);
+                    crate::layout_osd::Layout { code: crate::topbar::short_layout_name(name), name: name.to_string() }
+                })
+                .collect();
+            (layouts, xkb.active_layout().0 as usize)
+        });
+        if self.session.osd.show_layout(layouts, before, active, std::time::Instant::now()) {
+            self.queue_redraw();
+        }
     }
 
     pub fn set_keyboard_layout(&mut self, index: usize) {
@@ -2157,7 +2182,9 @@ impl GlideState {
                 self.refresh_topbar();
             }
             TopbarAction::SelectLayout(index) => {
+                let before = self.active_layout_index();
                 self.set_keyboard_layout(index);
+                self.announce_layout_switch(before);
                 self.topbar.close_popup();
                 self.refresh_topbar();
             }

@@ -74,10 +74,64 @@ pub fn kind_for_key(
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) struct Envelope {
+    pub since: Instant,
+    pub updated: Instant,
+}
+
+impl Envelope {
+    pub fn alpha(self, now: Instant) -> f32 {
+        let (rise, fall) = (glide_theme::motion::t1(), glide_theme::motion::t2());
+        let entering = now.saturating_duration_since(self.since);
+        let fade_in = if rise.is_zero() || entering >= rise {
+            1.0
+        } else {
+            glide_theme::motion::assist(entering.as_secs_f64() / rise.as_secs_f64())
+        };
+        let leaving = now.saturating_duration_since(self.updated).saturating_sub(rise + HOLD);
+        let fade_out = if leaving.is_zero() {
+            1.0
+        } else if fall.is_zero() || leaving >= fall {
+            0.0
+        } else {
+            glide_theme::motion::assist(1.0 - (leaving.as_secs_f64() / fall.as_secs_f64()))
+        };
+        (fade_in.min(fade_out)) as f32
+    }
+
+    pub fn offset_y(self, now: Instant, travel: f64) -> f64 {
+        let (rise, fall) = (glide_theme::motion::t1(), glide_theme::motion::t2());
+        let entering = now.saturating_duration_since(self.since);
+        let leaving = now.saturating_duration_since(self.updated).saturating_sub(rise + HOLD);
+        if !leaving.is_zero() {
+            if fall.is_zero() || leaving >= fall {
+                travel
+            } else {
+                glide_theme::motion::ease_io(leaving.as_secs_f64() / fall.as_secs_f64()) * travel
+            }
+        } else if rise.is_zero() || entering >= rise {
+            0.0
+        } else {
+            (1.0 - glide_theme::motion::ease_out(entering.as_secs_f64() / rise.as_secs_f64())) * travel
+        }
+    }
+}
+
+pub(crate) fn anchor_bottom(output: Rectangle<i32, Logical>) -> i32 {
+    output.loc.y + output.size.h - BOTTOM + HEIGHT
+}
+
+#[derive(Debug, Clone, Copy)]
 struct Shown {
     reading: Reading,
     since: Instant,
     updated: Instant,
+}
+
+impl Shown {
+    fn envelope(self) -> Envelope {
+        Envelope { since: self.since, updated: self.updated }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -86,6 +140,7 @@ pub struct Osd {
     expected: Option<(Kind, Instant)>,
     bar: Option<glide_ui::Tween>,
     cache: std::collections::HashMap<i32, (u64, MemoryRenderBuffer)>,
+    pub layout: crate::layout_osd::LayoutOsd,
 }
 
 impl Osd {
@@ -93,7 +148,18 @@ impl Osd {
         self.expected = Some((kind, now));
     }
 
+    pub fn show_layout(
+        &mut self, layouts: Vec<crate::layout_osd::Layout>, from: usize, to: usize, now: Instant,
+    ) -> bool {
+        let shown = self.layout.announce(layouts, from, to, now);
+        if shown {
+            self.shown = None;
+        }
+        shown
+    }
+
     pub fn show(&mut self, reading: Reading, now: Instant) {
+        self.layout.hide();
         let live = self.shown.filter(|_| self.alpha(now) > 0.0);
         let since = live.map_or(now, |shown| shown.since);
         let target = if reading.on { f64::from(reading.level.min(100)) } else { 0.0 };
@@ -137,49 +203,16 @@ impl Osd {
 
     #[must_use]
     pub fn alpha(&self, now: Instant) -> f32 {
-        let Some(shown) = self.shown else {
-            return 0.0;
-        };
-        let (rise, fall) = (glide_theme::motion::t1(), glide_theme::motion::t2());
-        let entering = now.saturating_duration_since(shown.since);
-        let fade_in = if rise.is_zero() || entering >= rise {
-            1.0
-        } else {
-            glide_theme::motion::assist(entering.as_secs_f64() / rise.as_secs_f64())
-        };
-        let leaving = now.saturating_duration_since(shown.updated).saturating_sub(rise + HOLD);
-        let fade_out = if leaving.is_zero() {
-            1.0
-        } else if fall.is_zero() || leaving >= fall {
-            0.0
-        } else {
-            glide_theme::motion::assist(1.0 - (leaving.as_secs_f64() / fall.as_secs_f64()))
-        };
-        (fade_in.min(fade_out)) as f32
+        self.shown.map_or(0.0, |shown| shown.envelope().alpha(now))
     }
 
     #[must_use]
     pub fn offset_y(&self, now: Instant) -> f64 {
-        let Some(shown) = self.shown else {
-            return 0.0;
-        };
-        let (rise, fall) = (glide_theme::motion::t1(), glide_theme::motion::t2());
-        let entering = now.saturating_duration_since(shown.since);
-        let leaving = now.saturating_duration_since(shown.updated).saturating_sub(rise + HOLD);
-        if !leaving.is_zero() {
-            if fall.is_zero() || leaving >= fall {
-                TRAVEL
-            } else {
-                glide_theme::motion::ease_io(leaving.as_secs_f64() / fall.as_secs_f64()) * TRAVEL
-            }
-        } else if rise.is_zero() || entering >= rise {
-            0.0
-        } else {
-            (1.0 - glide_theme::motion::ease_out(entering.as_secs_f64() / rise.as_secs_f64())) * TRAVEL
-        }
+        self.shown.map_or(0.0, |shown| shown.envelope().offset_y(now, TRAVEL))
     }
 
     pub fn tick(&mut self, now: Instant) -> bool {
+        let layout = self.layout.tick(now);
         if let Some(shown) = self.shown
             && self.alpha(now) <= 0.0
             && now.saturating_duration_since(shown.since) > glide_theme::motion::t1()
@@ -187,13 +220,13 @@ impl Osd {
             self.shown = None;
             return true;
         }
-        self.shown.is_some()
+        self.shown.is_some() || layout
     }
 
     #[must_use]
     pub fn rect(output: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
         Rectangle::new(
-            Point::from((output.loc.x + (output.size.w - WIDTH) / 2, output.loc.y + output.size.h - BOTTOM)),
+            Point::from((output.loc.x + (output.size.w - WIDTH) / 2, anchor_bottom(output) - HEIGHT)),
             Size::from((WIDTH, HEIGHT)),
         )
     }
@@ -355,6 +388,22 @@ mod tests {
         assert_eq!(kind_for_key(&[Keysym::Caps_Lock], Keysym::Caps_Lock), Some(Kind::CapsLock));
         assert_eq!(kind_for_key(&[], Keysym::XF86_KbdBrightnessDown), Some(Kind::KeyboardBrightness));
         assert_eq!(kind_for_key(&[Keysym::a], Keysym::a), None);
+    }
+
+    #[test]
+    fn the_layout_overlay_and_the_small_indicator_take_turns() {
+        let mut osd = Osd::default();
+        let now = Instant::now();
+        let layouts =
+            ["EN", "UK"].map(|code| crate::layout_osd::Layout { code: code.to_string(), name: String::new() }).to_vec();
+        osd.show(Reading { kind: Kind::CapsLock, level: 0, on: true }, now);
+        assert!(osd.show_layout(layouts.clone(), 0, 1, now));
+        assert!(osd.alpha(now) <= 0.0, "the Caps Lock pill gives way");
+        assert!(osd.layout.is_shown(now) || glide_theme::motion::t1().is_zero());
+        osd.show(Reading { kind: Kind::CapsLock, level: 0, on: false }, now);
+        assert!(!osd.layout.is_shown(now));
+        assert!(!osd.show_layout(layouts, 1, 1, now), "an unchanged layout keeps the pill");
+        assert!(osd.alpha(now + glide_theme::motion::t1()) > 0.0);
     }
 
     #[test]

@@ -415,6 +415,7 @@ pub struct InputConfig {
     pub touchpad_scroll_factor: Option<f64>,
     pub smooth_wheel: bool,
     pub smooth_wheel_exclude: Vec<String>,
+    pub layout_indicator: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
@@ -487,6 +488,7 @@ impl Default for InputConfig {
             touchpad_scroll_factor: None,
             smooth_wheel: true,
             smooth_wheel_exclude: Vec::new(),
+            layout_indicator: true,
         }
     }
 }
@@ -2304,6 +2306,7 @@ xkb-variant = ",,"
 xkb-options = "grp:alt_shift_toggle,caps:escape"
 layout-scope = "application"
 new-window-layout = "current"
+layout-indicator = false
 repeat-delay = 300
 repeat-rate = 40
 numlock = true
@@ -2439,6 +2442,8 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
         assert_eq!(policy.muted.len(), 2);
         assert_eq!(config.accessibility.cursor_size, Some(48));
         assert!(!config.accessibility.shake_to_find);
+        assert!(!config.input.layout_indicator);
+        assert!(Config::default().input.layout_indicator, "a layout switch is shown unless switched off");
         assert!(Config::default().accessibility.shake_to_find, "shaking finds the pointer unless switched off");
         assert_eq!(config.outputs[0].scale, Some(1.25));
         assert_eq!(

@@ -65,6 +65,16 @@ fn shake_to_find_is_written_only_when_switched_off() {
 }
 
 #[test]
+fn the_layout_indicator_is_written_only_when_switched_off() {
+    use glide_settings::panels::keyboard::Msg;
+    let mut app = app("");
+    let _ = app.update(Message::Keyboard(Msg::LayoutIndicator(false)));
+    assert_eq!(app.config().get_bool("input", "layout-indicator"), Some(false));
+    let _ = app.update(Message::Keyboard(Msg::LayoutIndicator(true)));
+    assert_eq!(app.config().get_bool("input", "layout-indicator"), None, "the default is not written");
+}
+
+#[test]
 fn text_scale_snaps_to_the_nearest_offered_size() {
     use glide_settings::panels::accessibility::nearest_scale;
     assert_eq!(nearest_scale(1.0), 0);

@@ -1845,6 +1845,9 @@ impl GlideState {
                 keyboard.advertise_modifier_state(self);
             }
             self.layout_switched();
+            if !waking && !handoff_blocking {
+                self.announce_layout_switch(layout_before);
+            }
         }
         if greeter_active {
             let caps_lock = keyboard.modifier_state().caps_lock;

@@ -56,6 +56,8 @@ mod tr {
         ScopeDesktop => "Each desktop", "Кожного робочого стола";
         ScopeApplication => "Each application", "Кожного застосунку";
         ScopeWindow => "Each window", "Кожного вікна";
+        LayoutIndicator => "Show the layout when it changes", "Показувати розкладку під час перемикання";
+        LayoutIndicatorHint => "A large indicator above the dock rolls from the old layout to the new one", "Велике вікно над доком прокручує стару розкладку до нової";
         NewWindowTitle => "New windows start with", "Нові вікна починають з";
         NewWindowHint => "The layout a desktop, app or window gets on its first visit", "Розкладка, яку робочий стіл, застосунок чи вікно отримує вперше";
         NewWindowDefault => "The first input source", "Першого джерела вводу";
@@ -65,6 +67,7 @@ mod tr {
 
 pub const LAYOUT_SCOPE: &str = "layout-scope";
 pub(crate) const NEW_WINDOW_LAYOUT: &str = "new-window-layout";
+pub(crate) const LAYOUT_INDICATOR: &str = "layout-indicator";
 
 pub const SCOPES: [(&str, tr::Key); 4] = [
     ("global", tr::Key::ScopeGlobal),
@@ -256,6 +259,7 @@ pub enum Msg {
     BothShifts(bool),
     NumpadDigits(bool),
     NumLock(bool),
+    LayoutIndicator(bool),
     Delay(f64),
     Rate(f64),
     CommitRepeat,
@@ -348,6 +352,8 @@ impl Pane for Page {
             }
             Msg::NumpadDigits(on) => Self::set_options(config, |options| input::set_option(options, NUMPAD_DIGITS, on)),
             Msg::NumLock(on) => config.set_bool("input", "numlock", on),
+            Msg::LayoutIndicator(true) => config.remove("input", LAYOUT_INDICATOR),
+            Msg::LayoutIndicator(false) => config.set_bool("input", LAYOUT_INDICATOR, false),
             Msg::Delay(delay) => {
                 self.delay = Some(delay);
                 return self.settle.schedule(Msg::SettleRepeat);
@@ -501,6 +507,13 @@ impl Page {
             .push(shortcut_row(c, config))
             .push(pick_row(c, (tr::Key::ScopeTitle, tr::Key::ScopeHint), (scopes, scope)))
             .push_maybe(fresh.map(|choices| pick_row(c, (tr::Key::NewWindowTitle, tr::Key::NewWindowHint), choices)))
+            .push(switch_row(
+                *c,
+                c.t(tr::Key::LayoutIndicator),
+                c.t(tr::Key::LayoutIndicatorHint),
+                config.bool_or("input", LAYOUT_INDICATOR, true),
+                Msg::LayoutIndicator,
+            ))
             .build()
     }
 

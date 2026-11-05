@@ -1835,6 +1835,27 @@ impl GlideState {
                 prepend(&mut elements, std::iter::once(GlideRenderElements::Memory(element)));
             }
         }
+        if primary && self.session.osd.layout.alpha(now) > 0.0 {
+            let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
+            let pieces = self.session.osd.layout.pieces(output_rect, &painter, &tokens, integer_scale, now);
+            let layout: Vec<GlideRenderElements> = pieces
+                .into_iter()
+                .filter_map(|piece| {
+                    smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement::from_buffer(
+                        gles_renderer,
+                        piece.at.to_physical(scale),
+                        &piece.buffer,
+                        Some(piece.alpha),
+                        piece.src,
+                        piece.size,
+                        Kind::Unspecified,
+                    )
+                    .ok()
+                    .map(GlideRenderElements::Memory)
+                })
+                .collect();
+            prepend(&mut elements, layout);
+        }
 
         let local_pointer = pointer_on_output(pointer_location, output_geometry);
         if !locked
