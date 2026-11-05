@@ -262,7 +262,7 @@ pub(crate) struct DeviceData {
     surfaces: HashMap<crtc::Handle, SurfaceData>,
     pub(crate) gles_renderer: GlesRenderer,
     cursor: Cursor,
-    cursor_buffers: Vec<(xcursor::parser::Image, MemoryRenderBuffer)>,
+    cursor_buffers: CursorBuffers,
     pointer_element: PointerElement,
 }
 
@@ -435,9 +435,10 @@ fn named_hotspot(image: &xcursor::parser::Image, scale: u32) -> Point<f64, Logic
     Point::from((f64::from(image.xhot) / scale, f64::from(image.yhot) / scale))
 }
 
+type CursorBuffers = Vec<(xcursor::parser::Image, u32, MemoryRenderBuffer)>;
+
 fn resolve_cursor_buffer(
-    cursor: &mut Cursor, cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>, icon: CursorIcon,
-    scale: u32, elapsed: Duration,
+    cursor: &mut Cursor, cursor_buffers: &mut CursorBuffers, icon: CursorIcon, scale: u32, elapsed: Duration,
 ) -> (MemoryRenderBuffer, Point<f64, Logical>) {
     let image = cursor.image(icon, scale, elapsed);
     let hotspot = named_hotspot(&image, scale);
@@ -445,9 +446,11 @@ fn resolve_cursor_buffer(
 }
 
 fn cached_cursor_buffer(
-    cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>, image: xcursor::parser::Image, scale: u32,
+    cursor_buffers: &mut CursorBuffers, image: xcursor::parser::Image, scale: u32,
 ) -> MemoryRenderBuffer {
-    if let Some((_, buffer)) = cursor_buffers.iter().find(|(cached, _)| cached == &image) {
+    if let Some((_, _, buffer)) =
+        cursor_buffers.iter().find(|(cached, cached_scale, _)| *cached_scale == scale && cached == &image)
+    {
         return buffer.clone();
     }
     let buffer = MemoryRenderBuffer::from_slice(
@@ -458,13 +461,12 @@ fn cached_cursor_buffer(
         Transform::Normal,
         None,
     );
-    cursor_buffers.push((image, buffer.clone()));
+    cursor_buffers.push((image, scale, buffer.clone()));
     buffer
 }
 
 fn resolve_magnified_cursor(
-    cursor: &mut Cursor, cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>, icon: CursorIcon,
-    scale: u32, elapsed: Duration,
+    cursor: &mut Cursor, cursor_buffers: &mut CursorBuffers, icon: CursorIcon, scale: u32, elapsed: Duration,
 ) -> (MemoryRenderBuffer, Point<f64, Logical>, crate::cursor::CursorView) {
     let scale = scale.max(1);
     let base = cursor.image(icon, scale, elapsed);
