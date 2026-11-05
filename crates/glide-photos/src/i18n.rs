@@ -103,6 +103,8 @@ glide_sdk::catalogue! {
     UsePictures => "Use Pictures", "Використати «Зображення»";
     OtherFolder => "Other Folder…", "Інша тека…";
     EmptyAlbum => "This album is empty", "Цей альбом порожній";
+    NoAlbums => "No albums yet", "Альбомів ще немає";
+    NoAlbumsBody => "Choose New Album, or select photos in the library and choose To Album.", "Натисніть «Новий альбом» або виберіть фото в бібліотеці й натисніть «В альбом».";
     EmptyAlbumBody => "Select photos in the library and choose To Album.", "Виберіть фото в бібліотеці й натисніть «В альбом».";
     EmptyTrash => "The Trash has no photos", "У смітнику немає фото";
     EmptyTrashBody => "Deleted photos stay here until the Trash is emptied.", "Видалені фото лежать тут, доки смітник не очистять.";

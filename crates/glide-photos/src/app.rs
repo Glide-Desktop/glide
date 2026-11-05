@@ -311,15 +311,13 @@ pub struct App {
     pub now: u64,
 }
 
-fn work<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> impl Future<Output = Option<T>> {
-    async move {
-        let (sender, receiver) = iced::futures::channel::oneshot::channel();
-        let spawned = std::thread::Builder::new().name("glide-photos-work".into()).spawn(move || {
-            let _ = sender.send(job());
-        });
-        drop(spawned);
-        receiver.await.ok()
-    }
+async fn work<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (sender, receiver) = iced::futures::channel::oneshot::channel();
+    let spawned = std::thread::Builder::new().name("glide-photos-work".into()).spawn(move || {
+        let _ = sender.send(job());
+    });
+    drop(spawned);
+    receiver.await.ok()
 }
 
 fn later<T: Send + 'static>(
@@ -341,7 +339,8 @@ pub fn writable(photo: &Photo) -> bool {
         && matches!(photo.format.name, "JPEG" | "PNG" | "WebP")
 }
 
-fn loaded_from(path: PathBuf, decoded: formats::Decoded) -> Loaded {
+#[must_use]
+pub fn loaded_from(path: PathBuf, decoded: formats::Decoded) -> Loaded {
     let camera = formats::exif(&path).map(|exif| formats::camera(&exif)).unwrap_or_default();
     let transparent = decoded.image.pixels().step_by(97).any(|pixel| pixel.0[3] < 250);
     let rgba = |image: RgbaImage| Handle::from_rgba(image.width(), image.height(), image.into_raw());
@@ -2016,7 +2015,7 @@ mod tests {
         let index = app.app().prefs.albums.len() - 1;
         app.message(Message::Go(Place::Album(index)));
         assert_eq!(app.app().shown().len(), 1);
-        app.message(Message::Favourite(vec![first.clone()], true));
+        app.message(Message::Favourite(vec![first], true));
         app.message(Message::Go(Place::Favourites));
         assert_eq!(app.app().shown().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);

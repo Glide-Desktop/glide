@@ -1,15 +1,15 @@
 use glide_sdk::Tone;
-use glide_sdk::theme::{SP2, SP3, SP4, TextStyle};
+use glide_sdk::theme::{SP2, SP4, TextStyle};
 use glide_sdk::widget::{self as ui, Size};
 use glide_sdk::window::{self, Header};
 use iced::widget::{Column, Row, Space, column, container, image, mouse_area, scrollable, stack, text_input};
-use iced::{Alignment, Element, Fill, Length, Padding};
+use iced::{Alignment, Element, Fill, Length};
 
 use crate::app::{App, Backdrop, Message, Viewer, ViewerEvent};
 use crate::formats::Family;
 use crate::i18n::{self, Key};
 use crate::icons::Icon;
-use crate::view::{FILMSTRIP, HEADER, backdrop_colour, failure_text, note_text};
+use crate::view::{FILMSTRIP, backdrop_colour, failure_text, note_text};
 
 fn event(event: ViewerEvent) -> Message {
     Message::Viewer(event)
@@ -336,10 +336,5 @@ fn info<'a>(app: &'a App, viewer: &'a Viewer) -> Element<'a, Message> {
             .width(Fill)
             .center_x(Fill),
     );
-    container(scrollable(panel).height(Fill)).padding(Padding::default()).width(ui::INSPECTOR_WIDTH).height(Fill).into()
-}
-
-#[must_use]
-pub fn gap() -> f32 {
-    SP3 + HEADER
+    container(panel).width(ui::INSPECTOR_WIDTH).height(Fill).into()
 }

@@ -199,7 +199,7 @@ fn header(app: &App) -> Element<'_, Message> {
     bar = bar.leading(ui::text(title, TextStyle::WIN_TITLE).color(ink(app)));
     let dated = !matches!(app.place, Place::Albums | Place::Trash);
     if dated && !app.searching() {
-        bar = bar.center(ui::segmented(
+        let segmented = ui::segmented(
             &paint,
             &[
                 (Scale::Years, app.t(Key::Years)),
@@ -208,7 +208,8 @@ fn header(app: &App) -> Element<'_, Message> {
             ],
             app.scale,
             Message::Scale,
-        ));
+        );
+        bar = bar.center(container(segmented).center_x(Fill));
     }
     if app.place == Place::Albums {
         bar = bar.trailing(search(app, Key::SearchAlbums)).trailing(ui::sized_button(
@@ -471,7 +472,7 @@ fn search_head<'a>(app: &'a App, shown: &[usize]) -> Element<'a, Message> {
     .wrap();
     let mut col = column![chips].spacing(SP2).padding(Padding::from([SP3, SP5]).bottom(0.0));
     let query = app.query.trim().to_lowercase();
-    if !query.is_empty() {
+    if !query.is_empty() && !shown.is_empty() {
         let mut hints: Vec<Element<'_, Message>> = Vec::new();
         for (index, album) in app.prefs.albums.iter().enumerate() {
             if album.name.to_lowercase().contains(&query) {
@@ -715,7 +716,7 @@ fn albums(app: &App) -> Element<'_, Message> {
     let mut mine_rows = Column::new().spacing(20);
     if mine.is_empty() {
         mine_rows =
-            mine_rows.push(ui::empty_note(&paint, Icon::Albums, app.t(Key::EmptyAlbum), app.t(Key::EmptyAlbumBody)));
+            mine_rows.push(ui::empty_note(&paint, Icon::Albums, app.t(Key::NoAlbums), app.t(Key::NoAlbumsBody)));
     }
     let mut mine = mine.into_iter().peekable();
     while mine.peek().is_some() {

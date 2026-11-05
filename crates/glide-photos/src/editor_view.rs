@@ -140,7 +140,7 @@ fn stage<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
     let hint = row![
         compare,
         ui::text(app.t(Key::Or), TextStyle::CAP).color(Color { a: 0.72, ..ui::GLASS_INK }),
-        ui::keycap(&paint, app.t(Key::Space)),
+        ui::format_badge(app.t(Key::Space)),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -317,7 +317,7 @@ fn crop<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
     let mut ratio_rows = Column::new().spacing(6);
     let mut ratios = ratios.into_iter().peekable();
     while ratios.peek().is_some() {
-        ratio_rows = ratio_rows.push(Row::with_children(ratios.by_ref().take(4)).spacing(6));
+        ratio_rows = ratio_rows.push(Row::with_children(ratios.by_ref().take(3)).spacing(6));
     }
     let tools = row![
         ui::sized_icon_button(

@@ -102,13 +102,11 @@ pub fn glass_label<'a, M: 'a>(label: impl Into<String>, width: f32) -> Element<'
 
 #[must_use]
 pub fn glass_divider<'a, M: 'a>() -> Element<'a, M> {
-    container(Space::new().width(1).height(18))
-        .padding([0.0, SP1])
-        .style(|_| container::Style {
-            background: Some(Background::Color(Color { a: 0.16, ..Color::WHITE })),
-            ..container::Style::default()
-        })
-        .into()
+    let line = container(Space::new().width(1).height(18)).style(|_| container::Style {
+        background: Some(Background::Color(Color { a: 0.16, ..Color::WHITE })),
+        ..container::Style::default()
+    });
+    container(line).padding([0.0, SP1]).into()
 }
 
 #[must_use]
