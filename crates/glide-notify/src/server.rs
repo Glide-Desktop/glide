@@ -255,6 +255,7 @@ impl Service {
             sender: Self::sender(&header),
             app_name,
             desktop_entry: hints::string(&hint_map, "desktop-entry"),
+            origin_device: hints::string(&hint_map, "x-glide-origin-device"),
             app_icon,
             image_path,
             summary: plain_text(&summary),

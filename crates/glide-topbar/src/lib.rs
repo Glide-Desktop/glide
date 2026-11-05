@@ -75,10 +75,10 @@ const ITEM_GAP: i32 = 2;
 const BUTTON_RADIUS: f32 = glide_theme::shape::R2;
 const BUTTON_MIN_WIDTH: i32 = 28;
 
-const APP_ICON: i32 = 16;
+const APP_ICON: i32 = 18;
 const APP_PAD_LEFT: i32 = 5;
 const APP_PAD_RIGHT: i32 = 9;
-const APP_GAP: i32 = 7;
+const APP_GAP: i32 = SP2;
 const APP_STYLE: TextStyle = TextStyle {
     size_px: TextStyle::TOPBAR.size_px,
     line_height_px: TextStyle::TOPBAR.line_height_px,
@@ -414,6 +414,7 @@ pub enum Slot {
     NcDndToggle,
     NcItem(u32),
     NcItemDismiss(u32),
+    NcItemAction(u32, u8),
     QsWifi,
     QsEthernet,
     QsBluetooth,
@@ -581,6 +582,7 @@ impl Slot {
                 | Self::NcDndToggle
                 | Self::NcItem(_)
                 | Self::NcItemDismiss(_)
+                | Self::NcItemAction(_, _)
                 | Self::CalMonth
                 | Self::CalPrev
                 | Self::CalNext
@@ -677,6 +679,9 @@ impl Slot {
             Self::NcClearAll => TopbarAction::ClearAllNotifications,
             Self::NcItem(id) => TopbarAction::ActivateNotification(id),
             Self::NcItemDismiss(id) => TopbarAction::DismissNotification(id),
+            Self::NcItemAction(id, index) => {
+                TopbarAction::Notification(crate::notifications::NotificationAction::Button(id, index as usize))
+            }
             Self::QsWifi => TopbarAction::QsToggleWifi,
             Self::QsBluetooth => TopbarAction::QsToggleBluetooth,
             Self::QsNetbird => TopbarAction::QsToggleNetbird,
@@ -1495,6 +1500,20 @@ impl Topbar {
         }
         if dx != 0 && self.focused == Some(Slot::CalMonth) && self.open_popup == Some(OpenPopup::NotificationCenter) {
             return self.shift_calendar(dx.signum());
+        }
+        if dx == 0 && dy > 0 && self.open_popup == Some(OpenPopup::NotificationCenter) {
+            let next = match self.focused {
+                Some(Slot::NcClearAll) => Some(Slot::NcDndToggle),
+                Some(Slot::NcDndToggle) => self.slots.iter().find_map(|(slot, _)| match slot {
+                    Slot::NcItem(id) => Some(Slot::NcItem(*id)),
+                    _ => None,
+                }),
+                _ => None,
+            };
+            if let Some(next) = next {
+                self.set_focused(Some(next));
+                return true;
+            }
         }
         let Some(pred) = self.open_popup.map(popup_slots) else {
             return false;
@@ -3042,9 +3061,13 @@ pub fn short_layout_name(name: &str) -> String {
 
 #[must_use]
 pub fn app_display_name(app_id: &str, title: &str) -> String {
-    let title_trimmed = title.trim();
-    if !title_trimmed.is_empty() {
-        return truncate_name(title_trimmed);
+    application_name(app_id, Some(title))
+}
+
+#[must_use]
+pub fn application_name(app_id: &str, resolved_name: Option<&str>) -> String {
+    if let Some(name) = resolved_name.map(str::trim).filter(|name| !name.is_empty()) {
+        return truncate_name(name);
     }
     let trimmed = app_id.trim();
     if trimmed.is_empty() {
@@ -5483,6 +5506,7 @@ mod tests {
         let notice = Notice {
             id: 9,
             app: "Glide".into(),
+            origin_device: String::new(),
             title: "Pair with Buds?".into(),
             body: "Check that both show 123456".into(),
             icon: None,
@@ -5497,7 +5521,13 @@ mod tests {
             waiting: 0,
         };
         assert!(bar.set_notice(Some(notice.clone())) && !bar.set_notice(Some(notice.clone())));
-        let alert = IslandAlert { id: 1, heading: "Telegram".into(), summary: "hi".into(), icon: None };
+        let alert = IslandAlert {
+            id: 1,
+            heading: "Telegram".into(),
+            origin_device: String::new(),
+            summary: "hi".into(),
+            icon: None,
+        };
         bar.show_alert(alert, std::time::Instant::now());
         bar.layout_slots(&painter(), output());
         assert!(bar.slot_rect(Slot::IslandAlert).is_none(), "a question outranks a glance");
@@ -5535,7 +5565,13 @@ mod tests {
         assert!(!bar.floats(), "nothing to announce, nothing drawn over the window");
         assert!(!bar.contains(output(), Point::from((100.0, 4.0))));
 
-        let alert = IslandAlert { id: 4, heading: "Telegram".into(), summary: "hi".into(), icon: None };
+        let alert = IslandAlert {
+            id: 4,
+            heading: "Telegram".into(),
+            origin_device: String::new(),
+            summary: "hi".into(),
+            icon: None,
+        };
         bar.show_alert(alert, std::time::Instant::now());
         bar.layout_slots(&painter(), output());
         assert!(bar.floats());
@@ -5545,6 +5581,7 @@ mod tests {
         let question = Notice {
             id: 9,
             app: "Glide".into(),
+            origin_device: String::new(),
             title: "Allow?".into(),
             body: String::new(),
             icon: None,
@@ -5580,7 +5617,13 @@ mod tests {
     fn a_new_notification_flashes_in_the_island_and_a_click_runs_its_own_action() {
         let mut bar = topbar_with(&["US", "UA"]);
         let start = std::time::Instant::now();
-        let alert = IslandAlert { id: 1, heading: "Telegram".into(), summary: "Olena: hi".into(), icon: None };
+        let alert = IslandAlert {
+            id: 1,
+            heading: "Telegram".into(),
+            origin_device: String::new(),
+            summary: "Olena: hi".into(),
+            icon: None,
+        };
         assert!(bar.show_alert(alert, start));
         bar.layout_slots(&painter(), output());
         let close = bar.slot_rect(Slot::IslandAlertClose).expect("close button");
@@ -5595,7 +5638,13 @@ mod tests {
         bar.layout_slots(&painter(), output());
         assert!(bar.slot_rect(Slot::Clock).is_some());
 
-        let alert = IslandAlert { id: 2, heading: "Mail".into(), summary: String::new(), icon: None };
+        let alert = IslandAlert {
+            id: 2,
+            heading: "Mail".into(),
+            origin_device: String::new(),
+            summary: String::new(),
+            icon: None,
+        };
         bar.show_alert(alert, start);
         assert!(bar.toggle_popup(OpenPopup::NotificationCenter));
         assert!(bar.alert().is_none(), "opening the centre answers the alert");
@@ -5701,8 +5750,10 @@ mod tests {
         bar.set_nc_items(vec![crate::notifications::NcItem {
             id: 42,
             app_name: "Telegram".to_string(),
+            origin_device: String::new(),
             title: "Hello".to_string(),
             body: "World".to_string(),
+            actions: Vec::new(),
             time: "2 хв".to_string(),
             icon: None,
             count: 1,
@@ -5786,12 +5837,11 @@ mod tests {
         assert_eq!(short_layout_name("Ukrainian"), "UKR");
         assert_eq!(short_layout_name("English (US)"), "US");
         assert_eq!(short_layout_name("Polish (qwertz)"), "QWE");
-        assert_eq!(app_display_name("org.gnome.Nautilus", "Documents"), "Documents");
-        assert_eq!(app_display_name("org.gnome.Nautilus", ""), "Nautilus");
-        assert_eq!(app_display_name("kitty", ""), "Kitty");
-        assert_eq!(app_display_name("kitty", "fish ~"), "fish ~");
-        assert_eq!(app_display_name("", "Some Window"), "Some Window");
-        let shown = app_display_name(&"a".repeat(80), "");
+        assert_eq!(application_name("org.gnome.Nautilus", Some("Files")), "Files");
+        assert_eq!(application_name("org.gnome.Nautilus", None), "Nautilus");
+        assert_eq!(application_name("kitty", None), "Kitty");
+        assert_eq!(application_name("", None), "");
+        let shown = application_name(&"a".repeat(80), None);
         assert!(shown.chars().count() <= APP_NAME_MAX && shown.ends_with('…'));
     }
 
@@ -6183,7 +6233,7 @@ mod tests {
     }
 
     #[test]
-    fn the_clock_popover_puts_the_calendar_above_the_notifications() {
+    fn the_clock_popover_places_the_calendar_beside_the_notifications() {
         let mut bar = topbar_with(&["US"]);
         bar.set_now(at(24, 4, 8, 12));
         bar.toggle_popup(OpenPopup::NotificationCenter);
@@ -6195,10 +6245,34 @@ mod tests {
         let collapse = bar.slot_rect(Slot::IslandCollapse).expect("collapse");
         assert!(popup.contains(month.loc) && popup.contains(next.loc));
         assert!(collapse.loc.y + collapse.size.h <= month.loc.y, "the header sits above the calendar");
-        assert!(month.loc.y + month.size.h < quiet.loc.y);
-        assert!(quiet.loc.y - month.loc.y >= calendar::BLOCK_H);
+        assert!(month.loc.x + month.size.w < quiet.loc.x, "the calendar is left of notifications");
         assert!(bar.slot_rect(Slot::NcClearAll).is_none(), "nothing to clear");
         assert!(bar.slot_rect(Slot::IslandToMedia).is_none(), "nothing playing");
+    }
+
+    #[test]
+    fn notification_card_actions_target_their_original_button() {
+        let mut bar = topbar_with(&["US"]);
+        bar.set_nc_items(vec![crate::notifications::NcItem {
+            id: 42,
+            app_name: "Mail".into(),
+            origin_device: String::new(),
+            title: "Message".into(),
+            body: "Hello".into(),
+            actions: vec!["Open".into(), "Later".into(), "Archive".into()],
+            time: "now".into(),
+            icon: None,
+            count: 1,
+        }]);
+        let bar = with_popup(bar, OpenPopup::NotificationCenter);
+        assert_eq!(
+            click(&bar, Slot::NcItemAction(42, 1)),
+            Some(TopbarAction::Notification(crate::notifications::NotificationAction::Button(42, 1)))
+        );
+        assert_eq!(
+            click(&bar, Slot::NcItemAction(42, 2)),
+            Some(TopbarAction::Notification(crate::notifications::NotificationAction::Button(42, 2)))
+        );
     }
 
     #[test]
@@ -6378,8 +6452,10 @@ mod tests {
         let item = |id: u32| crate::notifications::NcItem {
             id,
             app_name: "Telegram".to_string(),
+            origin_device: String::new(),
             title: "Hello".to_string(),
             body: "World".to_string(),
+            actions: Vec::new(),
             time: "2 хв".to_string(),
             icon: None,
             count: 1,
@@ -6392,7 +6468,9 @@ mod tests {
         assert_eq!(bar.focused, Some(Slot::CalNext), "Down leaves the header for the calendar");
         bar.set_focused(Some(Slot::NcClearAll));
         assert!(bar.focus_nav(0, 1));
-        assert_eq!(bar.focused, Some(Slot::NcItem(1)), "the dismiss button shares no column with clear-all");
+        assert_eq!(bar.focused, Some(Slot::NcDndToggle));
+        assert!(bar.focus_nav(0, 1));
+        assert_eq!(bar.focused, Some(Slot::NcItem(1)));
         assert!(bar.focus_nav(1, 0));
         assert_eq!(bar.focused, Some(Slot::NcItemDismiss(1)));
         assert!(bar.focus_nav(0, 1));

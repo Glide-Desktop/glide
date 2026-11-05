@@ -29,6 +29,8 @@ use glide_theme::Color;
 
 pub(super) const TOP: i32 = (super::HEIGHT - HAIRLINE - COMPACT_H) / 2;
 pub(super) const WIDE: i32 = 356;
+const NC_WIDTH: i32 = 760;
+const NC_LEFT: i32 = WIDE;
 pub(super) const VISIBLE_ITEMS: usize = 4;
 pub const ALERT_HOLD: Duration = Duration::from_millis(3500);
 
@@ -72,7 +74,6 @@ const FIELD_PAD: i32 = SP3;
 const SEND: i32 = 26;
 const CARET_H: i32 = 15;
 const HEADER_H: i32 = 24;
-const NC_HEADER_H: i32 = 26;
 const MINI_H: i32 = 22;
 const MINI_PAD: i32 = SP2;
 const MINI_ICON: i32 = 12;
@@ -91,9 +92,9 @@ const LINK_H: i32 = 19;
 const TOGGLE_W: i32 = 26;
 const TOGGLE_H: i32 = 15;
 const MOON: i32 = 13;
-const ITEM_H: i32 = 52;
-const ITEM_GAP: i32 = 5;
-const ITEM_ICON: i32 = 30;
+const ITEM_H: i32 = 76;
+const ITEM_GAP: i32 = SP2;
+const ITEM_ICON: i32 = 32;
 const ITEM_DISMISS: i32 = 20;
 const EMPTY_H: i32 = 75;
 const EMPTY_ICON: i32 = 22;
@@ -105,10 +106,10 @@ const INSET_HIGHLIGHT: f32 = 0.18;
 
 const MEDIA_H: i32 =
     PAD + HEADER_H + PAD + MEDIA_ART_LARGE + PAD + TRACK_H + SP1 + TIMES_H + PAD + TRANSPORT_MAIN + PAD;
-const CAL_TOP: i32 = PAD + NC_HEADER_H + SP2;
-const DIVIDER_Y: i32 = CAL_TOP + calendar::BLOCK_H + SP2 + 2;
-const SECTION_Y: i32 = DIVIDER_Y + 1 + 2 + SP2;
-const STACK_Y: i32 = SECTION_Y + SECTION_H + SP2;
+const CAL_TOP: i32 = 124;
+const SECTION_Y: i32 = 50;
+const STACK_Y: i32 = 108;
+const NC_MIN_HEIGHT: i32 = 410;
 const MEDIA_MIN: i32 = SUB_PAD * 2 + MEDIA_ART + SUB_GAP + BARS_W;
 
 const fn style(size_px: f32, line_height_px: f32, weight: u16, tabular: bool) -> TextStyle {
@@ -127,11 +128,13 @@ const TRACK_TITLE_STYLE: TextStyle = style(13.5, 18.0, 640, false);
 const ARTIST_STYLE: TextStyle = style(12.5, 17.0, 400, false);
 const ALBUM_STYLE: TextStyle = style(11.0, 14.0, 400, false);
 const TIMES_STYLE: TextStyle = style(10.5, 14.0, 400, true);
-const VIEW_TITLE_STYLE: TextStyle = style(12.0, 16.0, 650, false);
+const NC_DATE_STYLE: TextStyle = style(19.0, 25.0, 650, false);
+const NC_TITLE_STYLE: TextStyle = style(15.0, 20.0, 650, false);
 const LINK_STYLE: TextStyle = style(11.5, 15.0, 500, false);
 const ITEM_TITLE_STYLE: TextStyle = style(12.5, 17.0, 630, false);
 const ITEM_BODY_STYLE: TextStyle = style(11.5, 15.0, 400, false);
 const ITEM_TIME_STYLE: TextStyle = style(10.5, 14.0, 400, true);
+const ITEM_APP_STYLE: TextStyle = style(11.0, 14.0, 550, false);
 const COUNT_STYLE: TextStyle = style(9.5, 12.0, 600, true);
 const EMPTY_STYLE: TextStyle = style(12.5, 17.0, 400, false);
 const CAPTION_STYLE: TextStyle = style(12.0, 16.0, 500, false);
@@ -194,6 +197,7 @@ impl View {
 pub struct IslandAlert {
     pub id: u32,
     pub heading: String,
+    pub origin_device: String,
     pub summary: String,
     pub icon: Option<Arc<Vec<u8>>>,
 }
@@ -209,14 +213,21 @@ impl IslandAlert {
             (false, false, true) => (app.to_string(), title.to_string()),
             (false, false, false) => (app.to_string(), format!("{title}: {body}")),
         };
-        Self { id: item.id, heading, summary, icon: item.icon.clone() }
+        Self { id: item.id, heading, origin_device: item.origin_device.clone(), summary, icon: item.icon.clone() }
     }
 }
 
 type CompactKey = (u64, String, String, usize, u8, i32, ClockWidths);
 type MediaKey = (u64, Option<u16>, i32, Lang);
-type NcKey = (u64, bool, (u8, u8), Option<Slot>, usize, Option<i32>, Lang);
+type NcKey = (u64, bool, (u8, u8), Option<Slot>, usize, Option<i32>, Lang, i32, Option<(i32, u32, u32)>);
 type PillKey = (Pill, Lang);
+
+#[derive(Debug, Clone)]
+struct NcSnapshot {
+    marker: (u64, usize),
+    buffer: MemoryRenderBuffer,
+    rows: Vec<(u32, LocalRect, LocalRect)>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum PillDot {
@@ -265,8 +276,8 @@ pub(super) struct Island {
     pill_cache: Cache<PillKey>,
     media: Cache<MediaKey>,
     nc: Cache<NcKey>,
-    nc_seen: Option<((u64, usize), MemoryRenderBuffer)>,
-    nc_old: Option<MemoryRenderBuffer>,
+    nc_seen: Option<NcSnapshot>,
+    nc_old: Option<NcSnapshot>,
     nc_fade: Anim,
     epoch: Instant,
     bars_drawn: Option<Instant>,
@@ -352,6 +363,20 @@ fn placed(strip: Rectangle<i32, Logical>, size: Size<i32, Logical>) -> LocalRect
 }
 
 impl Island {
+    fn update_nc_snapshot(
+        &mut self, marker: (u64, usize), buffer: MemoryRenderBuffer, rows: Vec<(u32, LocalRect, LocalRect)>,
+    ) -> f32 {
+        if let Some(old) = self.nc_seen.take()
+            && old.marker != marker
+        {
+            self.nc_old = Some(old);
+            self.nc_fade = Anim::at(0.0);
+            self.nc_fade.retarget(1.0, motion::t2(), E_OUT);
+        }
+        self.nc_seen = Some(NcSnapshot { marker, buffer, rows });
+        self.nc_fade.value().clamp(0.0, 1.0) as f32
+    }
+
     pub(super) fn clear(&mut self) {
         self.backgrounds.clear();
         self.shadows.clear();
@@ -362,6 +387,8 @@ impl Island {
         self.pill_cache.clear();
         self.media.clear();
         self.nc.clear();
+        self.nc_seen = None;
+        self.nc_old = None;
         self.bar_ink = None;
         self.bars.clear();
         self.polkit_layout = None;
@@ -681,14 +708,40 @@ const fn shown_items(count: usize) -> i32 {
     shown as i32
 }
 
-const fn stack_height(count: usize) -> i32 {
+const fn nc_item_h(width: i32) -> i32 {
+    if width < 600 { 52 } else { ITEM_H }
+}
+
+const fn stack_height(count: usize, width: i32) -> i32 {
     let shown = shown_items(count);
-    if shown == 0 { EMPTY_H } else { shown * ITEM_H + (shown - 1) * ITEM_GAP }
+    if shown == 0 { EMPTY_H } else { shown * nc_item_h(width) + (shown - 1) * ITEM_GAP }
 }
 
 #[must_use]
-pub(super) const fn calendar_height(count: usize) -> i32 {
-    STACK_Y + stack_height(count) + PAD
+pub(super) const fn calendar_height(count: usize, width: i32) -> i32 {
+    let height = nc_stack_y(width) + stack_height(count, width) + PAD;
+    if height > NC_MIN_HEIGHT { height } else { NC_MIN_HEIGHT }
+}
+
+fn nc_width(strip: Rectangle<i32, Logical>) -> i32 {
+    let available = (strip.size.w - 2 * SP2).max(WIDE);
+    if available < 600 { WIDE } else { NC_WIDTH.min(available) }
+}
+
+const fn nc_left(width: i32) -> i32 {
+    if width < 600 { 0 } else { NC_LEFT }
+}
+
+const fn nc_cal_top(width: i32) -> i32 {
+    if width < 600 { 64 } else { CAL_TOP }
+}
+
+const fn nc_section_y(width: i32) -> i32 {
+    if width < 600 { nc_cal_top(width) + calendar::BLOCK_H + SP2 } else { SECTION_Y }
+}
+
+const fn nc_stack_y(width: i32) -> i32 {
+    nc_section_y(width) + (STACK_Y - SECTION_Y)
 }
 
 #[must_use]
@@ -707,31 +760,56 @@ struct NcLayout {
     items: Vec<(u32, LocalRect, LocalRect)>,
 }
 
-fn nc_layout(painter: &Painter, items: &[NcItem], first: usize, switch_w: Option<i32>) -> NcLayout {
+fn nc_item_actions(painter: &Painter, item: &NcItem, row: LocalRect) -> Vec<(u8, LocalRect)> {
+    if row.size.h < ITEM_H {
+        return Vec::new();
+    }
+    let mut x = row.loc.x + SP2 + ITEM_ICON + SP2;
+    let right = row.loc.x + row.size.w - SP2;
+    let count = item.actions.len().min(3);
+    item.actions
+        .iter()
+        .take(count)
+        .enumerate()
+        .filter_map(|(index, label)| {
+            let available = right - x;
+            if available < 32 {
+                return None;
+            }
+            let reserve = (count - index - 1) as i32 * (32 + SP1);
+            let width = (text_w(painter, label, &ITEM_APP_STYLE) + SP2 * 2).min((available - reserve).max(32));
+            let rect = local_rect(x, row.loc.y + row.size.h - 24, width, 20);
+            x += width + SP1;
+            u8::try_from(index).ok().map(|index| (index, rect))
+        })
+        .collect()
+}
+
+fn nc_layout(painter: &Painter, items: &[NcItem], first: usize, switch_w: Option<i32>, width: i32) -> NcLayout {
     use crate::i18n::{Key, t};
-    let (collapse, switch) = header_controls(NC_HEADER_H, switch_w);
-    let track = local_rect(WIDE - PAD - TOGGLE_W, SECTION_Y + (SECTION_H - TOGGLE_H) / 2, TOGGLE_W, TOGGLE_H);
-    let moon = local_rect(track.loc.x - MINI_GAP - MOON, SECTION_Y + (SECTION_H - MOON) / 2, MOON, MOON);
-    let toggle = local_rect(moon.loc.x, SECTION_Y, WIDE - PAD - moon.loc.x, SECTION_H);
+    let collapse_width = if switch_w.is_some() { 160 } else { COMPACT_W };
+    let collapse = local_rect(width / 2 - collapse_width / 2, 0, collapse_width, COMPACT_H);
+    let switch_y = if width < 600 { COMPACT_H + SP1 } else { PAD };
+    let switch = switch_w.map(|w| local_rect(width - PAD - w, switch_y, w, MINI_H));
+    let section_y = nc_section_y(width);
+    let left = nc_left(width);
+    let track = local_rect(width - PAD - TOGGLE_W, section_y + 28 + (SECTION_H - TOGGLE_H) / 2, TOGGLE_W, TOGGLE_H);
+    let moon = local_rect(track.loc.x - MINI_GAP - MOON, track.loc.y + (TOGGLE_H - MOON) / 2, MOON, MOON);
+    let toggle = local_rect(left + PAD, section_y + 28, width - left - PAD * 2, SECTION_H);
     let clear = (!items.is_empty()).then(|| {
         let w = text_w(painter, t(Key::ClearAll), &LINK_STYLE) + SUB_PAD * 2;
-        local_rect(moon.loc.x - SP2 - w, SECTION_Y + (SECTION_H - LINK_H) / 2, w, LINK_H)
+        local_rect(width - PAD - w, section_y + (SECTION_H - LINK_H) / 2, w, LINK_H)
     });
     let first = first_item(first, items.len());
-    let mut y = STACK_Y;
+    let mut y = nc_stack_y(width);
     let rows = items
         .iter()
         .skip(first)
         .take(VISIBLE_ITEMS)
         .map(|item| {
-            let row = local_rect(PAD, y, WIDE - PAD * 2, ITEM_H);
-            let dismiss = local_rect(
-                row.loc.x + row.size.w - SP2 - ITEM_DISMISS,
-                y + (ITEM_H - ITEM_DISMISS) / 2,
-                ITEM_DISMISS,
-                ITEM_DISMISS,
-            );
-            y += ITEM_H + ITEM_GAP;
+            let row = local_rect(left + PAD, y, (width - left - PAD * 2).max(0), nc_item_h(width));
+            let dismiss = local_rect(row.loc.x + row.size.w - SP2 - ITEM_DISMISS, y + SP2, ITEM_DISMISS, ITEM_DISMISS);
+            y += nc_item_h(width) + ITEM_GAP;
             (item.id, row, dismiss)
         })
         .collect();
@@ -1085,7 +1163,7 @@ impl Topbar {
             }
             View::Pill => (self.pill().map_or(COMPACT_W, |pill| pill_layout(painter, pill).width), COMPACT_H),
             View::Media => (WIDE, MEDIA_H),
-            View::Calendar => (WIDE, calendar_height(self.nc_items.len())),
+            View::Calendar => (NC_WIDTH, calendar_height(self.nc_items.len(), NC_WIDTH)),
             View::Polkit => {
                 (polkit_view::WIDTH, self.island.polkit_layout(painter).map_or(ALERT_H, |layout| layout.height))
             }
@@ -1102,7 +1180,11 @@ impl Topbar {
         let top = strip.loc.y + TOP;
         let view = if passive { View::Compact } else { self.island.view };
         let compact = self.island_size(painter, View::Compact);
-        let (w, h) = if view == View::Compact { compact } else { self.island_size(painter, view) };
+        let (mut w, mut h) = if view == View::Compact { compact } else { self.island_size(painter, view) };
+        if view == View::Calendar {
+            w = nc_width(strip);
+            h = calendar_height(self.nc_items.len(), w);
+        }
         if !passive {
             self.island.aim(Size::from((w, h)));
         }
@@ -1166,7 +1248,8 @@ impl Topbar {
         &self, painter: &Painter, popup: OpenPopup, strip: Rectangle<i32, Logical>, slots: &mut Vec<(Slot, LocalRect)>,
     ) -> Option<LocalRect> {
         let centre = strip.loc.x + strip.size.w / 2;
-        let origin = Point::from((centre - WIDE / 2, strip.loc.y + TOP));
+        let width = if popup == OpenPopup::NotificationCenter { nc_width(strip) } else { WIDE };
+        let origin = Point::from((centre - width / 2, strip.loc.y + TOP));
         match popup {
             OpenPopup::MediaPlayer => {
                 self.media.as_ref()?;
@@ -1182,12 +1265,12 @@ impl Topbar {
             }
             OpenPopup::NotificationCenter => {
                 let switch = self.switch_width(painter, View::Calendar);
-                let layout = nc_layout(painter, &self.nc_items, self.island.first_item, switch);
+                let layout = nc_layout(painter, &self.nc_items, self.island.first_item, switch, width);
                 slots.push((Slot::IslandCollapse, shift(layout.collapse, origin)));
                 if let Some(switch) = layout.switch {
                     slots.push((Slot::IslandToMedia, shift(switch, origin)));
                 }
-                let block = Point::from((origin.x + PAD, origin.y + CAL_TOP));
+                let block = Point::from((origin.x + PAD, origin.y + nc_cal_top(width)));
                 calendar::layout_slots(painter, &self.calendar_month_title(), block, slots);
                 if let Some(clear) = layout.clear {
                     slots.push((Slot::NcClearAll, shift(clear, origin)));
@@ -1195,9 +1278,14 @@ impl Topbar {
                 slots.push((Slot::NcDndToggle, shift(layout.toggle, origin)));
                 for (id, row, dismiss) in layout.items {
                     slots.push((Slot::NcItemDismiss(id), shift(dismiss, origin)));
+                    if let Some(item) = self.nc_items.iter().find(|item| item.id == id) {
+                        for (index, rect) in nc_item_actions(painter, item, row) {
+                            slots.push((Slot::NcItemAction(id, index), shift(rect, origin)));
+                        }
+                    }
                     slots.push((Slot::NcItem(id), shift(row, origin)));
                 }
-                Some(Rectangle::new(origin, Size::from((WIDE, calendar_height(self.nc_items.len())))))
+                Some(Rectangle::new(origin, Size::from((width, calendar_height(self.nc_items.len(), width)))))
             }
             _ => None,
         }
@@ -1361,6 +1449,7 @@ fn paint_alert(c: &mut Canvas<'_>, ink: &Ink<'_>, alert: &IslandAlert) {
     let body_h = ALERT_BODY_STYLE.line_height_px.ceil() as i32;
     let mut top = (ALERT_H - title_h - body_h * lines.len() as i32) / 2;
     let heading_right = right.min(layout.close.loc.x - SP3);
+    let heading_end = (left + text_w(ink.painter, &alert.heading, &ALERT_TITLE_STYLE)).min(heading_right);
     c.text(
         ink.painter,
         (left, heading_right, top, top + title_h),
@@ -1369,6 +1458,16 @@ fn paint_alert(c: &mut Canvas<'_>, ink: &Ink<'_>, alert: &IslandAlert) {
         ink.theme.label,
         &ALERT_TITLE_STYLE,
     );
+    if !alert.origin_device.is_empty() {
+        c.text(
+            ink.painter,
+            (heading_end + SP2, heading_right, top, top + title_h),
+            TextAlign::Left,
+            &alert.origin_device,
+            ink.theme.faint,
+            &ITEM_TIME_STYLE,
+        );
+    }
     top += title_h;
     for line in &lines {
         c.text(
@@ -1381,7 +1480,7 @@ fn paint_alert(c: &mut Canvas<'_>, ink: &Ink<'_>, alert: &IslandAlert) {
         );
         top += body_h;
     }
-    c.fill(layout.close, ink.theme.fill_2, R1);
+    c.fill(layout.close, ink.theme.track_soft, R2);
     glyph(c, Glyph::Close, 12, layout.close, ink.theme.muted);
 }
 
@@ -1433,6 +1532,17 @@ fn paint_notice(c: &mut Canvas<'_>, ink: &Ink<'_>, notice: &Notice, layout: &Not
     let caption_right = layout.badge.map_or(beside_close, |badge| badge.loc.x - SP1);
     let band = (caption_left, caption_right, layout.caption_y, layout.caption_y + caption_h);
     c.text(ink.painter, band, TextAlign::Left, &notice.app, theme.faint, &CAPTION_STYLE);
+    if !notice.origin_device.is_empty() {
+        let device_left = caption_left + text_w(ink.painter, &notice.app, &CAPTION_STYLE) + SP2;
+        c.text(
+            ink.painter,
+            (device_left, caption_right, layout.caption_y, layout.caption_y + caption_h),
+            TextAlign::Left,
+            &notice.origin_device,
+            theme.faint,
+            &ITEM_TIME_STYLE,
+        );
+    }
     if let Some(badge) = layout.badge {
         c.fill(badge, theme.track_soft, R_ROUND);
         let band = (badge.loc.x, badge.loc.x + badge.size.w, badge.loc.y, badge.loc.y + badge.size.h);
@@ -1610,29 +1720,59 @@ struct NcInk<'a> {
     hovered: Option<Slot>,
 }
 
-fn draw_nc_header(c: &mut Canvas<'_>, ink: &NcInk<'_>, layout: &NcLayout) {
+fn draw_nc_header(c: &mut Canvas<'_>, ink: &NcInk<'_>, layout: &NcLayout, today: Option<&(i32, u32, u32, String)>) {
     use crate::i18n::{Key, t};
     let theme = ink.ink.theme;
-    let right = layout.switch.map_or(layout.collapse.loc.x, |switch| switch.loc.x) - SP2;
-    let band = (PAD, right, PAD, PAD + NC_HEADER_H);
-    c.text(ink.ink.painter, band, TextAlign::Left, t(Key::CalendarAndNotifications), theme.label, &VIEW_TITLE_STYLE);
     if let Some(switch) = layout.switch {
         draw_mini(c, &ink.ink, switch, Glyph::Play, t(Key::Media));
     }
-    draw_collapse(c, &ink.ink, layout.collapse);
-    c.fill(local_rect(PAD, DIVIDER_Y, WIDE - PAD * 2, 1), theme.line, 0.0);
+    if nc_left(c.w) != 0 {
+        c.fill(local_rect(NC_LEFT, SECTION_Y, 1, c.h - SECTION_Y - PAD), theme.line, 0.0);
+    }
+    if c.w >= 600 {
+        c.text(
+            ink.ink.painter,
+            (PAD, NC_LEFT - PAD, SECTION_Y, SECTION_Y + 16),
+            TextAlign::Left,
+            t(Key::Today),
+            theme.faint,
+            &TextStyle::MICRO,
+        );
+    }
+    if let Some((year, _, _, date)) = today.filter(|_| c.w >= 600) {
+        c.text(
+            ink.ink.painter,
+            (PAD, NC_LEFT - PAD, SECTION_Y + 20, SECTION_Y + 45),
+            TextAlign::Left,
+            date,
+            theme.label,
+            &NC_DATE_STYLE,
+        );
+        c.text(
+            ink.ink.painter,
+            (PAD, NC_LEFT - PAD, SECTION_Y + 46, SECTION_Y + 62),
+            TextAlign::Left,
+            &year.to_string(),
+            theme.muted,
+            &ITEM_APP_STYLE,
+        );
+    }
 }
 
 fn draw_nc_section(c: &mut Canvas<'_>, ink: &NcInk<'_>, layout: &NcLayout) {
     use crate::i18n::{Key, t};
     let theme = ink.ink.theme;
+    let left = nc_left(c.w);
+    let section_y = nc_section_y(c.w);
     let band =
-        (PAD, layout.clear.map_or(layout.moon.loc.x, |clear| clear.loc.x) - SP2, SECTION_Y, SECTION_Y + SECTION_H);
-    c.text(ink.ink.painter, band, TextAlign::Left, t(Key::Notifications), theme.faint, &TextStyle::MICRO);
+        (left + PAD, layout.clear.map_or(c.w - PAD, |clear| clear.loc.x) - SP2, section_y, section_y + SECTION_H);
+    c.text(ink.ink.painter, band, TextAlign::Left, t(Key::Notifications), theme.label, &NC_TITLE_STYLE);
     if let Some(clear) = layout.clear {
         let colour = if ink.hovered == Some(Slot::NcClearAll) { theme.label } else { theme.muted };
         c.text_in(ink.ink.painter, clear, TextAlign::Center, t(Key::ClearAll), colour, &LINK_STYLE);
     }
+    let label = (left + PAD, layout.moon.loc.x - SP2, section_y + 28, section_y + 28 + SECTION_H);
+    c.text(ink.ink.painter, label, TextAlign::Left, t(Key::DoNotDisturb), theme.muted, &ITEM_APP_STYLE);
     glyph(c, Glyph::Moon, MOON, layout.moon, if ink.dnd { theme.active_background } else { theme.faint });
     draw_switch(c, theme, layout.track, (1, TOGGLE_H - 2), ink.switch);
 }
@@ -1648,17 +1788,25 @@ fn draw_item_icon(c: &mut Canvas<'_>, ink: &Ink<'_>, item: &NcItem, rect: LocalR
     c.text(ink.painter, band, TextAlign::Center, &initial(&item.app_name), ink.theme.label, &ITEM_TITLE_STYLE);
 }
 
-fn draw_item(c: &mut Canvas<'_>, ink: &Ink<'_>, item: &NcItem, row: LocalRect, dismiss: LocalRect) {
+fn draw_item(c: &mut Canvas<'_>, ink: &Ink<'_>, item: &NcItem, row: LocalRect, dismiss: LocalRect, hovered: bool) {
     let theme = ink.theme;
     c.fill(row, theme.track_soft, R2);
-    c.stroke(row, 1.0, R2, theme.line);
-    let icon = local_rect(row.loc.x + SP2, row.loc.y + (ITEM_H - ITEM_ICON) / 2, ITEM_ICON, ITEM_ICON);
+    let icon = local_rect(row.loc.x + SP2, row.loc.y + SP2, ITEM_ICON, ITEM_ICON);
     draw_item_icon(c, ink, item, icon);
     let left = icon.loc.x + ITEM_ICON + SP2;
     let right = dismiss.loc.x - SP2;
     let title_h = ITEM_TITLE_STYLE.line_height_px.ceil() as i32;
     let body_h = ITEM_BODY_STYLE.line_height_px.ceil() as i32;
-    let top = row.loc.y + (ITEM_H - title_h - 1 - body_h) / 2;
+    let app_h = line_h(&ITEM_APP_STYLE);
+    let actions = nc_item_actions(ink.painter, item, row);
+    let top = row.loc.y
+        + if row.size.h < ITEM_H {
+            3
+        } else if actions.is_empty() {
+            SP2
+        } else {
+            6
+        };
     let time_w = text_w(ink.painter, &item.time, &ITEM_TIME_STYLE);
     let time_left = right - time_w;
     c.text(
@@ -1669,42 +1817,77 @@ fn draw_item(c: &mut Canvas<'_>, ink: &Ink<'_>, item: &NcItem, row: LocalRect, d
         theme.faint,
         &ITEM_TIME_STYLE,
     );
-    let mut title_right = time_left - SP1;
+    c.text(
+        ink.painter,
+        (left, time_left - SP1, top, top + app_h),
+        TextAlign::Left,
+        &item.app_name,
+        theme.muted,
+        &ITEM_APP_STYLE,
+    );
+    if !item.origin_device.is_empty() {
+        let device_left = left + text_w(ink.painter, &item.app_name, &ITEM_APP_STYLE) + SP2;
+        c.text(
+            ink.painter,
+            (device_left, time_left - SP1, top, top + app_h),
+            TextAlign::Left,
+            &item.origin_device,
+            theme.faint,
+            &ITEM_TIME_STYLE,
+        );
+    }
+    let title_top = top + app_h;
+    let mut title_right = right;
     if item.count > 1 {
         let label = format!("+{}", item.count - 1);
         let badge_w = text_w(ink.painter, &label, &COUNT_STYLE) + 10;
         let title_w = text_w(ink.painter, &item.title, &ITEM_TITLE_STYLE);
         let badge_x = (left + title_w + MINI_GAP).min(title_right - badge_w);
-        let badge = local_rect(badge_x, top + (title_h - 13) / 2, badge_w, 13);
+        let badge = local_rect(badge_x, title_top + (title_h - 13) / 2, badge_w, 13);
         c.fill(badge, theme.fill_2, R_ROUND);
         c.text_in(ink.painter, badge, TextAlign::Center, &label, theme.muted, &COUNT_STYLE);
         title_right = badge_x - MINI_GAP;
     }
     c.text(
         ink.painter,
-        (left, title_right, top, top + title_h),
+        (left, title_right, title_top, title_top + title_h),
         TextAlign::Left,
         &item.title,
         theme.label,
         &ITEM_TITLE_STYLE,
     );
-    let body_top = top + title_h + 1;
-    c.text(
-        ink.painter,
-        (left, right, body_top, body_top + body_h),
-        TextAlign::Left,
-        &item.body,
-        theme.muted,
-        &ITEM_BODY_STYLE,
-    );
-    glyph(c, Glyph::Close, 10, dismiss, theme.faint);
+    let body_top = title_top + title_h;
+    let body_lines = if row.size.h < ITEM_H || !actions.is_empty() { 1 } else { 2 };
+    for (index, line) in
+        crate::notifications::wrap_lines(ink.painter, &item.body, &ITEM_BODY_STYLE, right - left, body_lines)
+            .iter()
+            .enumerate()
+    {
+        let y = body_top + index as i32 * body_h;
+        c.text(ink.painter, (left, right, y, y + body_h), TextAlign::Left, line, theme.muted, &ITEM_BODY_STYLE);
+    }
+    if hovered {
+        glyph(c, Glyph::Close, 10, dismiss, theme.faint);
+    }
+    for (index, rect) in actions {
+        c.fill(rect, theme.fill_2, R2);
+        c.text_in(
+            ink.painter,
+            rect,
+            TextAlign::Center,
+            &item.actions[usize::from(index)],
+            theme.label,
+            &ITEM_APP_STYLE,
+        );
+    }
 }
 
 fn draw_empty(c: &mut Canvas<'_>, ink: &Ink<'_>) {
-    let icon = local_rect((WIDE - EMPTY_ICON) / 2, STACK_Y + SP4, EMPTY_ICON, EMPTY_ICON);
+    let left = nc_left(c.w);
+    let icon = local_rect((left + c.w - EMPTY_ICON) / 2, nc_stack_y(c.w) + SP4, EMPTY_ICON, EMPTY_ICON);
     glyph(c, Glyph::Quiet, EMPTY_ICON, icon, ink.theme.faint.with_alpha(ink.theme.faint.0[3] * 0.6));
     let top = icon.loc.y + EMPTY_ICON + SP1;
-    let band = (PAD, WIDE - PAD, top, top + EMPTY_STYLE.line_height_px.ceil() as i32);
+    let band = (left + PAD, c.w - PAD, top, top + EMPTY_STYLE.line_height_px.ceil() as i32);
     let label = crate::i18n::t(crate::i18n::Key::NoNewNotifications);
     c.text(ink.painter, band, TextAlign::Center, label, ink.theme.faint, &EMPTY_STYLE);
 }
@@ -1713,28 +1896,29 @@ fn draw_scrollbar(c: &mut Canvas<'_>, theme: &TopbarTheme, first: usize, count: 
     if count <= VISIBLE_ITEMS {
         return;
     }
-    let track = stack_height(count);
+    let track = stack_height(count, c.w);
     let thumb = (track * VISIBLE_ITEMS as i32 / count as i32).max(SP4);
     let offset = (track - thumb) * first as i32 / (count - VISIBLE_ITEMS) as i32;
-    let x = WIDE - PAD + (PAD - SCROLL_W) / 2;
-    c.fill(local_rect(x, STACK_Y + offset, SCROLL_W, thumb), theme.track, R_ROUND);
+    let x = c.w - PAD + (PAD - SCROLL_W) / 2;
+    c.fill(local_rect(x, nc_stack_y(c.w) + offset, SCROLL_W, thumb), theme.track, R_ROUND);
 }
 
 fn draw_notifications(
-    ink: &NcInk<'_>, (items, first): (&[NcItem], usize), switch_w: Option<i32>, scale: i32,
-    icons: Option<&mut crate::icon::IconLoader>,
+    ink: &NcInk<'_>, (items, first): (&[NcItem], usize), switch_w: Option<i32>, width: i32,
+    today: Option<&(i32, u32, u32, String)>, scale: i32, icons: Option<&mut crate::icon::IconLoader>,
 ) -> Option<MemoryRenderBuffer> {
-    let height = calendar_height(items.len());
-    let mut c = Canvas::new(WIDE, height, scale)?.with_icons(icons);
-    let layout = nc_layout(ink.ink.painter, items, first, switch_w);
-    draw_nc_header(&mut c, ink, &layout);
+    let height = calendar_height(items.len(), width);
+    let mut c = Canvas::new(width, height, scale)?.with_icons(icons);
+    let layout = nc_layout(ink.ink.painter, items, first, switch_w, width);
+    draw_nc_header(&mut c, ink, &layout, today);
     draw_nc_section(&mut c, ink, &layout);
     if items.is_empty() {
         draw_empty(&mut c, &ink.ink);
     }
     let first = first_item(first, items.len());
     for (item, (_, row, dismiss)) in items.iter().skip(first).zip(layout.items.iter()) {
-        draw_item(&mut c, &ink.ink, item, *row, *dismiss);
+        let hovered = matches!(ink.hovered, Some(Slot::NcItem(id) | Slot::NcItemDismiss(id) | Slot::NcItemAction(id, _)) if id == item.id);
+        draw_item(&mut c, &ink.ink, item, *row, *dismiss, hovered);
     }
     draw_scrollbar(&mut c, ink.ink.theme, first, items.len());
     Some(c.finish())
@@ -2099,14 +2283,14 @@ fn push_media<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, a
     push_clipped(renderer, buffer, (content, clip), alpha, scale, elements);
 }
 
-fn push_calendar<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
+fn push_calendar_block<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
     let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
     let clip = spot.clip;
-    let switch_w = topbar.switch_width(painter, View::Calendar);
-    let height = calendar_height(topbar.nc_items.len());
-    let content = spot.content(WIDE, height);
+    let width = nc_width(spot.strip);
+    let height = calendar_height(topbar.nc_items.len(), width);
+    let content = spot.content(width, height);
     if let Some(block) = calendar::block(topbar, painter, icons, output_scale) {
-        let (left, top) = (content.loc.x + PAD, content.loc.y + CAL_TOP);
+        let (left, top) = (content.loc.x + PAD, content.loc.y + nc_cal_top(width));
         let header = local_rect(left, top, WIDE - PAD * 2, calendar::GRID_TOP);
         push_clipped(renderer, &block.header, (header, clip), alpha, scale, elements);
         let grid_area =
@@ -2118,10 +2302,63 @@ fn push_calendar<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>
             }
         }
     }
+}
+
+fn push_nc_static<R: ShellRenderer>(
+    renderer: &mut R, buffer: &MemoryRenderBuffer, (content, clip): (LocalRect, LocalRect),
+    (alpha, scale): (f32, Scale<f64>), elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
+) -> Option<LocalRect> {
+    let width = content.size.w;
+    let left = nc_left(width);
+    let stack_y = nc_stack_y(width);
+    let static_top = local_rect(content.loc.x, content.loc.y, width, stack_y);
+    let static_left = local_rect(content.loc.x, content.loc.y + stack_y, left, content.size.h - stack_y);
+    for area in [static_top, static_left] {
+        if let Some(visible) = area.intersection(clip) {
+            push_clipped(renderer, buffer, (content, visible), alpha, scale, elements);
+        }
+    }
+    let list_area = local_rect(content.loc.x + left, content.loc.y + stack_y, width - left, content.size.h - stack_y);
+    let list_clip = list_area.intersection(clip)?;
+    let scroll_area = local_rect(content.loc.x + width - PAD, content.loc.y + stack_y, PAD, content.size.h - stack_y);
+    if let Some(visible) = scroll_area.intersection(list_clip) {
+        push_clipped(renderer, buffer, (content, visible), alpha, scale, elements);
+    }
+    Some(list_clip)
+}
+
+fn push_calendar<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, alpha: f32, spot: Spot) {
+    push_compact(topbar, frame, alpha, spot);
+    push_calendar_block(topbar, frame, alpha, spot);
+    let (renderer, painter, icons, scale, output_scale, elements) = frame.parts();
+    let clip = spot.clip;
+    let switch_w = topbar.switch_width(painter, View::Calendar);
+    let width = nc_width(spot.strip);
+    let height = calendar_height(topbar.nc_items.len(), width);
+    let content = spot.content(width, height);
     let first = first_item(topbar.island.first_item, topbar.nc_items.len());
-    let hovered = topbar.hovered.filter(|slot| matches!(slot, Slot::NcClearAll));
-    let key: NcKey =
-        (topbar.nc_rev, topbar.dnd, topbar.dnd_anim.switch().key(), hovered, first, switch_w, crate::i18n::language());
+    let hovered = topbar
+        .hovered
+        .filter(|slot| {
+            matches!(slot, Slot::NcClearAll | Slot::NcItem(_) | Slot::NcItemDismiss(_) | Slot::NcItemAction(_, _))
+        })
+        .or_else(|| {
+            topbar
+                .focused
+                .filter(|slot| matches!(slot, Slot::NcItem(_) | Slot::NcItemDismiss(_) | Slot::NcItemAction(_, _)))
+        });
+    let today = topbar.calendar_today_info();
+    let key: NcKey = (
+        topbar.nc_rev,
+        topbar.dnd,
+        topbar.dnd_anim.switch().key(),
+        hovered,
+        first,
+        switch_w,
+        crate::i18n::language(),
+        width,
+        today.as_ref().map(|(year, month, day, _)| (*year, *month, *day)),
+    );
     let ink = NcInk {
         ink: Ink { painter, theme: &topbar.theme },
         dnd: topbar.dnd,
@@ -2129,31 +2366,60 @@ fn push_calendar<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>
         hovered,
     };
     let items = &topbar.nc_items;
-    let Some(buffer) = topbar
-        .island
-        .nc
-        .resolve(key, output_scale, || draw_notifications(&ink, (items, first), switch_w, output_scale, Some(icons)))
-    else {
+    let Some(buffer) = topbar.island.nc.resolve(key, output_scale, || {
+        draw_notifications(&ink, (items, first), switch_w, width, today.as_ref(), output_scale, Some(icons))
+    }) else {
         return;
     };
     let buffer = buffer.clone();
+    let rows = nc_layout(painter, items, first, switch_w, width).items;
     let island = &mut topbar.island;
     let marker = (topbar.nc_rev, first);
-    if let Some((seen, old)) = island.nc_seen.take()
-        && seen != marker
-    {
-        island.nc_old = Some(old);
-        island.nc_fade = Anim::at(0.0);
-        island.nc_fade.retarget(1.0, motion::t2(), E_OUT);
-    }
-    island.nc_seen = Some((marker, buffer.clone()));
-    let fade = island.nc_fade.value().clamp(0.0, 1.0) as f32;
+    let fade = island.update_nc_snapshot(marker, buffer.clone(), rows.clone());
+    let Some(list_clip) = push_nc_static(renderer, &buffer, (content, clip), (alpha, scale), elements) else { return };
     if fade < 1.0
         && let Some(old) = &island.nc_old
     {
-        push_clipped(renderer, old, (content, clip), alpha * (1.0 - fade), scale, elements);
+        for (id, row, _) in &old.rows {
+            if rows.iter().any(|(current, _, _)| current == id) {
+                continue;
+            }
+            let dx = (32.0 * fade).round() as i32;
+            let mut departing = content;
+            departing.loc.x += dx;
+            let mut row_rect = shift(*row, content.loc);
+            row_rect.loc.x += dx;
+            if let Some(visible) = row_rect.intersection(list_clip) {
+                push_clipped(
+                    renderer,
+                    &old.buffer,
+                    (departing, visible),
+                    alpha * ((1.0 - fade) / 0.4).min(1.0),
+                    scale,
+                    elements,
+                );
+            }
+        }
     }
-    push_clipped(renderer, &buffer, (content, clip), alpha, scale, elements);
+    if rows.is_empty() {
+        push_clipped(renderer, &buffer, (content, list_clip), alpha, scale, elements);
+    }
+    for (id, row, _) in &rows {
+        let old_y = island
+            .nc_old
+            .as_ref()
+            .and_then(|old| old.rows.iter().find(|(old_id, _, _)| old_id == id).map(|(_, old_row, _)| old_row.loc.y));
+        let offset = old_y.map_or(24, |old_y| old_y - row.loc.y);
+        let dy = (offset as f32 * (1.0 - fade)).round() as i32;
+        let mut arriving = content;
+        arriving.loc.y += dy;
+        let mut row_rect = shift(*row, content.loc);
+        row_rect.loc.y += dy;
+        if let Some(visible) = row_rect.intersection(list_clip) {
+            let visibility = if old_y.is_some() { 1.0 } else { (fade / 0.4).min(1.0) };
+            push_clipped(renderer, &buffer, (arriving, visible), alpha * visibility, scale, elements);
+        }
+    }
 }
 
 fn push_surface<R: ShellRenderer>(topbar: &mut Topbar, frame: &mut Frame<'_, R>, rect: LocalRect, radius: f32) {
@@ -2397,6 +2663,7 @@ mod tests {
         Notice {
             id: 7,
             app: "Glide".into(),
+            origin_device: String::new(),
             title: title.into(),
             body: body.into(),
             icon: None,
@@ -2557,13 +2824,44 @@ mod tests {
     }
 
     #[test]
-    fn expanded_heights_match_the_concept_and_grow_with_notifications() {
+    fn expanded_heights_fit_the_two_column_panel_and_the_narrow_layout() {
         assert_eq!(MEDIA_H, 201);
-        assert_eq!(calendar_height(0), STACK_Y + EMPTY_H + PAD);
-        assert_eq!(calendar_height(1), STACK_Y + ITEM_H + PAD);
-        assert_eq!(calendar_height(4), calendar_height(9), "more than four notifications scroll");
-        assert!(calendar_height(4) <= 564, "never taller than the concept's 564 px");
-        assert_eq!(stack_height(4), 4 * ITEM_H + 3 * ITEM_GAP);
+        assert_eq!(calendar_height(0, NC_WIDTH), NC_MIN_HEIGHT);
+        assert_eq!(calendar_height(4, NC_WIDTH), calendar_height(9, NC_WIDTH), "more than four notifications scroll");
+        assert!(calendar_height(4, NC_WIDTH) <= 480);
+        assert!(calendar_height(4, WIDE) <= 600, "the stacked fallback fits a 600 px output");
+        assert_eq!(stack_height(4, NC_WIDTH), 4 * ITEM_H + 3 * ITEM_GAP);
+    }
+
+    #[test]
+    fn notification_controls_and_rows_stay_inside_both_panel_layouts() {
+        let item = NcItem {
+            id: 1,
+            app_name: "Telegram".into(),
+            origin_device: "Pixel".into(),
+            title: "Olena".into(),
+            body: "Hello".into(),
+            actions: Vec::new(),
+            time: "2 min".into(),
+            icon: None,
+            count: 1,
+        };
+        for width in [WIDE, 624, NC_WIDTH] {
+            let layout = nc_layout(&painter(), std::slice::from_ref(&item), 0, Some(72), width);
+            let (_, row, dismiss) = layout.items[0];
+            let bounds = local_rect(0, 0, width, calendar_height(1, width));
+            assert_eq!(row.intersection(bounds), Some(row));
+            assert_eq!(dismiss.intersection(row), Some(dismiss));
+            assert_eq!(layout.toggle.intersection(bounds), Some(layout.toggle));
+            if width == WIDE {
+                assert!(row.loc.y >= nc_cal_top(width) + calendar::BLOCK_H);
+                let switch = layout.switch.expect("media switch");
+                assert!(switch.intersection(layout.collapse).is_none());
+                assert!(switch.loc.y + switch.size.h <= nc_cal_top(width));
+            } else {
+                assert!(row.loc.x >= NC_LEFT);
+            }
+        }
     }
 
     #[test]
@@ -2609,6 +2907,7 @@ mod tests {
         let alert = IslandAlert {
             id: 1,
             heading: String::from("Mail"),
+            origin_device: String::new(),
             summary: String::from("first\nsecond line of a body long enough to need wrapping across the alert ")
                 + &"word ".repeat(80),
             icon: None,
@@ -2657,8 +2956,10 @@ mod tests {
         let item = NcItem {
             id: 7,
             app_name: String::from("Telegram"),
+            origin_device: String::new(),
             title: String::from("Olena"),
             body: String::from("Call at 15:00?"),
+            actions: Vec::new(),
             time: String::new(),
             icon: None,
             count: 1,

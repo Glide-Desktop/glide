@@ -3052,7 +3052,12 @@ impl GlideState {
         let Some(slot) = slot else {
             return true;
         };
-        if matches!(slot, crate::topbar::Slot::NcItem(_) | crate::topbar::Slot::NcItemDismiss(_)) {
+        if matches!(
+            slot,
+            crate::topbar::Slot::NcItem(_)
+                | crate::topbar::Slot::NcItemDismiss(_)
+                | crate::topbar::Slot::NcItemAction(_, _)
+        ) {
             if self.topbar.scroll_notifications(steps) {
                 self.queue_redraw();
             }

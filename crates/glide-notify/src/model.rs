@@ -135,6 +135,7 @@ pub struct Notification {
     pub sender: String,
     pub app_name: String,
     pub desktop_entry: String,
+    pub origin_device: String,
     pub app_icon: String,
     pub image_path: String,
     pub summary: String,
@@ -170,6 +171,7 @@ impl Notification {
             && self.body == other.body
             && self.app_name == other.app_name
             && self.desktop_entry == other.desktop_entry
+            && self.origin_device == other.origin_device
             && self.actions == other.actions
             && self.app_icon == other.app_icon
             && self.image_path == other.image_path

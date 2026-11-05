@@ -574,6 +574,7 @@ fn dispatch_desktop_notification(device_name: &str, active: &ActiveNotification,
     };
     let icon_name = active.icon_path.as_deref().unwrap_or("glide-phone");
     let mut notification = glide_sdk::system::Notification::new("glide-phone", summary)
+        .origin_device(device_name)
         .body(&active.body)
         .icon(icon_name)
         .urgency(glide_sdk::system::Urgency::Normal);

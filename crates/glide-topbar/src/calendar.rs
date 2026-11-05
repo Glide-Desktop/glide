@@ -222,6 +222,16 @@ pub(super) fn layout_slots(
 }
 
 impl Topbar {
+    pub(super) fn calendar_today_info(&self) -> Option<(i32, u32, u32, String)> {
+        let now = self.calendar.today?;
+        Some((
+            now.year,
+            now.month0,
+            now.day,
+            crate::i18n::long_date(self.calendar.lang, now.weekday, now.day, now.month0),
+        ))
+    }
+
     pub(super) fn calendar_month_title(&self) -> String {
         month_title(self.calendar.lang, self.calendar.month())
     }
@@ -344,7 +354,8 @@ fn draw_month(c: &mut Canvas<'_>, ctx: &GridPaint<'_>, month: YearMonth, offset:
         let is_today =
             cell.in_month && ctx.today.is_some_and(|now| YearMonth::from(now) == month && now.day == cell.day);
         if is_today {
-            c.fill(rect, ctx.theme.active_background, R_ROUND);
+            let marker = local_rect(x + (CELL_W - CELL_H) / 2, y, CELL_H, CELL_H);
+            c.fill(marker, ctx.theme.active_background, R_ROUND);
         }
         let (colour, style) = if is_today {
             (ctx.theme.active_label, &TODAY_DAY_STYLE)

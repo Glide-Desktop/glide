@@ -1593,18 +1593,16 @@ impl GlideState {
     }
 
     #[must_use]
-    fn focused_app(&self) -> (String, String) {
-        let identity = self
-            .layout
-            .focused_window()
-            .and_then(|id| self.window_map.get(&id))
-            .map(crate::window::GlideWindow::identity);
-        let Some((app_id, title)) = identity else {
+    fn focused_app(&mut self) -> (String, String) {
+        let Some(id) = self.layout.focused_window() else {
             return (String::new(), String::new());
         };
-        let app_id = app_id.unwrap_or_default();
-        let title = title.unwrap_or_default();
-        let name = crate::topbar::app_display_name(&app_id, &title);
+        let app_id = self.window_map.get(&id).and_then(|window| window.identity().0).unwrap_or_default();
+        let cached = self.cached_app_name(&app_id);
+        if !app_id.is_empty() && cached.is_none() && !self.switcher_names.contains_key(&app_id.to_lowercase()) {
+            self.resolve_app_names(vec![app_id.clone()]);
+        }
+        let name = crate::topbar::application_name(&app_id, cached.as_deref());
         (app_id, name)
     }
 
@@ -2642,12 +2640,14 @@ impl GlideState {
             if let smithay::reexports::calloop::channel::Event::Msg(names) = event {
                 let mut relabelled = false;
                 for (app_id, name) in names {
+                    relabelled |= name.is_some();
                     if let (Some(switcher), Some(name)) = (state.switcher.as_mut(), &name) {
                         relabelled |= switcher.relabel_app(&app_id, name);
                     }
                     state.switcher_names.insert(app_id.to_lowercase(), name);
                 }
                 if relabelled {
+                    state.refresh_topbar();
                     state.queue_redraw();
                 }
             }

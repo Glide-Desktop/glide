@@ -25,8 +25,10 @@ pub enum NotificationAction {
 pub struct NcItem {
     pub id: u32,
     pub app_name: String,
+    pub origin_device: String,
     pub title: String,
     pub body: String,
+    pub actions: Vec<String>,
     pub time: String,
     pub icon: Option<std::sync::Arc<Vec<u8>>>,
     pub count: usize,
@@ -315,12 +317,22 @@ fn nc_item(notification: &Notification, age: Duration, icon: Option<&std::sync::
     NcItem {
         id: notification.id,
         app_name: notification.app_name.clone(),
-        title: notification.summary.clone(),
+        origin_device: notification.origin_device.clone(),
+        title: notification_title(notification).to_string(),
         body: notification.body.clone(),
+        actions: visible_buttons(notification).iter().map(|action| action.label.clone()).collect(),
         time: crate::i18n::elapsed_label(age.as_secs()),
         icon: icon.cloned(),
         count,
     }
+}
+
+fn notification_title(notification: &Notification) -> &str {
+    let device = notification.origin_device.trim();
+    if device.is_empty() {
+        return &notification.summary;
+    }
+    notification.summary.strip_prefix(device).and_then(|rest| rest.strip_prefix(": ")).unwrap_or(&notification.summary)
 }
 
 fn is_prompt(notification: &Notification) -> bool {
@@ -362,6 +374,7 @@ pub enum NoticeReply {
 pub struct Notice {
     pub id: u32,
     pub app: String,
+    pub origin_device: String,
     pub title: String,
     pub body: String,
     pub icon: Option<std::sync::Arc<Vec<u8>>>,
@@ -402,7 +415,8 @@ impl Notice {
         Self {
             id: notification.id,
             app: notification.display_app().to_string(),
-            title: notification.summary.clone(),
+            origin_device: notification.origin_device.clone(),
+            title: notification_title(notification).to_string(),
             body: notification.body.clone(),
             icon: entry.icon.clone(),
             buttons: reply_button.into_iter().chain(actions).chain(settings).collect(),
@@ -756,11 +770,11 @@ impl Notifications {
         let age = |at: Instant| now.duration_since(at);
         self.active()
             .map(|entry| nc_item(&entry.notification, age(entry.updated_at), entry.icon.as_ref(), entry.group_size()))
-            .chain(
-                self.archive
-                    .iter()
-                    .map(|kept| nc_item(&kept.notification, age(kept.received_at), kept.icon.as_ref(), 1)),
-            )
+            .chain(self.archive.iter().map(|kept| {
+                let mut item = nc_item(&kept.notification, age(kept.received_at), kept.icon.as_ref(), 1);
+                item.actions.clear();
+                item
+            }))
             .collect()
     }
 
@@ -1412,6 +1426,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn phone_device_is_separate_from_titles_in_the_centre_and_notices() {
+        let notification = Notification {
+            app_name: "glide-phone".into(),
+            origin_device: "Pixel: Work".into(),
+            summary: "Pixel: Work: Alice: hello".into(),
+            ..notification(1)
+        };
+        let item = nc_item(&notification, Duration::ZERO, None, 1);
+        assert_eq!(item.origin_device, "Pixel: Work");
+        assert_eq!(item.title, "Alice: hello");
+        let alert = crate::IslandAlert::from_item(&item);
+        assert_eq!(alert.origin_device, "Pixel: Work");
+        assert!(!alert.summary.contains("Pixel: Work"));
+        let other = Notification { origin_device: String::new(), ..notification };
+        assert_eq!(notification_title(&other), "Pixel: Work: Alice: hello");
+    }
+
     fn stacked_ids(entry: &Entry) -> Vec<u32> {
         entry.stacked.iter().map(|notification| notification.id).collect()
     }
@@ -1465,6 +1497,20 @@ mod tests {
             assert!(store.live.iter().any(|entry| entry.owns(id)), "{id} keeps its toast");
         }
         assert!(store.take_glances().is_empty());
+    }
+
+    #[test]
+    fn only_live_notifications_offer_actions_in_the_centre() {
+        let (mut store, mut icons) = store();
+        let note = Notification {
+            actions: vec![glide_notify::Action { key: "open".into(), label: "Open".into() }],
+            ..notification(9)
+        };
+        store.push(&mut icons, note.clone(), false);
+        assert_eq!(store.nc_items()[0].actions, ["Open"]);
+        store.live.clear();
+        store.keep(note, Instant::now(), None, true);
+        assert!(store.nc_items()[0].actions.is_empty());
     }
 
     #[test]
@@ -1618,8 +1664,10 @@ mod tests {
         let item = NcItem {
             id: 1,
             app_name: "Telegram".into(),
+            origin_device: String::new(),
             title: "Olena".into(),
             body: "The door code is 4821".into(),
+            actions: Vec::new(),
             time: "now".into(),
             icon: None,
             count: 1,

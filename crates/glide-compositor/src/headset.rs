@@ -571,6 +571,7 @@ impl crate::GlideState {
                     let alert = crate::topbar::IslandAlert {
                         id: 0,
                         heading: headset.name.clone(),
+                        origin_device: String::new(),
                         summary: connected_line(headset.battery),
                         icon,
                     };
