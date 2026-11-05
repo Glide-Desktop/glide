@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
+use glide_sdk::anim::{Speed, Transform, animate};
 use glide_sdk::theme::{R3, SP1, SP2, SP3, SP4, SP5, TextStyle};
 use glide_sdk::widget::{self as ui, CoverCard, Size, Tile};
 use glide_sdk::window::{self, Header, Side, side_corners};
 use iced::widget::{Column, Row, Space, column, container, mouse_area, opaque, row, scrollable, stack, text_input};
-use iced::{Alignment, Color, Element, Fill, Length, Padding};
+use iced::{Alignment, Color, Element, Fill, Length, Padding, Vector};
 
 use crate::app::{App, Backdrop, Message, Modal, Place, Scale, ViewerEvent, ZOOM_SIDES};
 use crate::formats::{Failure, Family, Note};
@@ -22,6 +23,20 @@ pub const STAGE_MARGIN: f32 = 24.0;
 pub const GRID_ID: &str = "glide-photos-grid";
 pub const SEARCH_ID: &str = "glide-photos-search";
 pub const ALBUM_FIELD: &str = "glide-photos-album-name";
+
+const DIALOG_RISE: f32 = 24.0;
+
+pub fn dialog_motion<'a>(card: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    let card = card.into();
+    let closed = glide_sdk::theme::component::DIALOG_CLOSED_SCALE;
+    animate(1.0, Speed::EXPAND, move |_| card)
+        .from(0.0)
+        .transform(move |value| Transform {
+            scale: closed + (1.0 - closed) * value,
+            offset: Vector::new(0.0, DIALOG_RISE * (1.0 - value)),
+        })
+        .into()
+}
 
 #[must_use]
 pub fn group_height(items: usize, columns: usize, side: f32) -> f32 {
@@ -197,7 +212,7 @@ fn header(app: &App) -> Element<'_, Message> {
         bar = bar
             .leading(
                 row![
-                    ui::text(title, TextStyle::WIN_TITLE).color(ink(app)),
+                    ui::swapped(n, None, ui::text(title, TextStyle::WIN_TITLE).color(ink(app))),
                     ui::text(i18n::bytes(app.lang, bytes), TextStyle::CAP).color(paint.fg_2()),
                 ]
                 .spacing(SP2)
@@ -476,6 +491,13 @@ fn content(app: &App) -> Element<'_, Message> {
         }
     };
     let mut column = Column::with_children(top);
+    let (change, start) = app.scale_change;
+    let paint_bg = paint.view_bg();
+    let body = animate(1.0, Speed::ARRIVE, move |_| body)
+        .keyed(change)
+        .from(if change == 0 { 1.0 } else { 0.0 })
+        .veil(paint_bg)
+        .scale(move |value| start + (1.0 - start) * value);
     column = column.push(container(body).height(Fill));
     column.height(Fill).into()
 }
@@ -843,15 +865,22 @@ fn modal_view<'a>(app: &'a App, modal: &'a Modal) -> Element<'a, Message> {
     ]
     .spacing(SP4)
     .width(380);
+    modal_frame(&paint, card, Message::CancelModal)
+}
+
+pub fn modal_frame<'a>(
+    paint: &glide_sdk::Paint, card: impl Into<Element<'a, Message>>, dismiss: Message,
+) -> Element<'a, Message> {
+    let paint = *paint;
     let card = container(card).padding(22).style(move |_| glide_sdk::glide_iced::style::popover(&paint));
-    let card = glide_sdk::glide_iced::widgets::surface(card, &paint, glide_sdk::theme::Level::El3, R3);
+    let card = dialog_motion(glide_sdk::glide_iced::widgets::surface(card, &paint, glide_sdk::theme::Level::El3, R3));
     let scrim = mouse_area(
         container(Space::new())
             .width(Fill)
             .height(Fill)
             .style(|_| glide_sdk::glide_iced::style::rounded(Color { a: 0.42, ..ui::STAGE }, 0.0)),
     )
-    .on_press(Message::CancelModal);
+    .on_press(dismiss);
     stack![scrim, container(opaque(card)).center_x(Fill).padding(Padding::default().top(92.0))].into()
 }
 

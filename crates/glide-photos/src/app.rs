@@ -55,6 +55,8 @@ pub const SLIDE: Duration = Duration::from_secs(4);
 pub const IDLE_CHROME: Duration = Duration::from_secs(2);
 const THUMB_WORKERS: usize = 3;
 const CARD_POLL_TICKS: u32 = 20;
+pub const ZOOM_IN_FROM: f32 = 0.9;
+pub const ZOOM_OUT_FROM: f32 = 1.1;
 const VIEW_SIDE: u32 = 4096;
 const EDIT_SIDE: u32 = 1600;
 
@@ -89,6 +91,7 @@ pub struct Viewer {
     pub slideshow: bool,
     pub backdrop: Backdrop,
     pub generation: u64,
+    pub step: i8,
 }
 
 impl Viewer {
@@ -318,6 +321,8 @@ pub struct App {
     pub ticks: u32,
     pub grid_bounds: Option<iced::Rectangle>,
     pub morph: Option<Morph>,
+    pub scale_change: (u64, f32),
+    pub edit_exit: Option<(Instant, iced::Vector, f32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -440,6 +445,8 @@ impl App {
             ticks: 0,
             grid_bounds: None,
             morph: None,
+            scale_change: (0, 1.0),
+            edit_exit: None,
         }
     }
 
@@ -589,6 +596,59 @@ impl App {
         }
     }
 
+    fn change_scale(&mut self, scale: Scale) {
+        let depth = |scale: Scale| match scale {
+            Scale::Years => 0,
+            Scale::Months => 1,
+            Scale::All => 2,
+        };
+        if scale != self.scale {
+            let start = if depth(scale) > depth(self.scale) { ZOOM_IN_FROM } else { ZOOM_OUT_FROM };
+            self.scale_change = (self.scale_change.0 + 1, start);
+        }
+        self.scale = scale;
+        self.scroll = 0.0;
+    }
+
+    #[must_use]
+    pub fn edit_rects(&self) -> Option<(iced::Rectangle, iced::Rectangle)> {
+        let editor = self.editor.as_ref()?;
+        let size = editor.preview.as_ref().map(|(_, size)| *size)?;
+        let viewer = self.viewer.as_ref()?;
+        let original = viewer.loaded.as_ref().map_or(size, |loaded| loaded.size);
+        let shown = self.image_rect(original, None, viewer.info, true);
+        let window = self.window.size;
+        let panel = crate::editor_view::PANEL + 1.0;
+        let margin = glide_sdk::theme::SP4;
+        let room_w = window.width - panel - 4.0 * margin;
+        let room_h = window.height - crate::view::HEADER - crate::editor_view::HINT - 2.0 * margin;
+        let (w, h) = (size.0.max(1) as f32, size.1.max(1) as f32);
+        let fit = (room_w / w).min(room_h / h);
+        let (fit_w, fit_h) = ((w * fit).floor(), (h * fit).floor());
+        let centre_x = (window.width - panel) / 2.0;
+        let centre_y = crate::view::HEADER + margin + room_h / 2.0;
+        let edited =
+            iced::Rectangle { x: centre_x - fit_w / 2.0, y: centre_y - fit_h / 2.0, width: fit_w, height: fit_h };
+        Some((edited, shown))
+    }
+
+    #[must_use]
+    pub fn edit_enter(&self) -> Option<(iced::Vector, f32)> {
+        let (edited, shown) = self.edit_rects()?;
+        let offset = shown.center() - edited.center();
+        Some((offset, shown.width / edited.width.max(1.0)))
+    }
+
+    fn leave_editor(&mut self) {
+        if let Some((edited, shown)) = self.edit_rects()
+            && !glide_sdk::theme::motion::t3().is_zero()
+        {
+            self.edit_exit =
+                Some((Instant::now(), edited.center() - shown.center(), edited.width / shown.width.max(1.0)));
+        }
+        self.editor = None;
+    }
+
     fn grid_origin(&self) -> iced::Point {
         self.grid_bounds
             .map_or(iced::Point::new(crate::view::SIDEBAR + 1.0, crate::view::HEADER), |bounds| bounds.position())
@@ -642,7 +702,12 @@ impl App {
         };
         let (w, h) = (size.0.max(1) as f32, size.1.max(1) as f32);
         let margin = 2.0 * crate::view::STAGE_MARGIN;
-        let fit = ((width - margin) / w).min((height - margin) / h).min(1.0);
+        let fit_height = if self.viewer.as_ref().is_some_and(|viewer| viewer.slideshow) {
+            self.window.size.height
+        } else {
+            self.window.size.height - crate::view::HEADER - crate::view::FILMSTRIP
+        };
+        let fit = ((width - margin) / w).min((fit_height - margin) / h).min(1.0);
         let scale = zoom.unwrap_or(fit);
         let (shown_w, shown_h) = (w * scale, h * scale);
         iced::Rectangle {
@@ -734,6 +799,7 @@ impl App {
             slideshow: false,
             backdrop: Backdrop::Checks,
             generation: 0,
+            step: 0,
         });
         self.load_current()
     }
@@ -1050,10 +1116,7 @@ impl App {
                     );
                 }
             }
-            Message::Scale(scale) => {
-                self.scale = scale;
-                self.scroll = 0.0;
-            }
+            Message::Scale(scale) => self.change_scale(scale),
             Message::Query(query) => {
                 self.query = query;
                 self.scroll = 0.0;
@@ -1145,8 +1208,11 @@ impl App {
                     let date = self.photos[i].date;
                     date.year == year && month.is_none_or(|m| date.month == m)
                 });
-                self.scale = if month.is_some() || self.scale == Scale::Months { Scale::All } else { Scale::Months };
-                self.scroll = 0.0;
+                self.change_scale(if month.is_some() || self.scale == Scale::Months {
+                    Scale::All
+                } else {
+                    Scale::Months
+                });
                 if let (Some(position), Scale::All) = (target, self.scale) {
                     let (columns, side) = self.grid();
                     let mut top = 0.0;
@@ -1509,7 +1575,7 @@ impl App {
                 }
                 match result {
                     Ok(path) => {
-                        self.editor = None;
+                        self.leave_editor();
                         let key = if replaced { Key::Saved } else { Key::SavedCopy };
                         shell.toast_with(self.t(key), self.t(Key::Show), Message::Reveal(path.clone()));
                         self.thumbs.remove(&path);
@@ -1551,6 +1617,9 @@ impl App {
     fn tick(&mut self, shell: &Shell<Message>) -> Task<Message> {
         let now = Instant::now();
         let mut tasks = Vec::new();
+        if self.edit_exit.is_some_and(|(at, ..)| now.duration_since(at) > glide_sdk::theme::motion::t3() * 2) {
+            self.edit_exit = None;
+        }
         if let Some(viewer) = self.viewer.as_mut() {
             let pointer = shell.pointer();
             if pointer != viewer.pointer {
@@ -1596,6 +1665,7 @@ impl App {
                 let next = viewer.at as isize + delta;
                 let next = if viewer.slideshow { next.rem_euclid(len.max(1)) } else { next.clamp(0, len - 1) };
                 if next as usize != viewer.at {
+                    viewer.step = delta.signum() as i8;
                     viewer.at = next as usize;
                     viewer.page = 0;
                     return self.load_current();
@@ -1603,6 +1673,7 @@ impl App {
             }
             ViewerEvent::Jump(at) => {
                 if at != viewer.at && at < viewer.list.len() {
+                    viewer.step = if at > viewer.at { 1 } else { -1 };
                     viewer.at = at;
                     viewer.page = 0;
                     return self.load_current();
@@ -1675,7 +1746,7 @@ impl App {
     #[must_use]
     pub fn stage(&self) -> (f32, f32) {
         let viewer = self.viewer.as_ref();
-        let chrome = viewer.is_none_or(|viewer| viewer.chrome || viewer.info);
+        let chrome = viewer.is_none_or(|viewer| !viewer.slideshow);
         let info = viewer.is_some_and(|viewer| viewer.info);
         let width = self.window.size.width - if info { glide_sdk::widget::INSPECTOR_WIDTH + 1.0 } else { 0.0 };
         let height = self.window.size.height - if chrome { crate::view::HEADER + crate::view::FILMSTRIP } else { 0.0 };
@@ -1787,12 +1858,12 @@ impl App {
                 return Task::none();
             }
             EditorEvent::Cancel | EditorEvent::SaveDiscard => {
-                self.editor = None;
+                self.leave_editor();
                 return Task::none();
             }
             EditorEvent::Done => {
                 if editor.edit.is_identity() {
-                    self.editor = None;
+                    self.leave_editor();
                     return Task::none();
                 }
                 let photo = &self.photos[editor.photo];
@@ -1958,7 +2029,8 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let mut subs = vec![iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick)];
+        let tick = if self.viewer.is_some() { Duration::from_millis(200) } else { Duration::from_millis(500) };
+        let mut subs = vec![iced::time::every(tick).map(|_| Message::Tick)];
         if self.morph.is_some() {
             subs.push(iced::window::frames().map(Message::Frame));
         }
@@ -2249,6 +2321,28 @@ mod tests {
         let _ = app.view();
         finish_motion(&mut app);
         assert!(app.app().viewer.is_none() && app.app().morph.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn going_deeper_zooms_in_going_up_zooms_out_and_steps_keep_their_direction() {
+        let (dir, photos) = library("directions");
+        let mut app = harness(photos);
+        assert_eq!(app.app().scale_change.0, 0);
+        app.message(Message::Scale(Scale::Years));
+        assert_eq!(app.app().scale_change, (1, ZOOM_OUT_FROM));
+        app.message(Message::Scale(Scale::Years));
+        assert_eq!(app.app().scale_change.0, 1, "picking the same scale does not replay the zoom");
+        app.message(Message::Scale(Scale::Months));
+        assert_eq!(app.app().scale_change, (2, ZOOM_IN_FROM));
+        let _ = app.view();
+        app.message(Message::Scale(Scale::All));
+        app.message(Message::Tile(1));
+        app.message(Message::Viewer(ViewerEvent::Step(1)));
+        assert_eq!(app.app().viewer.as_ref().unwrap().step, 1);
+        app.message(Message::Viewer(ViewerEvent::Jump(0)));
+        assert_eq!(app.app().viewer.as_ref().unwrap().step, -1);
+        let _ = app.view();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

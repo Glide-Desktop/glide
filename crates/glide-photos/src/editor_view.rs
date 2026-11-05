@@ -1,11 +1,10 @@
 use glide_sdk::Tone;
-use glide_sdk::theme::{R2, R3, SP1, SP2, SP3, SP4, TextStyle};
+use glide_sdk::anim::{Speed, Transform, animate};
+use glide_sdk::theme::{R2, SP1, SP2, SP3, SP4, TextStyle};
 use glide_sdk::widget::{self as ui, CropRect, Size};
 use glide_sdk::window::{self, Header};
-use iced::widget::{
-    Column, Row, Space, column, container, image, mouse_area, opaque, row, scrollable, stack, text_input,
-};
-use iced::{Alignment, Color, Element, Fill, Length, Padding};
+use iced::widget::{Column, Row, Space, column, container, image, mouse_area, row, scrollable, stack, text_input};
+use iced::{Alignment, Color, Element, Fill, Padding, Vector};
 
 use crate::app::{App, Editor, EditorEvent, Message, SaveForm, Tool};
 use crate::edit::{Filter, Output, Ratio, Slider};
@@ -14,7 +13,8 @@ use crate::icons::Icon;
 use crate::view::HEADER;
 
 pub const PANEL: f32 = 320.0;
-const HINT: f32 = 60.0;
+pub const HINT: f32 = 60.0;
+const PANEL_TRAVEL: f32 = 24.0;
 
 fn event(event: EditorEvent) -> Message {
     Message::Editor(event)
@@ -143,6 +143,17 @@ fn stage<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
     ]
     .spacing(10)
     .align_y(Alignment::Center);
+    let enter = app.edit_enter();
+    let ready = editor.preview.is_some();
+    let shot =
+        animate(1.0, Speed::EXPAND, move |_| shot).keyed(u64::from(ready)).from(0.0).transform(
+            move |value| match enter.filter(|_| ready && editor.tool != Tool::Crop) {
+                Some((offset, scale)) => {
+                    Transform { scale: scale + (1.0 - scale) * value, offset: offset * (1.0 - value) }
+                }
+                None => Transform::default(),
+            },
+        );
     let mut column = column![container(shot).center(Fill)].align_x(Alignment::Center);
     if editor.tool != Tool::Crop {
         column = column.push(container(hint).center_x(Fill).height(HINT));
@@ -217,10 +228,15 @@ fn panel<'a>(app: &'a App, editor: &'a Editor) -> Element<'a, Message> {
         Tool::Filters => filters(app, editor),
         Tool::Crop => crop(app, editor),
     };
-    container(scrollable(content).height(Fill))
+    let content = ui::swapped(editor.tool as u8, Some(paint.sidebar_bg()), content);
+    let surface = container(scrollable(content).height(Fill))
         .width(PANEL)
         .height(Fill)
-        .style(move |_| glide_sdk::glide_iced::style::rounded(paint.sidebar_bg(), 0.0))
+        .style(move |_| glide_sdk::glide_iced::style::rounded(paint.sidebar_bg(), 0.0));
+    animate(1.0, Speed::EXPAND, move |_| surface)
+        .from(0.0)
+        .veil(paint.sidebar_bg())
+        .offset(|value| Vector::new(PANEL_TRAVEL * (1.0 - value), 0.0))
         .into()
 }
 
@@ -465,17 +481,7 @@ fn save_dialog<'a>(app: &'a App, form: &'a SaveForm) -> Element<'a, Message> {
     ]
     .spacing(14)
     .width(480);
-    let card = container(card).padding(22).style(move |_| glide_sdk::glide_iced::style::popover(&paint));
-    let card = glide_sdk::glide_iced::widgets::surface(card, &paint, glide_sdk::theme::Level::El3, R3);
-    let scrim = mouse_area(
-        container(Space::new())
-            .width(Fill)
-            .height(Fill)
-            .style(|_| glide_sdk::glide_iced::style::rounded(Color { a: 0.42, ..ui::STAGE }, 0.0)),
-    )
-    .on_press(event(EditorEvent::SaveCancel));
-    stack![scrim, container(opaque(card)).center_x(Fill).padding(Padding::default().top(92.0)).height(Length::Shrink)]
-        .into()
+    crate::view::modal_frame(&paint, card, event(EditorEvent::SaveCancel))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

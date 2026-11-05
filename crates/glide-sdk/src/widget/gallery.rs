@@ -12,6 +12,7 @@ use iced::{
 };
 
 use super::{stepped_slider, text, tooltip};
+use crate::anim::{Speed, animate};
 
 pub const GLASS: Color = Color { r: 24.0 / 255.0, g: 23.0 / 255.0, b: 27.0 / 255.0, a: 0.64 };
 pub const GLASS_INK: Color = Color { r: 242.0 / 255.0, g: 240.0 / 255.0, b: 237.0 / 255.0, a: 1.0 };
@@ -22,6 +23,8 @@ pub const FILM_CURRENT: f32 = 60.0;
 pub const HISTOGRAM: f32 = 52.0;
 pub const DIAL_WIDTH: f32 = 460.0;
 pub const DIAL_HEIGHT: f32 = 48.0;
+pub const PICKED_SCALE: f32 = 0.92;
+const DISC_FROM: f32 = 0.6;
 
 const HEART: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white' stroke='white' stroke-width='2' stroke-linejoin='round'><path d='M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z'/></svg>";
 const CHECK: &[u8] = b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'><path d='m5 12 5 5 9-10'/></svg>";
@@ -139,19 +142,26 @@ pub struct Tile<'a, M> {
 pub fn photo_tile<'a, M: Clone + 'a>(paint: &Paint, tile: Tile<'a, M>) -> Element<'a, M> {
     let picked = tile.picked == Some(true);
     let side = tile.side;
-    let inner = if picked { (side * 0.92).floor() } else { side };
+    let inner = (side * PICKED_SCALE).floor();
     let radius = if picked { R2 } else { R1 };
     let well = paint.fill_2();
     let face: Element<'a, M> = match tile.picture {
         Some(handle) => {
-            image(handle).width(inner).height(inner).content_fit(ContentFit::Cover).border_radius(radius).into()
+            image(handle).width(side).height(side).content_fit(ContentFit::Cover).border_radius(radius).into()
         }
         None => container(Space::new())
-            .width(inner)
-            .height(inner)
+            .width(side)
+            .height(side)
             .style(move |_| glide_iced::style::rounded(well, radius))
             .into(),
     };
+    let key = {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(tile.label, &mut hasher);
+        std::hash::Hasher::finish(&hasher)
+    };
+    let face =
+        animate(if picked { PICKED_SCALE } else { 1.0 }, Speed::SLIDE, move |_| face).keyed(key).scale(|value| value);
     let soft = paint.acc_soft();
     let ground = container(face)
         .center(side)
@@ -179,6 +189,7 @@ pub fn photo_tile<'a, M: Clone + 'a>(paint: &Paint, tile: Tile<'a, M>) -> Elemen
             },
             ..container::Style::default()
         });
+        let disc = animate(1.0, Speed::OVERSHOOT, move |_| disc).from(DISC_FROM).scale(|value| value.max(0.01));
         layers.push(container(disc).padding(edge + 1.0).align_right(Fill).align_top(Fill).into());
     }
     let body = stack(layers).width(side).height(side);
@@ -588,8 +599,9 @@ impl<M> canvas::Program<M> for CropOverlay<'_, M> {
         frame.fill_rectangle(Point::new(0.0, top + h), Size::new(width, height - top - h), dim);
         frame.fill_rectangle(Point::new(0.0, top), Size::new(left, h), dim);
         frame.fill_rectangle(Point::new(left + w, top), Size::new(width - left - w, h), dim);
-        let thirds = Color { a: if state.grip.is_some() { 0.6 } else { 0.4 }, ..Color::WHITE };
-        for k in 1..3 {
+        let thirds = Color { a: 0.55, ..Color::WHITE };
+        let lines = if state.grip.is_some() { 1..3 } else { 1..1 };
+        for k in lines {
             let fx = left + w * k as f32 / 3.0;
             let fy = top + h * k as f32 / 3.0;
             frame.stroke(

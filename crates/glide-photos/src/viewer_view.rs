@@ -1,15 +1,19 @@
 use glide_sdk::Tone;
+use glide_sdk::anim::{self, Speed, Transform, animate};
 use glide_sdk::theme::{SP2, SP4, TextStyle};
 use glide_sdk::widget::{self as ui, Size};
 use glide_sdk::window::{self, Header};
 use iced::widget::{Column, Row, Space, column, container, image, mouse_area, scrollable, stack, text_input};
-use iced::{Alignment, Element, Fill, Length};
+use iced::{Alignment, Element, Fill, Length, Vector};
 
 use crate::app::{App, Backdrop, Message, Viewer, ViewerEvent};
 use crate::formats::Family;
 use crate::i18n::{self, Key};
 use crate::icons::Icon;
 use crate::view::{FILMSTRIP, backdrop_colour, failure_text, note_text};
+
+const CONTROL_TRAVEL: f32 = 80.0;
+const STEP_TRAVEL: f32 = 48.0;
 
 fn event(event: ViewerEvent) -> Message {
     Message::Viewer(event)
@@ -22,16 +26,33 @@ pub fn view(app: &App) -> Element<'_, Message> {
     };
     let paint = app.paint;
     let chrome = viewer.chrome || viewer.info;
-    let mut body = Column::new();
-    if chrome {
-        body = body.push(header(app, viewer));
-    }
-    let mut middle = Row::new().push(container(stage(app, viewer, chrome)).width(Fill).height(Fill));
-    if viewer.info {
-        middle = middle.push(ui::vertical_separator(&paint)).push(info(app, viewer));
-    }
-    body = body.push(middle.height(Fill));
-    ui::pane(if chrome { paint.view_bg() } else { ui::STAGE }, app.window.corner(), body).into()
+    let panel =
+        anim::slide_in_end(viewer.info, Row::new().push(ui::vertical_separator(&paint)).push(info(app, viewer)));
+    let middle = Row::new().push(container(stage(app, viewer, chrome)).width(Fill).height(Fill)).push(panel);
+    let body = column![anim::collapse(chrome, header(app, viewer)), middle.height(Fill)];
+    ui::pane(if viewer.slideshow { ui::STAGE } else { paint.view_bg() }, app.window.corner(), body).into()
+}
+
+fn slide<'a>(shown: bool, shift: Vector, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    let content = content.into();
+    animate(if shown { 1.0 } else { 0.0 }, Speed::SLIDE, move |_| content)
+        .offset(move |value| shift * (1.0 - value))
+        .into()
+}
+
+fn moving_picture<'a>(app: &'a App, viewer: &'a Viewer) -> Element<'a, Message> {
+    let content = picture(app, viewer);
+    let key = viewer.current().unwrap_or(0) as u64;
+    let step = f32::from(viewer.step);
+    let exit = app.edit_exit.map(|(_, offset, scale)| (offset, scale));
+    animate(1.0, if exit.is_some() { Speed::EXPAND } else { Speed::SLIDE }, move |_| content)
+        .keyed(key)
+        .from(0.0)
+        .transform(move |value| match exit {
+            Some((offset, scale)) => Transform { scale: scale + (1.0 - scale) * value, offset: offset * (1.0 - value) },
+            None => Transform { scale: 1.0, offset: Vector::new(STEP_TRAVEL * step * (1.0 - value), 0.0) },
+        })
+        .into()
 }
 
 fn header<'a>(app: &'a App, viewer: &'a Viewer) -> Element<'a, Message> {
@@ -217,49 +238,38 @@ fn toolbar<'a>(app: &'a App, viewer: &'a Viewer) -> Element<'a, Message> {
 
 fn stage<'a>(app: &'a App, viewer: &'a Viewer, chrome: bool) -> Element<'a, Message> {
     let paint = app.paint;
-    let mut layers: Vec<Element<'_, Message>> = vec![picture(app, viewer)];
-    if chrome {
-        if viewer.at > 0 {
-            layers.push(
-                container(ui::glass_circle(&paint, Icon::Back, app.t(Key::Previous), event(ViewerEvent::Step(-1))))
-                    .padding(16)
-                    .center_y(Fill)
-                    .align_left(Fill)
-                    .into(),
-            );
+    let mut layers: Vec<Element<'_, Message>> = vec![moving_picture(app, viewer)];
+    if viewer.at > 0 {
+        let circle = ui::glass_circle(&paint, Icon::Back, app.t(Key::Previous), event(ViewerEvent::Step(-1)));
+        let circle = slide(chrome, Vector::new(-CONTROL_TRAVEL, 0.0), circle);
+        layers.push(container(circle).padding(16).center_y(Fill).align_left(Fill).into());
+    }
+    if viewer.at + 1 < viewer.list.len() {
+        let circle = ui::glass_circle(&paint, Icon::Next, app.t(Key::Next), event(ViewerEvent::Step(1)));
+        let circle = slide(chrome, Vector::new(CONTROL_TRAVEL, 0.0), circle);
+        layers.push(container(circle).padding(16).center_y(Fill).align_right(Fill).into());
+    }
+    let bar = slide(chrome, Vector::new(0.0, CONTROL_TRAVEL), toolbar(app, viewer));
+    layers.push(container(bar).padding(16).center_x(Fill).align_bottom(Fill).into());
+    if let Some(index) = viewer.current() {
+        let photo = &app.photos[index];
+        let mut tag = photo.format.name.to_string();
+        if let Some(note) = viewer.loaded.as_ref().and_then(|loaded| note_text(app, loaded.note)) {
+            tag = format!("{tag} · {note}");
         }
-        if viewer.at + 1 < viewer.list.len() {
-            layers.push(
-                container(ui::glass_circle(&paint, Icon::Next, app.t(Key::Next), event(ViewerEvent::Step(1))))
-                    .padding(16)
-                    .center_y(Fill)
-                    .align_right(Fill)
-                    .into(),
-            );
-        }
-        layers.push(container(toolbar(app, viewer)).padding(16).center_x(Fill).align_bottom(Fill).into());
-        if let Some(index) = viewer.current() {
-            let photo = &app.photos[index];
-            let mut tag = photo.format.name.to_string();
-            if let Some(note) = viewer.loaded.as_ref().and_then(|loaded| note_text(app, loaded.note)) {
-                tag = format!("{tag} · {note}");
-            }
-            if photo.format.family != Family::Raster
-                || viewer.loaded.as_ref().is_some_and(|loaded| loaded.pages > 1 || loaded.frames.len() > 1)
-            {
-                layers.push(container(ui::format_badge(&tag)).padding(12).align_left(Fill).align_top(Fill).into());
-            }
+        if photo.format.family != Family::Raster
+            || viewer.loaded.as_ref().is_some_and(|loaded| loaded.pages > 1 || loaded.frames.len() > 1)
+        {
+            let badge = slide(chrome, Vector::new(0.0, -CONTROL_TRAVEL), ui::format_badge(&tag));
+            layers.push(container(badge).padding(12).align_left(Fill).align_top(Fill).into());
         }
     }
     let area: Element<'_, Message> =
         mouse_area(stack(layers).width(Fill).height(Fill)).on_double_click(event(ViewerEvent::Fullscreen)).into();
     let area = ui::context_area(area, |_| event(ViewerEvent::More))
         .on_zoom(|delta| event(if delta > 0 { ViewerEvent::ZoomIn } else { ViewerEvent::ZoomOut }));
-    let mut column = Column::new().push(container(area).width(Fill).height(Fill));
-    if chrome {
-        column = column.push(filmstrip(app, viewer));
-    }
-    ui::pane(ui::STAGE, 0.0, column).into()
+    let column = column![container(area).width(Fill).height(Fill), anim::collapse(chrome, filmstrip(app, viewer))];
+    ui::pane(ui::STAGE, 0.0, column).clip(true).into()
 }
 
 fn filmstrip<'a>(app: &'a App, viewer: &'a Viewer) -> Element<'a, Message> {
