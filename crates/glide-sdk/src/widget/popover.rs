@@ -218,11 +218,12 @@ fn content(layout: Layout<'_>) -> Layout<'_> {
 
 impl<M> Floating<'_, M> {
     fn lay(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
-        let max_width = self.width.unwrap_or(bounds.width - 2.0 * MARGIN);
+        let available = (bounds.width - 2.0 * MARGIN).max(0.0);
+        let max_width = self.width.unwrap_or(available).min(available);
         let below = bounds.height - (self.anchor.y + self.anchor.height + self.gap) - MARGIN;
         let above = self.anchor.y - self.gap - MARGIN;
         let limits = layout::Limits::new(
-            Size::new(self.width.unwrap_or(0.0), 0.0),
+            Size::new(self.width.map_or(0.0, |width| width.min(available)), 0.0),
             Size::new(max_width, below.max(above).max(48.0)),
         );
         let node = self.element.layout(self.tree, renderer, &limits);
@@ -566,6 +567,19 @@ fn option_row<'a, M: Clone + 'a>(
     decorated_row(paint, label, (None, None), checked, highlighted, message)
 }
 
+fn wrapping_option_row<'a, M: Clone + 'a>(
+    paint: &Paint, label: String, checked: bool, highlighted: bool, message: M,
+) -> Element<'a, M> {
+    let mark: Element<'a, M> =
+        if checked { icon(Icon::Check, 14.0, paint.acc_bg()) } else { Space::new().width(14).height(14).into() };
+    let line = row![mark, text(label, TextStyle::MENU_ITEM).width(Fill).wrapping(Wrapping::WordOrGlyph)]
+        .spacing(SP2)
+        .align_y(Alignment::Center);
+    let padding = (component::MENU_ITEM - TextStyle::MENU_ITEM.line_height_px).max(0.0) / 2.0;
+    let content = container(line).width(Fill).padding(Padding::from([padding, SP2])).clip(true);
+    menu_row_content(paint, content, highlighted, message)
+}
+
 fn decorated_row<'a, M: Clone + 'a>(
     paint: &Paint, label: String, (dot, tail): (Option<iced::Color>, Option<String>), checked: bool, highlighted: bool,
     message: M,
@@ -601,9 +615,15 @@ fn action_row<'a, M: Clone + 'a>(
 fn menu_row<'a, M: Clone + 'a>(
     paint: &Paint, line: impl Into<Element<'a, M>>, highlighted: bool, message: M,
 ) -> Element<'a, M> {
-    let paint = *paint;
     let content =
         container(line).center_y(component::MENU_ITEM).width(Fill).padding(Padding::from([0.0, SP2])).clip(true);
+    menu_row_content(paint, content, highlighted, message)
+}
+
+fn menu_row_content<'a, M: Clone + 'a>(
+    paint: &Paint, content: iced::widget::Container<'a, M>, highlighted: bool, message: M,
+) -> Element<'a, M> {
+    let paint = *paint;
     let row = widgets::container(content, move |hover, press| {
         let lit = if highlighted { 1.0 } else { hover.max(press) };
         container::Style {
@@ -655,16 +675,40 @@ pub fn dropdown_with<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
     let label = selected.as_ref().map_or_else(|| placeholder.to_string(), ToString::to_string);
     let color = if selected.is_some() { paint.fg_1() } else { paint.fg_3() };
     let anchor = opener(&paint, lead, label, style, color, Length::Fill);
+    dropdown_popup(&paint, anchor, options, selected, on_select, None)
+}
+
+#[must_use]
+pub fn dropdown_compact<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
+    paint: &Paint, options: Vec<T>, selected: Option<T>, on_select: impl Fn(T) -> M + 'a, width: f32,
+) -> Element<'a, M> {
+    let label = selected.as_ref().map_or_else(String::new, ToString::to_string);
+    let label = super::elide(&label, (width - 48.0).max(0.0), TextStyle::CALL);
+    let menu_width = compact_menu_width(&options);
+    let anchor = opener(paint, None, label, TextStyle::CALL, paint.fg_1(), Length::Fill);
+    dropdown_popup(paint, anchor, options, selected, on_select, Some(menu_width))
+}
+
+fn compact_menu_width<T: ToString>(options: &[T]) -> f32 {
+    options.iter().map(|option| super::measure(&option.to_string(), TextStyle::MENU_ITEM)).fold(240.0_f32, f32::max)
+        + 64.0
+}
+
+fn dropdown_popup<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
+    paint: &Paint, anchor: Element<'a, M>, options: Vec<T>, selected: Option<T>, on_select: impl Fn(T) -> M + 'a,
+    width: Option<f32>,
+) -> Element<'a, M> {
     let count = options.len();
     let options = std::rc::Rc::new(options);
     let on_select = std::rc::Rc::new(on_select);
     let (pick_options, pick) = (std::rc::Rc::clone(&options), std::rc::Rc::clone(&on_select));
-    Popup::new(&paint, anchor, move |paint, highlight| {
+    let popup = Popup::new(paint, anchor, move |paint, highlight| {
         let rows = options
             .iter()
             .enumerate()
             .map(|(index, option)| {
-                option_row(
+                let row = if width.is_some() { wrapping_option_row } else { option_row };
+                row(
                     paint,
                     option.to_string(),
                     selected.as_ref() == Some(option),
@@ -675,8 +719,11 @@ pub fn dropdown_with<'a, T: ToString + PartialEq + Clone + 'a, M: Clone + 'a>(
             .collect();
         menu_card(paint, rows)
     })
-    .keyboard(count, move |index| pick(pick_options[index].clone()))
-    .into()
+    .keyboard(count, move |index| pick(pick_options[index].clone()));
+    match width {
+        Some(width) => popup.width(width).into(),
+        None => popup.into(),
+    }
 }
 
 pub type RowMarks = (Option<iced::Color>, Option<String>);
@@ -776,6 +823,55 @@ pub fn menu_button<'a, M: Clone + 'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_dropdown_menu_fits_long_option_independently_of_the_opener() {
+        let name = "A very long custom icon theme or font family name";
+        let width = compact_menu_width(&[name]);
+        assert!(width > 180.0);
+        assert!(width >= super::super::measure(name, TextStyle::MENU_ITEM) + 64.0);
+        let label = super::super::elide(name, 132.0, TextStyle::CALL);
+        assert!(label.contains('…'));
+        assert!(super::super::measure(&label, TextStyle::CALL) <= 132.0);
+    }
+
+    #[test]
+    fn compact_option_grows_to_show_long_names_in_narrow_menus() {
+        let paint = Paint::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue);
+        let name = "A very long custom icon theme or font family name";
+        let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
+        let height = |width| {
+            let mut element = wrapping_option_row(&paint, name.to_owned(), true, false, ());
+            let mut tree = Tree::new(&element);
+            let limits = layout::Limits::new(Size::new(width, 0.0), Size::new(width, 400.0));
+            element.as_widget_mut().layout(&mut tree, &renderer, &limits).size().height
+        };
+        assert!(height(240.0) > height(500.0));
+        assert!(height(500.0) >= component::MENU_ITEM);
+    }
+
+    #[test]
+    fn wide_popup_is_constrained_to_the_window() {
+        let paint = Paint::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue);
+        let mut element = menu_card::<()>(&paint, vec![]);
+        let mut tree = Tree::new(&element);
+        let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
+        let mut floating = Floating {
+            element: element.as_widget_mut(),
+            tree: &mut tree,
+            anchor: Rectangle::new(Point::new(230.0, 20.0), Size::new(40.0, 30.0)),
+            progress: 1.0,
+            side: Side::Below,
+            width: Some(800.0),
+            centred: false,
+            gap: GAP,
+        };
+        let node = floating.lay(&renderer, Size::new(300.0, 400.0));
+        let [card] = node.children() else { panic!("the content is the only child") };
+        assert!(card.size().width <= 300.0 - 2.0 * MARGIN);
+        assert!(node.bounds().x + SHADOW_ROOM >= MARGIN);
+        assert!(node.bounds().x + SHADOW_ROOM + card.size().width <= 300.0 - MARGIN);
+    }
 
     #[test]
     fn a_popup_opens_below_and_flips_above_near_the_bottom() {

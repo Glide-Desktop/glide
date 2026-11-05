@@ -173,6 +173,7 @@ pub struct Notification {
     pub progress: Option<u8>,
     pub reply: Option<(String, String)>,
     pub image_path: Option<String>,
+    pub origin_device: Option<String>,
 }
 
 impl Notification {
@@ -265,6 +266,12 @@ impl Notification {
         self
     }
 
+    #[must_use]
+    pub fn origin_device(mut self, name: impl Into<String>) -> Self {
+        self.origin_device = Some(name.into());
+        self
+    }
+
     fn hints(&self) -> HashMap<&'static str, Value<'_>> {
         let urgency: u8 = match self.urgency {
             Urgency::Low => 0,
@@ -296,6 +303,9 @@ impl Notification {
         }
         if let Some(path) = &self.image_path {
             hints.insert("image-path", Value::from(path.as_str()));
+        }
+        if let Some(name) = &self.origin_device {
+            hints.insert("x-glide-origin-device", Value::from(name.as_str()));
         }
         hints
     }
@@ -520,6 +530,13 @@ mod tests {
         assert_eq!(notification.flat_actions(), vec!["open", "Open"]);
         assert_eq!(notification.timeout_ms, -1, "the server picks the timeout by default");
         assert!(!hints.contains_key("resident"), "unset hints stay out of the map");
+    }
+
+    #[test]
+    fn notifications_carry_the_origin_device_separately() {
+        let notification = Notification::new("glide-phone", "Pixel: Alice").origin_device("Pixel");
+        assert_eq!(notification.hints()["x-glide-origin-device"], Value::from("Pixel"));
+        assert_eq!(notification.summary, "Pixel: Alice");
     }
 
     #[test]
