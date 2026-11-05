@@ -169,9 +169,7 @@ git push origin v0.2.0
 
 The Release workflow checks that the tag matches the crate version, builds the
 Arch package with `makepkg`, and publishes a release whose notes start with the
-tag message and list the commits since the previous tag. Running the workflow
-by hand (Actions › Release › Run workflow) builds the package and the notes as
-an artifact without publishing anything.
+tag message and list the commits since the previous tag.
 
 ## Writing apps for Glide
 
