@@ -20,6 +20,7 @@ pub enum Page {
     Layout,
     Cards,
     Insight,
+    Gallery,
     Secrets,
     Overlays,
     Type,
@@ -29,7 +30,7 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Overview,
         Self::Buttons,
         Self::Inputs,
@@ -38,6 +39,7 @@ impl Page {
         Self::Layout,
         Self::Cards,
         Self::Insight,
+        Self::Gallery,
         Self::Secrets,
         Self::Overlays,
         Self::Type,
@@ -57,6 +59,7 @@ impl Page {
             Self::Layout => ("Розмітка", "Layout"),
             Self::Cards => ("Картки й списки", "Cards and lists"),
             Self::Insight => ("Стан і огляди", "Status and summaries"),
+            Self::Gallery => ("Галерея", "Gallery"),
             Self::Secrets => ("Секрети", "Secrets"),
             Self::Overlays => ("Оверлеї", "Overlays"),
             Self::Type => ("Типографіка й кольори", "Type and colour"),
@@ -75,6 +78,7 @@ impl Page {
             Self::Inputs => Icon::Search,
             Self::Secrets => Icon::Eye,
             Self::Feedback | Self::Insight => Icon::Refresh,
+            Self::Gallery => Icon::Inspector,
             Self::Layout | Self::Cards => Icon::Folder,
             Self::Overlays => Icon::More,
             Self::Type => Icon::File,
@@ -316,6 +320,66 @@ pub struct Catalog {
     pub issue_open: bool,
     pub info_open: bool,
     pub plan: Fruit,
+    pub gallery: Gallery,
+}
+
+pub struct Gallery {
+    pub pictures: Vec<glide_sdk::iced::widget::image::Handle>,
+    pub picked: [bool; 2],
+    pub favourite: bool,
+    pub exposure: i32,
+    pub crop: glide_sdk::widget::CropRect,
+    pub tilt: f32,
+    pub frame: usize,
+}
+
+const SCENES: [[[u8; 3]; 4]; 6] = [
+    [[0xf2, 0xd2, 0x96], [0xfc, 0xe4, 0xd6], [0xec, 0x8b, 0x4f], [0x74, 0x34, 0x0f]],
+    [[0xa7, 0xc8, 0xf6], [0xff, 0xff, 0xff], [0x5b, 0x9b, 0xec], [0x16, 0x3e, 0x79]],
+    [[0xdc, 0xef, 0xd9], [0xfa, 0xec, 0xd2], [0x6c, 0xbb, 0x62], [0x1e, 0x4f, 0x1c]],
+    [[0xcd, 0xb4, 0xee], [0xf6, 0xbf, 0x9c], [0x7a, 0x4d, 0xbb], [0x40, 0x25, 0x66]],
+    [[0xd3, 0xeb, 0xe7], [0xff, 0xff, 0xff], [0x46, 0xb3, 0xa6], [0x08, 0x4b, 0x45]],
+    [[0x16, 0x3e, 0x79], [0xfa, 0xec, 0xd2], [0x35, 0x31, 0x2c], [0x1b, 0x1a, 0x17]],
+];
+
+#[must_use]
+pub fn landscape(index: usize, width: u32, height: u32) -> glide_sdk::iced::widget::image::Handle {
+    let [sky, sun, far, near] = SCENES[index % SCENES.len()];
+    let (w, h) = (width as f32, height as f32);
+    let sun_x = w * (0.25 + (index * 37 % 50) as f32 / 100.0);
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for row in 0..height {
+        for column in 0..width {
+            let (x, y) = (column as f32, row as f32);
+            let ridge = h * (0.55 + 0.08 * (x / w * 6.0 + index as f32).sin());
+            let shore = h * (0.75 + 0.05 * (x / w * 9.0 + index as f32 * 2.0).cos());
+            let colour = if y > shore {
+                near
+            } else if y > ridge {
+                far
+            } else if (x - sun_x).hypot(y - h * 0.25) < h * 0.09 {
+                sun
+            } else {
+                sky
+            };
+            pixels.extend_from_slice(&[colour[0], colour[1], colour[2], 255]);
+        }
+    }
+    glide_sdk::iced::widget::image::Handle::from_rgba(width, height, pixels)
+}
+
+impl Gallery {
+    fn new() -> Self {
+        Self {
+            pictures: (0..SCENES.len()).map(|index| landscape(index, 360, 240)).collect(),
+            picked: [false, true],
+            favourite: true,
+            exposure: 14,
+            crop: glide_sdk::widget::CropRect { x: 0.1, y: 0.1, w: 0.8, h: 0.8 },
+            tilt: -3.5,
+            frame: 2,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -389,6 +453,12 @@ pub enum Message {
     OpenLink,
     SystemResult(bool, &'static str),
     Ignored,
+    GalleryPick(usize),
+    GalleryFavourite,
+    GalleryExposure(i32),
+    GalleryCrop(glide_sdk::widget::CropRect),
+    GalleryTilt(f32),
+    GalleryFrame(usize),
 }
 
 const SHORTCUT_PAGES: usize = 10;
@@ -572,6 +642,7 @@ impl Catalog {
             issue_open: false,
             info_open: false,
             plan: Fruit::Pear,
+            gallery: Gallery::new(),
         }
     }
 }
@@ -598,6 +669,16 @@ impl App for Catalog {
             Message::IssueOpen => self.issue_open = !self.issue_open,
             Message::InfoOpen => self.info_open = !self.info_open,
             Message::Plan(fruit) => self.plan = fruit,
+            Message::GalleryPick(index) => {
+                if let Some(picked) = self.gallery.picked.get_mut(index) {
+                    *picked = !*picked;
+                }
+            }
+            Message::GalleryFavourite => self.gallery.favourite = !self.gallery.favourite,
+            Message::GalleryExposure(value) => self.gallery.exposure = value,
+            Message::GalleryCrop(rect) => self.gallery.crop = rect,
+            Message::GalleryTilt(degrees) => self.gallery.tilt = degrees,
+            Message::GalleryFrame(index) => self.gallery.frame = index,
             Message::Look(look) => {
                 self.look = look;
                 self.apply_preview(shell);

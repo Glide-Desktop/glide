@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use glide_sdk::anim::{self, Speed};
-use glide_sdk::iced::widget::{Column, Row, Space, column, container, mouse_area, row, text_input};
+use glide_sdk::iced::widget::{Column, Row, Space, column, container, mouse_area, row, stack, text_input};
 use glide_sdk::iced::{Alignment, Color, Element, Fill, Padding, Vector};
 use glide_sdk::prelude::*;
 use glide_sdk::system::{Osd, QuickSettings, Urgency};
@@ -57,6 +57,7 @@ pub fn view<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
         Page::Layout => layout(catalog, shell),
         Page::Cards => cards(catalog, shell),
         Page::Insight => insight(catalog, shell),
+        Page::Gallery => gallery(catalog, shell),
         Page::Secrets => secrets(catalog, shell),
         Page::Overlays => overlays(shell),
         Page::Type => typography(shell),
@@ -1115,6 +1116,179 @@ fn tables<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Me
     ]
     .spacing(SP3)
     .into()
+}
+
+fn stage<'a>(content: impl Into<Element<'a, Message>>, height: f32) -> Element<'a, Message> {
+    ui::pane(ui::STAGE, R2, container(content).center(Fill)).height(height).width(Fill).into()
+}
+
+fn gallery_picture(catalog: &Catalog, index: usize) -> Option<glide_sdk::iced::widget::image::Handle> {
+    let pictures = &catalog.gallery.pictures;
+    pictures.get(index % pictures.len().max(1)).cloned()
+}
+
+fn gallery_tiles<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let gallery = &catalog.gallery;
+    let tile = |index: usize, badge: Option<&str>, favourite: bool, picked: Option<bool>, on_press: Option<Message>| {
+        ui::photo_tile(
+            paint,
+            ui::Tile {
+                picture: gallery_picture(catalog, index),
+                side: 120.0,
+                badge: badge.map(Into::into),
+                favourite,
+                picked,
+                on_press,
+                on_right: None,
+                label: "",
+            },
+        )
+    };
+    let tiles = wrap(vec![
+        tile(0, None, gallery.favourite, None, Some(Message::GalleryFavourite)),
+        tile(5, Some("RAW"), false, None, None),
+        tile(2, Some("0:04"), false, Some(gallery.picked[0]), Some(Message::GalleryPick(0))),
+        tile(4, None, false, Some(gallery.picked[1]), Some(Message::GalleryPick(1))),
+    ]);
+    let hint = shell.t(
+        "Клацніть першу плитку — серце, дві останні — вибір.",
+        "Click the first tile for the heart, the last two to pick them.",
+    );
+    column![tiles, caption(shell, hint)].spacing(SP2).into()
+}
+
+fn gallery_covers<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let cover = |pictures: &[usize], width: f32, title: &str, subtitle: &str, overlay: bool| {
+        ui::cover_card(
+            paint,
+            ui::CoverCard {
+                pictures: pictures.iter().map(|&index| gallery_picture(catalog, index)).collect(),
+                width,
+                height: 138.0,
+                title: title.into(),
+                subtitle: subtitle.into(),
+                overlay,
+                on_press: None,
+                on_right: None,
+            },
+        )
+    };
+    wrap(vec![
+        cover(
+            &[4],
+            220.0,
+            shell.t("Листопад 2026", "November 2026"),
+            shell.t("Карпати · 318 фото", "Carpathians · 318 photos"),
+            false,
+        ),
+        cover(&[0, 1, 2, 3], 138.0, shell.t("Родина", "Family"), shell.t("1 204 фото", "1,204 photos"), false),
+        cover(&[1], 260.0, "2026", shell.t("4 210 фото", "4,210 photos"), true),
+    ])
+}
+
+fn gallery<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
+    let paint = shell.paint();
+    let gallery = &catalog.gallery;
+    let picture = |index: usize| gallery_picture(catalog, index);
+    let film = stage(
+        Row::with_children(
+            (0..9).map(|index| ui::film_thumb(picture(index), index == gallery.frame, Message::GalleryFrame(index))),
+        )
+        .spacing(4)
+        .align_y(Alignment::Center),
+        88.0,
+    );
+    let toolbar = ui::glass(
+        row![
+            ui::glass_icon(paint, Icon::Minus, shell.t("Зменшити", "Zoom out"), Some(Message::Flip)),
+            ui::glass_label("79 %", 54.0),
+            ui::glass_icon(paint, Icon::Plus, shell.t("Збільшити", "Zoom in"), Some(Message::Flip)),
+            ui::glass_button(
+                paint,
+                text(shell.t("Вписати", "Fit"), TextStyle::CAP).color(ui::GLASS_INK),
+                "",
+                Some(Message::Flip)
+            ),
+            ui::glass_divider(),
+            ui::glass_icon(paint, Icon::Up, shell.t("На весь екран", "Fullscreen"), None),
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center),
+    );
+    let glass = stage(
+        row![
+            ui::glass_circle(paint, Icon::Right, shell.t("Наступне", "Next"), Message::Flip),
+            toolbar,
+            ui::format_badge(shell.t("RAW · вбудоване прев'ю", "RAW · embedded preview")),
+        ]
+        .spacing(SP4)
+        .align_y(Alignment::Center),
+        96.0,
+    );
+    let bins = {
+        let mut bins = [[0u32; 64]; 3];
+        for (channel, curve) in bins.iter_mut().enumerate() {
+            for (index, value) in curve.iter_mut().enumerate() {
+                let x = index as f32 / 63.0 - 0.35 - channel as f32 * 0.12;
+                *value = (1000.0 * (-x * x * 14.0).exp()) as u32 + 20;
+            }
+        }
+        bins
+    };
+    let adjust = column![
+        ui::histogram(paint, bins),
+        ui::adjust_slider(
+            paint,
+            shell.t("Експозиція", "Exposure"),
+            gallery.exposure,
+            -100,
+            Message::GalleryExposure,
+            None,
+            Some((Message::GalleryExposure(0), shell.t("Скинути", "Reset")))
+        ),
+        ui::exif_strip(paint, vec!["ƒ/1.7".into(), "1/240".into(), "ISO 64".into(), "24 мм".into()]),
+    ]
+    .spacing(SP3)
+    .max_width(320);
+    let crop = stage(
+        column![
+            stack![
+                glide_sdk::iced::widget::image(picture(4).unwrap_or_else(|| crate::landscape(4, 360, 240)))
+                    .width(360)
+                    .height(240),
+                ui::crop_overlay(gallery.crop, None, 1.5, 360.0, 240.0, Message::GalleryCrop),
+            ],
+            ui::straighten_dial(gallery.tilt, Message::GalleryTilt),
+        ]
+        .spacing(SP3)
+        .align_x(Alignment::Center),
+        340.0,
+    );
+    let backdrop = row![
+        ui::checkerboard(120.0, 80.0),
+        caption(shell, shell.t("Тло для прозорих зображень і SVG.", "The backdrop for transparent images and SVG."))
+    ]
+    .spacing(SP3)
+    .align_y(Alignment::Center);
+    page(
+        shell,
+        Page::Gallery,
+        shell.t(
+            "Віджети фото-застосунків: плитки сітки, стрічка, обкладинки, скляна панель над кадром і інструменти редагування. Ними зібрано Glide Фото.",
+            "Widgets for photo apps: grid tiles, a filmstrip, covers, the glass toolbar over a photo and the editing tools. Glide Photos is built from them.",
+        ),
+        vec![
+            demo(shell, "photo_tile", gallery_tiles(catalog, shell)),
+            demo(shell, "film_thumb", film),
+            demo(shell, "cover_card", gallery_covers(catalog, shell)),
+            demo(shell, "glass · glass_icon · glass_circle · format_badge", glass),
+            demo(shell, "histogram · adjust_slider · exif_strip", adjust),
+            demo(shell, "crop_overlay · straighten_dial", crop),
+            demo(shell, "checkerboard", backdrop),
+        ],
+    )
 }
 
 fn secrets<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {
