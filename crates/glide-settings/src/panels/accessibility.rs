@@ -27,6 +27,8 @@ mod tr {
         Pointer => "Pointer", "Вказівник";
         CursorSize => "Cursor size", "Розмір курсора";
         CursorSizeHint => "Applies to the Glide pointer at once and to apps as they restart", "Діє на вказівник Glide одразу, а на програми — після їх перезапуску";
+        ShakeToFind => "Shake to find the pointer", "Струсніть, щоб знайти вказівник";
+        ShakeToFindHint => "Moving the mouse quickly back and forth makes the pointer bigger for a moment", "Якщо швидко поводити мишею туди-сюди, вказівник ненадовго збільшиться";
         Default => "Default", "Типовий";
         Medium => "Medium", "Середній";
         Large => "Large", "Великий";
@@ -56,6 +58,7 @@ const MOUSE: &str = "org.gnome.desktop.peripherals.mouse";
 
 pub(crate) const TEXT_SCALES: [f64; 4] = [1.0, 1.25, 1.5, 2.0];
 pub(crate) const CURSOR_SIZES: [i64; 5] = [24, 32, 48, 64, 96];
+pub(crate) const SHAKE_TO_FIND: &str = "shake-to-find";
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -64,6 +67,7 @@ pub enum Msg {
     TextScale(usize),
     Scrollbars(bool),
     CursorSize(i64),
+    ShakeToFind(bool),
     DoubleClick(f64),
     CommitDoubleClick,
     DoubleClickSettled(u64),
@@ -104,12 +108,16 @@ impl Pane for Page {
         "text size",
         "large text",
         "cursor",
+        "shake",
+        "find pointer",
         "motion",
         "animation",
         "доступність",
         "контраст",
         "розмір тексту",
         "курсор",
+        "струс",
+        "знайти вказівник",
         "анімац",
     ];
 
@@ -139,6 +147,13 @@ impl Pane for Page {
                 }
                 if self.snapshot.has_schema(INTERFACE) {
                     return self.set(INTERFACE, "cursor-size", size.to_string());
+                }
+            }
+            Msg::ShakeToFind(on) => {
+                if on {
+                    config.remove("accessibility", SHAKE_TO_FIND);
+                } else {
+                    config.set_bool("accessibility", SHAKE_TO_FIND, false);
                 }
             }
             Msg::DoubleClick(value) => {
@@ -301,6 +316,15 @@ impl Page {
                     .build(),
             )
             .push(container(gated(*c, cards)).padding([4.0, theme::ROW_PADDING_X - 4.0]));
+        let shake = config.bool_or("accessibility", SHAKE_TO_FIND, true);
+        group = group.push(
+            Row::new(t, c.t(T::ShakeToFind))
+                .subtitle(c.t(T::ShakeToFindHint))
+                .prefix(widgets::icon(Icon::Pointer, 18.0, t.fg_2()))
+                .suffix(widgets::switch(t, shake, Msg::ShakeToFind))
+                .changed(!shake)
+                .build(),
+        );
         if let Some(saved) = self.snapshot.int(MOUSE, "double-click") {
             let value = self.double_click.unwrap_or(saved as f64);
             group = group

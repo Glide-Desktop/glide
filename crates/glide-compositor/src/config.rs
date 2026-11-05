@@ -56,10 +56,17 @@ pub struct DisplaysConfig {
     pub primary: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct AccessibilityConfig {
     pub cursor_size: Option<u32>,
+    pub shake_to_find: bool,
+}
+
+impl Default for AccessibilityConfig {
+    fn default() -> Self {
+        Self { cursor_size: None, shake_to_find: true }
+    }
 }
 
 #[allow(clippy::struct_excessive_bools)] // Independent [notifications] switches mirrored from glide.toml
@@ -1396,6 +1403,7 @@ impl Config {
         state.configure_tray(&self.topbar, dock.theme.icon_theme.clone());
         state.notifications.set_policy(self.notifications.policy());
         crate::cursor::set_configured_size(self.accessibility.cursor_size);
+        state.session.find_cursor.set_enabled(self.accessibility.shake_to_find);
         if crate::cursor::set_configured_theme(self.general.cursor_theme.as_deref()) {
             state.reload_cursor_theme();
         }
@@ -2339,6 +2347,7 @@ sensitivity = 1.5
 
 [accessibility]
 cursor-size = 48
+shake-to-find = false
 
 [[output]]
 name = "eDP-1"
@@ -2429,6 +2438,8 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
         assert_eq!(policy.banner_timeout, Some(std::time::Duration::from_secs(12)));
         assert_eq!(policy.muted.len(), 2);
         assert_eq!(config.accessibility.cursor_size, Some(48));
+        assert!(!config.accessibility.shake_to_find);
+        assert!(Config::default().accessibility.shake_to_find, "shaking finds the pointer unless switched off");
         assert_eq!(config.outputs[0].scale, Some(1.25));
         assert_eq!(
             config.outputs[0].mode_spec(),

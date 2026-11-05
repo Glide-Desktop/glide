@@ -404,6 +404,7 @@ pub struct SessionServices {
     pub volumes: crate::removable::Toasts,
     pub tiled_from: HashMap<glide_layout::WindowId, glide_layout::Rectangle>,
     pub osd: crate::osd::Osd,
+    pub find_cursor: crate::find_cursor::Finder,
     pub super_tap: crate::super_keys::SuperTap,
     pub lid_closed: bool,
     pub appearance_schedule: bool,

@@ -2473,6 +2473,7 @@ impl GlideState {
             pointer.frame(self);
             return;
         }
+        self.find_cursor_motion(event.delta());
 
         let mut delta = self.clamp_coords(pointer_location + event.delta()) - pointer_location;
 
@@ -2528,6 +2529,15 @@ impl GlideState {
         }
     }
 
+    fn find_cursor_motion(&mut self, delta: Point<f64, Logical>) {
+        if self.session.find_cursor.enabled()
+            && !self.pointer_constrained()
+            && self.session.find_cursor.motion((delta.x, delta.y), std::time::Instant::now())
+        {
+            self.queue_redraw();
+        }
+    }
+
     fn handle_pointer_motion_absolute<I: InputBackend>(&mut self, event: &I::PointerMotionAbsoluteEvent) {
         self.queue_redraw();
         let Some(output) = self.space.outputs().next() else {
@@ -2541,6 +2551,7 @@ impl GlideState {
         let serial = SERIAL_COUNTER.next_serial();
 
         let pointer = self.seat.get_pointer().expect("a pointer was added in GlideState::new");
+        self.find_cursor_motion(pos - pointer.current_location());
 
         let under = self.overview_motion(pos);
 

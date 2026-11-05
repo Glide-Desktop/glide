@@ -87,7 +87,7 @@ use backend::tty::TtyData;
 use glide_dock::{self as dock, preview as dock_preview};
 use glide_greeter::{self as greeter, handoff};
 use glide_launcher as launcher;
-use glide_overlays::{osd, power_dialog, switcher};
+use glide_overlays::{find_cursor, osd, power_dialog, switcher};
 #[cfg(test)]
 use glide_services::test_bus;
 use glide_services::{app_index, logind, oneshot, polkit_agent, polkit_helper, screensaver, x11_menus, xdg_autostart};
@@ -224,6 +224,7 @@ fn run() -> anyhow::Result<()> {
         let topbar_animating = state.topbar.is_animating();
         let flash_animating = state.screenshot_flash.tick(std::time::Instant::now());
         let osd_animating = state.session.osd.tick(std::time::Instant::now());
+        let find_cursor_animating = state.session.find_cursor.tick(std::time::Instant::now());
         let wheel_animating = state.smooth_wheel_pending();
         let shot_animating = state.tick_shot();
         let polkit_animating = state.tick_polkit();
@@ -252,6 +253,7 @@ fn run() -> anyhow::Result<()> {
             || switcher_animating
             || power_dialog_animating
             || cursor_animating
+            || find_cursor_animating
             || flash_animating
             || login_animating
         {

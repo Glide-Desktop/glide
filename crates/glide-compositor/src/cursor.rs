@@ -11,7 +11,7 @@ use smithay::{
     },
     input::pointer::{CursorIcon, CursorImageStatus},
     render_elements,
-    utils::{Physical, Point, Scale},
+    utils::{Logical, Physical, Point, Scale, Size},
 };
 use xcursor::{
     CursorTheme,
@@ -78,6 +78,15 @@ impl Cursor {
 
     pub fn image(&mut self, icon: CursorIcon, scale: u32, time: Duration) -> Image {
         self.image_with_index(icon, scale, time).0
+    }
+
+    pub fn image_sized(&mut self, icon: CursorIcon, size: u32, time: Duration) -> Image {
+        frame_with_index(time.as_millis() as u32, size, self.images_for(icon)).0
+    }
+
+    #[must_use]
+    pub fn nominal_size(&self, scale: u32) -> u32 {
+        effective_size(self.size) * scale
     }
 
     pub fn time_to_next_frame(&mut self, icon: CursorIcon, scale: u32, time: Duration) -> Option<Duration> {
@@ -189,12 +198,14 @@ impl<R: Renderer> std::fmt::Debug for PointerRenderElement<R> {
 
 pub struct PointerElement {
     buffer: Option<MemoryRenderBuffer>,
+    size: Option<Size<i32, Logical>>,
+    kind: Kind,
     status: CursorImageStatus,
 }
 
 impl Default for PointerElement {
     fn default() -> Self {
-        Self { buffer: None, status: CursorImageStatus::default_named() }
+        Self { buffer: None, size: None, kind: Kind::Cursor, status: CursorImageStatus::default_named() }
     }
 }
 
@@ -203,8 +214,13 @@ impl PointerElement {
         self.status = status;
     }
 
-    pub fn set_buffer(&mut self, buffer: MemoryRenderBuffer) {
+    pub fn set_buffer(&mut self, buffer: MemoryRenderBuffer, size: Option<Size<i32, Logical>>) {
         self.buffer = Some(buffer);
+        self.size = size;
+    }
+
+    pub fn set_kind(&mut self, kind: Kind) {
+        self.kind = kind;
     }
 }
 
@@ -226,8 +242,8 @@ where
                     buffer,
                     None,
                     None,
-                    None,
-                    Kind::Cursor,
+                    self.size,
+                    self.kind,
                 )
                 .map(|element| vec![E::from(PointerRenderElement::Memory(element))])
                 .unwrap_or_default(),
@@ -236,12 +252,7 @@ where
             CursorImageStatus::Surface(surface) => {
                 let elements: Vec<PointerRenderElement<R>> =
                     smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
-                        renderer,
-                        surface,
-                        location,
-                        scale,
-                        alpha,
-                        Kind::Cursor,
+                        renderer, surface, location, scale, alpha, self.kind,
                     );
                 elements.into_iter().map(E::from).collect()
             }

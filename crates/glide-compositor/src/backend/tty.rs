@@ -89,6 +89,7 @@ render_elements! {
     pub GlideRenderElements<=GlesRenderer>;
     Space=SpaceRenderElements<GlesRenderer, GlideWindowRenderElement<GlesRenderer>>,
     Pointer=PointerRenderElement<GlesRenderer>,
+    MagnifiedPointer=RescaleRenderElement<PointerRenderElement<GlesRenderer>>,
     Overview=crate::overview::OverviewRenderElement<GlesRenderer>,
     Memory=smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>,
     Snapshot=crate::snapshot::SnapshotRenderElement,
@@ -440,10 +441,15 @@ fn resolve_cursor_buffer(
 ) -> (MemoryRenderBuffer, Point<f64, Logical>) {
     let image = cursor.image(icon, scale, elapsed);
     let hotspot = named_hotspot(&image, scale);
-    if let Some((_, buffer)) = cursor_buffers.iter().find(|(cached, _)| cached == &image) {
-        return (buffer.clone(), hotspot);
-    }
+    (cached_cursor_buffer(cursor_buffers, image, scale), hotspot)
+}
 
+fn cached_cursor_buffer(
+    cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>, image: xcursor::parser::Image, scale: u32,
+) -> MemoryRenderBuffer {
+    if let Some((_, buffer)) = cursor_buffers.iter().find(|(cached, _)| cached == &image) {
+        return buffer.clone();
+    }
     let buffer = MemoryRenderBuffer::from_slice(
         &image.pixels_rgba,
         Fourcc::Argb8888,
@@ -453,7 +459,31 @@ fn resolve_cursor_buffer(
         None,
     );
     cursor_buffers.push((image, buffer.clone()));
-    (buffer, hotspot)
+    buffer
+}
+
+fn resolve_magnified_cursor(
+    cursor: &mut Cursor, cursor_buffers: &mut Vec<(xcursor::parser::Image, MemoryRenderBuffer)>, icon: CursorIcon,
+    scale: u32, elapsed: Duration,
+) -> (MemoryRenderBuffer, Point<f64, Logical>, smithay::utils::Size<i32, Logical>) {
+    let scale = scale.max(1);
+    let base = cursor.image(icon, scale, elapsed);
+    let wanted = (f64::from(cursor.nominal_size(scale)) * crate::find_cursor::MAGNIFY).ceil() as u32;
+    let image = cursor.image_sized(icon, wanted, elapsed);
+    let (shown, logical) = magnified_geometry(&base, &image, scale);
+    (cached_cursor_buffer(cursor_buffers, image, scale), shown, logical)
+}
+
+fn magnified_geometry(
+    base: &xcursor::parser::Image, large: &xcursor::parser::Image, scale: u32,
+) -> (Point<f64, Logical>, smithay::utils::Size<i32, Logical>) {
+    let ratio = f64::from(base.width) / f64::from(large.width.max(1)) / f64::from(scale.max(1));
+    let hotspot = Point::from((f64::from(large.xhot) * ratio, f64::from(large.yhot) * ratio));
+    let size = smithay::utils::Size::from((
+        (f64::from(large.width) * ratio).round() as i32,
+        (f64::from(large.height) * ratio).round() as i32,
+    ));
+    (hotspot, size)
 }
 
 enum FrameOutcome {
@@ -706,8 +736,15 @@ const CURSOR_EXTENT: i32 = 128;
 fn pointer_on_output(
     pointer_location: Point<f64, Logical>, output_geometry: Rectangle<i32, Logical>,
 ) -> Option<Point<f64, Logical>> {
-    let origin = pointer_location.to_i32_floor() - Point::from((CURSOR_EXTENT, CURSOR_EXTENT));
-    let reach = Rectangle::new(origin, smithay::utils::Size::from((CURSOR_EXTENT * 2, CURSOR_EXTENT * 2)));
+    pointer_within(pointer_location, output_geometry, 1.0)
+}
+
+fn pointer_within(
+    pointer_location: Point<f64, Logical>, output_geometry: Rectangle<i32, Logical>, magnify: f64,
+) -> Option<Point<f64, Logical>> {
+    let extent = (f64::from(CURSOR_EXTENT) * magnify.max(1.0)).ceil() as i32;
+    let origin = pointer_location.to_i32_floor() - Point::from((extent, extent));
+    let reach = Rectangle::new(origin, smithay::utils::Size::from((extent * 2, extent * 2)));
     reach.overlaps(output_geometry).then(|| pointer_location - output_geometry.loc.to_f64())
 }
 
@@ -719,13 +756,20 @@ fn cursor_origin(
 
 fn cursor_elements(
     gles_renderer: &mut GlesRenderer, pointer_element: &mut PointerElement, pointer_location: Point<f64, Logical>,
-    cursor_hotspot: Point<f64, Logical>, scale: Scale<f64>,
+    cursor_hotspot: Point<f64, Logical>, scale: Scale<f64>, magnify: f64,
 ) -> Vec<GlideRenderElements> {
     let position = cursor_origin(pointer_location, cursor_hotspot, scale);
-    pointer_element
-        .render_elements::<PointerRenderElement<GlesRenderer>>(gles_renderer, position, scale, 1.0)
+    let elements =
+        pointer_element.render_elements::<PointerRenderElement<GlesRenderer>>(gles_renderer, position, scale, 1.0);
+    if magnify <= 1.0 + 1e-3 {
+        return elements.into_iter().map(GlideRenderElements::Pointer).collect();
+    }
+    let origin = pointer_location.to_physical(scale).to_i32_round();
+    elements
         .into_iter()
-        .map(GlideRenderElements::Pointer)
+        .map(|element| {
+            GlideRenderElements::MagnifiedPointer(RescaleRenderElement::from_element(element, origin, magnify))
+        })
         .collect()
 }
 
@@ -1403,10 +1447,20 @@ impl GlideState {
             CursorImageStatus::Named(icon) => *icon,
             _ => CursorIcon::Default,
         };
-        let (cursor_buffer, named) =
-            resolve_cursor_buffer(cursor, cursor_buffers, icon, integer_scale.cast_unsigned(), elapsed);
+        let magnify = self.session.find_cursor.scale(glide_ui::clock::now());
+        let magnified = magnify > 1.0 + 1e-3;
+        let (cursor_buffer, named, cursor_size) = if magnified {
+            let (buffer, hotspot, size) =
+                resolve_magnified_cursor(cursor, cursor_buffers, icon, integer_scale.cast_unsigned(), elapsed);
+            (buffer, hotspot, Some(size))
+        } else {
+            let (buffer, hotspot) =
+                resolve_cursor_buffer(cursor, cursor_buffers, icon, integer_scale.cast_unsigned(), elapsed);
+            (buffer, hotspot, None)
+        };
         let cursor_hotspot = cursor_hotspot(&cursor_status, named);
-        pointer_element.set_buffer(cursor_buffer);
+        pointer_element.set_buffer(cursor_buffer, cursor_size);
+        pointer_element.set_kind(if magnified { Kind::Unspecified } else { Kind::Cursor });
         pointer_element.set_status(cursor_status);
 
         let output_mode = output.current_mode().map_or((1920, 1080), |m| (m.size.w, m.size.h));
@@ -1807,8 +1861,10 @@ impl GlideState {
             );
             prepend(&mut elements, dot);
         }
-        let mut ordered = local_pointer.map_or_else(Vec::new, |local| {
-            cursor_elements(gles_renderer, pointer_element, local, cursor_hotspot, scale)
+        let magnified_pointer =
+            if magnified { pointer_within(pointer_location, output_geometry, magnify) } else { None };
+        let mut ordered = magnified_pointer.or(local_pointer).map_or_else(Vec::new, |local| {
+            cursor_elements(gles_renderer, pointer_element, local, cursor_hotspot, scale, magnify)
         });
         let mut cursor_count = ordered.len();
         let icon_at = self.drag.touch_at.map_or(local_pointer, |at| pointer_on_output(at, output_geometry));
@@ -2358,6 +2414,23 @@ mod tests {
             pixels_rgba: Vec::new(),
             pixels_argb: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_magnified_cursor_draws_the_large_image_at_the_normal_size_before_rescaling() {
+        for scale in [1, 2] {
+            let (hotspot, size) = magnified_geometry(&text_beam(scale), &text_beam(3 * scale), scale);
+            assert_eq!(hotspot, named_hotspot(&text_beam(scale), scale), "the hotspot stays where it was");
+            assert_eq!(size, smithay::utils::Size::from((24, 24)));
+        }
+    }
+
+    #[test]
+    fn a_magnified_cursor_reaches_further_outputs() {
+        let neighbour = Rectangle::new(Point::from((1920, 0)), smithay::utils::Size::from((1920, 1080)));
+        let near_seam = Point::from((1920.0 - 200.0, 300.0));
+        assert_eq!(pointer_on_output(near_seam, neighbour), None);
+        assert!(pointer_within(near_seam, neighbour, 3.0).is_some());
     }
 
     #[test]
