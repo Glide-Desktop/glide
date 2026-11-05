@@ -7,6 +7,7 @@ mod feedback;
 mod find;
 mod focus;
 mod form;
+mod gallery;
 mod inputs;
 mod insight;
 mod inspector;
@@ -59,6 +60,12 @@ pub use find::{
 };
 pub use focus::{Focus, RING, focusable};
 pub use form::{action_bar, boxed_input, form_row, hint_line, key_values, sheet};
+pub use gallery::{
+    CoverCard, CropRect, DIAL_HEIGHT, DIAL_WIDTH, FILM_CURRENT, FILM_THUMB, GLASS, GLASS_BUTTON, GLASS_INK, HISTOGRAM,
+    STAGE, Tile, adjust_slider, checkerboard, cover_card, crop_overlay, dial_value, exif_strip, film_thumb,
+    format_badge, glass, glass_button, glass_circle, glass_divider, glass_icon, glass_label, glass_style, histogram,
+    photo_tile, straighten_dial,
+};
 pub use inputs::{
     Validity, bare_text_area_style, field, field_with, hinted_search_input, inline_field, inline_style, input_style,
     password_field, search_field, search_input, secret_input, secret_input_with, sized_search_input, stepper,
@@ -84,7 +91,8 @@ pub use media::{
 pub use panes::{code_block, heading_row, palette_swatch, pane, shortcut_list, split_view, stat_rows};
 pub use pointer::{ContextArea, context_area, reveal};
 pub use popover::{
-    MenuAction, Popup, RowMarks, Tooltip, bubble, dropdown, dropdown_decorated, dropdown_with, menu_button, tooltip,
+    MenuAction, Popup, RowMarks, Tooltip, bubble, dropdown, dropdown_compact, dropdown_decorated, dropdown_with,
+    menu_button, tooltip,
 };
 pub use secrets::{
     CODE, CodeSize, DiffField, ENTRY_ROW, FIELD_ROW, Glyphs, HALO, MASK, QrModules, SECRET, SecretField, Strength,

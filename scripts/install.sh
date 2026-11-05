@@ -6,7 +6,7 @@
 #   --prefix DIR   install prefix (default /usr/local)
 #   --destdir DIR  stage into DIR instead of / (for distribution packages)
 #   --from DIR     directory holding the glide, glidectl, glide-settings,
-#                  glide-files, glide-terminal, glide-text, glide-passwords, glide-catalog, glide-portal and glide-keychain binaries (default: bin/ of a
+#                  glide-files, glide-terminal, glide-text, glide-passwords, glide-photos, glide-catalog, glide-portal and glide-keychain binaries (default: bin/ of a
 #                  release tarball, else target/release of the source tree)
 #   --dm           install and configure glide-dm (via greetd) as system display manager
 #   --pam          add pam_glide_keychain to /etc/pam.d/greetd and /etc/pam.d/passwd,
@@ -103,9 +103,9 @@ else
     UNITDIR="$PREFIX/lib/systemd/user"
 fi
 
-BINARIES="glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed"
-FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-phone $BINDIR/glide-session $BINDIR/glide-lock
-$BINDIR/glide-welcome $BINDIR/glide-xembed $APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-passwords.desktop $APPDIR/glide-catalog.desktop $APPDIR/glide-phone.desktop $APPDIR/glide-welcome.desktop $AUTOSTARTDIR/glide-phone.desktop $ICONDIR/glide-phone.svg $ICONDIR/glide-welcome.svg $ICONDIR/org.kde.kdeconnect.svg $SOUNDDIR/terminal-bell.mp3 $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
+BINARIES="glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed"
+FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-photos $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-phone $BINDIR/glide-session $BINDIR/glide-lock
+$BINDIR/glide-welcome $BINDIR/glide-xembed $APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-passwords.desktop $APPDIR/glide-photos.desktop $APPDIR/glide-catalog.desktop $APPDIR/glide-phone.desktop $APPDIR/glide-welcome.desktop $AUTOSTARTDIR/glide-phone.desktop $ICONDIR/glide-phone.svg $ICONDIR/glide-welcome.svg $ICONDIR/org.kde.kdeconnect.svg $SOUNDDIR/terminal-bell.mp3 $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
 $PORTALDIR/portals/glide.portal $DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service
 $DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service $DBUSDIR/org.glide.Phone.service
 $INTERFACEDIR/org.glide.Shell1.xml
@@ -193,6 +193,7 @@ install -Dm644 "$ROOT/data/glide-files.desktop" "$DESTDIR$APPDIR/glide-files.des
 install -Dm644 "$ROOT/data/glide-terminal.desktop" "$DESTDIR$APPDIR/glide-terminal.desktop"
 install -Dm644 "$ROOT/data/glide-text.desktop" "$DESTDIR$APPDIR/glide-text.desktop"
 install -Dm644 "$ROOT/data/glide-passwords.desktop" "$DESTDIR$APPDIR/glide-passwords.desktop"
+install -Dm644 "$ROOT/data/glide-photos.desktop" "$DESTDIR$APPDIR/glide-photos.desktop"
 install -Dm644 "$ROOT/data/glide-catalog.desktop" "$DESTDIR$APPDIR/glide-catalog.desktop"
 install -Dm644 "$ROOT/data/glide-phone.desktop" "$DESTDIR$APPDIR/glide-phone.desktop"
 install -Dm644 "$ROOT/data/glide-welcome.desktop" "$DESTDIR$APPDIR/glide-welcome.desktop"
@@ -314,6 +315,11 @@ qt_plugin platformthemes/libqt5ct.so || themes="$themes qt5ct"
 qt_plugin styles/libkvantum.so || themes="$themes kvantum"
 [ -f /usr/share/icons/Colloid/index.theme ] || [ -f /usr/local/share/icons/Colloid/index.theme ] || themes="$themes colloid"
 
+decoders=""
+for tool in magick heif-convert djxl gs; do
+    command -v "$tool" >/dev/null 2>&1 || decoders="$decoders $tool"
+done
+
 echo
 if [ "$INSTALL_DM" -eq 1 ]; then
     echo "Glide and glide-dm (via greetd) are installed. Reboot or start greetd.service to test."
@@ -339,6 +345,16 @@ if [ -n "$themes" ]; then
     echo "  colloid (colloid-icon-theme-git, or ./install.sh -t all from vinceliuice/Colloid-icon-theme)"
     echo "                             the default icons, in the accent's colour; Papirus is used without them"
     echo "  Settings > Appearance > Other apps shows what is in use."
+fi
+if [ -n "$decoders" ]; then
+    echo
+    echo "Image decoders for Glide Photos not found:$decoders"
+    echo "  Photos opens JPEG, PNG, GIF, WebP, BMP, ICO, TIFF, TGA, PNM, QOI, DDS, HDR, EXR, SVG and"
+    echo "  RAW previews by itself. These add the rest:"
+    echo "  heif-convert (libheif)   HEIC and HEIF; on Arch: pacman -S libheif"
+    echo "  djxl (libjxl)            JPEG XL; on Arch: pacman -S libjxl"
+    echo "  magick (imagemagick)     AVIF, JPEG 2000, PSD, XCF, ICNS and other formats; pacman -S imagemagick"
+    echo "  gs (ghostscript)         PDF, EPS and PostScript through ImageMagick; pacman -S ghostscript"
 fi
 if [ "$INSTALL_PAM" -eq 0 ] && ! grep -qs "$PAM_MODULE" "$DESTDIR$PAMDIR/greetd"; then
     echo

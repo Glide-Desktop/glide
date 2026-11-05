@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Photos
+Name[uk]=Фото
+GenericName=Image Viewer
+GenericName[uk]=Переглядач зображень
+Comment=Browse, view and touch up the photos in your folders
+Comment[uk]=Переглядати й трохи підправляти фото з ваших тек
+Exec=glide-photos %F
+Icon=multimedia-photo-viewer
+Terminal=false
+Categories=Graphics;Photography;Viewer;
+Keywords=photo;photos;image;picture;viewer;gallery;raw;heic;svg;фото;зображення;світлини;галерея;переглядач;
+MimeType=image/jpeg;image/png;image/apng;image/gif;image/webp;image/bmp;image/x-bmp;image/vnd.microsoft.icon;image/x-icon;image/tiff;image/x-tga;image/x-portable-bitmap;image/x-portable-graymap;image/x-portable-pixmap;image/x-portable-anymap;image/qoi;image/vnd.ms-dds;image/x-dds;image/vnd.radiance;image/x-exr;image/svg+xml;image/svg+xml-compressed;image/heic;image/heif;image/avif;image/jxl;image/jp2;image/vnd.adobe.photoshop;image/x-xcf;image/x-canon-cr2;image/x-canon-cr3;image/x-canon-crw;image/x-nikon-nef;image/x-nikon-nrw;image/x-sony-arw;image/x-sony-srf;image/x-sony-sr2;image/x-fuji-raf;image/x-olympus-orf;image/x-panasonic-rw2;image/x-pentax-pef;image/x-adobe-dng;image/x-samsung-srw;image/x-kodak-dcr;image/x-dcraw;
+StartupNotify=true
+StartupWMClass=glide-photos

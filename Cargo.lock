@@ -2426,6 +2426,7 @@ dependencies = [
  "glide-sdk",
  "glide-theme",
  "iced",
+ "iced_tiny_skia",
  "image",
  "serde",
  "serde_json",

@@ -174,6 +174,7 @@ fn tiff_pages(path: &Path) -> u32 {
 pub enum Note {
     EmbeddedPreview,
     ToneMapped,
+    Converted,
     Partial,
 }
 
@@ -207,9 +208,77 @@ pub struct Request<'a> {
     pub animate: bool,
 }
 
+const EXTERNAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn run_converter(program: &str, args: &[&std::ffi::OsStr]) -> bool {
+    let Ok(mut child) = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if started.elapsed() < EXTERNAL_TIMEOUT => {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+#[must_use]
+pub fn converters(name: &str) -> &'static [&'static str] {
+    match name {
+        "HEIC" | "HEIF" => &["heif-convert", "magick"],
+        "JPEG XL" => &["djxl", "magick"],
+        "CBZ" => &[],
+        _ => &["magick"],
+    }
+}
+
+fn external(path: &Path, name: &str, page: u32) -> Option<DynamicImage> {
+    let dir = std::env::temp_dir().join(format!("glide-photos-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let output = dir.join(format!("{stamp}.png"));
+    let mut source = path.as_os_str().to_os_string();
+    let decoded = converters(name).iter().any(|&program| {
+        let converted = match program {
+            "magick" => {
+                source.push(format!("[{page}]"));
+                let density = std::ffi::OsStr::new("-density");
+                run_converter(program, &[density, std::ffi::OsStr::new("150"), &source, output.as_os_str()])
+            }
+            _ => run_converter(program, &[path.as_os_str(), output.as_os_str()]),
+        };
+        converted && output.is_file()
+    });
+    let image = decoded.then(|| image::open(&output).ok()).flatten();
+    let _ = std::fs::remove_file(&output);
+    image
+}
+
+#[must_use]
+pub fn external_available(name: &str) -> bool {
+    converters(name).iter().any(|program| glide_config::on_path(program))
+}
+
 pub fn decode(request: &Request<'_>) -> Result<Decoded, Failure> {
     match request.format.family {
-        Family::Unsupported => Err(Failure::Unsupported(request.format.name)),
+        Family::Unsupported => match external(request.path, request.format.name, request.page) {
+            Some(image) => Ok(finish(image, request, Some(Note::Converted), 1)),
+            None => Err(Failure::Unsupported(request.format.name)),
+        },
         Family::Vector => vector(request),
         Family::Raw => raw(request),
         Family::Hdr => hdr(request),
@@ -372,8 +441,12 @@ fn unpremultiply(data: &mut [u8]) {
 
 fn raw(request: &Request<'_>) -> Result<Decoded, Failure> {
     let bytes = std::fs::read(request.path).map_err(unreadable)?;
-    let image = embedded_preview(&bytes).ok_or(Failure::Unsupported("RAW"))?;
-    Ok(finish(image, request, Some(Note::EmbeddedPreview), 1))
+    if let Some(image) = embedded_preview(&bytes) {
+        return Ok(finish(image, request, Some(Note::EmbeddedPreview), 1));
+    }
+    external(request.path, "RAW", 0)
+        .map(|image| finish(image, request, Some(Note::Converted), 1))
+        .ok_or(Failure::Unsupported("RAW"))
 }
 
 #[must_use]
