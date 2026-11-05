@@ -163,7 +163,8 @@ pub enum Message {
     ClearQuery,
     Chip(Chip),
     Zoom(usize),
-    Scrolled(f32, f32),
+    Scrolled(iced::Rectangle, f32),
+    Frame(Instant),
     StartSelect,
     EndSelect,
     SelectAll,
@@ -315,6 +316,46 @@ pub struct App {
     pub today: library::Date,
     pub now: u64,
     pub ticks: u32,
+    pub grid_bounds: Option<iced::Rectangle>,
+    pub morph: Option<Morph>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Morph {
+    pub from: iced::Rectangle,
+    pub to: iced::Rectangle,
+    pub started: Instant,
+    pub length: Duration,
+    pub opening: bool,
+    pub handle: Option<Handle>,
+}
+
+impl Morph {
+    #[must_use]
+    pub fn progress(&self, now: Instant) -> f32 {
+        if self.length.is_zero() {
+            return 1.0;
+        }
+        (now.saturating_duration_since(self.started).as_secs_f32() / self.length.as_secs_f32()).clamp(0.0, 1.0)
+    }
+
+    #[must_use]
+    pub fn rect(&self, progress: f32) -> iced::Rectangle {
+        let eased = glide_sdk::theme::motion::ease_out(f64::from(progress)) as f32;
+        let mix = |a: f32, b: f32| a + (b - a) * eased;
+        iced::Rectangle {
+            x: mix(self.from.x, self.to.x),
+            y: mix(self.from.y, self.to.y),
+            width: mix(self.from.width, self.to.width),
+            height: mix(self.from.height, self.to.height),
+        }
+    }
+
+    #[must_use]
+    pub fn backdrop(&self, progress: f32) -> f32 {
+        let eased = glide_sdk::theme::motion::ease_io(f64::from(progress)) as f32;
+        if self.opening { eased } else { 1.0 - eased }
+    }
 }
 
 async fn work<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -397,6 +438,8 @@ impl App {
             today: library::today(),
             now: unix_now(),
             ticks: 0,
+            grid_bounds: None,
+            morph: None,
         }
     }
 
@@ -544,6 +587,130 @@ impl App {
         } else {
             vec![path]
         }
+    }
+
+    fn grid_origin(&self) -> iced::Point {
+        self.grid_bounds
+            .map_or(iced::Point::new(crate::view::SIDEBAR + 1.0, crate::view::HEADER), |bounds| bounds.position())
+    }
+
+    #[must_use]
+    pub fn tile_rect(&self, index: usize, pointer: Option<iced::Point>) -> Option<iced::Rectangle> {
+        let grid = self.searching() || self.scale == Scale::All;
+        if !grid || matches!(self.place, Place::Albums | Place::Trash) {
+            return None;
+        }
+        let shown = self.shown();
+        let (columns, side) = self.grid();
+        let grouped = !self.searching();
+        let groups = if grouped {
+            library::by_day(&self.photos, &shown)
+        } else {
+            vec![library::Group { date: library::Date::default(), items: shown }]
+        };
+        let head = if grouped { crate::view::GROUP_HEAD } else { 0.0 };
+        let step = side + crate::view::GAP;
+        let origin = self.grid_origin();
+        let mut top = 0.0;
+        for group in &groups {
+            let Some(position) = group.items.iter().position(|&i| i == index) else {
+                top += crate::view::group_height(group.items.len(), columns, side) - (crate::view::GROUP_HEAD - head);
+                continue;
+            };
+            let (row, column) = (position / columns, position % columns);
+            let mut rect = iced::Rectangle {
+                x: origin.x + glide_sdk::theme::SP5 + column as f32 * step,
+                y: origin.y + top + head + row as f32 * step - self.scroll,
+                width: side,
+                height: side,
+            };
+            if let Some(point) = pointer.filter(|point| point.y < rect.y || point.y > rect.y + side) {
+                rect.y = point.y - side / 2.0;
+            }
+            return Some(rect);
+        }
+        None
+    }
+
+    #[must_use]
+    pub fn image_rect(&self, size: (u32, u32), zoom: Option<f32>, info: bool, chrome: bool) -> iced::Rectangle {
+        let width = self.window.size.width - if info { glide_sdk::widget::INSPECTOR_WIDTH + 1.0 } else { 0.0 };
+        let (top, height) = if chrome {
+            (crate::view::HEADER, self.window.size.height - crate::view::HEADER - crate::view::FILMSTRIP)
+        } else {
+            (0.0, self.window.size.height)
+        };
+        let (w, h) = (size.0.max(1) as f32, size.1.max(1) as f32);
+        let margin = 2.0 * crate::view::STAGE_MARGIN;
+        let fit = ((width - margin) / w).min((height - margin) / h).min(1.0);
+        let scale = zoom.unwrap_or(fit);
+        let (shown_w, shown_h) = (w * scale, h * scale);
+        iced::Rectangle {
+            x: ((width - shown_w) / 2.0).max(0.0),
+            y: top + ((height - shown_h) / 2.0).max(0.0),
+            width: shown_w.min(width),
+            height: shown_h.min(height),
+        }
+    }
+
+    fn start_opening(&mut self, index: usize, from: Option<iced::Rectangle>) {
+        let length = glide_sdk::theme::motion::t4();
+        let Some(from) = from.filter(|_| !length.is_zero()) else {
+            return;
+        };
+        let photo = &self.photos[index];
+        let size = photo.dims.unwrap_or((3, 2));
+        let to = self.image_rect(size, None, false, true);
+        self.morph =
+            Some(Morph { from, to, started: Instant::now(), length, opening: true, handle: self.thumb(&photo.path) });
+    }
+
+    fn close_viewer(&mut self) -> Task<Message> {
+        let length = glide_sdk::theme::motion::t4();
+        let Some(viewer) = self.viewer.as_ref() else {
+            return Task::none();
+        };
+        let Some(index) = viewer.current() else {
+            self.viewer = None;
+            return Task::none();
+        };
+        if length.is_zero() {
+            self.viewer = None;
+            return Task::none();
+        }
+        let chrome = viewer.chrome || viewer.info;
+        let (size, handle) = viewer.loaded.as_ref().map_or_else(
+            || (self.photos[index].dims.unwrap_or((3, 2)), self.thumb(&self.photos[index].path)),
+            |loaded| {
+                let frame = loaded.frames.get(viewer.frame).map_or_else(|| loaded.handle.clone(), |(f, _)| f.clone());
+                (loaded.size, Some(frame))
+            },
+        );
+        let from = self.image_rect(size, viewer.zoom, viewer.info, chrome);
+        let mut scroll = Task::none();
+        let origin = self.grid_origin();
+        if let Some(rect) = self.tile_rect(index, None) {
+            let bottom = origin.y + self.viewport;
+            if rect.y < origin.y || rect.y + rect.height > bottom {
+                let target = (self.scroll + rect.y - origin.y - (self.viewport - rect.height) / 2.0).max(0.0);
+                self.scroll = target;
+                scroll = iced::widget::operation::scroll_to(
+                    crate::view::GRID_ID,
+                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: target },
+                );
+            }
+        }
+        let to = self.tile_rect(index, None).unwrap_or_else(|| {
+            let shrink = 0.9;
+            iced::Rectangle {
+                x: from.x + from.width * (1.0 - shrink) / 2.0,
+                y: from.y + from.height * (1.0 - shrink) / 2.0,
+                width: from.width * shrink,
+                height: from.height * shrink,
+            }
+        });
+        self.morph = Some(Morph { from, to, started: Instant::now(), length, opening: false, handle });
+        scroll
     }
 
     fn open(&mut self, index: usize) -> Task<Message> {
@@ -900,9 +1067,21 @@ impl App {
                 self.prefs.zoom = level.min(ZOOM_SIDES.len() - 1);
                 return self.save_prefs();
             }
-            Message::Scrolled(offset, height) => {
+            Message::Scrolled(bounds, offset) => {
                 self.scroll = offset;
-                self.viewport = height;
+                self.viewport = bounds.height;
+                self.grid_bounds = Some(bounds);
+            }
+            Message::Frame(now) => {
+                if let Some(morph) = &self.morph
+                    && morph.progress(now) >= 1.0
+                {
+                    let closing = !morph.opening;
+                    self.morph = None;
+                    if closing {
+                        self.viewer = None;
+                    }
+                }
             }
             Message::StartSelect => self.selecting = true,
             Message::EndSelect => {
@@ -949,7 +1128,10 @@ impl App {
                         self.anchor = Some(index);
                     }
                 } else {
-                    return self.open(index);
+                    let from = self.tile_rect(index, Some(shell.pointer()));
+                    let task = self.open(index);
+                    self.start_opening(index, from);
+                    return task;
                 }
             }
             Message::TileMenu(index) => shell.context_menu(self.tile_menu(index)),
@@ -1404,7 +1586,10 @@ impl App {
                 if viewer.slideshow && self.window.frame == Frame::Fullscreen {
                     shell.window_action(Action::ToggleFullscreen);
                 }
-                self.viewer = None;
+                if self.morph.as_ref().is_some_and(|morph| !morph.opening) {
+                    return Task::none();
+                }
+                return self.close_viewer();
             }
             ViewerEvent::Step(delta) => {
                 let len = viewer.list.len() as isize;
@@ -1774,6 +1959,9 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick)];
+        if self.morph.is_some() {
+            subs.push(iced::window::frames().map(Message::Frame));
+        }
         if let Some(viewer) = &self.viewer {
             if viewer.slideshow {
                 subs.push(iced::time::every(SLIDE).map(|_| Message::Viewer(ViewerEvent::Step(1))));
@@ -2026,6 +2214,44 @@ mod tests {
         app
     }
 
+    fn finish_motion(app: &mut glide_sdk::Harness<App>) {
+        app.message(Message::Frame(Instant::now() + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_tile_morphs_into_the_viewer_and_back_into_the_same_tile() {
+        let (dir, photos) = library("morph");
+        let mut app = harness(photos);
+        let tile = app.app().tile_rect(1, None).expect("tile in the grid");
+        app.point_at(tile.center());
+        app.message(Message::Tile(1));
+        let morph = app.app().morph.clone().expect("opening morph");
+        assert!(morph.opening);
+        assert_eq!(morph.from, tile);
+        assert_eq!(morph.rect(0.0), tile);
+        assert_eq!(morph.rect(1.0), morph.to);
+        let travel = (morph.to.center().x - tile.center().x).hypot(morph.to.center().y - tile.center().y);
+        let scale = (morph.to.width / tile.width - 1.0).abs();
+        assert!(travel >= 24.0 || scale >= 0.08, "scene content moves at least 24 px or scales 8 %");
+        assert!(morph.backdrop(0.0) < 0.01 && (morph.backdrop(1.0) - 1.0).abs() < 1e-4);
+        let _ = app.view();
+        app.message(Message::Frame(morph.started));
+        assert!(app.app().morph.is_some(), "a frame at the start keeps the morph");
+        finish_motion(&mut app);
+        assert!(app.app().morph.is_none() && app.app().viewer.is_some());
+        app.message(Message::Viewer(ViewerEvent::Step(1)));
+        app.message(Message::Viewer(ViewerEvent::Back));
+        let back = app.app().morph.clone().expect("closing morph");
+        assert!(!back.opening);
+        assert_eq!(back.to, app.app().tile_rect(2, None).unwrap(), "it lands on the photo now shown");
+        assert!((back.backdrop(0.0) - 1.0).abs() < 1e-4 && back.backdrop(1.0) < 0.01);
+        assert!(app.app().viewer.is_some(), "the viewer stays until the morph ends");
+        let _ = app.view();
+        finish_motion(&mut app);
+        assert!(app.app().viewer.is_none() && app.app().morph.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_scanned_folder_fills_the_library_and_every_screen_builds() {
         let (dir, photos) = library("screens");
@@ -2071,6 +2297,7 @@ mod tests {
         app.message(Message::Viewer(ViewerEvent::ToggleInfo));
         let _ = app.view();
         app.message(Message::Viewer(ViewerEvent::Back));
+        finish_motion(&mut app);
         assert!(app.app().viewer.is_none());
         app.message(Message::StartSelect);
         app.message(Message::Tile(0));
@@ -2141,6 +2368,7 @@ mod tests {
         assert_eq!(current(&app), watched);
         assert_eq!(app.app().viewer.as_ref().unwrap().list.len(), 3);
         app.message(Message::Viewer(ViewerEvent::Back));
+        finish_motion(&mut app);
         let card = dir.join("card/DCIM");
         std::fs::create_dir_all(&card).unwrap();
         image::RgbImage::new(8, 8).save(card.join("IMG_0001.png")).unwrap();

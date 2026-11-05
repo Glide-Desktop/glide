@@ -35,7 +35,9 @@ fn ink(app: &App) -> Color {
 
 #[must_use]
 pub fn view(app: &App) -> Element<'_, Message> {
-    let base: Element<'_, Message> = if app.editor.is_some() {
+    let base: Element<'_, Message> = if let Some(morph) = &app.morph {
+        morph_view(app, morph)
+    } else if app.editor.is_some() {
         crate::editor_view::view(app)
     } else if app.viewer.is_some() {
         crate::viewer_view::view(app)
@@ -50,6 +52,32 @@ pub fn view(app: &App) -> Element<'_, Message> {
         layers.push(modal_view(app, modal));
     }
     stack(layers).into()
+}
+
+fn morph_view<'a>(app: &'a App, morph: &'a crate::app::Morph) -> Element<'a, Message> {
+    let progress = morph.progress(std::time::Instant::now());
+    let rect = morph.rect(progress);
+    let shade = morph.backdrop(progress);
+    let corner = app.window.corner();
+    let scrim = container(Space::new())
+        .width(Fill)
+        .height(Fill)
+        .style(move |_| glide_sdk::glide_iced::style::rounded(Color { a: shade, ..ui::STAGE }, corner));
+    let mut layers: Vec<Element<'_, Message>> = vec![browser(app), scrim.into()];
+    if let Some(handle) = &morph.handle {
+        let picture = iced::widget::image(handle.clone())
+            .width(rect.width.max(1.0))
+            .height(rect.height.max(1.0))
+            .content_fit(iced::ContentFit::Cover);
+        layers.push(
+            container(picture)
+                .padding(Padding { top: rect.y.max(0.0), left: rect.x.max(0.0), right: 0.0, bottom: 0.0 })
+                .width(Fill)
+                .height(Fill)
+                .into(),
+        );
+    }
+    iced::widget::opaque(stack(layers))
 }
 
 fn browser(app: &App) -> Element<'_, Message> {
@@ -615,7 +643,7 @@ fn grid<'a>(app: &'a App, shown: &[usize], grouped: bool) -> Element<'a, Message
     }
     let list = scrollable(container(column.width(Fill)).padding(Padding::from([0.0, SP5])))
         .id(GRID_ID)
-        .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y, viewport.bounds().height))
+        .on_scroll(|viewport| Message::Scrolled(viewport.bounds(), viewport.absolute_offset().y))
         .height(Fill);
     list.into()
 }
