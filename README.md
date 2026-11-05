@@ -56,6 +56,19 @@ if-session` / `unless-session`), `X-GNOME-Autostart-Phase` and
 `X-GNOME-Autostart-Delay` are honoured, `Terminal=true` entries are skipped.
 `[general] xdg-autostart = false` turns this off.
 
+## Install the Arch Linux package
+
+Every release on the
+[Releases page](https://github.com/Glide-Desktop/glide/releases) carries a
+`glide-<version>-1-x86_64.pkg.tar.zst`:
+
+```sh
+sudo pacman -U glide-<version>-1-x86_64.pkg.tar.zst
+```
+
+Its PKGBUILD is `data/arch/glide/PKGBUILD`; `makepkg -si` in that folder
+builds the same package from the tagged source.
+
 ## Build and install
 
 On Arch Linux and derivatives, run `sh scripts/setup.sh`. It offers to install
@@ -143,6 +156,22 @@ cargo test --workspace
 
 To try a debug build, run `cargo build` and start `target/debug/glide` from a
 free VT; the log is `~/.local/state/glide/glide.log`.
+
+### Releases
+
+Set the new version in `crates/glide-compositor/Cargo.toml`, commit, then push
+an annotated tag of the same version:
+
+```sh
+git tag -a v0.2.0 -m "Short summary of the release" -m "Optional longer notes."
+git push origin v0.2.0
+```
+
+The Release workflow checks that the tag matches the crate version, builds the
+Arch package with `makepkg`, and publishes a release whose notes start with the
+tag message and list the commits since the previous tag. Running the workflow
+by hand (Actions › Release › Run workflow) builds the package and the notes as
+an artifact without publishing anything.
 
 ## Writing apps for Glide
 

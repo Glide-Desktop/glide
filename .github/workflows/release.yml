@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: System packages
+        run: pacman -Syu --noconfirm --needed git rustup github-cli
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Version
+        id: version
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --force --tags origin
+          crate="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/glide-compositor/Cargo.toml | head -n1)"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [ "$version" != "$crate" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the crate version $crate in crates/glide-compositor/Cargo.toml"
+              exit 1
+            fi
+            tag="$GITHUB_REF_NAME"
+          else
+            version="$crate"
+            tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || git rev-parse HEAD)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Dependencies
+        run: |
+          . data/arch/glide/PKGBUILD
+          pacman -S --noconfirm --needed "${depends[@]}" git pkgconf
+
+      - name: Build user and sources
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          useradd -m builder
+          install -d -o builder /home/builder/pkg
+          install -m644 -o builder data/arch/glide/PKGBUILD /home/builder/pkg/PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" /home/builder/pkg/PKGBUILD
+          git archive --format=tar.gz --prefix="glide-$VERSION/" -o "/home/builder/pkg/glide-$VERSION.tar.gz" HEAD
+          chown builder /home/builder/pkg/*
+          install -m644 -o builder rust-toolchain.toml /home/builder/rust-toolchain.toml
+          runuser -u builder -- sh -c 'cd /home/builder && rustup toolchain install --profile minimal'
+          rm /home/builder/rust-toolchain.toml
+
+      - name: makepkg
+        run: runuser -u builder -- sh -c 'cd /home/builder/pkg && makepkg -f --noconfirm'
+
+      - name: Disk usage
+        if: always()
+        run: df -h / /home
+
+      - name: Package and notes
+        id: files
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          install -d dist
+          mv /home/builder/pkg/*.pkg.tar.zst dist/
+          package="$(cd dist && ls *.pkg.tar.zst)"
+          (cd dist && sha256sum "$package" > "$package.sha256")
+          sh .github/release-notes.sh "$TAG" "$package" > dist/notes.md
+          cat dist/notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glide-arch-${{ steps.version.outputs.version }}
+          path: dist/
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Glide $VERSION" --notes-file dist/notes.md \
+            dist/*.pkg.tar.zst dist/*.sha256

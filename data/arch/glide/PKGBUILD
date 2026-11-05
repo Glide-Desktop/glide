@@ -1,0 +1,73 @@
+pkgname=glide
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Wayland desktop: compositor with its own shell (top bar, dock, launcher, overview, notifications) and apps"
+arch=(x86_64)
+url="https://github.com/Glide-Desktop/glide"
+license=(GPL-3.0-or-later)
+depends=(
+    dbus
+    gcc-libs
+    glibc
+    gst-plugins-base
+    gst-plugins-base-libs
+    gstreamer
+    libdisplay-info
+    libinput
+    libxkbcommon
+    mesa
+    pam
+    seatd
+    systemd-libs
+)
+makedepends=(cargo git pkgconf)
+optdepends=(
+    'xwayland-satellite: X11 applications'
+    'xdg-desktop-portal: file dialogs and screen sharing for sandboxed apps'
+    'xdg-desktop-portal-gtk: portal fallbacks'
+    'xdg-desktop-portal-wlr: screen sharing'
+    'pipewire: audio and screen sharing'
+    'wireplumber: volume keys and sound devices (wpctl)'
+    'libpulse: sound device lists (pactl)'
+    'rtkit: realtime priority for PipeWire'
+    'brightnessctl: brightness keys'
+    'networkmanager: Wi-Fi and VPN in quick settings'
+    'bluez-utils: Bluetooth in quick settings'
+    'udisks2: removable drives in Glide Files'
+    'greetd: Glide as the display manager (glide --greeter)'
+    'gst-plugins-good: screen mirroring'
+    'gst-plugins-bad: screen mirroring with hardware encoders'
+    'gst-plugins-ugly: screen mirroring with x264'
+    'adw-gtk-theme: GTK 3, Chrome and Electron apps in Glide colours'
+    'qt6ct: Qt 6 apps in Glide colours'
+    'kvantum: Qt controls in Glide shapes'
+    'papirus-icon-theme: icons when Colloid is not installed'
+    'libheif: HEIC and HEIF in Glide Photos'
+    'libjxl: JPEG XL in Glide Photos'
+    'imagemagick: AVIF, PSD and other formats in Glide Photos'
+    'netbird: NetBird VPN integration'
+)
+provides=(org.freedesktop.secrets)
+conflicts=(glide-secret-service)
+replaces=(glide-secret-service)
+backup=(etc/pam.d/glide-lock)
+options=(!lto !debug)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release --workspace
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    sh scripts/install.sh --destdir "$pkgdir" --prefix /usr --from target/release
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
