@@ -339,6 +339,7 @@ impl Doc {
         match self.memory.zoom {
             Zoom::FitWidth => (width / (widest.w * columns)).clamp(0.1, 8.0),
             Zoom::FitPage => (width / (widest.w * columns)).min(height / widest.h).clamp(0.1, 8.0),
+            Zoom::FitHeight => (height / widest.h).clamp(0.1, 8.0),
             Zoom::Percent(percent) => f32::from(percent) / 100.0,
         }
     }
@@ -677,6 +678,17 @@ mod tests {
         assert_eq!(STEPS[Doc::step_for(1.1, 2.0)], 2.5);
         doc.memory.zoom = Zoom::Percent(125);
         assert!((doc.zoom() - 1.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn fit_height_shows_the_whole_page_height_whatever_the_width() {
+        let mut doc = doc(3);
+        let tall = doc.widest().h;
+        doc.memory.zoom = Zoom::FitHeight;
+        for width in [400.0, 660.0, 1600.0] {
+            doc.viewport = iced::Size::new(width, 600.0);
+            assert!((doc.zoom() * tall - (600.0 - 2.0 * MARGIN)).abs() < 0.5, "width {width}: {}", doc.zoom());
+        }
     }
 
     #[test]

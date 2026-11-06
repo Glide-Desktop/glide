@@ -431,6 +431,9 @@ impl App {
                     Item::action(self.t(Key::FitWidth), Message::Read(Read::Zoom(store::Zoom::FitWidth)))
                         .shortcut("Ctrl+2")
                         .enabled(reading),
+                    Item::action(self.t(Key::FitHeight), Message::Read(Read::Zoom(store::Zoom::FitHeight)))
+                        .shortcut("Ctrl+3")
+                        .enabled(reading),
                     Item::action(self.t(Key::FitPage), Message::Read(Read::Zoom(store::Zoom::FitPage)))
                         .shortcut("Ctrl+0")
                         .enabled(reading),

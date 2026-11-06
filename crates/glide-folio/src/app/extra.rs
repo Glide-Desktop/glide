@@ -151,10 +151,13 @@ impl App {
             glyph(Item::action(self.t(Key::FitWidth), Message::Read(Read::Zoom(Zoom::FitWidth))), Icon::FitWidth)
                 .checked(zoom == Zoom::FitWidth)
                 .shortcut("Ctrl+2"),
+            glyph(Item::action(self.t(Key::FitHeight), Message::Read(Read::Zoom(Zoom::FitHeight))), Icon::FitHeight)
+                .checked(zoom == Zoom::FitHeight)
+                .shortcut("Ctrl+3"),
             glyph(Item::action(self.t(Key::FitPage), Message::Read(Read::Zoom(Zoom::FitPage))), Icon::FitPage)
                 .checked(zoom == Zoom::FitPage)
                 .shortcut("Ctrl+0"),
-            glyph(Item::action(self.t(Key::ActualSize), Message::Read(Read::Zoom(Zoom::Percent(100)))), Icon::Actual)
+            glyph(Item::action(self.t(Key::ActualSize), Message::Read(Read::Zoom(Zoom::Percent(100)))), Icon::Standard)
                 .checked(zoom == Zoom::Percent(100))
                 .shortcut("Ctrl+1"),
             Item::separator(),

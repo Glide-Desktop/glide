@@ -10,7 +10,7 @@ use crate::doc::{FieldKind, Hue, Mark};
 use crate::i18n::{self, Key};
 use crate::icons::Icon;
 use crate::reader::{Doc, GAP, Hover, MARGIN, Ocr, Scope, Tool, ZOOM_LEVELS};
-use crate::store::{Layout, Paper};
+use crate::store::{Layout, Paper, Zoom};
 
 fn area(rect: &crate::doc::Rect) -> Area {
     Area::new(rect.x, rect.y, rect.w, rect.h)
@@ -920,6 +920,13 @@ fn status<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
             (Layout::Spread, Icon::Spread, app.t(Key::LayoutSpread)),
         ];
         right.push(ui::icon_segmented(&paint, &layouts, doc.memory.layout, |l| Message::Read(Read::Layout(l))));
+        right.push(ui::tool_divider(&paint));
+        let fits = [
+            (Zoom::FitHeight, Icon::FitHeight, app.t(Key::FitHeight)),
+            (Zoom::FitWidth, Icon::FitWidth, app.t(Key::FitWidth)),
+            (Zoom::Percent(100), Icon::Standard, app.t(Key::ActualSize)),
+        ];
+        right.push(ui::icon_segmented(&paint, &fits, doc.memory.zoom, |z| Message::Read(Read::Zoom(z))));
         right.push(ui::tool_divider(&paint));
     }
     let level = ZOOM_LEVELS.iter().enumerate().min_by_key(|(_, l)| l.abs_diff(doc.percent())).map_or(2, |(i, _)| i);

@@ -20,6 +20,7 @@ pub enum Zoom {
     #[default]
     FitWidth,
     FitPage,
+    FitHeight,
     Percent(u16),
 }
 

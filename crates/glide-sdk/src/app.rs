@@ -843,6 +843,12 @@ impl<A: App> Harness<A> {
         Self { host }
     }
 
+    #[must_use]
+    pub fn chrome(mut self, chrome: Chrome) -> Self {
+        self.host.chrome = chrome;
+        self
+    }
+
     pub fn send(&mut self, event: Event<A::Message>) {
         let _ = self.host.update(event);
     }
