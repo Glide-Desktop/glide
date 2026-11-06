@@ -1,0 +1,44 @@
+[package]
+name = "glide-folio"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Document viewer for Glide: PDF and friends, notes, page organiser, forms"
+
+[lib]
+name = "glide_folio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "glide-folio"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+iced = { version = "0.14.0", default-features = false, features = [
+    "wgpu",
+    "tiny-skia",
+    "crisp",
+    "wayland",
+    "tokio",
+    "svg",
+    "image",
+    "web-colors",
+    "advanced",
+    "canvas",
+] }
+glide-config = { path = "../glide-config" }
+glide-sdk = { path = "../glide-sdk" }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+hayro = "0.9"
+lopdf = "0.47"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tiff = "0.11"

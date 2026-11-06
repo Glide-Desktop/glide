@@ -13,6 +13,7 @@ members = [
     "crates/glide-greeter",
     "crates/glide-iced",
     "crates/glide-files",
+    "crates/glide-folio",
     "crates/glide-launcher",
     "crates/glide-layout",
     "crates/glide-ipc",
