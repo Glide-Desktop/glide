@@ -356,8 +356,31 @@ pub fn fill(
     path: &Path, values: &[(String, String)], signature: Option<&Signature>, target: &Path,
 ) -> Result<(), WriteError> {
     let mut doc = load(path, None)?;
+    let (form, named) = named_fields(&doc);
+    set_values(&mut doc, &named, values);
+    let set_need = |dict: &mut Dictionary| dict.set("NeedAppearances", Object::Boolean(true));
+    match form {
+        Some(id) => {
+            if let Ok(dict) = doc.get_dictionary_mut(id) {
+                set_need(dict);
+            }
+        }
+        None => {
+            if let Ok(catalog) = doc.catalog_mut()
+                && let Ok(Object::Dictionary(form)) = catalog.get_mut(b"AcroForm")
+            {
+                set_need(form);
+            }
+        }
+    }
+    if let Some(signature) = signature {
+        stamp(&mut doc, signature)?;
+    }
+    store(&mut doc, target)
+}
+
+fn named_fields(doc: &Document) -> (Option<ObjectId>, Vec<(ObjectId, String)>) {
     let form = doc.catalog().ok().and_then(|c| c.get(b"AcroForm").ok()).and_then(|f| f.as_reference().ok());
-    let mut fields: Vec<ObjectId> = Vec::new();
     let root_fields = match form {
         Some(id) => doc.get_dictionary(id).ok().and_then(|f| f.get(b"Fields").ok()).cloned(),
         None => doc
@@ -402,11 +425,15 @@ pub fn fill(
             stack.extend(kids.into_iter().map(|k| (k, name.clone())));
         } else {
             named.push((id, name));
-            fields.push(id);
         }
     }
+    (form, named)
+}
+
+fn set_values(doc: &mut Document, named: &[(ObjectId, String)], values: &[(String, String)]) {
     for (id, name) in named {
-        let Some((_, value)) = values.iter().find(|(n, _)| *n == name) else {
+        let id = *id;
+        let Some((_, value)) = values.iter().find(|(n, _)| n == name) else {
             continue;
         };
         let kind = doc
@@ -439,25 +466,6 @@ pub fn fill(
             dict.remove(b"AP");
         }
     }
-    let set_need = |dict: &mut Dictionary| dict.set("NeedAppearances", Object::Boolean(true));
-    match form {
-        Some(id) => {
-            if let Ok(dict) = doc.get_dictionary_mut(id) {
-                set_need(dict);
-            }
-        }
-        None => {
-            if let Ok(catalog) = doc.catalog_mut()
-                && let Ok(Object::Dictionary(form)) = catalog.get_mut(b"AcroForm")
-            {
-                set_need(form);
-            }
-        }
-    }
-    if let Some(signature) = signature {
-        stamp(&mut doc, signature)?;
-    }
-    store(&mut doc, target)
 }
 
 fn stamp(doc: &mut Document, signature: &Signature) -> Result<(), WriteError> {
