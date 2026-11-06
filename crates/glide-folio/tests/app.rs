@@ -78,6 +78,17 @@ fn reading_a_document_end_to_end() {
     assert!(matches!(app.app().screen, Screen::Reading), "the document opens into the reader");
     assert_eq!(app.app().doc.as_ref().unwrap().count(), 4);
 
+    let wide = app.app().doc.as_ref().unwrap().viewport.width;
+    app.message(Message::Read(Read::ToggleSide));
+    let narrow = app.app().doc.as_ref().unwrap().viewport.width;
+    assert!((wide - narrow).abs() > 200.0, "toggling the sidebar resizes the page area: {wide} → {narrow}");
+    let widest = 612.0 * app.app().doc.as_ref().unwrap().zoom();
+    assert!(
+        glide_folio::view::content_width(narrow, widest) >= narrow,
+        "the page column spans the visible area, so the pages sit in its centre"
+    );
+    app.message(Message::Read(Read::ToggleSide));
+
     app.message(Message::Find(FindMsg::Open));
     app.message(Message::Find(FindMsg::Query("fingers".into())));
     let generation = app.app().doc.as_ref().unwrap().find.as_ref().unwrap().generation;

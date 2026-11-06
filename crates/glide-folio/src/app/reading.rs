@@ -157,6 +157,21 @@ impl App {
         Task::batch(tasks)
     }
 
+    pub fn fit_viewport(&mut self) -> bool {
+        let window = self.window.size;
+        let Some(doc) = self.doc.as_mut() else {
+            return false;
+        };
+        let panel = if doc.memory.side { crate::view::SIDEBAR + 1.0 } else { 0.0 };
+        let size = iced::Size::new(
+            (window.width - panel).max(320.0),
+            (window.height - glide_sdk::window::HEADER - glide_sdk::widget::STATUS_BAR).max(240.0),
+        );
+        let changed = (doc.viewport.width - size.width).abs() > 0.5 || (doc.viewport.height - size.height).abs() > 0.5;
+        doc.viewport = size;
+        changed
+    }
+
     pub fn scroll_to_page(&self) -> Task<Message> {
         let Some(doc) = self.doc.as_ref() else {
             return Task::none();
@@ -302,7 +317,8 @@ impl App {
                 if let Some(doc) = self.doc.as_mut() {
                     doc.memory.side = !doc.memory.side;
                 }
-                self.request_thumbs()
+                self.fit_viewport();
+                Task::batch([self.request_visible(), self.request_thumbs()])
             }
             Read::Layout(layout) => {
                 if let Some(doc) = self.doc.as_mut() {

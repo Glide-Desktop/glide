@@ -306,6 +306,11 @@ pub fn row_width(doc: &Doc, row: &[usize], zoom: f32) -> f32 {
 }
 
 #[must_use]
+pub fn content_width(viewport: f32, widest: f32) -> f32 {
+    viewport.max(widest + 2.0 * MARGIN).floor()
+}
+
+#[must_use]
 pub fn page_origin(doc: &Doc, index: usize) -> (f32, f32) {
     let zoom = doc.zoom();
     let rows = doc.rows();
@@ -346,8 +351,12 @@ fn pages<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
     let tops = doc.row_tops();
     let heights = doc.row_heights();
     let (from, to) = (doc.scroll - doc.viewport.height, doc.scroll + doc.viewport.height * 2.0);
-    let mut column =
-        Column::new().spacing(GAP).align_x(Alignment::Center).width(Fill).padding(Padding::from([MARGIN, MARGIN]));
+    let widest = rows.iter().map(|row| row_width(doc, row, zoom)).fold(0.0, f32::max);
+    let mut column = Column::new()
+        .spacing(GAP)
+        .align_x(Alignment::Center)
+        .width(content_width(doc.viewport.width, widest))
+        .padding(Padding::from([MARGIN, MARGIN]));
     for (row, (top, height)) in rows.iter().zip(tops.iter().zip(&heights)) {
         if top + height < from || *top > to {
             column = column.push(Space::new().width(1).height(*height));

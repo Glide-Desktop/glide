@@ -5,6 +5,8 @@ mod reader;
 mod side;
 mod states;
 
+pub use reader::content_width;
+
 use glide_sdk::Paint;
 use glide_sdk::window;
 use iced::widget::stack;

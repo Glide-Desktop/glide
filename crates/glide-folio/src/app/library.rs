@@ -280,10 +280,6 @@ impl App {
                 let memory = self.memory(&path);
                 let mut doc = Doc::new(path, opened, raster, index, memory, generation);
                 doc.dpr = self.dpr;
-                let window = self.window.size;
-                let panel = if doc.memory.side { 233.0 } else { 0.0 };
-                doc.viewport =
-                    iced::Size::new((window.width - panel).max(320.0), (window.height - 48.0 - 28.0).max(240.0));
                 if doc.opened.format == Format::Djvu || doc.opened.format == Format::Tiff {
                     doc.ocr = crate::reader::Ocr::Offer;
                 }
@@ -293,6 +289,7 @@ impl App {
                     doc.form = true;
                 }
                 self.doc = Some(doc);
+                self.fit_viewport();
                 self.screen = Screen::Reading;
                 self.remember_doc();
                 let jump = self.scroll_to_page();

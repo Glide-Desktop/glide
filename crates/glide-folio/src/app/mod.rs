@@ -551,7 +551,7 @@ impl glide_sdk::App for App {
 
     fn window_changed(&mut self, shell: &mut Shell<Message>) -> Task<Message> {
         self.window = *shell.window();
-        Task::none()
+        if self.fit_viewport() { Task::batch([self.request_visible(), self.request_thumbs()]) } else { Task::none() }
     }
 
     fn key(&mut self, event: &keyboard::Event, captured: bool, shell: &mut Shell<Message>) -> Task<Message> {
