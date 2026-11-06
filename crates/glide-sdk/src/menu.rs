@@ -42,6 +42,7 @@ pub enum Item<M> {
         label: String,
         items: Vec<Item<M>>,
         enabled: bool,
+        glyph: Option<iced::widget::svg::Handle>,
     },
     Stepper {
         label: String,
@@ -80,7 +81,7 @@ impl<M> Item<M> {
 
     #[must_use]
     pub fn glyph(mut self, handle: iced::widget::svg::Handle) -> Self {
-        if let Self::Action { glyph, .. } = &mut self {
+        if let Self::Action { glyph, .. } | Self::Submenu { glyph, .. } = &mut self {
             *glyph = Some(handle);
         }
         self
@@ -108,7 +109,12 @@ impl<M> Item<M> {
     }
 
     fn checks(&self) -> bool {
-        matches!(self, Self::Action { check: Some(_), .. } | Self::Action { glyph: Some(_), .. })
+        matches!(
+            self,
+            Self::Action { check: Some(_), .. }
+                | Self::Action { glyph: Some(_), .. }
+                | Self::Submenu { glyph: Some(_), .. }
+        )
     }
 
     #[must_use]
@@ -139,7 +145,7 @@ impl<M> Item<M> {
 
     #[must_use]
     pub fn submenu(label: impl Into<String>, items: Vec<Self>) -> Self {
-        Self::Submenu { label: label.into(), items, enabled: true }
+        Self::Submenu { label: label.into(), items, enabled: true, glyph: None }
     }
 
     #[must_use]
@@ -228,7 +234,7 @@ fn export_items<M: Clone>(items: &[Item<M>], actions: &mut Vec<M>) -> Vec<Entry>
                     shortcut: shortcut.clone(),
                 }
             }
-            Item::Submenu { label, items, enabled } => {
+            Item::Submenu { label, items, enabled, .. } => {
                 Entry::Submenu { label: label.clone(), enabled: *enabled, children: export_items(items, actions) }
             }
             Item::Stepper { label, less, more, .. } => {
@@ -692,6 +698,18 @@ fn card_layer<'a, E: Clone + 'a>(
     }
 }
 
+type RowParts = (Option<String>, Option<bool>, bool, bool, Option<iced::Color>, Option<iced::widget::svg::Handle>);
+
+fn row_parts<M>(item: &Item<M>) -> RowParts {
+    match item {
+        Item::Action { shortcut, check, more, danger, swatch, glyph, .. } => {
+            (shortcut.clone(), *check, *more, *danger, *swatch, glyph.clone())
+        }
+        Item::Submenu { glyph, .. } => (None, None, true, false, None, glyph.clone()),
+        _ => (None, None, false, false, None, None),
+    }
+}
+
 #[must_use]
 pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bool, marks: bool) -> Element<'a, Event> {
     let paint = *paint;
@@ -707,12 +725,7 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
             .into(),
         Item::Action { label, enabled, .. } | Item::Submenu { label, enabled, .. } => {
             let enabled = *enabled;
-            let (shortcut, check, more, danger, swatch, glyph) = match item {
-                Item::Action { shortcut, check, more, danger, swatch, glyph, .. } => {
-                    (shortcut.clone(), *check, *more, *danger, *swatch, glyph.clone())
-                }
-                _ => (None, None, true, false, None, None),
-            };
+            let (shortcut, check, more, danger, swatch, glyph) = row_parts(item);
             let ink = match (enabled, danger) {
                 (false, _) => paint.fg_3(),
                 (true, true) => paint.danger(),

@@ -2,6 +2,7 @@ mod buttons;
 mod cards;
 pub mod cells;
 mod controls;
+mod document;
 mod editor;
 mod feedback;
 mod find;
@@ -46,6 +47,12 @@ pub use cards::{
 pub use controls::{
     CHECK, Check, SwitchSize, ZOOM_TRACK, check_box, chevron, fold_chevron, paused_progress, progress, radio_indicator,
     radio_mark, sized_spinner, sized_switch, slider, spinner, stepped_slider, switch, zoom_control,
+};
+pub use document::{
+    Area, Cover, Layer, Marked, PAGE_GAP, PIN, PageEvent, PageTool, Paint2 as MarkStyle, Paper, THUMB_WIDTH, TOOL,
+    ThumbMarks, Verdict, doc_cover, external_link, floating, hit_row, link_preview, note_card, page_layer, page_sheet,
+    page_thumb, paper_picker, progress_line, quote_row, reading_progress, signature_pad, signature_status, tool_button,
+    tool_divider, tool_label,
 };
 pub use editor::{
     EDITOR_BAR, EditorContent, EditorRenderer, ScrolledEditor, View as EditorView, editor, editor_track,
