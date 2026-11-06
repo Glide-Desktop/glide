@@ -26,6 +26,7 @@ glide_sdk::catalogue! {
     Books => "Books", "Книжки";
     Comics => "Comics", "Комікси";
     Scans => "Scans", "Скани";
+    PageShort => "p. {n}", "с. {n}";
     DropHint => "Open documents from Files or drop them into the window", "Відкривайте документи з Файлів або перетягніть їх у вікно";
     PageOf => "p. {n} of {total}", "с. {n} з {total}";
     Read => "Read", "Прочитано";

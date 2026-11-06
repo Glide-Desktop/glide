@@ -35,6 +35,7 @@ glide-config = { path = "../glide-config" }
 glide-sdk = { path = "../glide-sdk" }
 serde.workspace = true
 serde_json.workspace = true
+zbus.workspace = true
 toml.workspace = true
 tracing.workspace = true
 hayro = "0.9"

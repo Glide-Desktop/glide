@@ -224,12 +224,15 @@ impl<M> canvas::Program<M> for Overlay<'_, M> {
         for (area, current) in &self.layer.hits {
             if *current {
                 let r = area.scaled(scale);
-                frame.fill_rectangle(
-                    Point::new(r.x - 2.0, r.y - 2.0),
-                    Size::new(r.width + 4.0, r.height + 4.0),
-                    Color { a: 0.35, ..self.layer.ring },
+                rect(&mut frame, area, Color { a: 0.28, ..self.layer.ring });
+                frame.stroke(
+                    &Path::rounded_rectangle(
+                        Point::new(r.x - 2.0, r.y - 2.0),
+                        Size::new(r.width + 4.0, r.height + 4.0),
+                        3.0.into(),
+                    ),
+                    Stroke::default().with_color(self.layer.ring).with_width(2.0),
                 );
-                rect(&mut frame, area, self.layer.ring);
             } else {
                 rect(&mut frame, area, Color::from_rgba8(240, 196, 64, 0.48));
             }
@@ -476,9 +479,8 @@ pub fn tool_label<'a, M: Clone + 'a>(
 #[must_use]
 pub fn tool_divider<'a, M: 'a>(paint: &Paint) -> Element<'a, M> {
     let paint = *paint;
-    container(Space::new().width(1).height(18))
+    container(container(Space::new().width(1).height(18)).style(move |_| style::rounded(paint.line_2(), 0.0)))
         .padding(Padding::from([0.0, SP1]))
-        .style(move |_| style::rounded(paint.line_2(), 0.0))
         .into()
 }
 
@@ -849,12 +851,12 @@ pub fn quote_row<'a, M: Clone + 'a>(
 #[derive(Debug, Clone)]
 pub struct Cover<'a> {
     pub picture: Option<image::Handle>,
-    pub title: &'a str,
+    pub title: String,
     pub face: Color,
     pub ink: Color,
     pub badge: &'a str,
-    pub name: &'a str,
-    pub meta: &'a str,
+    pub name: String,
+    pub meta: String,
     pub progress: Option<f32>,
 }
 
@@ -867,7 +869,7 @@ pub fn doc_cover<'a, M: Clone + 'a>(paint: &Paint, cover: Cover<'a>, width: f32,
         Some(handle) => image(handle).width(width).height(height).content_fit(ContentFit::Cover).into(),
         None => container(
             text(
-                cover.title.to_string(),
+                cover.title.clone(),
                 TextStyle { size_px: 13.0, line_height_px: 16.0, weight: 650, ..TextStyle::HEAD },
             )
             .color(cover.ink),
@@ -885,7 +887,7 @@ pub fn doc_cover<'a, M: Clone + 'a>(paint: &Paint, cover: Cover<'a>, width: f32,
     });
     let sheet = glide_iced::widgets::surface(sheet, &paint, Level::El1, R1);
     let mut info = column![
-        text(cover.name.to_string(), TextStyle { size_px: 13.0, line_height_px: 17.0, weight: 500, ..TextStyle::CALL })
+        text(cover.name.clone(), TextStyle { size_px: 13.0, line_height_px: 17.0, weight: 500, ..TextStyle::CALL })
             .color(paint.fg_1())
             .wrapping(Wrapping::WordOrGlyph)
     ]
@@ -894,7 +896,7 @@ pub fn doc_cover<'a, M: Clone + 'a>(paint: &Paint, cover: Cover<'a>, width: f32,
     if let Some(fraction) = cover.progress.filter(|f| *f > 0.0) {
         info = info.push(progress_line(&paint, fraction));
     }
-    info = info.push(text(cover.meta.to_string(), TextStyle::CAP).color(paint.fg_2()));
+    info = info.push(text(cover.meta.clone(), TextStyle::CAP).color(paint.fg_2()));
     let body = column![
         crate::anim::hover(Speed::OVERSHOOT, move |_| sheet).transform(|value| crate::anim::Transform {
             scale: 1.0 + 0.03 * value,
@@ -905,6 +907,113 @@ pub fn doc_cover<'a, M: Clone + 'a>(paint: &Paint, cover: Cover<'a>, width: f32,
     .spacing(SP2)
     .width(width);
     button(body).on_press(message).padding(0).style(|_, _| button::Style::default()).into()
+}
+
+#[must_use]
+pub fn form_input_style(
+    paint: &Paint, status: iced::widget::text_input::Status, needed: bool,
+) -> iced::widget::text_input::Style {
+    use iced::widget::text_input::{Status, Style};
+    let blue = Color::from_rgb8(0x2f, 0x6f, 0xd0);
+    let amber = Color::from_rgb8(0xb5, 0x7e, 0x10);
+    let focused = matches!(status, Status::Focused { .. });
+    let edge = if focused {
+        blue
+    } else if needed {
+        amber
+    } else {
+        Color { a: 0.45, ..blue }
+    };
+    Style {
+        background: Background::Color(if focused {
+            Color::WHITE
+        } else if needed {
+            Color { a: 0.14, ..Color::from_rgb8(0xe5, 0xb3, 0x55) }
+        } else {
+            Color { a: 0.07, ..blue }
+        }),
+        border: Border { color: edge, width: if focused { 2.0 } else { 1.0 }, radius: 2.0.into() },
+        icon: paint.fg_2(),
+        placeholder: Color { a: 0.45, ..Color::from_rgb8(0x1b, 0x1a, 0x17) },
+        value: Color::from_rgb8(0x1b, 0x1a, 0x17),
+        selection: Color { a: 0.3, ..blue },
+    }
+}
+
+#[must_use]
+pub fn sign_here<'a, M: Clone + 'a>(
+    paint: &Paint, label: &'a str, width: f32, height: f32, message: M,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let blue = Color::from_rgb8(0x2f, 0x6f, 0xd0);
+    let face = container(
+        text(label, TextStyle { size_px: 12.0, weight: 500, ..TextStyle::CAP })
+            .color(Color::from_rgb8(0x1f, 0x56, 0xa8)),
+    )
+    .center(Fill)
+    .width(width)
+    .height(height);
+    button(face)
+        .on_press(message)
+        .padding(0)
+        .style(move |_, status| button::Style {
+            background: Some(Background::Color(Color {
+                a: if matches!(status, button::Status::Hovered) { 0.10 } else { 0.05 },
+                ..blue
+            })),
+            border: Border { color: blue, width: 1.5, radius: R1.into() },
+            text_color: paint.fg_1(),
+            ..button::Style::default()
+        })
+        .into()
+}
+
+#[must_use]
+pub fn continue_card<'a, M: Clone + 'a>(
+    paint: &Paint, cover: Cover<'a>, status: Option<Element<'a, M>>, when: String, message: M,
+) -> Element<'a, M> {
+    let paint = *paint;
+    let face = cover.face;
+    let mini: Element<'a, M> = match cover.picture {
+        Some(handle) => image(handle).width(60).height(80).content_fit(ContentFit::Cover).into(),
+        None => container(
+            text(cover.title.clone(), TextStyle { size_px: 9.0, line_height_px: 11.0, weight: 650, ..TextStyle::CAP })
+                .color(cover.ink),
+        )
+        .padding(6)
+        .width(60)
+        .height(80)
+        .into(),
+    };
+    let mini = container(mini).width(60).height(80).clip(true).style(move |_| container::Style {
+        background: Some(Background::Color(face)),
+        border: Border { color: paint.line(), width: 1.0, radius: 3.0.into() },
+        ..container::Style::default()
+    });
+    let mut words = column![
+        text(cover.name.clone(), TextStyle { size_px: 13.5, line_height_px: 19.0, weight: 600, ..TextStyle::CALL })
+            .color(paint.fg_1())
+            .wrapping(Wrapping::None),
+        text(cover.meta.clone(), TextStyle::CAP).color(paint.fg_2()).wrapping(Wrapping::None),
+        Space::new().height(SP3),
+    ]
+    .spacing(4)
+    .width(Fill)
+    .clip(true);
+    if let Some(fraction) = cover.progress {
+        words = words.push(progress_line(&paint, fraction));
+    }
+    if let Some(status) = status {
+        words = words.push(status);
+    }
+    words = words.push(text(when, TextStyle::CAP).color(paint.fg_2()).wrapping(Wrapping::None));
+    let card = container(row![mini, words].spacing(14)).padding(12).width(Fill).style(move |_| container::Style {
+        background: Some(Background::Color(paint.card_bg())),
+        border: Border { color: paint.line(), width: 1.0, radius: R3.into() },
+        ..container::Style::default()
+    });
+    let card = crate::anim::hover(Speed::COLOR, move |_| glide_iced::widgets::surface(card, &paint, Level::El1, R3));
+    button(card).on_press(message).padding(0).width(Fill).style(|_, _| button::Style::default()).into()
 }
 
 #[cfg(test)]

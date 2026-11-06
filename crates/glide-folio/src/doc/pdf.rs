@@ -383,7 +383,7 @@ fn structure(doc: &Document, transforms: &[Affine], opened: &mut Opened, links: 
             .into_iter()
             .map(|entry| Heading {
                 title: entry.title,
-                level: entry.level.min(6) as u8,
+                level: entry.level.saturating_sub(1).min(6) as u8,
                 page: entry.page.checked_sub(1),
             })
             .collect();

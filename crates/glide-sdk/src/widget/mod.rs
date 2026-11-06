@@ -50,9 +50,9 @@ pub use controls::{
 };
 pub use document::{
     Area, Cover, Layer, Marked, PAGE_GAP, PIN, PageEvent, PageTool, Paint2 as MarkStyle, Paper, THUMB_WIDTH, TOOL,
-    ThumbMarks, Verdict, doc_cover, external_link, floating, hit_row, link_preview, note_card, page_layer, page_sheet,
-    page_thumb, paper_picker, progress_line, quote_row, reading_progress, signature_pad, signature_status, tool_button,
-    tool_divider, tool_label,
+    ThumbMarks, Verdict, continue_card, doc_cover, external_link, floating, form_input_style, hit_row, link_preview,
+    note_card, page_layer, page_sheet, page_thumb, paper_picker, progress_line, quote_row, reading_progress, sign_here,
+    signature_pad, signature_status, tool_button, tool_divider, tool_label,
 };
 pub use editor::{
     EDITOR_BAR, EditorContent, EditorRenderer, ScrolledEditor, View as EditorView, editor, editor_track,
