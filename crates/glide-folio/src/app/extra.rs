@@ -439,7 +439,7 @@ impl App {
                 let Some(field) = doc.opened.fields.get(signing.field) else {
                     return Task::none();
                 };
-                let pad = (336.0 - 28.0, 120.0);
+                let pad = (crate::view::SIGNATURE_PAD.0, crate::view::SIGNATURE_PAD.1);
                 let rect = field.rect;
                 let strokes: Vec<Vec<(f32, f32)>> = signing
                     .strokes

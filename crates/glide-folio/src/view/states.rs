@@ -90,15 +90,9 @@ pub fn locked(app: &App) -> Element<'_, Message> {
         ),
     ]
     .spacing(SP2);
-    let content = column![
-        ui::empty_state(&paint, Icon::Lock, app.t(Key::Locked), app.t(Key::LockedBody), None),
-        container(form).center_x(Fill),
-        container(actions).center_x(Fill),
-    ]
-    .spacing(SP3)
-    .align_x(Alignment::Center);
-    let body = container(content).center(Fill);
-    frame(app, name_of(path), app.t(Key::LockedSub), body.into(), app.t(Key::LockedFoot))
+    let below = column![form, container(actions).center_x(Fill)].spacing(SP3).width(320);
+    let body = ui::empty_state(&paint, Icon::Lock, app.t(Key::Locked), app.t(Key::LockedBody), Some(below.into()));
+    frame(app, name_of(path), app.t(Key::LockedSub), body, app.t(Key::LockedFoot))
 }
 
 pub fn failed<'a>(app: &'a App, path: &'a Path, error: &'a OpenError) -> Element<'a, Message> {

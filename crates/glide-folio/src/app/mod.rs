@@ -260,8 +260,7 @@ impl App {
         self.memories.insert(store::key(&doc.path), memory.clone());
         if self.saved_memory.as_ref() != Some(&memory) {
             self.saved_memory = Some(memory);
-            let memories = self.memories.clone();
-            std::thread::spawn(move || store::save_memories(&memories));
+            drop(store::save_memories_later(self.memories.clone()));
         }
     }
 

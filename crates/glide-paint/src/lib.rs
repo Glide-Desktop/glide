@@ -2031,7 +2031,9 @@ mod golden_tests {
         let dir = goldens_dir(category);
         let path = dir.join(format!("{name}.png"));
         if let Ok(existing) = std::fs::read(&path) {
-            if existing == png {
+            let pixels =
+                |bytes: &[u8]| tiny_skia::Pixmap::decode_png(bytes).ok().map(|p| (p.width(), p.height(), p.take()));
+            if existing == png || pixels(&existing).is_some_and(|old| Some(old) == pixels(&png)) {
                 return None;
             }
             let actual_path = dir.join(format!("{name}.actual.png"));

@@ -22,6 +22,7 @@ pub const DRAFT_ID: &str = "glide-folio-draft";
 pub const PASSWORD_ID: &str = "glide-folio-password";
 pub const PAGE_FIELD_ID: &str = "glide-folio-page";
 pub const SEARCH_ID: &str = "glide-folio-search";
+pub const SIGNATURE_PAD: (f32, f32) = (372.0, 120.0);
 
 #[must_use]
 pub fn hue_color(hue: Hue) -> Color {

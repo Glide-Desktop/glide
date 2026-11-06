@@ -210,8 +210,7 @@ impl App {
             Lib::Favourite(path) => {
                 let memory = self.memories.entry(store::key(&path)).or_default();
                 memory.favourite = !memory.favourite;
-                let memories = self.memories.clone();
-                std::thread::spawn(move || store::save_memories(&memories));
+                drop(store::save_memories_later(self.memories.clone()));
                 Task::none()
             }
             Lib::Password(_) | Lib::Reveal | Lib::TryPassword => self.password_step(lib),

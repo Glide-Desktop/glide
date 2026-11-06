@@ -131,6 +131,21 @@ pub fn save_memories(memories: &BTreeMap<String, Memory>) {
     }
 }
 
+static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn save_memories_later(memories: BTreeMap<String, Memory>) -> std::thread::JoinHandle<()> {
+    let ticket = SAVES.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
+        let Ok(_guard) = WRITER.lock() else {
+            return;
+        };
+        if SAVES.load(std::sync::atomic::Ordering::SeqCst) == ticket {
+            save_memories(&memories);
+        }
+    })
+}
+
 #[must_use]
 pub fn load_prefs() -> Prefs {
     prefs_file()

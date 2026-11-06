@@ -266,7 +266,13 @@ fn form_overlay<'a>(app: &'a App, doc: &'a Doc, page: usize, zoom: f32) -> Optio
                 ui::page_layer(Layer { scale: zoom, strokes, ..Layer::default() }, w, h, |_| Message::Ignore)
             }
         };
-        layers.push(container(control).padding(Padding { top: y, left: x, right: 0.0, bottom: 0.0 }).into());
+        layers.push(
+            container(control)
+                .padding(Padding { top: y, left: x, right: 0.0, bottom: 0.0 })
+                .width(Fill)
+                .height(Fill)
+                .into(),
+        );
     }
     (!layers.is_empty()).then(|| stack(layers).into())
 }
@@ -401,7 +407,11 @@ fn reflow<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
 }
 
 fn place<'a>(content: impl Into<Element<'a, Message>>, x: f32, y: f32) -> Element<'a, Message> {
-    container(content).padding(Padding { top: y.max(0.0), left: x.max(0.0), right: 0.0, bottom: 0.0 }).into()
+    container(content)
+        .padding(Padding { top: y.max(0.0), left: x.max(0.0), right: 0.0, bottom: 0.0 })
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 
 fn find_float<'a>(app: &'a App, doc: &'a Doc) -> Option<Element<'a, Message>> {
@@ -852,8 +862,10 @@ fn signing_float<'a>(app: &'a App, doc: &'a Doc) -> Option<Element<'a, Message>>
         .spacing(SP2),
     ]
     .spacing(SP3)
-    .width(308);
-    let left = (x + (field.rect.x + field.rect.w) * zoom + 16.0).min(doc.viewport.width - 350.0);
+    .width(crate::view::SIGNATURE_PAD.0);
+    let card = crate::view::SIGNATURE_PAD.0 + 28.0 + 16.0;
+    let right = x + (field.rect.x + field.rect.w) * zoom + 16.0;
+    let left = if right + card <= doc.viewport.width { right } else { (x + field.rect.x * zoom - card).max(8.0) };
     Some(place(ui::floating(&paint, content, 14), left, (y + field.rect.y * zoom - 120.0).max(8.0)))
 }
 
