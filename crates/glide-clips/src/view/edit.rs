@@ -9,7 +9,10 @@ use crate::i18n::{self, Key};
 use crate::icons::Icon;
 use crate::view::player::ink;
 
-const PANEL_GAP: f32 = 24.0;
+pub const PANEL_GAP: f32 = 24.0;
+pub const TRIM_PANEL: f32 = glide_sdk::widget::player::TRIM_HEIGHT + 20.0;
+pub const CLIPS_PANEL: f32 = 40.0 + 6.0 + 76.0 + 20.0;
+pub const PANEL_RADIUS: f32 = 12.0;
 const CLIP_HEIGHT: f32 = 60.0;
 const CLIP_RADIUS: f32 = 6.0;
 

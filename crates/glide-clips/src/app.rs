@@ -404,6 +404,7 @@ pub struct App {
     pub resized: Option<(Instant, iced::Size)>,
     pub pip: bool,
     pub aspect_sent: Option<(u32, u32)>,
+    pub blur_sent: Option<Vec<window_traits::Region>>,
 }
 
 async fn work<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -437,6 +438,11 @@ pub fn title_of(uri: &str, path: Option<&Path>) -> String {
 
 pub const SIDECAR: &str = "glide-clips-sidecar";
 pub const RESIZE_SETTLE: Duration = Duration::from_millis(400);
+const TOPLINE_INSET: f32 = 14.0;
+const TOPLINE_GAP: f32 = 8.0;
+const DISC: f32 = 28.0;
+const DISC_TOP: f32 = TOPLINE_INSET + (TITLE_HEIGHT - DISC) / 2.0;
+const TITLE_HEIGHT: f32 = 36.0;
 const LEAST: iced::Size = iced::Size::new(480.0, 270.0);
 
 #[must_use]
@@ -841,6 +847,52 @@ impl App {
         if self.aspect_sent != Some(wanted) {
             self.aspect_sent = Some(wanted);
             window_traits::request(window_traits::Call::Aspect(wanted.0, wanted.1));
+        }
+    }
+
+    #[must_use]
+    pub fn blur_regions(&self) -> Vec<window_traits::Region> {
+        use crate::view::edit::{CLIPS_PANEL, PANEL_GAP, PANEL_RADIUS, TRIM_PANEL};
+        if !self.media.as_ref().is_some_and(|media| media.showing_video() && media.failure.is_none()) {
+            return Vec::new();
+        }
+        let covered = self.pip || self.ocr.is_some() || matches!(self.exporting, Some(Exporting::Form(_)));
+        if covered {
+            return Vec::new();
+        }
+        let size = self.window.size;
+        let region = |x: f32, y: f32, width: f32, height: f32, radius: f32| window_traits::Region {
+            x: x.round() as i32,
+            y: y.round() as i32,
+            width: width.round() as i32,
+            height: height.round() as i32,
+            radius: radius.round() as i32,
+        };
+        let panel = |height: f32| {
+            region(PANEL_GAP, size.height - PANEL_GAP - height, size.width - 2.0 * PANEL_GAP, height, PANEL_RADIUS)
+        };
+        match self.mode {
+            Mode::Trim { .. } => vec![panel(TRIM_PANEL)],
+            Mode::Clips { .. } => vec![panel(CLIPS_PANEL)],
+            Mode::Play if self.chrome.shown => {
+                let hud = crate::view::hud_rect(size);
+                let disc = |x: f32| region(x, DISC_TOP, DISC, DISC, DISC / 2.0);
+                vec![
+                    region(hud.x, hud.y, hud.width, hud.height, PANEL_RADIUS),
+                    disc(TOPLINE_INSET),
+                    disc(size.width - TOPLINE_INSET - DISC),
+                    disc(size.width - TOPLINE_INSET - 2.0 * DISC - TOPLINE_GAP),
+                ]
+            }
+            Mode::Play => Vec::new(),
+        }
+    }
+
+    pub(crate) fn sync_blur(&mut self) {
+        let wanted = self.blur_regions();
+        if self.blur_sent.as_ref() != Some(&wanted) {
+            self.blur_sent = Some(wanted.clone());
+            window_traits::request(window_traits::Call::Blur(wanted));
         }
     }
 

@@ -96,6 +96,7 @@ impl glide_sdk::App for App {
             resized: None,
             pip: false,
             aspect_sent: None,
+            blur_sent: None,
         };
         let recents = app.refresh_recents();
         let handles = glide_sdk::window::handles().map(Message::Handles);
@@ -119,6 +120,7 @@ impl glide_sdk::App for App {
         if had != self.media.is_some() {
             self.shell_paint(shell);
         }
+        self.sync_blur();
         let mut tasks = vec![task];
         tasks.append(&mut self.queued);
         if self.media.is_none() && had {
@@ -160,6 +162,7 @@ impl glide_sdk::App for App {
             self.resized = Some((std::time::Instant::now(), first));
         }
         self.place();
+        self.sync_blur();
         Task::none()
     }
 

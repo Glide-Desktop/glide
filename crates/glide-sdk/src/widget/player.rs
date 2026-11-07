@@ -676,7 +676,7 @@ pub fn glass_slider<'a, M: Clone + 'a>(value: f32, width: f32, on_change: impl F
 #[must_use]
 pub fn hud<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> container::Container<'a, M> {
     container(content)
-        .padding([6.0, 14.0])
+        .padding(iced::Padding::from([7.0, 15.0]).bottom(11.0))
         .style(|_| container::Style { border: Border { radius: R3.into(), ..glass_style().border }, ..glass_style() })
 }
 

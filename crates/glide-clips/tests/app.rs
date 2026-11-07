@@ -164,8 +164,16 @@ fn a_video_opens_plays_and_is_edited_through_the_whole_app() {
     harness.message(Message::SetAspect(glide_clips::app::Aspect::Fill));
     assert_eq!(harness.app().wanted_aspect(), (0, 0), "filling the window frees the shape");
     harness.message(Message::SetAspect(glide_clips::app::Aspect::File));
+    harness.app_mut().chrome.shown = true;
+    let regions = harness.app().blur_regions();
+    assert_eq!(regions.len(), 4, "the HUD and the three glass buttons of the top line: {regions:?}");
+    assert_eq!((regions[0].x, regions[0].y, regions[0].width, regions[0].height), (320, 614, 640, 82));
+    assert_eq!((regions[1].x, regions[1].y, regions[1].radius), (14, 18, 14));
+    harness.app_mut().chrome.shown = false;
+    assert!(harness.app().blur_regions().is_empty(), "hidden chrome needs no blur");
     harness.message(Message::Pip);
     assert!(harness.app().pip);
+    assert!(harness.app().blur_regions().is_empty(), "picture in picture has no glass");
     let _ = harness.view();
     harness.message(Message::Command(glide_clips::keys::Command::Escape));
     assert!(!harness.app().pip, "Esc returns the picture to the window");
