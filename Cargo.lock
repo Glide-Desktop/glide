@@ -2107,6 +2107,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "glide-clips"
+version = "0.1.0"
+dependencies = [
+ "glide-config",
+ "glide-sdk",
+ "glide-video",
+ "iced",
+ "image",
+ "serde",
+ "toml",
+ "tracing",
+ "zbus",
+]
+
+[[package]]
 name = "glide-compositor"
 version = "0.1.0"
 dependencies = [
@@ -2713,6 +2728,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
+ "zbus",
 ]
 
 [[package]]
