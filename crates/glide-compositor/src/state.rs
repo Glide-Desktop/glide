@@ -4034,7 +4034,8 @@ impl GlideState {
                     self.layout.set_keep_above(id, traits.above());
                 }
                 Change::PictureInPicture(on) if *on != before => self.picture_in_picture(pid, id, *on),
-                Change::PictureInPicture(_) | Change::Blur(_) => {}
+                Change::Blur(regions) => crate::content_blur::set_regions(&window, regions),
+                Change::PictureInPicture(_) => {}
             }
         }
         self.reconcile_space();
@@ -4081,6 +4082,7 @@ impl GlideState {
             return;
         };
         crate::grabs::resize_grab::set_aspect_hint(&window, traits.aspect);
+        crate::content_blur::set_regions(&window, &traits.blur);
         self.layout.set_keep_above(id, traits.above());
     }
 

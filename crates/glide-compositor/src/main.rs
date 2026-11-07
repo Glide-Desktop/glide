@@ -17,6 +17,7 @@ mod clip;
 mod clipboard;
 mod config;
 mod config_repair;
+mod content_blur;
 mod cursor;
 mod decoration;
 mod disk_space;

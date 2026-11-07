@@ -8,7 +8,7 @@ use smithay::{
     backend::renderer::{
         ImportAll, ImportMem, Renderer,
         element::{
-            AsRenderElements, Element, Kind,
+            AsRenderElements, Element, Id, Kind,
             memory::MemoryRenderBufferRenderElement,
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
             utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
@@ -343,6 +343,7 @@ render_elements! {
     Decoration = MemoryRenderBufferRenderElement<R>,
     ClippedDecoration = ClippedMemoryElement<R>,
     ScaledDecoration = RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
+    BlurredContent = crate::content_blur::Blurred<R>,
 }
 
 render_elements! {
@@ -359,6 +360,7 @@ impl<R: Renderer> std::fmt::Debug for GlideWindowLayer<R> {
             Self::Decoration(e) => f.debug_tuple("Decoration").field(e).finish(),
             Self::ClippedDecoration(e) => f.debug_tuple("ClippedDecoration").field(e).finish(),
             Self::ScaledDecoration(e) => f.debug_tuple("ScaledDecoration").field(e).finish(),
+            Self::BlurredContent(e) => f.debug_tuple("BlurredContent").field(e).finish(),
             Self::_GenericCatcher(e) => f.debug_tuple("_GenericCatcher").field(e).finish(),
         }
     }
@@ -449,15 +451,21 @@ impl GlideWindow {
 
     fn content_layers<R>(
         &self, renderer: &mut R, location: Point<i32, Physical>, clip_frame: Option<(Rectangle<i32, Physical>, f32)>,
-        scale: Scale<f64>, alpha: f32,
+        scale: Scale<f64>, alpha: f32, blur: bool,
     ) -> Vec<GlideWindowLayer<R>>
     where
         R: ShellRenderer + ClipCapableRenderer,
         R::Error: std::fmt::Debug,
     {
         let content_elements = self.surface_elements(renderer, location, scale, alpha);
+        let root = self.0.toplevel().map(|toplevel| Id::from_wayland_resource(toplevel.wl_surface()));
+        let below_root = root.and_then(|root| content_elements.iter().position(|element| element.id() == &root));
+        let blurred = match below_root {
+            Some(index) if blur => Some((index + 1, self.blur_layers(renderer, location, scale, alpha))),
+            _ => None,
+        };
 
-        content_elements
+        let mut layers: Vec<GlideWindowLayer<R>> = content_elements
             .into_iter()
             .map(|element| {
                 let clip = clip_frame.and_then(|(frame, radius)| {
@@ -473,7 +481,43 @@ impl GlideWindow {
                     None => GlideWindowLayer::Content(element),
                 }
             })
-            .collect()
+            .collect();
+        if let Some((at, extra)) = blurred {
+            let at = at.min(layers.len());
+            layers.splice(at..at, extra);
+        }
+        layers
+    }
+
+    fn blur_layers<R>(
+        &self, renderer: &mut R, location: Point<i32, Physical>, scale: Scale<f64>, alpha: f32,
+    ) -> Vec<GlideWindowLayer<R>>
+    where
+        R: ShellRenderer + ClipCapableRenderer,
+        R::Error: std::fmt::Debug,
+    {
+        let regions = crate::content_blur::regions(self);
+        let Some(toplevel) = self.0.toplevel().filter(|_| !regions.is_empty()) else { return Vec::new() };
+        if !renderer.prepare_content_blur() {
+            return Vec::new();
+        }
+        let surface = toplevel.wl_surface();
+        let root = Id::from_wayland_resource(surface);
+        let mut layers = Vec::new();
+        for (region_index, region) in regions.iter().enumerate() {
+            let rect = crate::content_blur::region_rect(location, region, scale);
+            let radius = (f64::from(region.radius) * scale.x) as f32;
+            let tree: Vec<WaylandSurfaceRenderElement<R>> =
+                render_elements_from_surface_tree(renderer, surface, location, scale, alpha, Kind::Unspecified);
+            let below = tree.into_iter().skip_while(|element| element.id() != &root).skip(1);
+            for (element_index, element) in below.enumerate() {
+                let index = region_index * crate::window_traits::MAX_BLUR_REGIONS * 4 + element_index;
+                if let Some(blurred) = crate::content_blur::Blurred::new(element, rect, radius, scale, index) {
+                    layers.push(GlideWindowLayer::BlurredContent(blurred));
+                }
+            }
+        }
+        layers
     }
 
     fn chrome_layers<R>(
@@ -561,7 +605,7 @@ impl GlideWindow {
         .filter(|_| renderer.prepare_rounded_clip());
         let chrome_clip = clip_frame.filter(|_| preview.is_some());
 
-        let content = self.content_layers(renderer, location, clip_frame, scale, alpha);
+        let content = self.content_layers(renderer, location, clip_frame, scale, alpha, preview.is_none());
         if content.is_empty() {
             return Vec::new();
         }

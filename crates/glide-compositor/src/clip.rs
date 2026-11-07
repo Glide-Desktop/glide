@@ -134,6 +134,15 @@ impl RoundedClip {
 pub trait ClipCapableRenderer: Renderer {
     fn prepare_rounded_clip(&mut self) -> bool;
 
+    fn prepare_content_blur(&mut self) -> bool;
+
+    #[allow(clippy::too_many_arguments)] // The texture draw call's own arguments plus the blur's clip and step
+    fn draw_blurred(
+        frame: &mut Self::Frame<'_, '_>, texture: &Self::TextureId, src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>, damage: &[Rectangle<i32, Physical>], alpha: f32, clip: &RoundedClip,
+        step: (f64, f64),
+    ) -> Result<(), Self::Error>;
+
     #[allow(clippy::too_many_arguments)]
     fn draw_rounded_clipped(
         frame: &mut Self::Frame<'_, '_>, texture: &Self::TextureId, src: Rectangle<f64, BufferCoord>,
@@ -148,6 +157,32 @@ pub trait ClipCapableRenderer: Renderer {
 }
 
 struct CachedClipProgram(GlesTexProgram);
+
+struct CachedBlurProgram(GlesTexProgram);
+
+const UNIFORM_BLUR_STEP: &str = "blur_step";
+
+fn cached_blur_program(frame: &GlesFrame<'_, '_>) -> Option<GlesTexProgram> {
+    frame.egl_context().user_data().get::<Option<CachedBlurProgram>>().and_then(Option::as_ref).map(|c| c.0.clone())
+}
+
+fn compile_blur_program(renderer: &mut GlesRenderer) -> Option<GlesTexProgram> {
+    let uniforms = [
+        UniformName::new(UNIFORM_UNIT_SCALE, UniformType::_2f),
+        UniformName::new(UNIFORM_UNIT_OFFSET, UniformType::_2f),
+        UniformName::new(UNIFORM_DST_SIZE, UniformType::_2f),
+        UniformName::new(UNIFORM_CLIP_RECT, UniformType::_4f),
+        UniformName::new(UNIFORM_CLIP_RADII, UniformType::_4f),
+        UniformName::new(UNIFORM_BLUR_STEP, UniformType::_2f),
+    ];
+    match renderer.compile_custom_texture_shader(crate::content_blur::BLUR_SHADER, &uniforms) {
+        Ok(program) => Some(program),
+        Err(err) => {
+            tracing::warn!(?err, "content blur shader failed to compile; glass over video stays unblurred");
+            None
+        }
+    }
+}
 
 fn cached_clip_program(frame: &GlesFrame<'_, '_>) -> Option<GlesTexProgram> {
     frame.egl_context().user_data().get::<Option<CachedClipProgram>>().and_then(Option::as_ref).map(|c| c.0.clone())
@@ -182,6 +217,38 @@ impl ClipCapableRenderer for GlesRenderer {
         }
 
         self.egl_context().user_data().get::<Option<CachedClipProgram>>().is_some_and(Option::is_some)
+    }
+
+    fn prepare_content_blur(&mut self) -> bool {
+        if self.egl_context().user_data().get::<Option<CachedBlurProgram>>().is_none() {
+            let compiled = compile_blur_program(self);
+            self.egl_context().user_data().insert_if_missing(|| compiled.map(CachedBlurProgram));
+        }
+        self.egl_context().user_data().get::<Option<CachedBlurProgram>>().is_some_and(Option::is_some)
+    }
+
+    fn draw_blurred(
+        frame: &mut GlesFrame<'_, '_>, texture: &Self::TextureId, src: Rectangle<f64, BufferCoord>,
+        dst: Rectangle<i32, Physical>, damage: &[Rectangle<i32, Physical>], alpha: f32, clip: &RoundedClip,
+        step: (f64, f64),
+    ) -> Result<(), GlesError> {
+        let Some(program) = cached_blur_program(frame) else { return Ok(()) };
+        let tex_size = texture.size();
+        let (tex_w, tex_h) = (tex_size.w as f32, tex_size.h as f32);
+        let mut uniforms = clip_uniforms((tex_w, tex_h), src, dst, clip);
+        let step = [step.0 as f32 / tex_w.max(1.0), step.1 as f32 / tex_h.max(1.0)];
+        uniforms.push(Uniform::new(UNIFORM_BLUR_STEP, step));
+        frame.render_texture_from_to(
+            texture,
+            src,
+            dst,
+            damage,
+            &[],
+            Transform::Normal,
+            alpha,
+            Some(&program),
+            &uniforms,
+        )
     }
 
     fn draw_rounded_clipped(
@@ -422,6 +489,57 @@ mod tests {
             ROUNDED_CLIP_SHADER.contains("samplerExternalOES"),
             "the EXTERNAL variant needs an external sampler declaration"
         );
+    }
+
+    #[test]
+    fn the_blur_shader_declares_its_uniforms_and_every_variant() {
+        let shader = crate::content_blur::BLUR_SHADER;
+        assert!(shader.contains("//_DEFINES_"));
+        for name in [
+            UNIFORM_UNIT_SCALE,
+            UNIFORM_UNIT_OFFSET,
+            UNIFORM_DST_SIZE,
+            UNIFORM_CLIP_RECT,
+            UNIFORM_CLIP_RADII,
+            UNIFORM_BLUR_STEP,
+        ] {
+            assert!(shader.contains(name), "uniform {name} is declared to smithay but unused by the blur shader");
+        }
+        for define in ["NO_ALPHA", "EXTERNAL", "DEBUG_FLAGS"] {
+            assert!(shader.contains(define), "blur shader ignores the {define} variant");
+        }
+    }
+
+    #[test]
+    fn both_shaders_compile_as_glsl_es_in_every_variant() {
+        let Ok(validator) = which_glslang() else { return };
+        let folder = std::env::temp_dir().join(format!("glide-shaders-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("scratch folder");
+        let variants = [&[][..], &["NO_ALPHA"][..], &["EXTERNAL"][..], &["DEBUG_FLAGS"][..]];
+        for (name, source) in [("clip", ROUNDED_CLIP_SHADER), ("blur", crate::content_blur::BLUR_SHADER)] {
+            for defines in variants {
+                let lines = defines.iter().fold(String::new(), |mut lines, define| {
+                    lines.push_str("#define ");
+                    lines.push_str(define);
+                    lines.push('\n');
+                    lines
+                });
+                let path = folder.join(format!("{name}-{}.frag", defines.join("-")));
+                std::fs::write(&path, source.replace("//_DEFINES_", &lines)).expect("write shader");
+                let output = std::process::Command::new(&validator).arg(&path).output().expect("run glslang");
+                assert!(output.status.success(), "{name} {defines:?}: {}", String::from_utf8_lossy(&output.stdout));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    fn which_glslang() -> Result<std::path::PathBuf, ()> {
+        std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+            .map(|folder| folder.join("glslangValidator"))
+            .find(|candidate| candidate.is_file())
+            .ok_or(())
     }
 
     #[test]
