@@ -105,7 +105,7 @@ OUT="$REPO/target/release"
 
 echo
 echo "built:"
-for bin in glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed; do
+for bin in glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed; do
     echo "  $OUT/$bin"
 done
 echo "  $OUT/libpam_glide_keychain.so"

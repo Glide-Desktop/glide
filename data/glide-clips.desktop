@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Clips
+Name[uk]=Clips
+GenericName=Video Player
+GenericName[uk]=Відеопрогравач
+Comment=Watch videos and listen to sound, trim and export copies
+Comment[uk]=Дивитися відео й слухати звук, обрізати й експортувати копії
+Exec=glide-clips %U
+Icon=multimedia-video-player
+Terminal=false
+Categories=AudioVideo;Video;Player;
+Keywords=video;movie;film;player;mp4;mkv;webm;trim;відео;фільм;програвач;плеєр;обрізати;
+MimeType=video/mp4;video/x-m4v;video/quicktime;video/x-matroska;video/webm;video/x-msvideo;video/avi;video/x-flv;video/x-ms-wmv;video/x-ms-asf;video/mpeg;video/mp2t;video/vnd.dlna.mpeg-tts;video/3gpp;video/3gpp2;video/ogg;video/x-ogm+ogg;video/x-theora+ogg;video/dv;video/x-mjpeg;video/vnd.avi;audio/mpeg;audio/mp4;audio/x-m4a;audio/aac;audio/flac;audio/x-flac;audio/ogg;audio/x-vorbis+ogg;audio/opus;audio/x-opus+ogg;audio/wav;audio/x-wav;audio/webm;audio/x-matroska;audio/x-ms-wma;audio/ac3;application/x-matroska;application/ogg;application/vnd.apple.mpegurl;application/x-mpegurl;audio/x-mpegurl;application/dash+xml;x-scheme-handler/rtsp;x-scheme-handler/mms;
+StartupNotify=true
+StartupWMClass=glide-clips

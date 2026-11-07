@@ -6,7 +6,7 @@
 #   --prefix DIR   install prefix (default /usr/local)
 #   --destdir DIR  stage into DIR instead of / (for distribution packages)
 #   --from DIR     directory holding the glide, glidectl, glide-settings,
-#                  glide-files, glide-terminal, glide-text, glide-passwords, glide-photos, glide-folio, glide-catalog, glide-portal and glide-keychain binaries (default: bin/ of a
+#                  glide-files, glide-terminal, glide-text, glide-passwords, glide-photos, glide-folio, glide-clips, glide-catalog, glide-portal and glide-keychain binaries (default: bin/ of a
 #                  release tarball, else target/release of the source tree)
 #   --dm           install and configure glide-dm (via greetd) as system display manager
 #   --pam          add pam_glide_keychain to /etc/pam.d/greetd and /etc/pam.d/passwd,
@@ -103,9 +103,9 @@ else
     UNITDIR="$PREFIX/lib/systemd/user"
 fi
 
-BINARIES="glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed"
-FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-photos $BINDIR/glide-folio $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-phone $BINDIR/glide-session $BINDIR/glide-lock
-$BINDIR/glide-welcome $BINDIR/glide-xembed $APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-passwords.desktop $APPDIR/glide-photos.desktop $APPDIR/glide-folio.desktop $APPDIR/glide-catalog.desktop $APPDIR/glide-phone.desktop $APPDIR/glide-welcome.desktop $AUTOSTARTDIR/glide-phone.desktop $ICONDIR/glide-phone.svg $ICONDIR/glide-welcome.svg $ICONDIR/org.kde.kdeconnect.svg $SOUNDDIR/terminal-bell.mp3 $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
+BINARIES="glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed"
+FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-photos $BINDIR/glide-folio $BINDIR/glide-clips $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-phone $BINDIR/glide-session $BINDIR/glide-lock
+$BINDIR/glide-welcome $BINDIR/glide-xembed $APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-passwords.desktop $APPDIR/glide-photos.desktop $APPDIR/glide-folio.desktop $APPDIR/glide-clips.desktop $APPDIR/glide-catalog.desktop $APPDIR/glide-phone.desktop $APPDIR/glide-welcome.desktop $AUTOSTARTDIR/glide-phone.desktop $ICONDIR/glide-phone.svg $ICONDIR/glide-welcome.svg $ICONDIR/org.kde.kdeconnect.svg $SOUNDDIR/terminal-bell.mp3 $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
 $PORTALDIR/portals/glide.portal $DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service
 $DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service $DBUSDIR/org.glide.Phone.service
 $INTERFACEDIR/org.glide.Shell1.xml
@@ -195,6 +195,7 @@ install -Dm644 "$ROOT/data/glide-text.desktop" "$DESTDIR$APPDIR/glide-text.deskt
 install -Dm644 "$ROOT/data/glide-passwords.desktop" "$DESTDIR$APPDIR/glide-passwords.desktop"
 install -Dm644 "$ROOT/data/glide-photos.desktop" "$DESTDIR$APPDIR/glide-photos.desktop"
 install -Dm644 "$ROOT/data/glide-folio.desktop" "$DESTDIR$APPDIR/glide-folio.desktop"
+install -Dm644 "$ROOT/data/glide-clips.desktop" "$DESTDIR$APPDIR/glide-clips.desktop"
 install -Dm644 "$ROOT/data/glide-catalog.desktop" "$DESTDIR$APPDIR/glide-catalog.desktop"
 install -Dm644 "$ROOT/data/glide-phone.desktop" "$DESTDIR$APPDIR/glide-phone.desktop"
 install -Dm644 "$ROOT/data/glide-welcome.desktop" "$DESTDIR$APPDIR/glide-welcome.desktop"
@@ -327,6 +328,16 @@ for tool in gs ddjvu xpstopdf bsdtar tesseract; do
 done
 command -v soffice >/dev/null 2>&1 || command -v libreoffice >/dev/null 2>&1 || readers="$readers soffice"
 
+players=""
+if command -v gst-inspect-1.0 >/dev/null 2>&1; then
+    for element in matroskademux:gst-plugins-good waylandsink:gst-plugins-bad avdec_h264:gst-libav x264enc:gst-plugins-ugly; do
+        gst-inspect-1.0 --exists "${element%%:*}" 2>/dev/null || players="$players ${element#*:}"
+    done
+else
+    players=" gstreamer"
+fi
+command -v tesseract >/dev/null 2>&1 || players="$players tesseract"
+
 echo
 if [ "$INSTALL_DM" -eq 1 ]; then
     echo "Glide and glide-dm (via greetd) are installed. Reboot or start greetd.service to test."
@@ -373,6 +384,15 @@ if [ -n "$readers" ]; then
     echo "  bsdtar (libarchive)      CBR, CB7 and CBT comics; pacman -S libarchive"
     echo "  soffice (libreoffice)    office documents; pacman -S libreoffice-fresh"
     echo "  tesseract                text recognition in scans; pacman -S tesseract tesseract-data-ukr tesseract-data-eng"
+fi
+if [ -n "$players" ]; then
+    echo
+    echo "Media parts for Glide Clips not found:$players"
+    echo "  gst-plugins-good   MP4, MKV, WebM, Opus, FLAC and most containers"
+    echo "  gst-plugins-bad    the Wayland video surface, HLS and DASH streams, AV1 and hardware decoders"
+    echo "  gst-libav          H.264, HEVC, AAC, AC-3 and other common codecs"
+    echo "  gst-plugins-ugly   H.264 encoding for export without a hardware encoder (x264)"
+    echo "  tesseract          text on a frame; pacman -S tesseract tesseract-data-ukr tesseract-data-eng"
 fi
 if [ "$INSTALL_PAM" -eq 0 ] && ! grep -qs "$PAM_MODULE" "$DESTDIR$PAMDIR/greetd"; then
     echo

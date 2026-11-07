@@ -27,6 +27,7 @@ fn installer_stages_the_welcome_binary_desktop_entry_and_icon() {
         "glide-passwords",
         "glide-photos",
         "glide-folio",
+        "glide-clips",
         "glide-catalog",
         "glide-portal",
         "glide-keychain",
