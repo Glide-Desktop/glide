@@ -11,8 +11,6 @@ use crate::i18n::{self, Key};
 use crate::icons::Icon;
 use crate::view::player::ink;
 
-const STAGE: Color = Color { r: 0.067, g: 0.063, b: 0.078, a: 1.0 };
-
 fn glass_panel<'a>(content: impl Into<Element<'a, Message>>, padding: Padding) -> container::Container<'a, Message> {
     container(content)
         .padding(padding)
@@ -290,6 +288,27 @@ pub fn buffering<'a>(app: &'a App, media: &'a Media) -> Option<Element<'a, Messa
 }
 
 #[must_use]
+pub fn primaries(colorimetry: Option<&str>, hdr: Hdr) -> String {
+    let lower = colorimetry.unwrap_or_default().to_ascii_lowercase();
+    let named = if lower.starts_with("bt2020") || lower.starts_with("bt2100") {
+        Some("BT.2020")
+    } else if lower.starts_with("bt709") {
+        Some("BT.709")
+    } else if lower.starts_with("bt601") || lower.starts_with("smpte170m") {
+        Some("BT.601")
+    } else if lower.starts_with("srgb") || lower.starts_with("sycc") {
+        Some("sRGB")
+    } else {
+        None
+    };
+    match (named, colorimetry) {
+        (Some(name), _) => name.to_string(),
+        (None, Some(raw)) if !raw.is_empty() => raw.to_string(),
+        _ => if hdr == Hdr::Sdr { "BT.709" } else { "BT.2020" }.to_string(),
+    }
+}
+
+#[must_use]
 pub fn inspector_rows(app: &App) -> Vec<(String, String)> {
     let Some(media) = &app.media else { return Vec::new() };
     let lang = app.lang;
@@ -323,12 +342,11 @@ pub fn inspector_rows(app: &App) -> Vec<(String, String)> {
             app.t(Key::Video).into(),
             format!("{} · {} × {} · {fps} {}{depth}", video.codec, video.width, video.height, lang.pick("к/с", "fps")),
         ));
+        let primaries = primaries(video.colorimetry.as_deref(), video.hdr);
         let colour = match video.hdr {
-            Hdr::Hdr10 => {
-                format!("{} · PQ (HDR10) → SDR", video.colorimetry.clone().unwrap_or_else(|| "BT.2020".into()))
-            }
-            Hdr::Hlg => format!("{} · HLG → SDR", video.colorimetry.clone().unwrap_or_else(|| "BT.2020".into())),
-            Hdr::Sdr => video.colorimetry.clone().unwrap_or_else(|| "BT.709".into()),
+            Hdr::Hdr10 => format!("{primaries} · PQ (HDR10) → SDR"),
+            Hdr::Hlg => format!("{primaries} · HLG → SDR"),
+            Hdr::Sdr => primaries,
         };
         rows.push((app.t(Key::Colour).into(), colour));
     }
@@ -474,8 +492,7 @@ pub fn ocr<'a>(app: &'a App, media: &'a Media, state: &'a Ocr) -> Element<'a, Me
         Padding::from([6.0, 10.0]),
     );
     layers.push(container(bar).width(Fill).height(Fill).align_y(Alignment::End).padding(24).into());
-    let _ = STAGE;
-    stack(layers).into()
+    stack(layers).width(Fill).height(Fill).into()
 }
 
 #[cfg(test)]
@@ -488,5 +505,14 @@ mod tests {
         assert_eq!(package_of("gstreamer|1.0|glide-clips|H.265 decoder|decoder-video/x-h265"), Some("gst-libav"));
         assert_eq!(package_of("gstreamer|1.0|x|AC-3 decoder|decoder-audio/x-ac3"), Some("gst-plugins-ugly"));
         assert_eq!(codec_name("something odd"), None);
+    }
+
+    #[test]
+    fn colour_primaries_read_as_the_standard_not_the_gstreamer_token() {
+        assert_eq!(primaries(Some("bt2100-pq"), Hdr::Hdr10), "BT.2020");
+        assert_eq!(primaries(Some("bt709"), Hdr::Sdr), "BT.709");
+        assert_eq!(primaries(Some("2:4:5:4"), Hdr::Sdr), "2:4:5:4");
+        assert_eq!(primaries(None, Hdr::Hlg), "BT.2020");
+        assert_eq!(primaries(None, Hdr::Sdr), "BT.709");
     }
 }

@@ -1068,7 +1068,7 @@ impl App {
         self.chrome.shown = true;
         self.chrome.moved = Instant::now();
         let (at, items) = crate::menus::build(self, anchor);
-        shell.context_menu_at(at, items);
+        shell.popover_at(at, items, crate::menus::POPOVER_LEAST);
         Task::none()
     }
 

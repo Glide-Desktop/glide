@@ -94,20 +94,34 @@ fn icon(item: Item<Message>, glyph: Icon) -> Item<Message> {
     item.glyph(glyph.handle())
 }
 
+pub const POPOVER_LEAST: f32 = 212.0;
+const POPOVER_GAP: f32 = 8.0;
+const POPOVER_OVERHANG: f32 = 20.0;
+
+fn above_hud(app: &App, button_right: f32, items: &[Item<Message>]) -> Point {
+    let hud = crate::view::hud_rect(app.window.size);
+    let width = glide_sdk::menu::width(items, POPOVER_LEAST);
+    let height = glide_sdk::menu::height(items);
+    let right = (hud.x + hud.width - button_right + POPOVER_OVERHANG).min(app.window.size.width - 8.0);
+    Point::new((right - width).max(8.0), (hud.y - POPOVER_GAP - height).max(8.0))
+}
+
 #[must_use]
 pub fn build(app: &App, anchor: Anchor) -> (Point, Vec<Item<Message>>) {
-    let size = app.window.size;
-    let hud = crate::view::hud_rect(size);
-    let right = hud.x + hud.width - 14.0;
-    let above = hud.y - 4.0;
-    match anchor {
-        Anchor::Speed => (Point::new(right - 178.0, above), speed(app)),
-        Anchor::Tracks => (Point::new(right - 136.0, above), tracks(app)),
-        Anchor::More | Anchor::Aspect => {
-            (Point::new(right - 102.0, above), if anchor == Anchor::More { more(app) } else { aspect(app) })
-        }
-        Anchor::Chapters => (Point::new(54.0, 56.0), chapters(app)),
-    }
+    let items = match anchor {
+        Anchor::Speed => speed(app),
+        Anchor::Tracks => tracks(app),
+        Anchor::More => more(app),
+        Anchor::Aspect => aspect(app),
+        Anchor::Chapters => chapters(app),
+    };
+    let at = match anchor {
+        Anchor::Speed => above_hud(app, 116.0, &items),
+        Anchor::Tracks => above_hud(app, 82.0, &items),
+        Anchor::More | Anchor::Aspect => above_hud(app, 48.0, &items),
+        Anchor::Chapters => Point::new(54.0, 56.0),
+    };
+    (at, items)
 }
 
 #[must_use]
@@ -200,7 +214,7 @@ pub fn tracks(app: &App) -> Vec<Item<Message>> {
 pub fn chapters(app: &App) -> Vec<Item<Message>> {
     let Some(media) = &app.media else { return Vec::new() };
     let current = media.chapter();
-    let mut items = vec![Item::heading(app.t(Key::Chapters).replace("{n}", &media.chapters.len().to_string()))];
+    let mut items = vec![Item::heading(i18n::chapters(app.lang, media.chapters.len()))];
     for (index, chapter) in media.chapters.iter().enumerate() {
         let title = if chapter.title.is_empty() {
             app.t(Key::ChapterNumber).replace("{n}", &(index + 1).to_string())
@@ -242,6 +256,17 @@ pub fn aspect(app: &App) -> Vec<Item<Message>> {
     ]
 }
 
+fn aspect_now(app: &App) -> String {
+    let current = app.media.as_ref().map(|media| media.aspect).unwrap_or_default();
+    let name = app.t(match current {
+        Aspect::File => Key::AsInFile,
+        Aspect::Fill => Key::FillWindow,
+        Aspect::Cinema => Key::Cinema,
+    });
+    let mut letters = name.chars();
+    letters.next().map_or_else(String::new, |first| first.to_lowercase().chain(letters).collect())
+}
+
 #[must_use]
 pub fn ratio_label(width: u32, height: u32, lang: Lang) -> String {
     let known = [
@@ -270,7 +295,7 @@ pub fn more(app: &App) -> Vec<Item<Message>> {
         icon(Item::action(app.t(Key::PictureInPicture), Message::Pip), Icon::Pip).shortcut("Ctrl+Shift+P"),
         icon(Item::action(app.t(Key::OnTop), Message::ToggleOnTop), Icon::Pin).checked(media.on_top),
         icon(Item::action(app.t(Key::Repeat), Message::ToggleRepeat), Icon::Repeat).checked(media.repeat),
-        Item::submenu(app.t(Key::AspectMenu), aspect(app)).glyph(Icon::Aspect.handle()),
+        Item::submenu(app.t(Key::AspectMenu), aspect(app)).glyph(Icon::Aspect.handle()).value(aspect_now(app)),
         Item::separator(),
         Item::heading(app.t(Key::Editing)),
         icon(Item::action(app.t(Key::TrimEllipsis), Message::EnterTrim), Icon::Scissors)

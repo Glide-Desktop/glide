@@ -305,7 +305,9 @@ fn subtitles(media: &Media, shown: bool) -> Element<'_, Message> {
 
 #[must_use]
 pub fn view<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
-    let shown = app.chrome.shown || app.mode != Mode::Play;
+    let covered = matches!(app.exporting, Some(crate::app::Exporting::Form(_)));
+    let chrome = app.chrome.shown && !covered;
+    let shown = (app.chrome.shown || app.mode != Mode::Play) && !covered;
     let editing = app.mode != Mode::Play;
     let base: Element<'a, Message> = if let Some(state) = crate::view::states::failure(app, media) {
         state
@@ -317,14 +319,17 @@ pub fn view<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
     let bars = column![scrim(shown, SCRIM_TOP, true), Space::new().height(Fill), scrim(shown, SCRIM_BOTTOM, false)];
     let top = animate(if shown { 1.0 } else { 0.0 }, Speed::EXPAND, move |_| topline(app, media))
         .offset(|value| Vector::new(0.0, -TOP_TRAVEL * (1.0 - value)));
-    let mut layers: Vec<Element<'a, Message>> = vec![base, bars.into(), subtitles(media, shown || editing), top.into()];
+    let mut layers: Vec<Element<'a, Message>> = vec![base, bars.into(), subtitles(media, shown || editing)];
+    if !editing {
+        layers.push(top.into());
+    }
     if let Some(chip) = crate::view::states::buffering(app, media) {
         layers.push(chip);
     }
     match app.mode {
         Mode::Play => {
             let hide = HUD_TRAVEL;
-            let panel = animate(if app.chrome.shown { 1.0 } else { 0.0 }, Speed::EXPAND, move |_| controls(app, media))
+            let panel = animate(if chrome { 1.0 } else { 0.0 }, Speed::EXPAND, move |_| controls(app, media))
                 .offset(move |value| Vector::new(0.0, hide * (1.0 - value)));
             layers.push(
                 container(panel)
@@ -357,7 +362,7 @@ pub fn view<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
         border: Border { radius: corner.into(), ..Border::default() },
         ..container::Style::default()
     });
-    let pane = player::hidden_cursor(!shown, pane);
+    let pane = player::hidden_cursor(!shown && !covered, pane);
     stage(pane)
         .on_drag(Message::WindowDrag)
         .on_double_click(Message::Window(Action::ToggleFullscreen))

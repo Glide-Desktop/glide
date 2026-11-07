@@ -5,12 +5,13 @@ use iced::widget::{Space, button, column, container, image, mouse_area, row, sta
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Padding};
 
 use crate::app::{App, Media, Message, Mode};
-use crate::i18n::Key;
+use crate::i18n::{self, Key};
 use crate::icons::Icon;
 use crate::view::player::ink;
 
 const PANEL_GAP: f32 = 24.0;
 const CLIP_HEIGHT: f32 = 60.0;
+const CLIP_RADIUS: f32 = 6.0;
 
 fn glass_panel<'a>(content: impl Into<Element<'a, Message>>, padding: Padding) -> container::Container<'a, Message> {
     container(content)
@@ -86,13 +87,12 @@ fn tool(glyph: Icon, label: &str, on: bool, message: Option<Message>) -> Element
 }
 
 fn divider<'a>() -> Element<'a, Message> {
-    container(Space::new().width(1).height(18))
-        .padding([0.0, 6.0])
-        .style(|_| container::Style {
-            background: Some(Background::Color(Color { a: 0.16, ..Color::WHITE })),
-            ..container::Style::default()
-        })
-        .into()
+    container(container(Space::new().width(1).height(18)).style(|_| container::Style {
+        background: Some(Background::Color(Color { a: 0.16, ..Color::WHITE })),
+        ..container::Style::default()
+    }))
+    .padding([0.0, 6.0])
+    .into()
 }
 
 fn summary<'a>(
@@ -187,7 +187,10 @@ pub fn trim<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
         (vec!["Esc"], app.t(Key::HintCancel)),
     ]);
     let bottom = column![container(hints).width(Fill).align_x(Alignment::End), panel].spacing(12);
-    stack![top, container(bottom).width(Fill).height(Fill).align_y(Alignment::End).padding(PANEL_GAP),].into()
+    stack![top, container(bottom).width(Fill).height(Fill).align_y(Alignment::End).padding(PANEL_GAP)]
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 
 fn clip_frames<'a>(media: &'a Media, index: usize, width: f32) -> Element<'a, Message> {
@@ -212,12 +215,25 @@ fn clip_frames<'a>(media: &'a Media, index: usize, width: f32) -> Element<'a, Me
     };
     let cells = picked.len().max(1);
     let cell = (width / cells as f32).floor().max(1.0);
-    let strip = picked.into_iter().fold(row![], |line, frame| {
+    let strip = picked.into_iter().enumerate().fold(row![], |line, (slot, frame)| {
+        let mut corners = iced::border::Radius::default();
+        if slot == 0 {
+            corners = corners.left(CLIP_RADIUS);
+        }
+        if slot + 1 == cells {
+            corners = corners.right(CLIP_RADIUS);
+        }
         let content: Element<'a, Message> = match frame {
-            Some(handle) => image(handle).width(cell).height(CLIP_HEIGHT).content_fit(iced::ContentFit::Cover).into(),
+            Some(handle) => image(handle)
+                .width(cell)
+                .height(CLIP_HEIGHT)
+                .content_fit(iced::ContentFit::Cover)
+                .border_radius(corners)
+                .into(),
             None => container(Space::new().width(cell).height(CLIP_HEIGHT))
-                .style(|_| container::Style {
+                .style(move |_| container::Style {
                     background: Some(Background::Color(Color::from_rgb8(18, 17, 20))),
+                    border: Border { radius: corners, ..Border::default() },
                     ..container::Style::default()
                 })
                 .into(),
@@ -253,8 +269,7 @@ pub fn clips<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
     let Mode::Clips { dragging } = app.mode else { return Space::new().into() };
     let timeline = &media.timeline;
     let count = timeline.clips.len();
-    let tail =
-        app.t(Key::ClipsCount).replace("{n}", &count.to_string()).replace("{time}", &clock(timeline.total(), true));
+    let tail = format!("{} · {}", i18n::clips(app.lang, count), clock(timeline.total(), true));
     let top = summary(app, media, Icon::Split, Key::ClipsTitle, tail, None);
     let selected = timeline.selected.min(count.saturating_sub(1));
     let transform = timeline.clips.get(selected).map(|clip| clip.transform).unwrap_or_default();
@@ -295,7 +310,10 @@ pub fn clips<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
         let frames = clip_frames(media, index, width);
         let mut face = stack![frames];
         if clip.transform.turn != glide_video::export::Turn::None {
-            face = face.push(container(glass_tag(&format!("{}°", clip.transform.turn.degrees()))).padding(4));
+            face = face.push(
+                container(player::frame_tag(Some(Icon::RotateRight), &format!("{}°", clip.transform.turn.degrees())))
+                    .padding(4),
+            );
         }
         let length = clip_length(clip.length());
         face = face.push(
@@ -309,14 +327,15 @@ pub fn clips<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
         let picked = index == selected;
         let lifted = dragging == Some(index);
         let ring = glide_sdk::Paint::default().acc_bg();
-        let bordered = container(face).width(width).height(CLIP_HEIGHT).clip(true).style(move |_| container::Style {
+        face = face.push(container(Space::new().width(width).height(CLIP_HEIGHT)).style(move |_| container::Style {
             border: Border {
-                radius: 6.0.into(),
+                radius: CLIP_RADIUS.into(),
                 color: if picked { ring } else { Color { a: 0.14, ..Color::WHITE } },
                 width: if picked { 3.0 } else { 1.0 },
             },
             ..container::Style::default()
-        });
+        }));
+        let bordered = container(face).width(width).height(CLIP_HEIGHT).clip(true);
         let bordered =
             if lifted { glide_sdk::glide_iced::widgets::lift(bordered, 1.03, -12.0) } else { bordered.into() };
         let area = mouse_area(bordered)
@@ -340,7 +359,10 @@ pub fn clips<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
     );
     let above = row![caption, Space::new().width(Fill), hints].align_y(Alignment::End);
     let bottom = column![above, panel].spacing(12);
-    stack![top, container(bottom).width(Fill).height(Fill).align_y(Alignment::End).padding(PANEL_GAP)].into()
+    stack![top, container(bottom).width(Fill).height(Fill).align_y(Alignment::End).padding(PANEL_GAP)]
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 
 fn clip_length<'a>(length: std::time::Duration) -> Element<'a, Message> {

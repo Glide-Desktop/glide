@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use glide_sdk::theme::TextStyle;
@@ -13,6 +14,7 @@ use crate::i18n::{self, Key};
 use crate::icons::Icon;
 
 const WIDTH: f32 = 520.0;
+const PRESET_HEIGHT: f32 = 68.0;
 
 fn preset<'a>(paint: &Paint, name: String, size: String, on: bool, message: Message) -> Element<'a, Message> {
     let paint = *paint;
@@ -21,12 +23,13 @@ fn preset<'a>(paint: &Paint, name: String, size: String, on: bool, message: Mess
             .color(if on { paint.acc_soft_fg() } else { paint.fg_1() }),
         ui::text(size, TextStyle { size_px: 11.5, line_height_px: 15.0, ..TextStyle::CAP })
             .color(paint.fg_2())
-            .wrapping(ui::Wrapping::None),
+            .wrapping(ui::Wrapping::WordOrGlyph),
     ]
     .spacing(2);
-    button(container(content).padding([8.0, 10.0]).width(Fill))
+    button(container(content).padding([8.0, 10.0]).width(Fill).height(Fill))
         .padding(0)
         .width(Fill)
+        .height(PRESET_HEIGHT)
         .on_press(message)
         .style(move |_, status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
@@ -101,7 +104,7 @@ fn actions<'a>(app: &'a App, media: &'a Media, form: &'a ExportForm, lossless_po
     let estimate = app
         .t(Key::Estimate)
         .replace("{size}", &i18n::bytes(app.lang, shown.0))
-        .replace("{time}", &clock(shown.1, false));
+        .replace("{time}", &i18n::span(app.lang, shown.1));
     row![
         ui::text(estimate, TextStyle::CAP).color(paint.fg_2()),
         Space::new().width(Fill),
@@ -142,6 +145,50 @@ fn switches<'a>(app: &'a App, media: &'a Media, form: &'a ExportForm, lossless_p
     .into()
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum Place {
+    Folder(PathBuf, String),
+    Other(String),
+}
+
+impl std::fmt::Display for Place {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Folder(_, name) | Self::Other(name) => formatter.write_str(name),
+        }
+    }
+}
+
+fn folder_name(app: &App, folder: &Path) -> String {
+    if crate::update::user_dir("XDG_VIDEOS_DIR", "Videos").as_deref() == Some(folder) {
+        return app.t(Key::VideosFolder).to_string();
+    }
+    folder.file_name().map_or_else(|| folder.to_string_lossy().into_owned(), |name| name.to_string_lossy().into_owned())
+}
+
+fn places<'a>(app: &'a App, media: &'a Media, form: &'a ExportForm) -> Element<'a, Message> {
+    let paint = app.paint;
+    let mut folders: Vec<PathBuf> = vec![form.folder.clone()];
+    let candidates = [
+        crate::update::user_dir("XDG_VIDEOS_DIR", "Videos"),
+        media.path.as_deref().and_then(Path::parent).map(Path::to_path_buf),
+    ];
+    for folder in candidates.into_iter().flatten() {
+        if !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
+    let mut options: Vec<Place> =
+        folders.into_iter().map(|folder| Place::Folder(folder.clone(), folder_name(app, &folder))).collect();
+    let current = options.first().cloned();
+    options.push(Place::Other(app.t(Key::OtherFolder).to_string()));
+    let lead = ui::icon(Icon::Folder, 16.0, paint.fg_2());
+    ui::dropdown_with(&paint, Some(lead), TextStyle::CALL, options, current, "", |place| match place {
+        Place::Folder(folder, _) => Message::ExportFolderChosen(folder),
+        Place::Other(_) => Message::ExportFolder,
+    })
+}
+
 fn form<'a>(app: &'a App, media: &'a Media, form: &'a ExportForm) -> Element<'a, Message> {
     let paint = app.paint;
     let lang = app.lang;
@@ -155,18 +202,13 @@ fn form<'a>(app: &'a App, media: &'a Media, form: &'a ExportForm) -> Element<'a,
     } else {
         "mp4"
     };
-    let name =
-        ui::field(&paint, text_input("", &form.name).on_input(Message::ExportName).on_submit(Message::ExportStart));
-    let name =
-        row![container(name).width(Fill), ui::text(format!(".{extension}"), TextStyle::CALL).color(paint.fg_2())]
-            .spacing(6)
-            .align_y(Alignment::Center);
-    let folder = form
-        .folder
-        .file_name()
-        .map_or_else(|| form.folder.to_string_lossy().into_owned(), |name| name.to_string_lossy().into_owned());
-    let place =
-        ui::glyph_button(&paint, Icon::Folder, folder, Tone::Neutral, Size::Medium, Some(Message::ExportFolder));
+    let name = ui::field_with(
+        &paint,
+        None,
+        text_input("", &form.name).on_input(Message::ExportName).on_submit(Message::ExportStart),
+        vec![ui::text(format!(".{extension}"), TextStyle::BODY).color(paint.fg_3()).into()],
+    );
+    let place = places(app, media, form);
     let labelled = |label: &'a str, content: Element<'a, Message>| -> Element<'a, Message> {
         column![
             ui::text(label, TextStyle { size_px: 13.0, line_height_px: 19.0, weight: 500, ..TextStyle::CALL })
@@ -177,7 +219,7 @@ fn form<'a>(app: &'a App, media: &'a Media, form: &'a ExportForm) -> Element<'a,
         .into()
     };
     let top = row![
-        container(labelled(app.t(Key::Name), name.into())).width(Fill),
+        container(labelled(app.t(Key::Name), name)).width(Fill),
         container(labelled(app.t(Key::Where), place)).width(Length::Fixed(168.0)),
     ]
     .spacing(12);
@@ -201,7 +243,7 @@ fn form<'a>(app: &'a App, media: &'a Media, form: &'a ExportForm) -> Element<'a,
             .width(Fill),
         )
     });
-    let codecs = ui::segmented_fill(
+    let codecs = ui::segmented_spread(
         &paint,
         &[(Codec::H264, app.t(Key::H264)), (Codec::Hevc, app.t(Key::Hevc)), (Codec::Av1, app.t(Key::Av1))],
         form.codec,

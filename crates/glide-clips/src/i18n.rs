@@ -51,7 +51,6 @@ glide_sdk::catalogue! {
     Shift => "Delay", "Зсув";
     Seconds => "{n} s", "{n} с";
     Track => "Track {n}", "Доріжка {n}";
-    Chapters => "{n} chapters", "Розділів: {n}";
     Now => "now", "зараз";
     AspectMenu => "Aspect ratio", "Пропорції";
     AsInFile => "As in the file", "Як у файлі";
@@ -91,7 +90,6 @@ glide_sdk::catalogue! {
     StartAt => "Start: {time}", "Початок: {time}";
     EndAt => "End: {time}", "Кінець: {time}";
     ClipsTitle => "Clips", "Кліпи";
-    ClipsCount => "{n} clips · {time}", "Кліпів: {n} · {time}";
     ClipLabel => "Clip {n}", "Кліп {n}";
     Turned => "turned {n}° clockwise", "повернуто на {n}° праворуч";
     Flipped => "flipped", "віддзеркалено";
@@ -115,7 +113,12 @@ glide_sdk::catalogue! {
     EncoderNote => "The graphics card encodes through VA-API; without it the processor does, slower.", "Кодує відеокарта через VA-API; без неї — процесор, довше.";
     Lossless => "Without re-encoding, where possible", "Без перекодування, коли можна";
     LosslessNote => "Instant and lossless; the edges move to the nearest keyframes", "Миттєво і без втрат; межі стануть на найближчі ключові кадри";
-    LosslessUnavailable => "Not possible with flips or with clips from different files", "Неможливо з віддзеркаленням або кліпами з різних файлів";
+    LosslessUnavailable => "Not possible when clips are turned differently, flipped or come from different files", "Неможливо, коли кліпи повернуто по-різному, віддзеркалено чи взято з різних файлів";
+    VideosFolder => "Videos", "Відео";
+    OtherFolder => "Other Folder…", "Інша папка…";
+    SpanSeconds => "{n} s", "{n} с";
+    SpanMinutes => "{n} min", "{n} хв";
+    SpanHours => "{h} h {m} min", "{h} год {m} хв";
     KeepHdr => "Keep HDR", "Зберегти HDR";
     KeepHdrNote => "HEVC and AV1 only; H.264 turns the colours into SDR", "Лише для HEVC і AV1; у H.264 кольори перетворяться на SDR";
     Estimate => "About {size} · about {time}", "Приблизно {size} · близько {time}";
@@ -222,8 +225,59 @@ pub fn civil(days: u64) -> (i64, u32, u32) {
 }
 
 #[must_use]
+pub fn counted(lang: Lang, n: usize, en: [&str; 2], uk: [&str; 3]) -> String {
+    let word = match lang {
+        Lang::En => {
+            if n == 1 {
+                en[0]
+            } else {
+                en[1]
+            }
+        }
+        Lang::Uk => {
+            let (tens, ones) = (n % 100, n % 10);
+            if ones == 1 && tens != 11 {
+                uk[0]
+            } else if (2..=4).contains(&ones) && !(12..=14).contains(&tens) {
+                uk[1]
+            } else {
+                uk[2]
+            }
+        }
+    };
+    format!("{n} {word}")
+}
+
+#[must_use]
+pub fn span(lang: Lang, span: std::time::Duration) -> String {
+    let seconds = span.as_secs();
+    if seconds < 60 {
+        return Key::SpanSeconds.text(lang).replace("{n}", &seconds.max(1).to_string());
+    }
+    let minutes = seconds.div_ceil(60);
+    if minutes < 60 {
+        Key::SpanMinutes.text(lang).replace("{n}", &minutes.to_string())
+    } else {
+        Key::SpanHours
+            .text(lang)
+            .replace("{h}", &(minutes / 60).to_string())
+            .replace("{m}", &(minutes % 60).to_string())
+    }
+}
+
+#[must_use]
+pub fn chapters(lang: Lang, n: usize) -> String {
+    counted(lang, n, ["chapter", "chapters"], ["розділ", "розділи", "розділів"])
+}
+
+#[must_use]
+pub fn clips(lang: Lang, n: usize) -> String {
+    counted(lang, n, ["clip", "clips"], ["кліп", "кліпи", "кліпів"])
+}
+
+#[must_use]
 pub fn left(lang: Lang, left: std::time::Duration) -> String {
-    let minutes = (left.as_secs() + 30) / 60;
+    let minutes = left.as_secs() / 60;
     if minutes == 0 {
         Key::LeftSeconds.text(lang).replace("{n}", &left.as_secs().to_string())
     } else {
@@ -277,9 +331,29 @@ mod tests {
     }
 
     #[test]
-    fn time_left_rounds_to_minutes() {
-        assert_eq!(left(Lang::Uk, std::time::Duration::from_secs(2866)), "Залишилось 48 хв");
+    fn time_left_counts_whole_minutes_like_a_clock() {
+        assert_eq!(left(Lang::Uk, std::time::Duration::from_secs(2866)), "Залишилось 47 хв");
         assert_eq!(left(Lang::En, std::time::Duration::from_secs(20)), "20 s left");
+    }
+
+    #[test]
+    fn counts_take_the_ukrainian_plural() {
+        assert_eq!(chapters(Lang::Uk, 1), "1 розділ");
+        assert_eq!(chapters(Lang::Uk, 3), "3 розділи");
+        assert_eq!(chapters(Lang::Uk, 5), "5 розділів");
+        assert_eq!(chapters(Lang::Uk, 12), "12 розділів");
+        assert_eq!(chapters(Lang::Uk, 22), "22 розділи");
+        assert_eq!(clips(Lang::Uk, 4), "4 кліпи");
+        assert_eq!(clips(Lang::En, 1), "1 clip");
+        assert_eq!(clips(Lang::En, 4), "4 clips");
+    }
+
+    #[test]
+    fn spans_read_in_minutes_rounded_up() {
+        assert_eq!(span(Lang::Uk, std::time::Duration::from_secs(5)), "5 с");
+        assert_eq!(span(Lang::Uk, std::time::Duration::from_secs(61)), "2 хв");
+        assert_eq!(span(Lang::Uk, std::time::Duration::from_secs(800)), "14 хв");
+        assert_eq!(span(Lang::En, std::time::Duration::from_mins(65)), "1 h 5 min");
     }
 
     #[test]
