@@ -302,6 +302,59 @@ mod tests {
     }
 
     #[test]
+    fn a_window_kept_above_stays_on_top_of_windows_raised_later() {
+        let mut layout = Layout::new();
+        layout.set_policy(NewWindowPolicy::ActiveWorkspace);
+        let ids = windows(&mut layout, 3, SMALL);
+        assert!(layout.set_keep_above(ids[0], true));
+        assert!(!layout.set_keep_above(ids[0], true), "setting it twice changes nothing");
+        assert_eq!(visible(&layout), vec![ids[1], ids[2], ids[0]]);
+        layout.focus_window(ids[2]);
+        assert_eq!(visible(&layout).last(), Some(&ids[0]), "focus raises below the kept-above window");
+        let newer = WindowId::next();
+        layout.add_window(newer, SMALL);
+        assert_eq!(visible(&layout).last(), Some(&ids[0]));
+        assert!(layout.set_keep_above(ids[0], false));
+        assert_eq!(visible(&layout).first(), Some(&ids[0]));
+    }
+
+    #[test]
+    fn a_sticky_window_follows_every_workspace_switch() {
+        let (mut layout, ids) = shared(2);
+        let first = layout.active_workspace();
+        assert!(layout.set_sticky(ids[0], true));
+        layout.set_policy(NewWindowPolicy::NewWorkspace);
+        let other = WindowId::next();
+        layout.add_window(other, SMALL);
+        layout.set_policy(NewWindowPolicy::ActiveWorkspace);
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Id(state(&layout, other).workspace_id)));
+        assert!(visible(&layout).contains(&ids[0]), "the sticky window is on the new workspace");
+        assert!(!visible(&layout).contains(&ids[1]));
+        layout.focus_window(ids[0]);
+        assert_ne!(layout.active_workspace(), first, "focusing it does not pull the view back");
+        assert_eq!(overview_ids(&layout).iter().filter(|id| **id == ids[0]).count(), 1, "listed once");
+    }
+
+    #[test]
+    fn a_workspace_holding_only_a_sticky_window_is_still_empty() {
+        let (mut layout, ids) = shared(1);
+        let pip = WindowId::next();
+        layout.add_window(pip, SMALL);
+        layout.set_sticky(pip, true);
+        let first = layout.active_workspace();
+        layout.set_policy(NewWindowPolicy::NewWorkspace);
+        let other = WindowId::next();
+        layout.add_window(other, SMALL);
+        let second = state(&layout, other).workspace_id;
+        assert!(layout.switch_to_workspace(WorkspaceTarget::Id(second)));
+        layout.remove_window(other);
+        assert!(layout.workspaces().all(|ws| ws.id != second), "the workspace the sticky window held is gone");
+        assert_eq!(layout.active_workspace(), first);
+        assert!(visible(&layout).contains(&pip), "and the sticky window came along: {:?}", visible(&layout));
+        assert!(visible(&layout).contains(&ids[0]));
+    }
+
+    #[test]
     fn test_workspace_remembers_its_own_focus() {
         let (mut layout, ids) = shared(2);
         let ws1 = layout.active_workspace();

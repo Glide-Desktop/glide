@@ -42,6 +42,8 @@ pub struct WindowState {
     pub mapped: bool,
     pub modal: bool,
     pub app: Option<String>,
+    pub keep_above: bool,
+    pub sticky: bool,
 }
 
 impl WindowState {
@@ -423,13 +425,49 @@ impl Layout {
     }
 
     fn shown_windows_of(&self, workspace: WorkspaceId) -> Vec<WindowState> {
-        self.workspace(workspace)
+        let (mut below, above): (Vec<WindowState>, Vec<WindowState>) = self
+            .workspace(workspace)
             .into_iter()
             .flat_map(|ws| ws.windows.iter())
             .filter_map(|id| self.windows.get(id))
             .filter(|state| state.focusable())
             .cloned()
-            .collect()
+            .partition(|state| !state.keep_above);
+        below.extend(above);
+        below
+    }
+
+    pub fn set_keep_above(&mut self, w: WindowId, keep_above: bool) -> bool {
+        self.windows.get_mut(&w).is_some_and(|state| std::mem::replace(&mut state.keep_above, keep_above) != keep_above)
+    }
+
+    pub fn set_sticky(&mut self, w: WindowId, sticky: bool) -> bool {
+        let changed =
+            self.windows.get_mut(&w).is_some_and(|state| std::mem::replace(&mut state.sticky, sticky) != sticky);
+        if changed && sticky {
+            self.carry_sticky(self.active);
+        }
+        changed
+    }
+
+    fn carry_sticky(&mut self, to: WorkspaceId) {
+        let moving: Vec<WindowId> = self
+            .windows
+            .values()
+            .filter(|state| state.sticky && state.workspace_id != to)
+            .map(|state| state.id)
+            .collect();
+        for id in moving {
+            for ws in &mut self.workspaces {
+                ws.windows.retain(|&known| known != id);
+            }
+            if let Some(ws) = self.workspace_mut(to) {
+                ws.windows.push(id);
+            }
+            if let Some(state) = self.windows.get_mut(&id) {
+                state.workspace_id = to;
+            }
+        }
     }
 
     #[must_use]
@@ -566,6 +604,7 @@ impl Layout {
         self.recent.retain(|&seen| seen != left && seen != id);
         self.recent.insert(0, left);
         self.active = id;
+        self.carry_sticky(id);
     }
 
     pub fn move_workspace(&mut self, id: WorkspaceId, index: usize) -> bool {
@@ -767,6 +806,8 @@ impl Layout {
                 mapped: false,
                 modal: false,
                 app: None,
+                keep_above: false,
+                sticky: false,
             },
         );
         if let Some(ws) = self.workspace_mut(ws_id) {
@@ -1151,19 +1192,33 @@ impl Layout {
         if self.fixed.is_some() || (self.overview_active && ws_id == self.active) {
             return false;
         }
+        let only_sticky =
+            |ws: &Workspace| ws.windows.iter().all(|id| self.windows.get(id).is_some_and(|state| state.sticky));
         if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == ws_id)
-            && self.workspaces[idx].windows.is_empty()
+            && only_sticky(&self.workspaces[idx])
             && self.workspaces.len() > 1
         {
-            self.workspaces.remove(idx);
+            let carried = self.workspaces.remove(idx).windows;
             self.recent.retain(|&seen| seen != ws_id);
-            if self.active == ws_id {
-                let neighbour = self.workspaces[idx.min(self.workspaces.len() - 1)].id;
+            let neighbour = self.workspaces[idx.min(self.workspaces.len() - 1)].id;
+            let was_active = self.active == ws_id;
+            let home = if was_active {
                 let back = self.recent.first().copied().unwrap_or(neighbour);
                 self.recent.retain(|&seen| seen != back);
                 self.active = back;
-                return true;
+                back
+            } else {
+                self.active
+            };
+            for id in carried {
+                if let Some(state) = self.windows.get_mut(&id) {
+                    state.workspace_id = home;
+                }
+                if let Some(ws) = self.workspace_mut(home) {
+                    ws.windows.push(id);
+                }
             }
+            return was_active;
         }
         false
     }
