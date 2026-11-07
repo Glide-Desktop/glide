@@ -50,6 +50,10 @@ impl Tracks {
         self.0.push(track);
     }
 
+    pub fn retain(&mut self, keep: impl FnMut(&Track) -> bool) {
+        self.0.retain(keep);
+    }
+
     pub fn all(&self) -> impl Iterator<Item = &Track> {
         self.0.iter()
     }
@@ -137,6 +141,75 @@ pub fn plain_text(raw: &str) -> String {
     unescape(out.trim())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Line {
+    pub start: Duration,
+    pub end: Duration,
+    pub text: String,
+}
+
+fn ass_time(raw: &str) -> Option<Duration> {
+    let mut parts = raw.trim().split(':');
+    let hours: u64 = parts.next()?.trim().parse().ok()?;
+    let minutes: u64 = parts.next()?.trim().parse().ok()?;
+    let seconds = parts.next()?.trim();
+    if parts.next().is_some() {
+        return None;
+    }
+    let (whole, fraction) = seconds.split_once('.').unwrap_or((seconds, "0"));
+    let whole: u64 = whole.parse().ok()?;
+    let digits: String = fraction.chars().take(3).collect();
+    let millis: u64 = format!("{digits:0<3}").parse().ok()?;
+    Some(Duration::from_millis(((hours * 60 + minutes) * 60 + whole) * 1000 + millis))
+}
+
+#[must_use]
+pub fn ass_script(script: &str) -> Vec<Line> {
+    let mut events = false;
+    let mut format: Vec<String> = Vec::new();
+    let mut lines = Vec::new();
+    for raw in script.lines() {
+        let line = raw.trim_start_matches('\u{feff}').trim();
+        if line.starts_with('[') {
+            events = line.eq_ignore_ascii_case("[events]");
+            continue;
+        }
+        if !events {
+            continue;
+        }
+        if let Some(fields) = line.strip_prefix("Format:") {
+            format = fields.split(',').map(|field| field.trim().to_ascii_lowercase()).collect();
+            continue;
+        }
+        let Some(fields) = line.strip_prefix("Dialogue:") else { continue };
+        let count = if format.is_empty() { 10 } else { format.len() };
+        let values: Vec<&str> = fields.splitn(count, ',').collect();
+        let index = |name: &str, fallback: usize| format.iter().position(|field| field == name).unwrap_or(fallback);
+        let (Some(start), Some(end), Some(text)) = (
+            values.get(index("start", 1)).and_then(|value| ass_time(value)),
+            values.get(index("end", 2)).and_then(|value| ass_time(value)),
+            values.get(index("text", count - 1)),
+        ) else {
+            continue;
+        };
+        let text = ass_text(text);
+        if end > start && !text.is_empty() {
+            lines.push(Line { start, end, text });
+        }
+    }
+    lines.sort_by_key(|line| line.start);
+    lines
+}
+
+#[must_use]
+pub fn text_at(lines: &[Line], at: Duration) -> Option<String> {
+    let started = lines.partition_point(|line| line.start <= at);
+    let first = started.saturating_sub(64);
+    let showing: Vec<&str> =
+        lines[first..started].iter().filter(|line| at < line.end).map(|line| line.text.as_str()).collect();
+    (!showing.is_empty()).then(|| showing.join("\n"))
+}
+
 #[must_use]
 pub fn ass_text(raw: &str) -> String {
     let line = raw.trim();
@@ -194,6 +267,34 @@ pub fn chapter_at(chapters: &[Chapter], at: Duration) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SCRIPT: &str = "\u{feff}[Script Info]\nTitle: x\n\n[V4+ Styles]\nFormat: Name, Fontname\nStyle: Default,Sans\n\n\
+        [Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+        Comment: 0,0:00:00.00,0:00:09.00,Default,,0,0,0,,not shown\n\
+        Dialogue: 0,0:00:03.50,0:00:05.00,Default,,0,0,0,,{\\an8}Угорі, з комою\n\
+        Dialogue: 0,0:00:01.20,0:00:04.00,Default,,0,0,0,,{\\i1}Дивись{\\i0},\\Nтуман\n\
+        Dialogue: 0,0:00:07.00,0:00:06.00,Default,,0,0,0,,backwards\n";
+
+    #[test]
+    fn an_ass_script_becomes_timed_plain_lines() {
+        let lines = ass_script(SCRIPT);
+        assert_eq!(lines.len(), 2, "comments and lines that end before they start are dropped");
+        assert_eq!(lines[0].start, Duration::from_millis(1200));
+        assert_eq!(lines[0].text, "Дивись,\nтуман");
+        assert_eq!(lines[1].text, "Угорі, з комою", "commas inside the text stay");
+        assert_eq!(text_at(&lines, Duration::from_millis(500)), None);
+        assert_eq!(text_at(&lines, Duration::from_secs(2)).as_deref(), Some("Дивись,\nтуман"));
+        assert_eq!(text_at(&lines, Duration::from_millis(3700)).as_deref(), Some("Дивись,\nтуман\nУгорі, з комою"));
+        assert_eq!(text_at(&lines, Duration::from_millis(4500)).as_deref(), Some("Угорі, з комою"));
+        assert_eq!(text_at(&lines, Duration::from_secs(6)), None);
+    }
+
+    #[test]
+    fn ass_times_read_centiseconds_and_hours() {
+        assert_eq!(ass_time("1:02:03.45"), Some(Duration::from_millis(3_723_450)));
+        assert_eq!(ass_time("0:00:00.5"), Some(Duration::from_millis(500)));
+        assert_eq!(ass_time("nonsense"), None);
+    }
 
     #[test]
     fn srt_markup_loses_tags_and_entities() {

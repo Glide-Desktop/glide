@@ -41,6 +41,7 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)] // Independent pipeline switches chosen per open, not a state machine
 pub struct Options {
     pub target: Option<Target>,
     pub rect: Rect,
@@ -49,6 +50,7 @@ pub struct Options {
     pub volume: f64,
     pub muted: bool,
     pub video: bool,
+    pub video_subtitles: bool,
 }
 
 impl Default for Options {
@@ -61,8 +63,17 @@ impl Default for Options {
             volume: 1.0,
             muted: false,
             video: true,
+            video_subtitles: false,
         }
     }
+}
+
+#[must_use]
+pub fn styled_subtitles(codec: Option<&str>) -> bool {
+    let lower = codec.unwrap_or_default().to_ascii_lowercase();
+    ["ass", "ssa", "substation", "pgs", "hdmv", "vobsub", "dvd sub", "dvd_sub", "x-dvd", "dvb sub", "x-pgs"]
+        .iter()
+        .any(|needle| lower.contains(needle))
 }
 
 pub struct Player {
@@ -134,7 +145,9 @@ impl Player {
         } else {
             playbin.set_property_from_str("flags", "audio+text+soft-volume+buffering");
         }
-        playbin.set_property("text-sink", text_sink(bus));
+        if !(options.video_subtitles && sink.is_some()) {
+            playbin.set_property("text-sink", text_sink(bus));
+        }
         if options.keep_pitch
             && let Ok(tempo) = element("scaletempo")
         {
@@ -287,6 +300,9 @@ impl Player {
     }
 
     pub fn select(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
         let event = gst::event::SelectStreams::new(ids.iter().map(String::as_str));
         if !self.playbin.send_event(event) {
             tracing::debug!("stream selection was refused");

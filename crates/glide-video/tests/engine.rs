@@ -112,6 +112,63 @@ fn sidecar_subtitles_arrive_as_cues() {
 }
 
 #[test]
+fn styled_subtitles_are_composed_into_the_picture_instead_of_sent_as_text() {
+    let path = fixture("styled.mkv", 3, &[]);
+    let ass = scratch("styled.ass");
+    std::fs::write(
+        &ass,
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\n\n[V4+ Styles]\n\
+         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, \
+         Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, \
+         MarginR, MarginV, Encoding\n\
+         Style: Default,Sans,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,8,10,10,10,1\n\n\
+         [Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+         Dialogue: 0,0:00:00.20,0:00:02.50,Default,,0,0,0,,{\\an8}Угорі\n",
+    )
+    .unwrap();
+    let muxed = scratch("styled-ass.mkv");
+    let _ = std::fs::remove_file(&muxed);
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-y", "-i"])
+        .arg(&path)
+        .arg("-i")
+        .arg(&ass)
+        .args(["-map", "0", "-map", "1", "-c", "copy"])
+        .arg(&muxed)
+        .status();
+    if !made.is_ok_and(|status| status.success()) {
+        eprintln!("ffmpeg is not installed; skipping the embedded ASS check");
+        return;
+    }
+    let options = Options { video_subtitles: true, ..headless() };
+    let player = Player::open(&uri(&muxed), &options).unwrap();
+    wait(&player, |event| matches!(event, Event::State(Playback::Paused)));
+    player.play();
+    let seen = wait(&player, |event| matches!(event, Event::Eos));
+    assert!(!seen.iter().any(|event| matches!(event, Event::Subtitle(Some(_)) | Event::Failed(_))), "{seen:?}");
+    let bin = player.element().clone().downcast::<gst::Bin>().unwrap();
+    let names: Vec<String> = bin
+        .iterate_recurse()
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter_map(|element| element.factory().map(|factory| factory.name().to_string()))
+        .collect();
+    assert!(names.iter().any(|name| name == "assrender"), "libass renders the styles: {names:?}");
+}
+
+#[test]
+fn subtitle_codecs_with_styles_or_pictures_are_recognised() {
+    use glide_video::player::styled_subtitles;
+    assert!(styled_subtitles(Some("SubStation Alpha")));
+    assert!(styled_subtitles(Some("ASS")));
+    assert!(styled_subtitles(Some("PGS subtitles")));
+    assert!(styled_subtitles(Some("VobSub")));
+    assert!(!styled_subtitles(Some("SubRip")));
+    assert!(!styled_subtitles(Some("WebVTT")));
+    assert!(!styled_subtitles(None));
+}
+
+#[test]
 fn a_missing_file_is_reported_as_not_found() {
     let player = Player::open(&uri(&scratch("absent.mkv")), &headless()).unwrap();
     let seen = wait(&player, |event| matches!(event, Event::Failed(_)));

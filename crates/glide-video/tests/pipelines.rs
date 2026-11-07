@@ -88,6 +88,44 @@ fn transcode_joins_rotated_segments() {
 }
 
 #[test]
+fn transcode_joins_clips_from_different_files() {
+    let first = fixture("first.mkv", 3, &[]);
+    let second = fixture("second.mp4", 3, &[]);
+    let output = scratch("mixed.mp4");
+    let _ = std::fs::remove_file(&output);
+    let job = Job {
+        segments: vec![
+            Segment {
+                uri: uri(&first),
+                start: Duration::ZERO,
+                end: Duration::from_millis(1500),
+                transform: Transform::default(),
+            },
+            Segment {
+                uri: uri(&second),
+                start: Duration::from_millis(500),
+                end: Duration::from_millis(2500),
+                transform: Transform::default(),
+            },
+        ],
+        output: output.clone(),
+        quality: Quality::P720,
+        codec: Codec::H264,
+        lossless: false,
+        source_width: 320,
+        source_height: 180,
+    };
+    assert!(!export::lossless_possible(&job.segments));
+    let (_handle, receiver) = export::spawn(job);
+    let progress = finish(receiver);
+    assert!(matches!(progress.last(), Some(Progress::Done(done)) if *done == output), "{progress:?}");
+    let found = info::discover(&uri(&output), Duration::from_secs(10)).unwrap();
+    let total = found.duration.unwrap().as_secs_f64();
+    assert!((total - 3.5).abs() < 0.3, "{total}");
+    assert_eq!(found.audio.len(), 1);
+}
+
+#[test]
 fn lossless_trim_snaps_to_keyframes() {
     for name in ["cut.mkv", "cut.mp4"] {
         let path = fixture(name, 4, &[]);
