@@ -28,6 +28,10 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const TICK: Color = Color { r: 20.0 / 255.0, g: 19.0 / 255.0, b: 22.0 / 255.0, a: 0.85 };
 const OUTSIDE: Color = Color { r: 10.0 / 255.0, g: 10.0 / 255.0, b: 12.0 / 255.0, a: 0.66 };
 const HALO: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.55 };
+const OVERLAY_ROOM: f32 = 12.0;
+const UNREADABLE: Color = Color { r: 240.0 / 255.0, g: 121.0 / 255.0, b: 111.0 / 255.0, a: 0.75 };
+const DASH: f32 = 4.0;
+const DASH_GAP: f32 = 3.0;
 
 fn white(alpha: f32) -> Color {
     Color { a: alpha, ..Color::WHITE }
@@ -71,6 +75,7 @@ pub struct Scrubber<'a, M> {
     on_hover: Hover<'a, M>,
     on_seek: Seek<'a, M>,
     on_release: Option<M>,
+    unreadable: Option<f32>,
 }
 
 #[derive(Debug, Default)]
@@ -96,6 +101,7 @@ pub fn scrubber<'a, M: 'a>(
         on_hover: Box::new(on_hover),
         on_seek: Box::new(on_seek),
         on_release: None,
+        unreadable: None,
     }
 }
 
@@ -127,6 +133,12 @@ impl<'a, M: 'a> Scrubber<'a, M> {
     #[must_use]
     pub fn on_release(mut self, message: M) -> Self {
         self.on_release = Some(message);
+        self
+    }
+
+    #[must_use]
+    pub fn unreadable(mut self, from: Option<f32>) -> Self {
+        self.unreadable = from.map(|from| from.clamp(0.0, 1.0));
         self
     }
 
@@ -261,6 +273,15 @@ impl<'a, M: Clone + 'a> Widget<M, Theme, Renderer> for Scrubber<'a, M> {
         quad(renderer, rail, 2.0, white(0.2));
         quad(renderer, part(self.buffered.max(self.position)), 2.0, white(0.3));
         quad(renderer, part(self.position), 2.0, GLASS_INK);
+        if let Some(from) = self.unreadable {
+            let mut x = rail.x + rail.width * from + DASH_GAP;
+            let end = rail.x + rail.width;
+            while x < end {
+                let width = DASH.min(end - x);
+                quad(renderer, Rectangle { x, width, ..rail }, 1.0, UNREADABLE);
+                x += DASH + DASH_GAP;
+            }
+        }
         for mark in self.marks.iter().filter(|mark| mark.at > 0.0 && mark.at < 1.0) {
             quad(renderer, Rectangle { x: rail.x + rail.width * mark.at - 1.0, width: 2.0, ..rail }, 0.0, TICK);
         }
@@ -503,6 +524,33 @@ impl<'a, M: 'a> Widget<M, Theme, Renderer> for TrimBar<'a, M> {
                 }
             }
         });
+        renderer.with_layer(bounds.expand(OVERLAY_ROOM), |renderer| self.draw_marks(renderer, bounds, strip));
+    }
+
+    fn mouse_interaction(
+        &self, _: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, _: &Rectangle, _: &Renderer,
+    ) -> mouse::Interaction {
+        let bounds = layout.bounds();
+        let strip = Self::strip(bounds);
+        let Some(at) = cursor.position_over(bounds.expand(4.0)) else { return mouse::Interaction::None };
+        let start_x = strip.x + strip.width * self.start;
+        let end_x = strip.x + strip.width * self.end;
+        if (start_x - GRIP..=start_x).contains(&at.x) || (end_x..=end_x + GRIP).contains(&at.x) {
+            mouse::Interaction::ResizingHorizontally
+        } else {
+            mouse::Interaction::Pointer
+        }
+    }
+
+    fn overlay<'b>(
+        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, _: &Renderer, _: &Rectangle, translation: Vector,
+    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+        Some(self.badges(tree, layout, translation))
+    }
+}
+
+impl<'a, M: 'a> TrimBar<'a, M> {
+    fn draw_marks(&self, renderer: &mut Renderer, bounds: Rectangle, strip: Rectangle) {
         let start_x = strip.x + strip.width * self.start;
         let end_x = strip.x + strip.width * self.end;
         quad(renderer, Rectangle { width: start_x - strip.x, ..strip }, 6.0, OUTSIDE);
@@ -555,24 +603,9 @@ impl<'a, M: 'a> Widget<M, Theme, Renderer> for TrimBar<'a, M> {
         quad(renderer, Rectangle { x: head - 5.0, y: bounds.y - 9.0, width: 10.0, height: 4.0 }, 2.0, Color::WHITE);
     }
 
-    fn mouse_interaction(
-        &self, _: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, _: &Rectangle, _: &Renderer,
-    ) -> mouse::Interaction {
-        let bounds = layout.bounds();
-        let strip = Self::strip(bounds);
-        let Some(at) = cursor.position_over(bounds.expand(4.0)) else { return mouse::Interaction::None };
-        let start_x = strip.x + strip.width * self.start;
-        let end_x = strip.x + strip.width * self.end;
-        if (start_x - GRIP..=start_x).contains(&at.x) || (end_x..=end_x + GRIP).contains(&at.x) {
-            mouse::Interaction::ResizingHorizontally
-        } else {
-            mouse::Interaction::Pointer
-        }
-    }
-
-    fn overlay<'b>(
-        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, _: &Renderer, _: &Rectangle, translation: Vector,
-    ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+    fn badges<'b>(
+        &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, translation: Vector,
+    ) -> overlay::Element<'b, M, Theme, Renderer> {
         let state = tree.state.downcast_mut::<Trimming>();
         let bounds = layout.bounds() + translation;
         let strip = Self::strip(bounds);
@@ -587,7 +620,7 @@ impl<'a, M: 'a> Widget<M, Theme, Renderer> for TrimBar<'a, M> {
             let anchor = Point::new(strip.x + strip.width * at, bounds.y - SP2 - 6.0);
             children.push(overlay::Element::new(Box::new(Bubble { element, tree, anchor })));
         }
-        Some(overlay::Group::with_children(children).overlay())
+        overlay::Group::with_children(children).overlay()
     }
 }
 
@@ -601,14 +634,19 @@ impl<'a, M: 'a> From<TrimBar<'a, M>> for Element<'a, M> {
 pub fn subtitle<'a, M: 'a>(content: &str) -> Element<'a, M> {
     let style = TextStyle { size_px: 26.0, line_height_px: 36.0, weight: 560, ..TextStyle::BODY };
     let lines = content.lines().filter(|line| !line.trim().is_empty()).map(|line| {
-        container(text(line.trim().to_string(), style).color(Color::WHITE).wrapping(Wrapping::None))
-            .padding([2.0, 12.0])
-            .style(|_| container::Style {
-                background: Some(Background::Color(Color { a: 0.55, ..Color::BLACK })),
-                border: Border { radius: R1.into(), ..Border::default() },
-                ..container::Style::default()
-            })
-            .into()
+        container(
+            text(line.trim().to_string(), style)
+                .color(Color::WHITE)
+                .wrapping(Wrapping::WordOrGlyph)
+                .align_x(Alignment::Center),
+        )
+        .padding([2.0, 12.0])
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color { a: 0.55, ..Color::BLACK })),
+            border: Border { radius: R1.into(), ..Border::default() },
+            ..container::Style::default()
+        })
+        .into()
     });
     iced::widget::Column::with_children(lines).align_x(Alignment::Center).into()
 }
