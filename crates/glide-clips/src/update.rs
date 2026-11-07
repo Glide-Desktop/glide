@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use glide_sdk::Shell;
+use glide_sdk::glide_app::window_traits;
 use glide_sdk::widget::player::Trim;
 use glide_sdk::window::Action;
 use glide_video::export::{self, Progress};
@@ -261,14 +262,22 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ToggleOnTop | Message::Pip => {
-                shell.toast(self.t(Key::PipUnavailable));
+            Message::ToggleOnTop => {
+                if let Some(media) = &mut self.media {
+                    media.on_top = !media.on_top;
+                    window_traits::request(window_traits::Call::KeepAbove(media.on_top));
+                }
+                Task::none()
+            }
+            Message::Pip => {
+                self.set_pip(!self.pip);
                 Task::none()
             }
             Message::SetAspect(aspect) => {
                 if let Some(media) = &mut self.media {
                     media.aspect = aspect;
                 }
+                self.sync_aspect();
                 self.place();
                 Task::none()
             }
@@ -996,7 +1005,8 @@ impl App {
         media.info = Some(*info);
         let cover = media.path.clone();
         self.place();
-        let resize = self.resize_to_video();
+        self.sync_aspect();
+        let resize = if self.pip { Task::none() } else { self.resize_to_video() };
         let thumb = match cover {
             Some(path) => later_cover(path),
             None => Task::none(),
@@ -1042,7 +1052,9 @@ impl App {
             Command::Mute => self.dispatch(Message::ToggleMute, shell),
             Command::Fullscreen => self.dispatch(Message::Window(Action::ToggleFullscreen), shell),
             Command::Escape => {
-                if self.ocr.is_some() {
+                if self.pip {
+                    self.set_pip(false);
+                } else if self.ocr.is_some() {
                     self.ocr = None;
                 } else if self.inspector {
                     self.inspector = false;

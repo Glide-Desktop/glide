@@ -94,6 +94,8 @@ impl glide_sdk::App for App {
             hovered_clip: None,
             queued: Vec::new(),
             resized: None,
+            pip: false,
+            aspect_sent: None,
         };
         let recents = app.refresh_recents();
         let handles = glide_sdk::window::handles().map(Message::Handles);

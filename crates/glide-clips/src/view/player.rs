@@ -73,7 +73,7 @@ fn hud_button(glyph: Icon, label: &str, on: bool, message: Message) -> Element<'
     ui::tooltip(&glide_sdk::Paint::default(), face, label)
 }
 
-fn skip_button(back: bool, label: &str) -> Element<'_, Message> {
+pub(crate) fn skip_button(back: bool, label: &str) -> Element<'_, Message> {
     let glyph = if back { Icon::Back10 } else { Icon::Forward10 };
     let number =
         ui::text("10", TextStyle { size_px: 7.5, line_height_px: 8.0, weight: 700, ..TextStyle::CAP }).color(ink());
@@ -97,7 +97,7 @@ fn skip_button(back: bool, label: &str) -> Element<'_, Message> {
     ui::tooltip(&glide_sdk::Paint::default(), face, label)
 }
 
-fn play_disc(playing: bool, label: &str) -> Element<'_, Message> {
+pub(crate) fn play_disc(playing: bool, label: &str) -> Element<'_, Message> {
     let glyph = if playing { Icon::Pause } else { Icon::Play };
     let face = button(container(ui::icon(glyph, 18.0, Color::from_rgb8(0x18, 0x17, 0x1b))).center(42.0))
         .padding(0)

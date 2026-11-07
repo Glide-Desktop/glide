@@ -1,5 +1,6 @@
 pub mod edit;
 pub mod export;
+pub mod pip;
 pub mod player;
 pub mod states;
 pub mod welcome;
@@ -33,6 +34,7 @@ pub fn hud_rect(size: Size) -> Rectangle {
 pub fn view(app: &App) -> Element<'_, Message> {
     let content = match &app.media {
         None => welcome::view(app),
+        Some(media) if app.pip => pip::view(app, media),
         Some(media) => player::view(app, media),
     };
     let mut layers = vec![content];

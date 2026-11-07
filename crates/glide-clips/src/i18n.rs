@@ -184,7 +184,7 @@ glide_sdk::catalogue! {
     CopiedTime => "The time is copied", "Час скопійовано";
     CopiedText => "The text is copied", "Текст скопійовано";
     CopiedInfo => "The details are copied", "Відомості скопійовано";
-    PipUnavailable => "Glide cannot keep a window on top yet", "Glide поки не вміє тримати вікно поверх інших";
+    BackToWindow => "Back to the window", "Повернути у вікно";
     ShortcutsTitle => "Keyboard shortcuts", "Гарячі клавіші";
     KeyPlay => "Play or pause", "Відтворити / пауза";
     KeyShuttle => "Back / forward, faster on each press", "Назад / уперед, щоразу швидше";

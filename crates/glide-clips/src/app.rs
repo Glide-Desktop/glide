@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use glide_sdk::glide_app::menubar::Handles;
+use glide_sdk::glide_app::window_traits;
 use glide_sdk::glide_theme::Accent;
 use glide_sdk::widget::player::Trim;
 use glide_sdk::window::{Action, Frame};
@@ -369,6 +370,7 @@ pub enum Message {
     Ignore,
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent window switches (inspector, drop hover, picture-in-picture)
 pub struct App {
     pub paint: Paint,
     pub dark: Paint,
@@ -400,6 +402,8 @@ pub struct App {
     pub hovered_clip: Option<usize>,
     pub queued: Vec<Task<Message>>,
     pub resized: Option<(Instant, iced::Size)>,
+    pub pip: bool,
+    pub aspect_sent: Option<(u32, u32)>,
 }
 
 async fn work<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -790,7 +794,9 @@ impl App {
 
     pub(crate) fn close_media(&mut self) {
         self.remember();
+        self.set_pip(false);
         self.media = None;
+        self.sync_aspect();
         self.mode = Mode::Play;
         self.exporting = None;
         self.ocr = None;
@@ -820,12 +826,45 @@ impl App {
         iced::window::latest().and_then(move |id| iced::window::resize(id, iced::Size::new(w.round(), h.round())))
     }
 
+    #[must_use]
+    pub fn wanted_aspect(&self) -> (u32, u32) {
+        let Some(media) = self.media.as_ref().filter(|media| media.showing_video()) else { return (0, 0) };
+        match media.aspect {
+            Aspect::Fill => (0, 0),
+            Aspect::Cinema => (239, 100),
+            Aspect::File => media.video_size().filter(|(width, height)| *width > 0 && *height > 0).unwrap_or((0, 0)),
+        }
+    }
+
+    pub(crate) fn sync_aspect(&mut self) {
+        let wanted = self.wanted_aspect();
+        if self.aspect_sent != Some(wanted) {
+            self.aspect_sent = Some(wanted);
+            window_traits::request(window_traits::Call::Aspect(wanted.0, wanted.1));
+        }
+    }
+
+    pub(crate) fn set_pip(&mut self, on: bool) {
+        let video = self.media.as_ref().is_some_and(Media::showing_video);
+        if on == self.pip || (on && !video) {
+            return;
+        }
+        self.pip = on;
+        self.sync_aspect();
+        window_traits::request(window_traits::Call::PictureInPicture(on));
+        self.chrome.shown = true;
+        self.chrome.moved = Instant::now();
+    }
+
     pub(crate) fn settle_resize(&mut self) -> Task<Message> {
         let Some((at, first)) = self.resized else { return Task::none() };
         if at.elapsed() < RESIZE_SETTLE {
             return Task::none();
         }
         self.resized = None;
+        if self.pip {
+            return Task::none();
+        }
         let video = self
             .media
             .as_ref()

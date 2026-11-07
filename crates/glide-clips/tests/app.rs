@@ -159,6 +159,20 @@ fn a_video_opens_plays_and_is_edited_through_the_whole_app() {
     assert!(rows.iter().any(|(_, value)| value.contains("320 × 180")), "{rows:?}");
     let _ = harness.view();
 
+    harness.message(Message::Inspector(false));
+    assert_eq!(harness.app().wanted_aspect(), (320, 180), "the shell is asked to keep the video's shape");
+    harness.message(Message::SetAspect(glide_clips::app::Aspect::Fill));
+    assert_eq!(harness.app().wanted_aspect(), (0, 0), "filling the window frees the shape");
+    harness.message(Message::SetAspect(glide_clips::app::Aspect::File));
+    harness.message(Message::Pip);
+    assert!(harness.app().pip);
+    let _ = harness.view();
+    harness.message(Message::Command(glide_clips::keys::Command::Escape));
+    assert!(!harness.app().pip, "Esc returns the picture to the window");
+    harness.message(Message::ToggleOnTop);
+    assert!(harness.app().media.as_ref().unwrap().on_top);
+    harness.message(Message::ToggleOnTop);
+
     styled_script_next_to_the_video(harness, &root);
     closing_remembers(harness, &root);
 }
