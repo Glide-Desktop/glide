@@ -2223,7 +2223,6 @@ dependencies = [
  "hayro",
  "iced",
  "image",
- "libc",
  "lopdf",
  "serde",
  "serde_json",
