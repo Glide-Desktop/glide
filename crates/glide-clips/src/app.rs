@@ -128,7 +128,16 @@ pub struct Media {
     pub strip: Vec<Option<Handle>>,
     pub hover: Option<u32>,
     pub grabber: Option<Grabber>,
-    pub strip_grabber: Option<Grabber>,
+    pub grabbers: HashMap<usize, Grabber>,
+    pub strip_grabbers: Vec<Grabber>,
+    pub feed: u64,
+    pub loaded: usize,
+    pub handoff: Option<(Duration, bool)>,
+    pub restore: Option<Vec<String>>,
+    pub video_subtitles: bool,
+    pub prefer_external: bool,
+    pub sidecar_lines: Vec<glide_video::media::Line>,
+    pub sidecar_on: bool,
     pub generation: u64,
     pub remembered: Option<memory::Entry>,
     pub cover: Option<Handle>,
@@ -177,7 +186,16 @@ impl Media {
             strip: vec![None; STRIP],
             hover: None,
             grabber: None,
-            strip_grabber: None,
+            grabbers: HashMap::new(),
+            strip_grabbers: Vec::new(),
+            feed: generation,
+            loaded: crate::timeline::MAIN,
+            handoff: None,
+            restore: None,
+            video_subtitles: false,
+            prefer_external: false,
+            sidecar_lines: Vec::new(),
+            sidecar_on: false,
             generation,
             remembered: None,
             cover: None,
@@ -303,6 +321,11 @@ pub enum Message {
     MoveClip(usize, usize),
     SplitClip,
     RemoveClip,
+    Dropped(glide_sdk::glide_app::drop_target::Dropped),
+    SidecarLines(u64, Vec<glide_video::media::Line>),
+    AddClip,
+    ClipChosen(Option<PathBuf>),
+    ClipProbed(PathBuf, Option<Duration>),
     TurnClip(bool),
     FlipClip(bool),
     ClipsDone,
@@ -375,6 +398,7 @@ pub struct App {
     pub clipboard: Option<glide_video::clipboard::Clipboard>,
     pub dropping: bool,
     pub hovered_clip: Option<usize>,
+    pub queued: Vec<Task<Message>>,
 }
 
 async fn work<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -404,6 +428,52 @@ pub fn title_of(uri: &str, path: Option<&Path>) -> String {
         return name.to_string_lossy().into_owned();
     }
     uri.rsplit('/').find(|part| !part.is_empty()).unwrap_or(uri).to_string()
+}
+
+pub const SIDECAR: &str = "glide-clips-sidecar";
+
+#[must_use]
+pub fn styled_sidecar(uri: &str) -> bool {
+    std::path::Path::new(uri)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ass") || extension.eq_ignore_ascii_case("ssa"))
+}
+
+#[must_use]
+pub fn player_subtitle(suburi: Option<&str>) -> Option<String> {
+    suburi.filter(|uri| !styled_sidecar(uri)).map(str::to_string)
+}
+
+#[must_use]
+pub fn sidecar_language(uri: &str) -> Option<String> {
+    let name = uri.rsplit('/').next()?;
+    let stem = name.rsplit_once('.')?.0;
+    let code = stem.rsplit_once('.')?.1.to_ascii_lowercase();
+    (2..=3).contains(&code.len()).then_some(code).filter(|code| code.chars().all(|letter| letter.is_ascii_alphabetic()))
+}
+
+#[must_use]
+pub fn sidecar_track(suburi: Option<&str>) -> glide_video::media::Track {
+    glide_video::media::Track {
+        id: SIDECAR.into(),
+        kind: TrackKind::Text,
+        language: suburi.and_then(sidecar_language),
+        title: None,
+        codec: Some("ASS".into()),
+        channels: None,
+        format: None,
+        external: true,
+    }
+}
+
+#[must_use]
+pub fn read_sidecar(uri: &str) -> Vec<glide_video::media::Line> {
+    let Some(path) = glide_sdk::chooser::uri_path(uri) else { return Vec::new() };
+    let Ok(bytes) = std::fs::read(&path) else { return Vec::new() };
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Vec::new();
+    }
+    glide_video::media::ass_script(&String::from_utf8_lossy(&bytes))
 }
 
 #[must_use]
@@ -523,7 +593,9 @@ impl App {
             .and_then(|id| media.tracks.get(id))
             .map(|track| track.language.clone().unwrap_or_else(|| track.id.clone()));
         let entry = self.memory.entry(path);
-        entry.position = media.position.as_secs_f64();
+        if media.loaded == crate::timeline::MAIN {
+            entry.position = media.position.as_secs_f64();
+        }
         entry.duration = media.duration.unwrap_or_default().as_secs_f64();
         entry.opened = memory::now();
         entry.volume = Some(media.volume);
@@ -577,16 +649,16 @@ impl App {
         self.open_with(uri, path, &Reopen::default())
     }
 
-    pub(crate) fn open_with(&mut self, uri: String, path: Option<PathBuf>, reopen: &Reopen) -> Task<Message> {
+    fn ready_to_open(&mut self) -> bool {
         self.remember();
         if let Some(old) = &mut self.media {
             old.player = None;
             old.grabber = None;
-            old.strip_grabber = None;
+            old.grabbers.clear();
+            old.strip_grabbers.clear();
         }
         if self.handles.is_none() && self.surface.is_none() {
-            self.pending = Some((uri, path));
-            return Task::none();
+            return false;
         }
         if self.surface.is_none()
             && let Some(Some(handles)) = self.handles
@@ -595,6 +667,14 @@ impl App {
                 Ok(surface) => self.surface = Some(surface),
                 Err(err) => tracing::warn!("no video surface: {err}"),
             }
+        }
+        true
+    }
+
+    pub(crate) fn open_with(&mut self, uri: String, path: Option<PathBuf>, reopen: &Reopen) -> Task<Message> {
+        if !self.ready_to_open() {
+            self.pending = Some((uri, path));
+            return Task::none();
         }
         self.generation += 1;
         self.track += 1;
@@ -624,14 +704,16 @@ impl App {
             .map(|media| media.volume)
             .or_else(|| remembered.as_ref().and_then(|entry| entry.volume))
             .unwrap_or(0.7);
+        let video_subtitles = false;
         let options = Options {
             target,
             rect: self.rect(),
-            subtitle: subtitle.clone(),
+            subtitle: player_subtitle(subtitle.as_deref()),
             keep_pitch: reopen.keep_pitch,
             volume,
             muted: false,
             video: true,
+            video_subtitles,
         };
         let (player, failure) = match Player::open(&uri, &options) {
             Ok(player) => (Some(player), None),
@@ -659,7 +741,8 @@ impl App {
         media.failure = failure;
         media.grabber = grabber;
         media.remembered = remembered;
-        media.suburi = subtitle;
+        media.suburi.clone_from(&subtitle);
+        media.video_subtitles = video_subtitles;
         self.media = Some(media);
         self.chrome.shown = true;
         self.chrome.moved = Instant::now();
@@ -669,6 +752,9 @@ impl App {
         }
         if let Some(results) = results {
             tasks.push(Task::run(results, move |frame| Message::Frame(generation, frame)));
+        }
+        if let Some(sidecar) = subtitle.filter(|uri| styled_sidecar(uri)) {
+            tasks.push(self.load_sidecar(sidecar));
         }
         let probe = uri;
         tasks.push(later(
@@ -758,20 +844,22 @@ impl App {
         if play && media.failure.as_ref().is_some_and(|failure| !matches!(failure, Failure::Missing { .. })) {
             return;
         }
+        let edited = media.timeline.edited();
+        let restart = play
+            && if edited {
+                media.at() >= media.timeline.total().saturating_sub(Duration::from_millis(50))
+            } else {
+                media.duration.is_some_and(|length| media.position + Duration::from_millis(250) >= length)
+            };
+        if restart {
+            self.seek_timeline(Duration::ZERO, true);
+        }
+        let Some(media) = &mut self.media else { return };
+        if let Some((at, _)) = media.handoff {
+            media.handoff = Some((at, play));
+        }
         if let Some(player) = &media.player {
             if play {
-                if media.timeline.edited()
-                    && media.at() >= media.timeline.total().saturating_sub(Duration::from_millis(50))
-                {
-                    if let Some((index, source)) = media.timeline.locate(Duration::ZERO) {
-                        media.clip = index;
-                        player.seek(source, true);
-                    }
-                } else if !media.timeline.edited()
-                    && media.duration.is_some_and(|length| media.position + Duration::from_millis(250) >= length)
-                {
-                    player.seek(Duration::ZERO, true);
-                }
                 player.play();
             } else {
                 player.pause();
@@ -791,15 +879,82 @@ impl App {
         } else {
             (0, at.min(media.duration.unwrap_or(at)))
         };
+        let from = media.timeline.clips.get(index).map_or(crate::timeline::MAIN, |clip| clip.from);
         media.clip = index;
         media.position = source;
         media.cue = None;
-        if let Some(player) = &media.player {
-            player.seek(source, accurate);
+        if from == media.loaded {
+            if let Some(player) = &media.player {
+                player.seek(source, accurate);
+            }
+        } else {
+            let play = media.playing() || media.handoff.is_some_and(|(_, play)| play);
+            self.switch_to(from, source, play);
         }
         if let Some(server) = &self.mpris {
             server.seeked(source);
         }
+    }
+
+    pub(crate) fn switch_to(&mut self, from: usize, at: Duration, play: bool) {
+        let target = self
+            .surface
+            .as_ref()
+            .map(|surface| glide_video::sink::Target { display: surface.display(), surface: surface.handle() });
+        let rect = self.rect();
+        self.generation += 1;
+        let feed = self.generation;
+        let Some(media) = &mut self.media else { return };
+        let uri = media.timeline.uri(from, &media.uri).to_string();
+        let options = Options {
+            target,
+            rect,
+            subtitle: if from == crate::timeline::MAIN { player_subtitle(media.suburi.as_deref()) } else { None },
+            keep_pitch: media.keep_pitch,
+            volume: media.volume,
+            muted: media.muted,
+            video: !media.sound_only,
+            video_subtitles: from == crate::timeline::MAIN && media.video_subtitles,
+        };
+        if media.loaded == crate::timeline::MAIN && media.restore.is_none() {
+            media.restore = Some(media.selected.clone());
+        }
+        media.player = None;
+        media.loaded = from;
+        media.feed = feed;
+        media.position = at;
+        media.cue = None;
+        match Player::open(&uri, &options) {
+            Ok(player) => {
+                let events = player.events();
+                player.set_subtitle_offset(Duration::from_millis(media.offset_ms.unsigned_abs()), media.offset_ms < 0);
+                media.player = Some(player);
+                media.handoff = Some((at, play));
+                self.queued.push(Task::run(events, move |event| Message::Player(feed, event)));
+            }
+            Err(failure) => {
+                media.handoff = None;
+                media.failure = Some(failure);
+            }
+        }
+        self.orient();
+    }
+
+    pub(crate) fn advance(&mut self) -> bool {
+        let Some(media) = &mut self.media else { return false };
+        let next = media.clip + 1;
+        let Some(following) = media.timeline.clips.get(next).copied() else { return false };
+        media.clip = next;
+        media.position = following.start;
+        if following.from == media.loaded {
+            if let Some(player) = &media.player {
+                player.seek(following.start, true);
+            }
+            self.orient();
+        } else {
+            self.switch_to(following.from, following.start, true);
+        }
+        true
     }
 
     pub(crate) fn skip(&mut self, seconds: i32) {
@@ -846,20 +1001,22 @@ impl App {
     pub(crate) fn select_text(&mut self, pick: Option<String>) {
         let Some(media) = &mut self.media else { return };
         let ids = media.tracks.selection(&media.selected, TrackKind::Text, pick.as_deref());
+        media.sidecar_on = pick.as_deref() == Some(SIDECAR);
+        media.cue = None;
         if pick.is_some() {
             media.text_track = pick;
-        } else {
-            media.cue = None;
         }
-        if let Some(player) = &media.player {
-            player.select(&ids);
+        let for_player: Vec<String> = ids.iter().filter(|id| id.as_str() != SIDECAR).cloned().collect();
+        media.selected.clone_from(&ids);
+        if let Some(player) = media.player.as_ref().filter(|_| media.loaded == crate::timeline::MAIN) {
+            player.select(&for_player);
         }
     }
 
     pub(crate) fn select_audio(&mut self, pick: &str) {
         let Some(media) = &mut self.media else { return };
         let ids = media.tracks.selection(&media.selected, TrackKind::Audio, Some(pick));
-        if let Some(player) = &media.player {
+        if let Some(player) = media.player.as_ref().filter(|_| media.loaded == crate::timeline::MAIN) {
             player.select(&ids);
         }
     }
@@ -933,15 +1090,65 @@ impl App {
         if length.is_zero() || media.path.is_none() {
             return Task::none();
         }
-        let times: Vec<Duration> = frames::strip_times(length, STRIP)
+        let places: Vec<(usize, Duration)> = frames::strip_times(length, STRIP)
             .into_iter()
-            .filter_map(|at| media.timeline.locate(at).map(|(_, source)| source))
+            .filter_map(|at| {
+                let (index, source) = media.timeline.locate(at)?;
+                Some((media.timeline.clips.get(index)?.from, source))
+            })
             .collect();
-        let (grabber, results) = Grabber::spawn(&media.uri, STRIP_WIDTH);
-        grabber.request(0, times, false);
         media.strip = vec![None; STRIP];
-        media.strip_grabber = Some(grabber);
+        media.frames.clear();
+        media.grabbers.clear();
+        media.strip_grabbers.clear();
         let generation = media.generation;
-        Task::run(results, move |frame| Message::Strip(generation, frame))
+        let mut tasks = Vec::new();
+        for from in media.timeline.sources() {
+            let times: Vec<Duration> =
+                places.iter().filter(|(source, _)| *source == from).map(|(_, time)| *time).collect();
+            if times.is_empty() {
+                continue;
+            }
+            let (grabber, results) = Grabber::spawn(media.timeline.uri(from, &media.uri), STRIP_WIDTH);
+            grabber.request(from as u64, times, false);
+            media.strip_grabbers.push(grabber);
+            tasks.push(Task::run(results, move |frame| Message::Strip(generation, frame)));
+        }
+        Task::batch(tasks)
+    }
+
+    pub(crate) fn load_sidecar(&self, uri: String) -> Task<Message> {
+        let generation = self.media.as_ref().map_or(self.generation, |media| media.generation);
+        later(move || read_sidecar(&uri), move |lines| Message::SidecarLines(generation, lines))
+    }
+
+    pub(crate) fn sidecar_loaded(&mut self, generation: u64, lines: Vec<glide_video::media::Line>) {
+        let Some(media) = self.media.as_mut().filter(|media| media.generation == generation) else { return };
+        if lines.is_empty() {
+            return;
+        }
+        media.sidecar_lines = lines;
+        if media.tracks.get(SIDECAR).is_none() {
+            media.tracks.push(sidecar_track(media.suburi.as_deref()));
+        }
+        let wanted = media.remembered.as_ref().is_none_or(|entry| entry.subtitles != Some(false));
+        if wanted {
+            self.select_text(Some(SIDECAR.to_string()));
+        }
+    }
+
+    pub(crate) fn hover_grabber(&mut self, from: usize) -> Option<&Grabber> {
+        let media = self.media.as_mut()?;
+        if from == crate::timeline::MAIN {
+            return media.grabber.as_ref();
+        }
+        if !media.grabbers.contains_key(&from) {
+            let uri = media.timeline.uri(from, &media.uri).to_string();
+            let (grabber, results) = Grabber::spawn(&uri, PREVIEW_WIDTH);
+            let generation = media.generation;
+            self.queued.push(Task::run(results, move |frame| Message::Frame(generation, frame)));
+            media.grabbers.insert(from, grabber);
+        }
+        media.grabbers.get(&from)
     }
 }

@@ -78,6 +78,7 @@ pub enum Icon {
     Speaker,
     Mark,
     Stop,
+    DropIn,
 }
 
 impl Icon {
@@ -177,6 +178,7 @@ impl Icon {
                 solid!("<path d='M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z'/>")
             }
             Self::Stop => solid!("<rect x='6' y='6' width='12' height='12' rx='2'/>"),
+            Self::DropIn => glyph!("<path d='M12 4v12M6 10l6 6 6-6M5 20h14'/>"),
         };
         svg::Handle::from_memory(bytes)
     }

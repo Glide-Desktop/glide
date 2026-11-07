@@ -20,6 +20,8 @@ glide_sdk::catalogue! {
     Yesterday => "yesterday", "вчора";
     DropToPlay => "Drop to play", "Відпустіть, щоб відтворити";
     DropAspect => "The window will take the shape of this video", "Вікно розгорнеться в пропорціях цього відео";
+    DropToAdd => "Drop to add a clip at the end", "Відпустіть, щоб додати кліп у кінець";
+    DropAddNote => "The original files stay as they are", "Оригінальні файли лишаються як є";
     ChooseVideo => "Open a video", "Відкрити відео";
     Choose => "Open", "Відкрити";
     AddressTitle => "Open an address", "Відкрити адресу";
@@ -98,6 +100,7 @@ glide_sdk::catalogue! {
     ClipsHint => "Drag a clip to move it · Delete removes it · Ctrl+Y splits at the playhead", "Перетягніть кліп, щоб переставити · Delete — вилучити · Ctrl+Y — розділити в курсорі";
     Split => "Split", "Розділити";
     AddClip => "Add Clip at the End…", "Додати кліп у кінець…";
+    ClipUnreadable => "This file cannot be added as a clip", "Цей файл не вдається додати як кліп";
     RemoveClip => "Remove clip", "Вилучити кліп";
     ExportTitle => "Export a copy", "Експортувати копію";
     ExportBody => "The original «{name}» stays as it is.", "Оригінал «{name}» лишиться як є.";

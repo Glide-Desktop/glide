@@ -92,6 +92,7 @@ impl glide_sdk::App for App {
             clipboard: None,
             dropping: false,
             hovered_clip: None,
+            queued: Vec::new(),
         };
         let recents = app.refresh_recents();
         let handles = glide_sdk::window::handles().map(Message::Handles);
@@ -115,10 +116,12 @@ impl glide_sdk::App for App {
         if had != self.media.is_some() {
             self.shell_paint(shell);
         }
+        let mut tasks = vec![task];
+        tasks.append(&mut self.queued);
         if self.media.is_none() && had {
-            return Task::batch([task, self.refresh_recents()]);
+            tasks.push(self.refresh_recents());
         }
-        task
+        Task::batch(tasks)
     }
 
     fn view<'a>(&'a self, _shell: &'a Shell<Message>) -> Element<'a, Message> {
@@ -131,7 +134,9 @@ impl glide_sdk::App for App {
 
     fn subscription(&self) -> Subscription<Message> {
         let busy = self.media.is_some() || matches!(self.exporting, Some(app::Exporting::Done(_)));
-        if busy { iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick) } else { Subscription::none() }
+        let cues = self.media.as_ref().is_some_and(|media| media.sidecar_on && media.playing());
+        let every = Duration::from_millis(if cues { 100 } else { 250 });
+        if busy { iced::time::every(every).map(|_| Message::Tick) } else { Subscription::none() }
     }
 
     fn close_requested(&mut self, shell: &mut Shell<Message>) -> Task<Message> {

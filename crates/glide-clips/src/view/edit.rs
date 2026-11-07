@@ -253,6 +253,11 @@ fn clip_caption<'a>(app: &'a App, media: &'a Media, selected: usize) -> Element<
         let span = format!("{} – {}", clock(clip.start, true), clock(clip.end, true));
         parts = parts
             .push(ui::text(span, TextStyle { size_px: 12.0, line_height_px: 16.0, ..TextStyle::NUM }).color(ink()));
+        if let Some(source) = clip.from.checked_sub(1).and_then(|index| media.timeline.extra.get(index)) {
+            parts = parts
+                .push(dot())
+                .push(ui::text(source.title.clone(), TextStyle::CAP).color(ink()).wrapping(ui::Wrapping::None));
+        }
         if clip.transform.turn != glide_video::export::Turn::None {
             let turned = app.t(Key::Turned).replace("{n}", &clip.transform.turn.degrees().to_string());
             parts = parts.push(dot()).push(ui::text(turned, TextStyle::CAP).color(ink()));
@@ -276,6 +281,7 @@ pub fn clips<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
     let panel_width = (app.window.size.width - 2.0 * PANEL_GAP - 24.0).max(200.0);
     let tools = row![
         glass_button(app.t(Key::Split), Some(Icon::Split), false, 30.0, Some(Message::SplitClip)),
+        glass_button(app.t(Key::AddClip), Some(Icon::Plus), false, 30.0, Some(Message::AddClip)),
         divider(),
         tool(Icon::RotateLeft, app.t(Key::RotateLeft), false, Some(Message::TurnClip(false))),
         tool(
@@ -296,7 +302,7 @@ pub fn clips<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
     .align_y(Alignment::Center)
     .height(40);
     let total = timeline.total().as_secs_f32().max(0.001);
-    let usable = (panel_width - 8.0 * count as f32).max(60.0);
+    let usable = (panel_width - 8.0 * (count + 1) as f32 - CLIP_HEIGHT).max(60.0);
     let mut line = row![].spacing(8).align_y(Alignment::Center);
     for (index, clip) in timeline.clips.iter().enumerate() {
         if dragging.is_some_and(|from| from != index) && app.hovered_clip == Some(index) {
@@ -348,6 +354,7 @@ pub fn clips<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
             .interaction(iced::mouse::Interaction::Grab);
         line = line.push(area);
     }
+    line = line.push(add_tile(app));
     let caption = clip_caption(app, media, selected);
     let hints = glass_panel(
         ui::text(app.t(Key::ClipsHint), TextStyle::CAP).color(Color { a: 0.82, ..ink() }),
@@ -363,6 +370,23 @@ pub fn clips<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
         .width(Fill)
         .height(Fill)
         .into()
+}
+
+fn add_tile(app: &App) -> Element<'_, Message> {
+    let face = button(container(ui::icon(Icon::Plus, 18.0, Color { a: 0.8, ..ink() })).center(CLIP_HEIGHT))
+        .padding(0)
+        .width(CLIP_HEIGHT)
+        .height(CLIP_HEIGHT)
+        .on_press(Message::AddClip)
+        .style(|_, status| {
+            let layer = if matches!(status, button::Status::Hovered | button::Status::Pressed) { 0.12 } else { 0.0 };
+            button::Style {
+                background: Some(Background::Color(Color { a: layer, ..Color::WHITE })),
+                border: Border { radius: CLIP_RADIUS.into(), color: Color { a: 0.3, ..Color::WHITE }, width: 1.5 },
+                ..button::Style::default()
+            }
+        });
+    ui::tooltip(&glide_sdk::Paint::default(), face, app.t(Key::AddClip))
 }
 
 fn clip_length<'a>(length: std::time::Duration) -> Element<'a, Message> {

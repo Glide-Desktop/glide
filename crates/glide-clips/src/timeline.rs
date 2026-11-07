@@ -1,14 +1,17 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use glide_video::export::{Segment, Transform};
 
 pub const SHORTEST: Duration = Duration::from_millis(200);
+pub const MAIN: usize = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Clip {
     pub start: Duration,
     pub end: Duration,
     pub transform: Transform,
+    pub from: usize,
 }
 
 impl Clip {
@@ -19,9 +22,18 @@ impl Clip {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub uri: String,
+    pub path: Option<PathBuf>,
+    pub title: String,
+    pub length: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timeline {
     pub clips: Vec<Clip>,
     pub selected: usize,
+    pub extra: Vec<Source>,
     source: Duration,
 }
 
@@ -29,8 +41,9 @@ impl Timeline {
     #[must_use]
     pub fn whole(source: Duration) -> Self {
         Self {
-            clips: vec![Clip { start: Duration::ZERO, end: source, transform: Transform::default() }],
+            clips: vec![Clip { start: Duration::ZERO, end: source, transform: Transform::default(), from: MAIN }],
             selected: 0,
+            extra: Vec::new(),
             source,
         }
     }
@@ -38,6 +51,30 @@ impl Timeline {
     #[must_use]
     pub fn source(&self) -> Duration {
         self.source
+    }
+
+    pub fn append(&mut self, source: Source) -> bool {
+        if source.length < SHORTEST {
+            return false;
+        }
+        let end = source.length;
+        self.extra.push(source);
+        self.clips.push(Clip { start: Duration::ZERO, end, transform: Transform::default(), from: self.extra.len() });
+        self.selected = self.clips.len() - 1;
+        true
+    }
+
+    #[must_use]
+    pub fn uri<'a>(&'a self, from: usize, main: &'a str) -> &'a str {
+        if from == MAIN { main } else { self.extra.get(from - 1).map_or(main, |source| source.uri.as_str()) }
+    }
+
+    #[must_use]
+    pub fn sources(&self) -> Vec<usize> {
+        let mut used: Vec<usize> = self.clips.iter().map(|clip| clip.from).collect();
+        used.sort_unstable();
+        used.dedup();
+        used
     }
 
     #[must_use]
@@ -48,6 +85,7 @@ impl Timeline {
     #[must_use]
     pub fn edited(&self) -> bool {
         self.clips.len() != 1
+            || self.clips[0].from != MAIN
             || self.clips[0].start != Duration::ZERO
             || self.clips[0].end != self.source
             || !self.clips[0].transform.is_identity()
@@ -79,8 +117,10 @@ impl Timeline {
     }
 
     #[must_use]
-    pub fn clip_of(&self, source: Duration, hint: usize) -> Option<usize> {
-        let inside = |index: usize| self.clips.get(index).is_some_and(|clip| source >= clip.start && source < clip.end);
+    pub fn clip_of(&self, source: Duration, hint: usize, from: usize) -> Option<usize> {
+        let inside = |index: usize| {
+            self.clips.get(index).is_some_and(|clip| clip.from == from && source >= clip.start && source < clip.end)
+        };
         if inside(hint) {
             return Some(hint);
         }
@@ -135,7 +175,7 @@ impl Timeline {
                 kept.push(Clip {
                     start: clip.start + keep_from.saturating_sub(from),
                     end: clip.start + keep_to.saturating_sub(from),
-                    transform: clip.transform,
+                    ..*clip
                 });
             }
         }
@@ -172,7 +212,12 @@ impl Timeline {
     pub fn segments(&self, uri: &str) -> Vec<Segment> {
         self.clips
             .iter()
-            .map(|clip| Segment { uri: uri.to_string(), start: clip.start, end: clip.end, transform: clip.transform })
+            .map(|clip| Segment {
+                uri: self.uri(clip.from, uri).to_string(),
+                start: clip.start,
+                end: clip.end,
+                transform: clip.transform,
+            })
             .collect()
     }
 }
@@ -199,7 +244,10 @@ mod tests {
         let mut timeline = Timeline::whole(secs(760));
         timeline.trim(secs(137), secs(426));
         assert!(timeline.edited());
-        assert_eq!(timeline.clips, vec![Clip { start: secs(137), end: secs(426), transform: Transform::default() }]);
+        assert_eq!(
+            timeline.clips,
+            vec![Clip { start: secs(137), end: secs(426), transform: Transform::default(), from: MAIN }]
+        );
         assert_eq!(timeline.locate(Duration::ZERO), Some((0, secs(137))));
     }
 
@@ -261,9 +309,42 @@ mod tests {
     fn source_time_finds_its_clip() {
         let mut timeline = Timeline::whole(secs(100));
         timeline.split(secs(40));
-        assert_eq!(timeline.clip_of(secs(60), 0), Some(1));
-        assert_eq!(timeline.clip_of(secs(10), 1), Some(0));
+        assert_eq!(timeline.clip_of(secs(60), 0, MAIN), Some(1));
+        assert_eq!(timeline.clip_of(secs(10), 1, MAIN), Some(0));
         timeline.trim(secs(10), secs(90));
-        assert_eq!(timeline.clip_of(secs(5), 0), None);
+        assert_eq!(timeline.clip_of(secs(5), 0, MAIN), None);
+    }
+
+    fn other(length: u64) -> Source {
+        Source { uri: "file:///other.mp4".into(), path: None, title: "other.mp4".into(), length: secs(length) }
+    }
+
+    #[test]
+    fn a_clip_from_another_file_joins_at_the_end_and_exports_from_that_file() {
+        let mut timeline = Timeline::whole(secs(100));
+        assert!(timeline.append(other(30)));
+        assert!(timeline.edited());
+        assert_eq!(timeline.total(), secs(130));
+        assert_eq!(timeline.selected, 1);
+        assert_eq!(timeline.locate(secs(110)), Some((1, secs(10))));
+        assert_eq!(timeline.clip_of(secs(10), 0, 1), Some(1));
+        assert_eq!(timeline.clip_of(secs(10), 1, MAIN), Some(0));
+        let segments = timeline.segments("file:///main.mkv");
+        assert_eq!(segments[0].uri, "file:///main.mkv");
+        assert_eq!(segments[1].uri, "file:///other.mp4");
+        assert_eq!(timeline.sources(), vec![MAIN, 1]);
+        assert!(!glide_video::export::lossless_possible(&segments));
+    }
+
+    #[test]
+    fn splits_and_trims_keep_the_file_a_clip_comes_from() {
+        let mut timeline = Timeline::whole(secs(100));
+        timeline.append(other(40));
+        assert!(timeline.split(secs(120)));
+        assert_eq!(timeline.clips.iter().map(|clip| clip.from).collect::<Vec<_>>(), vec![MAIN, 1, 1]);
+        timeline.trim(secs(50), secs(130));
+        assert_eq!(timeline.clips.iter().map(|clip| clip.from).collect::<Vec<_>>(), vec![MAIN, 1, 1]);
+        assert_eq!(timeline.total(), secs(80));
+        assert!(!timeline.append(Source { length: Duration::from_millis(50), ..other(0) }));
     }
 }

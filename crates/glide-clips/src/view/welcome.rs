@@ -20,9 +20,12 @@ const ROOMY_HEIGHT: f32 = 640.0;
 const HINT_HEIGHT: f32 = 480.0;
 
 fn mark<'a>(app: &App) -> Element<'a, Message> {
-    let paint = app.paint;
+    mark_with(&app.paint, Icon::Mark, 30.0)
+}
+
+fn mark_with<'a>(paint: &glide_sdk::Paint, glyph: Icon, size: f32) -> Element<'a, Message> {
     let accent = paint.acc_bg();
-    container(ui::icon(Icon::Mark, 30.0, Color::WHITE))
+    container(ui::icon(glyph, size, Color::WHITE))
         .center(64.0)
         .style(move |_| container::Style {
             background: Some(Background::Color(accent)),
@@ -256,24 +259,25 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let corner = window.corner();
     let surface = ui::pane(background, corner, stack![page, controls]);
     let surface = stage(surface).on_drag(Message::WindowDrag).on_double_click(Message::Window(Action::ToggleMaximize));
-    let mut layers: Vec<Element<'_, Message>> = vec![surface.into()];
-    if app.dropping {
-        layers.push(drop_overlay(app));
-    }
-    stack(layers).into()
+    surface.into()
 }
 
-fn drop_overlay(app: &App) -> Element<'_, Message> {
-    let paint = app.paint;
+#[must_use]
+pub fn drop_overlay(app: &App) -> Element<'_, Message> {
+    let paint = if app.media.is_some() { app.dark } else { app.paint };
+    let adding = matches!(app.mode, crate::app::Mode::Clips { .. }) && app.media.is_some();
+    let (title, note) = if adding { (Key::DropToAdd, Key::DropAddNote) } else { (Key::DropToPlay, Key::DropAspect) };
     let content = column![
-        mark(app),
-        ui::text(app.t(Key::DropToPlay), TextStyle::T3).color(paint.acc_soft_fg()),
-        ui::text(app.t(Key::DropAspect), TextStyle::CAP).color(paint.fg_2()),
+        container(mark_with(&paint, Icon::DropIn, 28.0)).padding(Padding::default().bottom(4)),
+        ui::text(app.t(title), TextStyle::T3).color(paint.acc_soft_fg()),
+        ui::text(app.t(note), TextStyle::CAP).color(paint.fg_2()),
     ]
     .spacing(10)
     .align_x(Alignment::Center);
     let ring = paint.acc_bg();
-    let soft = Color { a: 0.88 * paint.acc_soft().a, ..paint.acc_soft() };
+    let (over, base) = (paint.acc_soft(), paint.view_bg());
+    let mix = |top: f32, under: f32| top * over.a + under * (1.0 - over.a);
+    let soft = Color { r: mix(over.r, base.r), g: mix(over.g, base.g), b: mix(over.b, base.b), a: 0.88 };
     container(container(content).center(Fill).style(move |_| container::Style {
         background: Some(Background::Color(soft)),
         border: Border { radius: theme::R3.into(), color: ring, width: 2.0 },

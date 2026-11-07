@@ -46,9 +46,18 @@ impl App {
         match message {
             Message::Handles(handles) => {
                 self.handles = Some(handles);
-                if let Some((uri, path)) = self.pending.take() {
-                    return self.open_uri(uri, path);
-                }
+                let drops = handles.map_or_else(Task::none, |handles| {
+                    Task::run(glide_sdk::glide_app::drop_target::events(&handles, "glide-clips"), Message::Dropped)
+                });
+                let opened = match self.pending.take() {
+                    Some((uri, path)) => self.open_uri(uri, path),
+                    None => Task::none(),
+                };
+                Task::batch([drops, opened])
+            }
+            Message::Dropped(dropped) => self.dropped(dropped, shell),
+            Message::SidecarLines(generation, lines) => {
+                self.sidecar_loaded(generation, lines);
                 Task::none()
             }
             Message::Open => self.choose(),
@@ -96,10 +105,12 @@ impl App {
             Message::Strip(generation, frame) => {
                 if let Some(media) = self.media.as_mut().filter(|media| media.generation == generation) {
                     let times = frames::strip_times(media.timeline.total(), crate::app::STRIP);
-                    let at = frame.at;
-                    let index = times
-                        .iter()
-                        .position(|time| media.timeline.locate(*time).is_some_and(|(_, source)| source == at));
+                    let (at, from) = (frame.at, frame.tag as usize);
+                    let index = times.iter().position(|time| {
+                        media.timeline.locate(*time).is_some_and(|(clip, source)| {
+                            source == at && media.timeline.clips.get(clip).is_some_and(|clip| clip.from == from)
+                        })
+                    });
                     if let Some(slot) = index.and_then(|index| media.strip.get_mut(index)) {
                         *slot = Some(rgba_handle(frame));
                     }
@@ -348,13 +359,12 @@ impl App {
                 Task::none()
             }
             Message::MoveClip(from, to) => {
+                self.mode = Mode::Clips { dragging: None };
                 if let Some(media) = &mut self.media
                     && media.timeline.reorder(from, to)
                 {
-                    self.mode = Mode::Clips { dragging: None };
-                    return self.request_strip();
+                    return self.rearranged();
                 }
-                self.mode = Mode::Clips { dragging: None };
                 Task::none()
             }
             Message::SplitClip => self.split(),
@@ -362,11 +372,17 @@ impl App {
                 if let Some(media) = &mut self.media {
                     let index = media.timeline.selected;
                     if media.timeline.remove(index) {
-                        return self.request_strip();
+                        return self.rearranged();
                     }
                 }
                 Task::none()
             }
+            Message::AddClip => self.choose_clip(),
+            Message::ClipChosen(path) => {
+                let Some(path) = path.filter(|path| path.is_file()) else { return Task::none() };
+                Self::probe_clip(path)
+            }
+            Message::ClipProbed(path, length) => self.clip_probed(&path, length, shell),
             Message::TurnClip(clockwise) => {
                 if let Some(media) = &mut self.media {
                     media.timeline.turn(clockwise);
@@ -635,7 +651,7 @@ impl App {
     fn seek_source(&mut self, source: std::time::Duration) {
         let Some(media) = &self.media else { return };
         let at = if media.timeline.edited() {
-            match media.timeline.clip_of(source, media.clip) {
+            match media.timeline.clip_of(source, media.clip, media.loaded) {
                 Some(index) => media.timeline.total_at(index, source),
                 None => return,
             }
@@ -651,8 +667,10 @@ impl App {
         let Some(bucket) = bucket.filter(|bucket| !media.frames.contains_key(bucket)) else { return Task::none() };
         let fraction = (bucket as f32 + 0.5) / crate::app::BUCKETS as f32;
         let at = media.length().mul_f32(fraction);
-        let source = media.timeline.locate(at).map_or(at, |(_, source)| source);
-        if let Some(grabber) = &media.grabber {
+        let (from, source) = media.timeline.locate(at).map_or((crate::timeline::MAIN, at), |(index, source)| {
+            (media.timeline.clips.get(index).map_or(crate::timeline::MAIN, |clip| clip.from), source)
+        });
+        if let Some(grabber) = self.hover_grabber(from) {
             grabber.request(u64::from(bucket), vec![source], false);
         }
         Task::none()
@@ -679,7 +697,9 @@ impl App {
             if let Some(position) = player.position() {
                 media.position = position;
             }
-            if let Some(duration) = player.duration().filter(|duration| !duration.is_zero()) {
+            if let Some(duration) = player.duration().filter(|duration| {
+                !duration.is_zero() && media.loaded == crate::timeline::MAIN && media.handoff.is_none()
+            }) {
                 if media.duration != Some(duration) && !media.timeline.edited() {
                     media.timeline = crate::timeline::Timeline::whole(duration);
                 }
@@ -695,24 +715,22 @@ impl App {
         {
             media.cue = None;
         }
-        let boundary = media.timeline.edited().then(|| media.timeline.clips.get(media.clip).copied()).flatten();
-        if let Some(clip) =
-            boundary.filter(|clip| media.playing() && media.position + Duration::from_millis(60) >= clip.end)
-        {
-            let _ = clip;
-            let next = media.clip + 1;
-            if let Some(following) = media.timeline.clips.get(next).copied() {
-                media.clip = next;
-                media.position = following.start;
-                if let Some(player) = &media.player {
-                    player.seek(following.start, true);
-                }
-                self.orient();
-            } else if media.repeat {
-                self.seek_timeline(Duration::ZERO, true);
-            } else if let Some(player) = &media.player {
-                player.pause();
+        if media.sidecar_on && media.loaded == crate::timeline::MAIN {
+            let shift = Duration::from_millis(media.offset_ms.unsigned_abs());
+            let at = if media.offset_ms >= 0 { media.position.saturating_sub(shift) } else { media.position + shift };
+            let text = glide_video::media::text_at(&media.sidecar_lines, at);
+            if media.cue.as_ref().map(|(cue, _)| &cue.text) != text.as_ref() {
+                media.cue = text.map(|text| (glide_video::player::Cue { text, duration: None }, now));
             }
+        } else if media.sidecar_on {
+            media.cue = None;
+        }
+        let boundary = media.timeline.edited().then(|| media.timeline.clips.get(media.clip).copied()).flatten();
+        let ended = boundary.is_some_and(|clip| {
+            media.playing() && media.handoff.is_none() && media.position + Duration::from_millis(60) >= clip.end
+        });
+        if ended {
+            self.clip_ended();
         }
         if let Mode::Trim { end, .. } = self.mode
             && let Some(media) = &self.media
@@ -745,8 +763,41 @@ impl App {
         Task::none()
     }
 
+    fn clip_ended(&mut self) {
+        if self.advance() {
+            return;
+        }
+        let repeat = self.media.as_ref().is_some_and(|media| media.repeat);
+        if repeat {
+            self.seek_timeline(Duration::ZERO, true);
+        } else {
+            self.with_player(glide_video::player::Player::pause);
+        }
+    }
+
     fn on_state(&mut self, playback: Playback) {
         let Some(media) = &mut self.media else { return };
+        if playback != Playback::Stopped
+            && let Some((at, play)) = media.handoff.take()
+        {
+            let rate = media.rate;
+            let restore = if media.loaded == crate::timeline::MAIN { media.restore.take() } else { None };
+            if let Some(player) = &mut media.player {
+                if let Some(ids) = restore.filter(|ids| !ids.is_empty()) {
+                    player.select(&ids);
+                }
+                player.seek(at, true);
+                if (rate - 1.0).abs() > f64::EPSILON {
+                    player.set_rate(rate);
+                }
+                if play {
+                    player.play();
+                }
+            }
+            media.playback = if play { Playback::Playing } else { Playback::Paused };
+            self.publish();
+            return;
+        }
         let first = media.playback == Playback::Stopped && playback == Playback::Paused && !media.playing_since_open;
         media.playback = playback;
         if first {
@@ -767,10 +818,13 @@ impl App {
         self.publish();
     }
 
-    fn on_player(&mut self, generation: u64, event: Event) -> Task<Message> {
-        let Some(media) = self.media.as_mut().filter(|media| media.generation == generation) else {
+    fn on_player(&mut self, feed: u64, event: Event) -> Task<Message> {
+        let Some(media) = self.media.as_mut().filter(|media| media.feed == feed) else {
             return Task::none();
         };
+        if media.loaded != crate::timeline::MAIN {
+            return self.on_other_source(event);
+        }
         match event {
             Event::State(playback) => {
                 self.on_state(playback);
@@ -798,6 +852,9 @@ impl App {
                 }
             }
             Event::SeekDone | Event::Title(_) => {}
+            Event::Eos if media.timeline.edited() && media.clip + 1 < media.timeline.clips.len() => {
+                self.clip_ended();
+            }
             Event::Eos => {
                 if media.repeat {
                     self.seek_timeline(Duration::ZERO, true);
@@ -834,27 +891,77 @@ impl App {
                     media.chapters = chapters;
                 }
             }
-            Event::Tracks(tracks) => {
-                media.kind = glide_video::player::kind_of(&tracks);
-                if media.text_track.is_none() {
-                    media.text_track = tracks.of(TrackKind::Text).next().map(|track| track.id.clone());
-                }
-                media.tracks = tracks;
-            }
-            Event::Selected(ids) => {
-                let first = media.selected.is_empty();
-                media.selected = ids;
-                if let Some(text) = media.selected_of(TrackKind::Text).map(str::to_string) {
-                    media.text_track = Some(text);
-                }
-                if first {
-                    self.apply_remembered_tracks();
-                }
-            }
+            Event::Tracks(tracks) => self.on_tracks(tracks),
+            Event::Selected(ids) => self.on_selected(ids),
             Event::Subtitle(cue) => {
-                media.cue = cue.map(|cue| (cue, Instant::now()));
+                if !media.sidecar_on {
+                    media.cue = cue.map(|cue| (cue, Instant::now()));
+                }
             }
             Event::Live(live) => media.live = live,
+        }
+        Task::none()
+    }
+
+    fn on_tracks(&mut self, tracks: glide_video::media::Tracks) {
+        let Some(media) = &mut self.media else { return };
+        media.kind = glide_video::player::kind_of(&tracks);
+        if media.text_track.is_none() {
+            media.text_track = tracks.of(TrackKind::Text).next().map(|track| track.id.clone());
+        }
+        let external = tracks.of(TrackKind::Text).find(|track| track.external).map(|track| track.id.clone());
+        media.tracks = tracks;
+        if !media.sidecar_lines.is_empty() {
+            media.tracks.push(crate::app::sidecar_track(media.suburi.as_deref()));
+        }
+        let external = external.or_else(|| (!media.sidecar_lines.is_empty()).then(|| crate::app::SIDECAR.into()));
+        if media.prefer_external
+            && let Some(id) = external
+        {
+            media.prefer_external = false;
+            self.select_text(Some(id));
+        }
+    }
+
+    fn on_selected(&mut self, ids: Vec<String>) {
+        let Some(media) = &mut self.media else { return };
+        let first = media.selected.is_empty();
+        media.selected = ids;
+        if media.sidecar_on {
+            let before = media.selected.len();
+            media.selected.retain(|id| media.tracks.get(id).is_none_or(|track| track.kind != TrackKind::Text));
+            if media.selected.len() != before
+                && let Some(player) = &media.player
+            {
+                player.select(&media.selected);
+            }
+            media.selected.push(crate::app::SIDECAR.into());
+        }
+        if let Some(text) = media.selected_of(TrackKind::Text).map(str::to_string) {
+            media.text_track = Some(text);
+        }
+        if first {
+            self.apply_remembered_tracks();
+        }
+        self.follow_subtitle_style();
+    }
+
+    fn on_other_source(&mut self, event: Event) -> Task<Message> {
+        match event {
+            Event::State(playback) => self.on_state(playback),
+            Event::Eos => self.clip_ended(),
+            Event::Failed(failure) => {
+                if let Some(media) = &mut self.media {
+                    media.failure = Some(failure);
+                }
+                self.chrome.shown = true;
+            }
+            Event::Buffering(percent) => {
+                if let Some(media) = &mut self.media {
+                    media.buffering = (percent < 100).then_some(percent);
+                }
+            }
+            _ => {}
         }
         Task::none()
     }
@@ -1083,16 +1190,65 @@ impl App {
         Some((media.uri.clone(), media.path.clone(), reopen))
     }
 
+    fn reload(&mut self) {
+        let Some(media) = &self.media else { return };
+        if media.live {
+            if let Some((uri, path, reopen)) = self.reopen() {
+                let opened = self.open_with(uri, path, &reopen);
+                self.queued.push(opened);
+            }
+            return;
+        }
+        let play = media.playing() || media.handoff.is_some_and(|(_, play)| play);
+        let (loaded, position) = (media.loaded, media.position);
+        self.switch_to(loaded, position, play);
+    }
+
     fn toggle_pitch(&mut self) -> Task<Message> {
-        let Some((uri, path, reopen)) = self.reopen() else { return Task::none() };
-        let reopen = crate::app::Reopen { keep_pitch: !reopen.keep_pitch, ..reopen };
-        self.open_with(uri, path, &reopen)
+        let Some(media) = &mut self.media else { return Task::none() };
+        media.keep_pitch = !media.keep_pitch;
+        self.reload();
+        Task::none()
     }
 
     fn reopen_with_subtitle(&mut self, subtitle: &Path) -> Task<Message> {
-        let Some((uri, path, reopen)) = self.reopen() else { return Task::none() };
-        let reopen = crate::app::Reopen { subtitle: Some(uri_of(subtitle)), ..reopen };
-        self.open_with(uri, path, &reopen)
+        let Some(media) = &mut self.media else { return Task::none() };
+        let uri = uri_of(subtitle);
+        media.suburi = Some(uri.clone());
+        if crate::app::styled_sidecar(&uri) {
+            media.sidecar_lines.clear();
+            media.tracks.retain(|track| track.id != crate::app::SIDECAR);
+            return self.load_sidecar(uri);
+        }
+        media.prefer_external = true;
+        if media.loaded == crate::timeline::MAIN {
+            self.reload();
+            if let Some(media) = &mut self.media {
+                media.restore = None;
+            }
+        }
+        Task::none()
+    }
+
+    fn follow_subtitle_style(&mut self) {
+        let Some(media) = &self.media else { return };
+        if media.loaded != crate::timeline::MAIN || media.handoff.is_some() || media.sound_only {
+            return;
+        }
+        let styled = media
+            .selected_of(TrackKind::Text)
+            .filter(|id| *id != crate::app::SIDECAR)
+            .and_then(|id| media.tracks.get(id))
+            .is_some_and(|track| {
+                glide_video::player::styled_subtitles(track.codec.as_deref())
+                    || glide_video::player::styled_subtitles(track.format.as_deref())
+            });
+        if styled != media.video_subtitles {
+            if let Some(media) = &mut self.media {
+                media.video_subtitles = styled;
+            }
+            self.reload();
+        }
     }
 
     fn reopen_sound_only(&mut self) -> Task<Message> {
@@ -1107,9 +1263,11 @@ impl App {
         match glide_video::player::Player::open(&media.uri, &options) {
             Ok(player) => {
                 let events = player.events();
-                media.generation += 1;
-                let generation = media.generation;
-                self.generation = generation;
+                self.generation += 1;
+                let generation = self.generation;
+                media.feed = generation;
+                media.loaded = crate::timeline::MAIN;
+                media.handoff = None;
                 media.player = Some(player);
                 media.playback = Playback::Stopped;
                 media.playing_since_open = false;
@@ -1169,6 +1327,96 @@ impl App {
         media.clip = 0;
         self.seek_timeline(Duration::ZERO, true);
         Task::none()
+    }
+
+    fn dropped(
+        &mut self, dropped: glide_sdk::glide_app::drop_target::Dropped, shell: &mut Shell<Message>,
+    ) -> Task<Message> {
+        use glide_sdk::glide_app::drop_target::Dropped;
+        let entries = match dropped {
+            Dropped::Hover(hover) => {
+                self.dropping = hover.is_some();
+                return Task::none();
+            }
+            Dropped::Uris(uris, _) => uris,
+            Dropped::Text(text, _) => text.lines().map(str::trim).map(str::to_string).collect(),
+        };
+        self.dropping = false;
+        let Some(target) = entries.iter().find_map(|entry| dropped_target(entry)) else {
+            shell.toast(self.t(Key::DropUnsupported));
+            return Task::none();
+        };
+        match target {
+            (_, Some(path)) if matches!(self.mode, Mode::Clips { .. }) && self.media.is_some() => {
+                Self::probe_clip(path)
+            }
+            (_, Some(path)) => self.open_path(path, shell),
+            (uri, None) => self.open_uri(uri, None),
+        }
+    }
+
+    fn probe_clip(path: PathBuf) -> Task<Message> {
+        let uri = uri_of(&path);
+        later(
+            move || {
+                let length =
+                    glide_video::info::discover(&uri, Duration::from_secs(15)).ok().and_then(|info| info.duration);
+                (path, length)
+            },
+            |(path, length)| Message::ClipProbed(path, length),
+        )
+    }
+
+    fn rearranged(&mut self) -> Task<Message> {
+        if let Some(media) = &self.media {
+            let at = media.timeline.offset_of(media.timeline.selected);
+            self.seek_timeline(at, true);
+            self.orient();
+        }
+        self.request_strip()
+    }
+
+    fn choose_clip(&mut self) -> Task<Message> {
+        self.set_playing(false);
+        let folder = self
+            .media
+            .as_ref()
+            .and_then(|media| media.path.as_deref())
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .or_else(|| user_dir("XDG_VIDEOS_DIR", "Videos"));
+        let ask = glide_sdk::chooser::Ask {
+            purpose: glide_sdk::chooser::Purpose::Open,
+            title: self.t(Key::AddClip).into(),
+            accept: self.t(Key::Choose).into(),
+            name: None,
+            folder,
+        };
+        let receiver = glide_sdk::chooser::spawn(ask);
+        Task::perform(async move { receiver.await.ok() }, |chosen| match chosen {
+            Some(glide_sdk::chooser::Chosen::Paths(paths)) => Message::ClipChosen(paths.into_iter().next()),
+            _ => Message::ClipChosen(None),
+        })
+    }
+
+    fn clip_probed(&mut self, path: &Path, length: Option<Duration>, shell: &mut Shell<Message>) -> Task<Message> {
+        let Some(media) = &mut self.media else { return Task::none() };
+        let added = length.is_some_and(|length| {
+            media.timeline.append(crate::timeline::Source {
+                uri: uri_of(path),
+                title: crate::app::title_of(&uri_of(path), Some(path)),
+                path: Some(path.to_path_buf()),
+                length,
+            })
+        });
+        if !added {
+            shell.toast(self.t(Key::ClipUnreadable));
+            return Task::none();
+        }
+        if !matches!(self.mode, Mode::Clips { .. }) {
+            self.mode = Mode::Clips { dragging: None };
+        }
+        self.rearranged()
     }
 
     fn split(&mut self) -> Task<Message> {
@@ -1367,6 +1615,25 @@ fn later_cover(path: PathBuf) -> Task<Message> {
     )
 }
 
+#[must_use]
+pub fn dropped_target(entry: &str) -> Option<(String, Option<PathBuf>)> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return None;
+    }
+    if entry.starts_with("file:") {
+        let path = glide_sdk::chooser::uri_path(entry)?;
+        return path.is_file().then(|| (uri_of(&path), Some(path)));
+    }
+    if entry.starts_with('/') {
+        let path = PathBuf::from(entry);
+        return path.is_file().then(|| (uri_of(&path), Some(path)));
+    }
+    let scheme = entry.split_once("://").map(|(scheme, _)| scheme.to_ascii_lowercase())?;
+    matches!(scheme.as_str(), "http" | "https" | "rtsp" | "rtsps" | "rtmp" | "mms" | "srt" | "udp" | "rtp")
+        .then(|| (entry.to_string(), None))
+}
+
 fn later<T: Send + 'static>(
     job: impl FnOnce() -> T + Send + 'static, done: impl Fn(T) -> Message + Send + 'static,
 ) -> Task<Message> {
@@ -1380,4 +1647,28 @@ fn later<T: Send + 'static>(
         },
         move |result| result.map_or(Message::Ignore, &done),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drops_open_local_files_and_stream_addresses_only() {
+        let file = std::env::temp_dir().join(format!("glide-clips-drop-{}.mkv", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        let uri = uri_of(&file);
+        assert_eq!(dropped_target(&uri), Some((uri.clone(), Some(file.clone()))));
+        assert_eq!(dropped_target(&file.to_string_lossy()), Some((uri, Some(file.clone()))));
+        assert_eq!(dropped_target("file:///nonexistent/glide/a.mkv"), None);
+        assert_eq!(dropped_target("file://remote/etc/hosts"), None);
+        assert_eq!(
+            dropped_target("https://tv.example.ua/live.m3u8"),
+            Some(("https://tv.example.ua/live.m3u8".into(), None))
+        );
+        assert_eq!(dropped_target("javascript:alert(1)"), None);
+        assert_eq!(dropped_target("ftp://example.org/a.mkv"), None);
+        assert_eq!(dropped_target("  "), None);
+        std::fs::remove_file(file).unwrap();
+    }
 }

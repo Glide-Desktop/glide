@@ -68,7 +68,7 @@ fn pump(harness: &mut Harness<App>, until: impl Fn(&App) -> bool) {
     while Instant::now() < deadline {
         let polled = harness.app().media.as_ref().and_then(|media| {
             let event = media.player.as_ref()?.poll(Duration::from_millis(50))?;
-            Some((media.generation, event))
+            Some((media.feed, event))
         });
         if let Some((generation, event)) = polled {
             harness.message(Message::Player(generation, event));
@@ -89,7 +89,7 @@ fn a_video_opens_plays_and_is_edited_through_the_whole_app() {
     fixture(&file, 6);
     std::fs::write(root.join("videos").join("Карпати.uk.srt"), "1\n00:00:00,100 --> 00:00:05,000\nДивись, туман\n\n")
         .unwrap();
-    let mut harness = Harness::<App>::new(glide_clips::APP_ID, Look::default(), iced::Size::new(1280.0, 720.0));
+    let harness = &mut Harness::<App>::new(glide_clips::APP_ID, Look::default(), iced::Size::new(1280.0, 720.0));
     let _ = harness.view();
     harness.message(Message::OpenPath(file));
     harness.message(Message::Handles(None));
@@ -100,7 +100,7 @@ fn a_video_opens_plays_and_is_edited_through_the_whole_app() {
         .map(Box::new);
     harness.message(Message::Info(generation, info));
 
-    pump(&mut harness, |app| app.media.as_ref().is_some_and(|media| media.playback == Playback::Playing));
+    pump(harness, |app| app.media.as_ref().is_some_and(|media| media.playback == Playback::Playing));
     let media = harness.app().media.as_ref().unwrap();
     assert_eq!(media.title, "Карпати.mkv");
     assert_eq!(media.chapters.len(), 2, "chapters come from the container");
@@ -109,9 +109,9 @@ fn a_video_opens_plays_and_is_edited_through_the_whole_app() {
     assert!((media.length().as_secs_f64() - 6.0).abs() < 0.3);
 
     harness.message(Message::TogglePlay);
-    pump(&mut harness, |app| app.media.as_ref().is_some_and(|media| media.playback == Playback::Paused));
+    pump(harness, |app| app.media.as_ref().is_some_and(|media| media.playback == Playback::Paused));
     harness.message(Message::Seek(0.5));
-    pump(&mut harness, |app| app.media.as_ref().is_some_and(|media| (media.at().as_secs_f64() - 3.0).abs() < 0.6));
+    pump(harness, |app| app.media.as_ref().is_some_and(|media| (media.at().as_secs_f64() - 3.0).abs() < 0.6));
     assert_eq!(harness.app().media.as_ref().unwrap().chapter(), Some(1));
 
     let tracks = glide_clips::menus::tracks(harness.app());
@@ -145,6 +145,8 @@ fn a_video_opens_plays_and_is_edited_through_the_whole_app() {
     harness.message(Message::TurnClip(true));
     harness.message(Message::MoveClip(1, 0));
     assert_eq!(harness.app().media.as_ref().unwrap().timeline.clips.len(), 2);
+
+    clips_from_another_file(harness, &root);
     harness.message(Message::ClipsDone);
 
     harness.message(Message::ExportOpen);
@@ -157,6 +159,94 @@ fn a_video_opens_plays_and_is_edited_through_the_whole_app() {
     assert!(rows.iter().any(|(_, value)| value.contains("320 × 180")), "{rows:?}");
     let _ = harness.view();
 
+    styled_script_next_to_the_video(harness, &root);
+    closing_remembers(harness, &root);
+}
+
+fn clips_from_another_file(harness: &mut Harness<App>, root: &Path) {
+    use glide_sdk::glide_app::drop_target::Dropped;
+    let other = root.join("videos").join("Синевир.mkv");
+    fixture(&other, 4);
+    harness.message(Message::ClipProbed(other.clone(), None));
+    assert_eq!(harness.app().media.as_ref().unwrap().timeline.clips.len(), 2, "an unreadable file adds nothing");
+    harness.message(Message::ClipProbed(other, Some(Duration::from_secs(4))));
+    let media = harness.app().media.as_ref().unwrap();
+    assert_eq!(media.timeline.clips.len(), 3);
+    assert_eq!(media.timeline.selected, 2);
+    assert!((media.timeline.total().as_secs_f64() - 7.0).abs() < 0.3, "{:?}", media.timeline.total());
+    let segments = media.timeline.segments(&media.uri);
+    assert!(
+        segments[2].uri.ends_with("%D0%A1%D0%B8%D0%BD%D0%B5%D0%B2%D0%B8%D1%80.mkv")
+            || segments[2].uri.contains("Синевир")
+    );
+    assert_eq!(media.loaded, 1, "selecting the new clip loads its file");
+    pump(harness, |app| app.media.as_ref().is_some_and(|media| media.handoff.is_none() && media.player.is_some()));
+    let media = harness.app().media.as_ref().unwrap();
+    assert!(media.failure.is_none(), "{:?}", media.failure);
+    assert!(media.at() >= Duration::from_millis(2900), "the playhead sits at the third clip: {:?}", media.at());
+    let _ = harness.view();
+    harness.message(Message::SelectClip(0));
+    assert_eq!(harness.app().media.as_ref().unwrap().loaded, 0, "the first clip goes back to the main file");
+    pump(harness, |app| app.media.as_ref().is_some_and(|media| media.handoff.is_none()));
+    let media = harness.app().media.as_ref().unwrap();
+    let boundary = media.timeline.offset_of(2).as_secs_f64();
+    let near = ((boundary - 0.5) / media.timeline.total().as_secs_f64()) as f32;
+    harness.message(Message::Seek(near));
+    assert_eq!(harness.app().media.as_ref().unwrap().loaded, 0);
+    if !harness.app().media.as_ref().unwrap().playing() {
+        harness.message(Message::TogglePlay);
+    }
+    pump(harness, |app| app.media.as_ref().is_some_and(|media| media.loaded == 1 && media.playing()));
+    let media = harness.app().media.as_ref().unwrap();
+    assert_eq!(media.clip, 2, "playback crossed into the clip from the other file");
+    harness.message(Message::Dropped(Dropped::Hover(Some((10.0, 10.0)))));
+    assert!(harness.app().dropping);
+    let _ = harness.view();
+    harness.message(Message::Dropped(Dropped::Hover(None)));
+    assert!(!harness.app().dropping);
+    harness.message(Message::Dropped(Dropped::Text("not a file".into(), (0.0, 0.0))));
+    assert_eq!(harness.app().media.as_ref().unwrap().timeline.clips.len(), 3, "an unusable drop changes nothing");
+    harness.message(Message::RemoveClip);
+    let media = harness.app().media.as_ref().unwrap();
+    assert_eq!(media.timeline.clips.len(), 2);
+    assert_eq!(media.loaded, 0, "removing the playing clip from the other file returns to the main one");
+}
+
+fn styled_script_next_to_the_video(harness: &mut Harness<App>, root: &Path) {
+    let styled = root.join("videos").join("Говерла.mkv");
+    fixture(&styled, 4);
+    let script = root.join("videos").join("Говерла.uk.ass");
+    std::fs::write(
+        &script,
+        "[Script Info]\nScriptType: v4.00+\n\n[Events]\n\
+         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+         Dialogue: 0,0:00:00.00,0:00:03.50,Default,,0,0,0,,{\\an8}Туман, {\\i1}сходить{\\i0}\n",
+    )
+    .unwrap();
+    harness.message(Message::OpenPath(styled));
+    let media = harness.app().media.as_ref().unwrap();
+    assert!(media.suburi.as_deref().is_some_and(|uri| uri.ends_with(".uk.ass")));
+    let generation = media.generation;
+    let lines = glide_clips::app::read_sidecar(media.suburi.as_deref().unwrap());
+    assert_eq!(lines.len(), 1);
+    harness.message(Message::SidecarLines(generation, lines));
+    pump(harness, |app| app.media.as_ref().is_some_and(glide_clips::app::Media::playing));
+    pump(harness, |app| {
+        app.media.as_ref().is_some_and(|media| media.cue.as_ref().is_some_and(|(cue, _)| cue.text == "Туман, сходить"))
+    });
+    let media = harness.app().media.as_ref().unwrap();
+    assert!(media.failure.is_none(), "an ASS file next to the video no longer breaks playback: {:?}", media.failure);
+    assert_eq!(media.selected_of(TrackKind::Text), Some(glide_clips::app::SIDECAR));
+    let tracks = glide_clips::menus::tracks(harness.app());
+    let _ = harness.view();
+    assert!(tracks.len() >= 5, "the script is listed with the subtitle tracks");
+    harness.message(Message::PickText(None));
+    assert!(harness.app().media.as_ref().unwrap().cue.is_none());
+    harness.message(Message::Tick);
+    assert!(harness.app().media.as_ref().unwrap().cue.is_none(), "switching the script off hides it");
+}
+
+fn closing_remembers(harness: &mut Harness<App>, root: &Path) {
     harness.message(Message::Close);
     assert!(harness.exiting());
     let saved = std::fs::read_to_string(root.join("state/glide/clips/files.toml"));

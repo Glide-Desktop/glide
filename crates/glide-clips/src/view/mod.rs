@@ -42,6 +42,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if let Some(address) = &app.address {
         layers.push(address_dialog(app, address));
     }
+    if app.dropping {
+        layers.push(welcome::drop_overlay(app));
+    }
     if !app.window.edge_to_edge() {
         layers.push(glide_sdk::window::resize_handles(Message::Window));
     }
