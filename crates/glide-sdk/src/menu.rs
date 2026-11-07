@@ -24,6 +24,9 @@ const DOT: f32 = 10.0;
 const SWATCH: f32 = 18.0;
 const SEPARATOR: f32 = 9.0;
 const HEADING: f32 = SP2 + SP1 + TextStyle::CAP.line_height_px;
+const TALL: f32 = 44.0;
+const PICTURE: (f32, f32) = (48.0, 27.0);
+const DETAIL: TextStyle = TextStyle { size_px: 11.5, line_height_px: 14.0, ..TextStyle::CAP };
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item<M> {
@@ -37,6 +40,9 @@ pub enum Item<M> {
         danger: bool,
         swatch: Option<iced::Color>,
         glyph: Option<iced::widget::svg::Handle>,
+        detail: Option<String>,
+        value: Option<String>,
+        picture: Option<iced::widget::image::Handle>,
     },
     Submenu {
         label: String,
@@ -49,6 +55,7 @@ pub enum Item<M> {
         value: String,
         less: Option<M>,
         more: Option<M>,
+        glyph: Option<iced::widget::svg::Handle>,
     },
     Swatches(Vec<Swatch<M>>),
     Heading(String),
@@ -76,15 +83,51 @@ impl<M> Item<M> {
             danger: false,
             swatch: None,
             glyph: None,
+            detail: None,
+            value: None,
+            picture: None,
         }
     }
 
     #[must_use]
     pub fn glyph(mut self, handle: iced::widget::svg::Handle) -> Self {
-        if let Self::Action { glyph, .. } | Self::Submenu { glyph, .. } = &mut self {
+        if let Self::Action { glyph, .. } | Self::Submenu { glyph, .. } | Self::Stepper { glyph, .. } = &mut self {
             *glyph = Some(handle);
         }
         self
+    }
+
+    #[must_use]
+    pub fn detail(mut self, line: impl Into<String>) -> Self {
+        if let Self::Action { detail, .. } = &mut self {
+            *detail = Some(line.into());
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn value(mut self, shown: impl Into<String>) -> Self {
+        if let Self::Action { value, .. } = &mut self {
+            *value = Some(shown.into());
+        }
+        self
+    }
+
+    #[must_use]
+    pub fn picture(mut self, handle: iced::widget::image::Handle) -> Self {
+        if let Self::Action { picture, .. } = &mut self {
+            *picture = Some(handle);
+        }
+        self
+    }
+
+    fn leads(&self) -> bool {
+        matches!(
+            self,
+            Self::Action { glyph: Some(_), .. }
+                | Self::Action { picture: Some(_), .. }
+                | Self::Submenu { glyph: Some(_), .. }
+        )
     }
 
     #[must_use]
@@ -119,7 +162,7 @@ impl<M> Item<M> {
 
     #[must_use]
     pub fn stepper(label: impl Into<String>, value: impl Into<String>, less: Option<M>, more: Option<M>) -> Self {
-        Self::Stepper { label: label.into(), value: value.into(), less, more }
+        Self::Stepper { label: label.into(), value: value.into(), less, more, glyph: None }
     }
 
     #[must_use]
@@ -579,6 +622,7 @@ fn row_height<M>(item: &Item<M>) -> f32 {
     match item {
         Item::Separator => SEPARATOR,
         Item::Heading(_) => HEADING,
+        Item::Action { detail: Some(_), .. } | Item::Action { picture: Some(_), .. } => TALL,
         _ => ITEM,
     }
 }
@@ -602,10 +646,15 @@ pub fn width<M>(items: &[Item<M>], least: f32) -> f32 {
     let widest = items
         .iter()
         .map(|item| match item {
-            Item::Action { label, shortcut, more, swatch, .. } => {
+            Item::Action { label, shortcut, more, swatch, detail, value, picture, glyph, check, .. } => {
                 let keys = shortcut.as_deref().map_or(0.0, |keys| measure(keys, KEYS) + SP3);
+                let shown = value.as_deref().map_or(0.0, |shown| measure(shown, TextStyle::CAP) + SP3);
                 let dot = if swatch.is_some() { DOT + SP2 } else { 0.0 };
-                measure(label, TextStyle::MENU_ITEM) + keys + dot + if *more { CHEVRON + SP2 } else { 0.0 }
+                let lead = if picture.is_some() { PICTURE.0 - GLYPH } else { 0.0 };
+                let tail = if check.is_some() && (glyph.is_some() || picture.is_some()) { GLYPH + SP2 } else { 0.0 };
+                let words = measure(label, TextStyle::MENU_ITEM)
+                    .max(detail.as_deref().map_or(0.0, |line| measure(line, DETAIL)));
+                words + keys + shown + dot + lead + tail + if *more { CHEVRON + SP2 } else { 0.0 }
             }
             Item::Submenu { label, .. } => measure(label, TextStyle::MENU_ITEM) + CHEVRON + SP2,
             Item::Stepper { label, value, .. } => {
@@ -725,40 +774,13 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
             .into(),
         Item::Action { label, enabled, .. } | Item::Submenu { label, enabled, .. } => {
             let enabled = *enabled;
-            let (shortcut, check, more, danger, swatch, glyph) = row_parts(item);
-            let ink = match (enabled, danger) {
-                (false, _) => paint.fg_3(),
-                (true, true) => paint.danger(),
-                (true, false) => paint.fg_2(),
-            };
-            let mut content = row![].spacing(SP2).align_y(Alignment::Center);
-            if marks {
-                let mark: Element<'a, Event> = match (check, glyph) {
-                    (Some(true), _) => icon(Icon::Check, MARK, if enabled { paint.acc_text() } else { paint.fg_3() }),
-                    (_, Some(handle)) => crate::widget::svg_glyph(handle, GLYPH, ink),
-                    _ => Space::new().width(GLYPH).height(GLYPH).into(),
-                };
-                content = content.push(container(mark).center(GLYPH));
-            }
-            if let Some(color) = swatch {
-                content = content.push(
-                    container(Space::new().width(DOT).height(DOT))
-                        .style(move |_| style::rounded(color, glide_theme::shape::R_ROUND)),
-                );
-            }
-            content = content
-                .push(text(label.clone(), TextStyle::MENU_ITEM).wrapping(Wrapping::None))
-                .push(Space::new().width(Fill));
-            if let Some(shortcut) = shortcut {
-                content = content.push(text(shortcut, KEYS).color(ink));
-            }
-            if more {
-                content = content.push(icon(Icon::Right, CHEVRON, ink));
-            }
+            let danger = matches!(item, Item::Action { danger: true, .. });
+            let content = row_content(&paint, item, label, marks, enabled);
+            let height = row_height(item);
             let control = button(container(content).center_y(Fill).clip(true))
                 .on_press_maybe(enabled.then_some(Event::Picked(index)))
                 .width(Fill)
-                .height(ITEM)
+                .height(height)
                 .padding(Padding::from([0.0, SP2]));
             let control = widgets::button(control, move |status| {
                 let mut style = style::menu_item(&paint, status);
@@ -772,41 +794,119 @@ pub fn item_row<'a, M>(paint: &Paint, item: &Item<M>, index: usize, selected: bo
             });
             mouse_area(control).on_enter(Event::Hovered(index)).into()
         }
-        Item::Stepper { label, value, less, more } => {
-            let step = |sign: &'static str, active: bool, more: bool| -> Element<'a, Event> {
-                let control = button(container(text(sign, TextStyle::BODY)).center(Fill))
-                    .on_press_maybe(active.then_some(Event::Stepped(index, more)))
-                    .width(STEP)
-                    .height(STEP)
-                    .padding(0);
-                widgets::button(control, move |status| style::action(&paint, glide_iced::Tone::Neutral, status))
-            };
-            let value = text(value.clone(), TextStyle::NUM).width(Length::Shrink).wrapping(Wrapping::None);
-            let content = row![
-                Space::new().width(14),
-                text(label.clone(), TextStyle::MENU_ITEM).wrapping(Wrapping::None),
-                Space::new().width(Fill),
-                step("−", less.is_some(), false),
-                container(value).padding(Padding::from([0.0, SP1])).center_y(STEP),
-                step("+", more.is_some(), true),
-            ]
-            .spacing(SP2)
-            .align_y(Alignment::Center);
-            let row = container(content).padding(Padding::from([0.0, SP2])).height(ITEM).center_y(ITEM);
-            let row = widgets::container(row, move |hover, _| {
-                let layer = if selected { 1.0 } else { hover };
-                style::rounded(paint.layer(iced::Color::TRANSPARENT, motion::ST_HOVER * layer), R2)
-            });
-            mouse_area(row).on_enter(Event::Hovered(index)).into()
+        Item::Stepper { label, value, less, more, glyph } => {
+            stepper_row(&paint, label, value, less.is_some(), more.is_some(), glyph.as_ref(), index, selected)
         }
-        Item::Swatches(swatches) => {
-            let dots = swatches.iter().enumerate().map(|(at, swatch)| {
-                crate::widget::swatch(&paint, swatch.color, swatch.on, Some(Event::Swatched(index, at)), SWATCH)
-            });
-            let content = iced::widget::Row::with_children(dots).spacing(SP1).align_y(Alignment::Center);
-            container(content).padding(Padding::from([0.0, SP2])).height(ITEM).center_y(ITEM).into()
-        }
+        Item::Swatches(swatches) => swatches_row(&paint, swatches, index),
     }
+}
+
+fn row_content<'a, M>(
+    paint: &Paint, item: &Item<M>, label: &str, marks: bool, enabled: bool,
+) -> iced::widget::Row<'a, Event> {
+    let paint = *paint;
+    let (shortcut, check, more, danger, swatch, glyph) = row_parts(item);
+    let (detail, value, picture) = match item {
+        Item::Action { detail, value, picture, .. } => (detail.clone(), value.clone(), picture.clone()),
+        _ => (None, None, None),
+    };
+    let leads = item.leads();
+    let ink = match (enabled, danger) {
+        (false, _) => paint.fg_3(),
+        (true, true) => paint.danger(),
+        (true, false) => paint.fg_2(),
+    };
+    let tick = if enabled { paint.acc_text() } else { paint.fg_3() };
+    let mut content = row![].spacing(SP2).align_y(Alignment::Center);
+    if let Some(handle) = picture {
+        let frame = iced::widget::image(handle)
+            .width(PICTURE.0)
+            .height(PICTURE.1)
+            .content_fit(iced::ContentFit::Cover)
+            .border_radius(glide_theme::shape::R1);
+        content = content.push(frame);
+    } else if marks {
+        let mark: Element<'a, Event> = match (check, glyph) {
+            (_, Some(handle)) => crate::widget::svg_glyph(handle, GLYPH, ink),
+            (Some(true), None) => icon(Icon::Check, MARK, tick),
+            _ => Space::new().width(GLYPH).height(GLYPH).into(),
+        };
+        content = content.push(container(mark).center(GLYPH));
+    }
+    if let Some(color) = swatch {
+        content = content.push(
+            container(Space::new().width(DOT).height(DOT))
+                .style(move |_| style::rounded(color, glide_theme::shape::R_ROUND)),
+        );
+    }
+    let title = text(label.to_string(), TextStyle::MENU_ITEM).wrapping(Wrapping::None);
+    content = match detail {
+        Some(line) => {
+            content.push(iced::widget::column![title, text(line, DETAIL).color(paint.fg_2()).wrapping(Wrapping::None)])
+        }
+        None => content.push(title),
+    };
+    content = content.push(Space::new().width(Fill));
+    if let Some(shown) = value {
+        content = content.push(text(shown, TextStyle::CAP).color(paint.fg_2()).wrapping(Wrapping::None));
+    }
+    if let Some(shortcut) = shortcut {
+        content = content.push(text(shortcut, KEYS).color(ink));
+    }
+    if leads && let Some(on) = check {
+        let mark: Element<'a, Event> =
+            if on { icon(Icon::Check, MARK, tick) } else { Space::new().width(MARK).height(MARK).into() };
+        content = content.push(container(mark).center(GLYPH));
+    }
+    if more {
+        content = content.push(icon(Icon::Right, CHEVRON, ink));
+    }
+    content
+}
+
+#[allow(clippy::too_many_arguments)] // Rendering one stepper row needs its parts and the row's place in the menu
+fn stepper_row<'a>(
+    paint: &Paint, label: &str, value: &str, less: bool, more: bool, glyph: Option<&iced::widget::svg::Handle>,
+    index: usize, selected: bool,
+) -> Element<'a, Event> {
+    let paint = *paint;
+    let lead: Element<'a, Event> = match glyph {
+        Some(handle) => container(crate::widget::svg_glyph(handle.clone(), GLYPH, paint.fg_2())).center(GLYPH).into(),
+        None => Space::new().width(14).into(),
+    };
+    let step = |sign: &'static str, active: bool, more: bool| -> Element<'a, Event> {
+        let control = button(container(text(sign, TextStyle::BODY)).center(Fill))
+            .on_press_maybe(active.then_some(Event::Stepped(index, more)))
+            .width(STEP)
+            .height(STEP)
+            .padding(0);
+        widgets::button(control, move |status| style::action(&paint, glide_iced::Tone::Neutral, status))
+    };
+    let value = text(value.to_string(), TextStyle::NUM).width(Length::Shrink).wrapping(Wrapping::None);
+    let content = row![
+        lead,
+        text(label.to_string(), TextStyle::MENU_ITEM).wrapping(Wrapping::None),
+        Space::new().width(Fill),
+        step("−", less, false),
+        container(value).padding(Padding::from([0.0, SP1])).center_y(STEP),
+        step("+", more, true),
+    ]
+    .spacing(SP2)
+    .align_y(Alignment::Center);
+    let row = container(content).padding(Padding::from([0.0, SP2])).height(ITEM).center_y(ITEM);
+    let row = widgets::container(row, move |hover, _| {
+        let layer = if selected { 1.0 } else { hover };
+        style::rounded(paint.layer(iced::Color::TRANSPARENT, motion::ST_HOVER * layer), R2)
+    });
+    mouse_area(row).on_enter(Event::Hovered(index)).into()
+}
+
+fn swatches_row<'a, M>(paint: &Paint, swatches: &[Swatch<M>], index: usize) -> Element<'a, Event> {
+    let dots = swatches.iter().enumerate().map(|(at, swatch)| {
+        crate::widget::swatch(paint, swatch.color, swatch.on, Some(Event::Swatched(index, at)), SWATCH)
+    });
+    let content = iced::widget::Row::with_children(dots).spacing(SP1).align_y(Alignment::Center);
+    container(content).padding(Padding::from([0.0, SP2])).height(ITEM).center_y(ITEM).into()
 }
 
 #[must_use]

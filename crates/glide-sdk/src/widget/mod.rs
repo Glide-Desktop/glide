@@ -17,6 +17,7 @@ mod layout;
 mod media;
 pub mod mock;
 mod panes;
+pub mod player;
 mod pointer;
 mod popover;
 mod secrets;
