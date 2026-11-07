@@ -199,6 +199,10 @@ impl<M: Clone> Shell<M> {
         self.popup = Some(Popup::new(Source::Context, items, at));
     }
 
+    pub fn popover_at(&mut self, at: Point, items: Vec<menu::Item<M>>, least: f32) {
+        self.popup = Some(Popup::new(Source::Context, items, at).least(least));
+    }
+
     pub fn close_menu(&mut self) {
         if let Some(popup) = &mut self.popup {
             popup.reveal.close(motion::t2());
@@ -864,6 +868,10 @@ impl<A: App> Harness<A> {
     #[must_use]
     pub fn app(&self) -> &A {
         &self.host.app
+    }
+
+    pub fn app_mut(&mut self) -> &mut A {
+        &mut self.host.app
     }
 
     #[must_use]

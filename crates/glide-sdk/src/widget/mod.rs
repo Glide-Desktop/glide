@@ -111,8 +111,8 @@ pub use secrets::{
 };
 pub use selection::{
     Crumb, DOT, DOT_ACTIVE, ICON_SEGMENT, Indicator, SWATCH, breadcrumbs, checkbox, chip, crumb_trail, icon_segmented,
-    icon_segmented_width, page_dots, radio_group, segmented, segmented_fill, sidebar_list, swatch, swatches, tabs,
-    track,
+    icon_segmented_width, page_dots, radio_group, segmented, segmented_fill, segmented_spread, sidebar_list, swatch,
+    swatches, tabs, track,
 };
 pub use strip::{Mark, Tab, TabStrip, tab_strip};
 

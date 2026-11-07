@@ -658,6 +658,26 @@ pub fn glass_tag<'a, M: 'a>(label: &str) -> Element<'a, M> {
 }
 
 #[must_use]
+pub fn frame_tag<'a, M: 'a>(glyph: Option<impl super::Glyph + 'a>, label: &str) -> Element<'a, M> {
+    let mut line = iced::widget::row![].spacing(3).align_y(iced::Alignment::Center);
+    if let Some(glyph) = glyph {
+        line = line.push(glyph.draw(10.0, Color::WHITE));
+    }
+    line = line.push(
+        text(label.to_uppercase(), TextStyle { size_px: 10.0, line_height_px: 14.0, ..TextStyle::MICRO })
+            .color(Color::WHITE),
+    );
+    container(line)
+        .padding([1.0, 5.0])
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color { a: 0.62, ..Color::BLACK })),
+            border: Border { radius: R1.into(), ..Border::default() },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+#[must_use]
 pub fn glass_disc<'a, M: Clone + 'a>(
     glyph: impl super::Glyph + 'a, side: f32, danger: bool, message: Option<M>,
 ) -> Element<'a, M> {

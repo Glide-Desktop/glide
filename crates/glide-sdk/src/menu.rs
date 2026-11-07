@@ -49,6 +49,7 @@ pub enum Item<M> {
         items: Vec<Item<M>>,
         enabled: bool,
         glyph: Option<iced::widget::svg::Handle>,
+        value: Option<String>,
     },
     Stepper {
         label: String,
@@ -107,7 +108,7 @@ impl<M> Item<M> {
 
     #[must_use]
     pub fn value(mut self, shown: impl Into<String>) -> Self {
-        if let Self::Action { value, .. } = &mut self {
+        if let Self::Action { value, .. } | Self::Submenu { value, .. } = &mut self {
             *value = Some(shown.into());
         }
         self
@@ -188,7 +189,7 @@ impl<M> Item<M> {
 
     #[must_use]
     pub fn submenu(label: impl Into<String>, items: Vec<Self>) -> Self {
-        Self::Submenu { label: label.into(), items, enabled: true, glyph: None }
+        Self::Submenu { label: label.into(), items, enabled: true, glyph: None, value: None }
     }
 
     #[must_use]
@@ -452,6 +453,7 @@ pub struct Popup<M> {
     pub selected: Option<usize>,
     pub reveal: Reveal,
     trail: Vec<Vec<Item<M>>>,
+    least: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,7 +477,13 @@ impl<M: Clone> Popup<M> {
     pub fn new(source: Source, items: Vec<Item<M>>, at: Point) -> Self {
         let mut reveal = Reveal::closed();
         reveal.open(motion::t2());
-        Self { source, items, at, selected: None, reveal, trail: Vec::new() }
+        Self { source, items, at, selected: None, reveal, trail: Vec::new(), least: WIDTH }
+    }
+
+    #[must_use]
+    pub fn least(mut self, least: f32) -> Self {
+        self.least = least;
+        self
     }
 
     fn actionable(&self) -> Vec<usize> {
@@ -587,7 +595,7 @@ impl<M> Popup<M> {
 
     #[must_use]
     pub fn placement(&self, window: Size) -> (Point, Size) {
-        place(self.at, self.height(), width(&self.items, WIDTH), window, self.source == Source::Context)
+        place(self.at, self.height(), width(&self.items, self.least), window, self.source == Source::Context)
     }
 }
 
@@ -656,7 +664,12 @@ pub fn width<M>(items: &[Item<M>], least: f32) -> f32 {
                     .max(detail.as_deref().map_or(0.0, |line| measure(line, DETAIL)));
                 words + keys + shown + dot + lead + tail + if *more { CHEVRON + SP2 } else { 0.0 }
             }
-            Item::Submenu { label, .. } => measure(label, TextStyle::MENU_ITEM) + CHEVRON + SP2,
+            Item::Submenu { label, value, .. } => {
+                measure(label, TextStyle::MENU_ITEM)
+                    + value.as_deref().map_or(0.0, |shown| measure(shown, TextStyle::CAP) + SP3)
+                    + CHEVRON
+                    + SP2
+            }
             Item::Stepper { label, value, .. } => {
                 measure(label, TextStyle::MENU_ITEM)
                     + SP3
@@ -808,6 +821,7 @@ fn row_content<'a, M>(
     let (shortcut, check, more, danger, swatch, glyph) = row_parts(item);
     let (detail, value, picture) = match item {
         Item::Action { detail, value, picture, .. } => (detail.clone(), value.clone(), picture.clone()),
+        Item::Submenu { value, .. } => (None, value.clone(), None),
         _ => (None, None, None),
     };
     let leads = item.leads();

@@ -269,14 +269,36 @@ pub fn segmented_fill<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>
     segmented_sized(paint, options, selected, on_select, Length::Fill)
 }
 
+#[must_use]
+pub fn segmented_spread<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clone + 'a>(
+    paint: &Paint, options: &[(T, L)], selected: T, on_select: impl Fn(T) -> M,
+) -> Element<'a, M> {
+    let widths: Vec<Length> = options
+        .iter()
+        .map(|(_, label)| {
+            let label: Cow<'a, str> = label.clone().into();
+            let wide = super::measure(&label, TextStyle { weight: 560, ..TextStyle::CALL }) + 2.0 * (SP3 + 2.0) + SP2;
+            Length::FillPortion(wide.ceil().clamp(1.0, f32::from(u16::MAX)) as u16)
+        })
+        .collect();
+    segmented_with(paint, options, selected, on_select, Length::Fill, |index| widths[index])
+}
+
 fn segmented_sized<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clone + 'a>(
     paint: &Paint, options: &[(T, L)], selected: T, on_select: impl Fn(T) -> M, width: Length,
 ) -> Element<'a, M> {
+    segmented_with(paint, options, selected, on_select, width, |_| width)
+}
+
+fn segmented_with<'a, T: Copy + PartialEq + 'a, L: Clone + Into<Cow<'a, str>>, M: Clone + 'a>(
+    paint: &Paint, options: &[(T, L)], selected: T, on_select: impl Fn(T) -> M, width: Length,
+    segment: impl Fn(usize) -> Length,
+) -> Element<'a, M> {
     let paint = *paint;
     let index = options.iter().position(|(value, _)| *value == selected);
-    let segments = options.iter().map(|(value, label)| {
+    let segments = options.iter().enumerate().map(|(at, (value, label))| {
         let active = *value == selected;
-        segment_button(&paint, label.clone().into(), active, on_select(*value), component::SMALL_CONTROL, width)
+        segment_button(&paint, label.clone().into(), active, on_select(*value), component::SMALL_CONTROL, segment(at))
     });
     let content = Row::with_children(segments).spacing(2).width(width);
     let control = container(track(&paint, Indicator::Thumb, index, content))
