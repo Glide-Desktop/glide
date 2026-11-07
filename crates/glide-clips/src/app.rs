@@ -308,6 +308,7 @@ pub enum Message {
     ToggleOnTop,
     SetAspect(Aspect),
     Pip,
+    PipAsk(bool),
     Command(Command),
     EnterTrim,
     TrimChanged(Trim),
@@ -443,7 +444,9 @@ const TOPLINE_GAP: f32 = 8.0;
 const DISC: f32 = 28.0;
 const DISC_TOP: f32 = TOPLINE_INSET + (TITLE_HEIGHT - DISC) / 2.0;
 const TITLE_HEIGHT: f32 = 36.0;
-const LEAST: iced::Size = iced::Size::new(480.0, 270.0);
+const LEAST: iced::Size = WINDOW_LEAST;
+pub const WINDOW_LEAST: iced::Size = iced::Size::new(480.0, 270.0);
+pub const PIP_LEAST: iced::Size = iced::Size::new(384.0, 216.0);
 
 #[must_use]
 pub fn snapped(now: iced::Size, before: iced::Size, aspect: f32) -> Option<iced::Size> {
@@ -800,7 +803,8 @@ impl App {
 
     pub(crate) fn close_media(&mut self) {
         self.remember();
-        self.set_pip(false);
+        let restored = self.set_pip(false);
+        self.queued.push(restored);
         self.media = None;
         self.sync_aspect();
         self.mode = Mode::Play;
@@ -896,16 +900,19 @@ impl App {
         }
     }
 
-    pub(crate) fn set_pip(&mut self, on: bool) {
+    pub(crate) fn set_pip(&mut self, on: bool) -> Task<Message> {
         let video = self.media.as_ref().is_some_and(Media::showing_video);
         if on == self.pip || (on && !video) {
-            return;
+            return Task::none();
         }
         self.pip = on;
         self.sync_aspect();
-        window_traits::request(window_traits::Call::PictureInPicture(on));
         self.chrome.shown = true;
         self.chrome.moved = Instant::now();
+        let least = if on { PIP_LEAST } else { WINDOW_LEAST };
+        iced::window::latest()
+            .and_then(move |id| iced::window::set_min_size(id, Some(least)))
+            .chain(Task::done(Message::PipAsk(on)))
     }
 
     pub(crate) fn settle_resize(&mut self) -> Task<Message> {

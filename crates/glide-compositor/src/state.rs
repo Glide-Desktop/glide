@@ -4052,7 +4052,14 @@ impl GlideState {
             let aspect = self.session.window_traits.of(pid).and_then(|traits| traits.aspect);
             let content = state.content_geometry();
             let own = f64::from(content.size.width.max(1)) / f64::from(content.size.height.max(1));
-            let frame = crate::window_traits::pip_frame(self.layout.work_area_for_window(id), aspect, own);
+            let least = self.window_map.get(&id).map_or((0, 0), |window| {
+                let min = smithay::wayland::compositor::with_states(window_surface(window), |states| {
+                    states.cached_state.get::<smithay::wayland::shell::xdg::SurfaceCachedState>().current().min_size
+                });
+                let insets = state.insets;
+                (min.w + insets.left + insets.right, min.h + insets.top + insets.bottom)
+            });
+            let frame = crate::window_traits::pip_frame(self.layout.work_area_for_window(id), aspect, own, least);
             self.morph_geometry(id, |shell| {
                 shell.layout.set_fullscreen(id, false);
                 shell.layout.set_maximized(id, false);

@@ -269,8 +269,11 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Pip => {
-                self.set_pip(!self.pip);
+            Message::Pip => self.set_pip(!self.pip),
+            Message::PipAsk(on) => {
+                if on == self.pip {
+                    window_traits::request(window_traits::Call::PictureInPicture(on));
+                }
                 Task::none()
             }
             Message::SetAspect(aspect) => {
@@ -1053,7 +1056,7 @@ impl App {
             Command::Fullscreen => self.dispatch(Message::Window(Action::ToggleFullscreen), shell),
             Command::Escape => {
                 if self.pip {
-                    self.set_pip(false);
+                    return self.set_pip(false);
                 } else if self.ocr.is_some() {
                     self.ocr = None;
                 } else if self.inspector {

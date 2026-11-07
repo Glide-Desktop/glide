@@ -67,9 +67,10 @@ pub fn blur_regions(raw: &[(i32, i32, i32, i32, i32)]) -> Vec<BlurRegion> {
 }
 
 #[must_use]
-pub fn pip_frame(work_area: Rectangle, aspect: Option<f64>, content_aspect: f64) -> Rectangle {
+pub fn pip_frame(work_area: Rectangle, aspect: Option<f64>, content_aspect: f64, least: (i32, i32)) -> Rectangle {
     let aspect = aspect.unwrap_or(content_aspect).clamp(0.25, 4.0);
-    let width = PIP_WIDTH.min(work_area.size.width - 2 * PIP_MARGIN).max(1);
+    let least_width = least.0.max((f64::from(least.1) * aspect).ceil() as i32);
+    let width = PIP_WIDTH.max(least_width).min(work_area.size.width - 2 * PIP_MARGIN).max(1);
     let height = ((f64::from(width) / aspect).round() as i32).clamp(1, (work_area.size.height - 2 * PIP_MARGIN).max(1));
     let width = if height < (f64::from(width) / aspect).round() as i32 {
         (f64::from(height) * aspect).round() as i32
@@ -138,12 +139,26 @@ mod tests {
     #[test]
     fn picture_in_picture_sits_in_the_bottom_right_corner_of_the_work_area() {
         let area = Rectangle::from_loc_and_size(0, 32, 1280, 688);
-        let frame = pip_frame(area, Some(16.0 / 9.0), 1.0);
+        let frame = pip_frame(area, Some(16.0 / 9.0), 1.0, (0, 0));
         assert_eq!(frame, Rectangle::from_loc_and_size(1280 - 24 - 384, 32 + 688 - 24 - 216, 384, 216));
-        let portrait = pip_frame(Rectangle::from_loc_and_size(0, 0, 1280, 300), Some(9.0 / 16.0), 1.0);
+        let portrait = pip_frame(Rectangle::from_loc_and_size(0, 0, 1280, 300), Some(9.0 / 16.0), 1.0, (0, 0));
         assert!(portrait.size.height <= 300 - 48, "{portrait:?}");
         assert!(portrait.loc.y >= 0 && portrait.loc.x + portrait.size.width <= 1280 - 24);
-        assert_eq!(pip_frame(area, None, 4.0 / 3.0).size.height, 288, "without an aspect the window's own shape");
+        assert_eq!(
+            pip_frame(area, None, 4.0 / 3.0, (0, 0)).size.height,
+            288,
+            "without an aspect the window's own shape"
+        );
+    }
+
+    #[test]
+    fn a_client_that_cannot_shrink_that_far_gets_its_smallest_size_still_inside_the_margins() {
+        let area = Rectangle::from_loc_and_size(0, 32, 1280, 688);
+        let frame = pip_frame(area, Some(16.0 / 9.0), 1.0, (480, 270));
+        assert_eq!(frame.size.width, 480);
+        assert_eq!(frame.size.height, 270);
+        assert_eq!(frame.loc.x + frame.size.width, 1280 - 24, "the right margin holds");
+        assert_eq!(frame.loc.y + frame.size.height, 32 + 688 - 24, "the bottom margin holds");
     }
 
     #[test]
