@@ -41,6 +41,7 @@ members = [
     "crates/glide-topbar",
     "crates/glide-tray",
     "crates/glide-ui",
+    "crates/glide-video",
     "crates/glide-welcome",
     "crates/glide-xembed",
     "crates/glidectl",

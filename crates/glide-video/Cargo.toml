@@ -1,0 +1,28 @@
+[package]
+name = "glide-video"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GStreamer playback, frame extraction, export and the Wayland video surface for Glide apps"
+
+[lints]
+workspace = true
+
+[dependencies]
+futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+glide-app = { path = "../glide-app" }
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-pbutils = "0.25"
+gstreamer-video = "0.25"
+libc = "0.2"
+tracing.workspace = true
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
+
+[dev-dependencies]
+futures-executor = "0.3"
