@@ -7,6 +7,7 @@ use zbus::zvariant::OwnedValue;
 
 pub mod activation;
 pub mod chooser;
+pub mod drop_target;
 pub mod i18n;
 pub mod integration;
 pub mod menubar;
