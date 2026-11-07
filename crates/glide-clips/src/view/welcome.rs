@@ -14,6 +14,10 @@ use crate::icons::Icon;
 const CARD_GAP: f32 = 20.0;
 const SIDE: f32 = 120.0;
 const TRACK_INSET: f32 = 3.0;
+const NARROW_SIDE: f32 = 24.0;
+const CARD_LEAST: f32 = 168.0;
+const ROOMY_HEIGHT: f32 = 640.0;
+const HINT_HEIGHT: f32 = 480.0;
 
 fn mark<'a>(app: &App) -> Element<'a, Message> {
     let paint = app.paint;
@@ -121,22 +125,26 @@ fn card<'a>(app: &'a App, recent: &'a Recent, width: f32) -> Element<'a, Message
         .into()
 }
 
-#[must_use]
-pub fn view(app: &App) -> Element<'_, Message> {
+fn hero(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let window = app.window;
-    let width = window.size.width;
-    let lead = column![
-        mark(app),
-        container(ui::text(app.t(Key::OpenVideo), TextStyle::T1).color(paint.fg_1()))
-            .padding(Padding::default().top(8)),
+    let hint: Element<'_, Message> = if window.size.height >= HINT_HEIGHT {
         container(
             ui::text(app.t(Key::OpenHint), TextStyle::CALL)
                 .color(paint.fg_2())
                 .wrapping(ui::Wrapping::WordOrGlyph)
-                .align_x(Alignment::Center)
+                .align_x(Alignment::Center),
         )
-        .max_width(520),
+        .max_width(520)
+        .into()
+    } else {
+        Space::new().into()
+    };
+    let lead = column![
+        mark(app),
+        container(ui::text(app.t(Key::OpenVideo), TextStyle::T1).color(paint.fg_1()))
+            .padding(Padding::default().top(8)),
+        hint,
         container(
             row![
                 ui::glyph_button(
@@ -162,24 +170,35 @@ pub fn view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(12)
     .align_x(Alignment::Center);
-    let mut body = column![Space::new().height(72), container(lead).center_x(Fill)].width(Fill);
-    if !app.recents.is_empty() {
-        let usable = (width - 2.0 * SIDE).clamp(320.0, 1040.0);
-        let card_width = ((usable - CARD_GAP * 3.0) / 4.0).floor();
-        let cards = app
-            .recents
-            .iter()
-            .take(4)
-            .fold(row![].spacing(CARD_GAP), |line, recent| line.push(card(app, recent, card_width)));
-        let heading = row![
-            ui::text(app.t(Key::ContinueWatching), TextStyle::HEAD).color(paint.fg_1()),
-            Space::new().width(Fill),
-            ui::text(app.t(Key::MemoryNote), TextStyle::CAP).color(paint.fg_2()),
-        ]
-        .align_y(Alignment::Center)
-        .width(usable);
-        body = body.push(Space::new().height(12)).push(container(column![heading, cards].spacing(18)).center_x(Fill));
+    container(lead).center_x(Fill).padding([0.0, NARROW_SIDE]).into()
+}
+
+fn recents(app: &App) -> Element<'_, Message> {
+    let paint = app.paint;
+    let width = app.window.size.width;
+    let side = if width >= 2.0 * SIDE + 4.0 * CARD_LEAST + 3.0 * CARD_GAP { SIDE } else { NARROW_SIDE };
+    let usable = (width - 2.0 * side).clamp(CARD_LEAST, 1040.0);
+    let columns = ((usable + CARD_GAP) / (CARD_LEAST + CARD_GAP)).floor().clamp(1.0, 4.0);
+    let card_width = ((usable - CARD_GAP * (columns - 1.0)) / columns).floor();
+    let cards = app
+        .recents
+        .iter()
+        .take(columns as usize)
+        .fold(row![].spacing(CARD_GAP), |line, recent| line.push(card(app, recent, card_width)));
+    let mut heading = row![
+        ui::text(app.t(Key::ContinueWatching), TextStyle::HEAD).color(paint.fg_1()).wrapping(ui::Wrapping::None),
+        Space::new().width(Fill),
+    ]
+    .align_y(Alignment::Center)
+    .width(usable);
+    if columns >= 4.0 {
+        heading = heading.push(ui::text(app.t(Key::MemoryNote), TextStyle::CAP).color(paint.fg_2()));
     }
+    container(column![heading, cards].spacing(18)).center_x(Fill).into()
+}
+
+fn footer(app: &App) -> Element<'_, Message> {
+    let paint = app.paint;
     let foot = row![
         ui::text(app.t(Key::PhotosNote), TextStyle::CAP).color(paint.fg_2()),
         container(Space::new().width(1).height(14)).style(move |_| container::Style {
@@ -197,7 +216,31 @@ pub fn view(app: &App) -> Element<'_, Message> {
     ]
     .spacing(16)
     .align_y(Alignment::Center);
-    let page = column![body.height(Fill), container(foot).center_x(Fill).padding(Padding::from([0.0, 0.0]).bottom(28))];
+    container(foot).center_x(Fill).padding(Padding::from([0.0, 0.0]).bottom(28)).into()
+}
+
+#[must_use]
+pub fn view(app: &App) -> Element<'_, Message> {
+    let paint = app.paint;
+    let window = app.window;
+    let roomy = window.size.height >= ROOMY_HEIGHT;
+    let top = if roomy { 72.0 } else { 48.0 };
+    let mut body = column![Space::new().height(top), hero(app)].width(Fill);
+    if !app.recents.is_empty() {
+        body = body.push(Space::new().height(12)).push(recents(app));
+    }
+    let foot = footer(app);
+    let page: Element<'_, Message> = if roomy {
+        column![body.height(Fill), foot].into()
+    } else {
+        let content = body.push(Space::new().height(24)).push(foot);
+        iced::widget::scrollable(content)
+            .direction(iced::widget::scrollable::Direction::Vertical(
+                iced::widget::scrollable::Scrollbar::new().width(0).scroller_width(0),
+            ))
+            .height(Fill)
+            .into()
+    };
     let controls = row![
         glide_sdk::window::maximize_button(
             &paint,

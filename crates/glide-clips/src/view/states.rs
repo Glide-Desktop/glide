@@ -46,6 +46,28 @@ fn glass_button(label: &str, primary: bool, message: Message) -> Element<'_, Mes
     .into()
 }
 
+fn bubble_button(glyph: Icon, label: &str, message: Message) -> Element<'_, Message> {
+    let content = row![
+        ui::icon(glyph, 15.0, ink()),
+        ui::text(label, TextStyle { size_px: 13.0, line_height_px: 16.0, weight: 500, ..TextStyle::CALL }).color(ink()),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    button(container(content).center_y(30.0).padding([0.0, 12.0]))
+        .padding(0)
+        .height(30)
+        .on_press(message)
+        .style(move |_, status| {
+            let layer = if matches!(status, button::Status::Hovered | button::Status::Pressed) { 0.12 } else { 0.0 };
+            button::Style {
+                background: Some(Background::Color(Color { a: layer, ..Color::WHITE })),
+                border: Border { radius: 8.0.into(), ..Border::default() },
+                ..button::Style::default()
+            }
+        })
+        .into()
+}
+
 fn centre<'a>(
     glyph: Icon, tint: Color, title: String, body: String, actions: Vec<Element<'a, Message>>,
     extra: Option<Element<'a, Message>>,
@@ -454,7 +476,13 @@ pub fn ocr<'a>(app: &'a App, media: &'a Media, state: &'a Ocr) -> Element<'a, Me
             row![ui::text(app.t(Key::NothingRecognised), TextStyle::CAP).color(ink())]
         }
         Ocr::Lines(lines) => {
-            row![ui::text(app.t(Key::Recognised).replace("{n}", &lines.len().to_string()), TextStyle::CAP).color(ink())]
+            row![
+                ui::text(
+                    app.t(Key::Recognised).replace("{lines}", &i18n::lines(app.lang, lines.len())),
+                    TextStyle::CAP
+                )
+                .color(ink())
+            ]
         }
     };
     if let Ocr::Lines(lines) = state {
@@ -477,8 +505,8 @@ pub fn ocr<'a>(app: &'a App, media: &'a Media, state: &'a Ocr) -> Element<'a, Me
             let (x, y) = (frame.x + first.x * frame.width, (frame.y + first.y * frame.height - 40.0).max(8.0));
             let bubble = glass_panel(
                 row![
-                    glass_button(app.t(Key::Copy), false, Message::CopyText(all.clone())),
-                    glass_button(app.t(Key::SearchWeb), false, Message::SearchText(all)),
+                    bubble_button(Icon::Copy, app.t(Key::Copy), Message::CopyText(all.clone())),
+                    bubble_button(Icon::Search, app.t(Key::SearchWeb), Message::SearchText(all)),
                 ]
                 .spacing(2),
                 Padding::from(3.0),

@@ -81,13 +81,29 @@ fn short_codec(track: &Track) -> Option<String> {
     Some(named.iter().find(|(key, _)| lower.contains(key)).map_or(codec, |(_, name)| (*name).to_string()))
 }
 
-fn track_title(track: &Track, index: usize, lang: Lang) -> String {
-    track
-        .title
-        .clone()
-        .filter(|title| !title.trim().is_empty())
-        .or_else(|| language(track.language.as_deref(), lang).map(str::to_string))
-        .unwrap_or_else(|| Key::Track.text(lang).replace("{n}", &(index + 1).to_string()))
+#[must_use]
+pub fn track_flag(title: Option<&str>) -> Option<Key> {
+    let lower = title?.trim().to_lowercase();
+    let words: Vec<&str> =
+        lower.split(|letter: char| !letter.is_alphanumeric()).filter(|word| !word.is_empty()).collect();
+    if words.iter().any(|word| matches!(*word, "sdh" | "cc" | "hi"))
+        || lower.contains("hearing")
+        || lower.contains("глух")
+    {
+        Some(Key::ForDeaf)
+    } else if words.contains(&"forced") || lower.contains("написи") {
+        Some(Key::ForcedOnly)
+    } else {
+        None
+    }
+}
+
+#[must_use]
+pub fn track_title(track: &Track, index: usize, lang: Lang) -> String {
+    let named = language(track.language.as_deref(), lang).map(str::to_string);
+    let title = track.title.clone().filter(|title| !title.trim().is_empty());
+    let title = if track_flag(title.as_deref()).is_some() && named.is_some() { None } else { title };
+    title.or(named).unwrap_or_else(|| Key::Track.text(lang).replace("{n}", &(index + 1).to_string()))
 }
 
 fn icon(item: Item<Message>, glyph: Icon) -> Item<Message> {
@@ -160,8 +176,12 @@ pub fn tracks(app: &App) -> Vec<Item<Message>> {
                 ),
             )
         } else {
-            let codec = short_codec(track).map(|codec| format!(" · {codec}")).unwrap_or_default();
-            (Icon::Subtitles, format!("{}{codec}", app.t(Key::Embedded)))
+            let note = track_flag(track.title.as_deref())
+                .map(|flag| flag.text(lang).to_string())
+                .or_else(|| short_codec(track))
+                .map(|note| format!(" · {note}"))
+                .unwrap_or_default();
+            (Icon::Subtitles, format!("{}{note}", app.t(Key::Embedded)))
         };
         items.push(
             icon(Item::action(track_title(track, index, lang), Message::PickText(Some(track.id.clone()))), glyph)
@@ -347,6 +367,31 @@ pub fn context(app: &App) -> Vec<Item<Message>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text_track(language: &str, title: Option<&str>) -> Track {
+        Track {
+            id: "t".into(),
+            kind: TrackKind::Text,
+            language: Some(language.into()),
+            title: title.map(Into::into),
+            codec: None,
+            channels: None,
+            format: None,
+            external: false,
+        }
+    }
+
+    #[test]
+    fn a_hearing_flag_is_a_detail_and_the_language_is_the_name() {
+        assert_eq!(track_flag(Some("SDH")), Some(Key::ForDeaf));
+        assert_eq!(track_flag(Some("English (CC)")), Some(Key::ForDeaf));
+        assert_eq!(track_flag(Some("Forced")), Some(Key::ForcedOnly));
+        assert_eq!(track_flag(Some("Коментар автора")), None);
+        assert_eq!(track_flag(Some("Chinese")), None);
+        assert_eq!(track_title(&text_track("en", Some("SDH")), 0, Lang::Uk), "English");
+        assert_eq!(track_title(&text_track("uk", Some("Коментар автора")), 0, Lang::Uk), "Коментар автора");
+        assert_eq!(track_title(&text_track("xx", Some("SDH")), 2, Lang::En), "SDH");
+    }
 
     #[test]
     fn language_codes_get_names_in_both_languages() {

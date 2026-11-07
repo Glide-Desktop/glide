@@ -46,6 +46,8 @@ glide_sdk::catalogue! {
     Sound => "Sound", "Звук";
     Off => "Off", "Вимкнено";
     Embedded => "embedded", "вбудовані";
+    ForDeaf => "for the deaf and hard of hearing", "для глухих і слабочуючих";
+    ForcedOnly => "signs and foreign lines only", "лише написи й іншомовні репліки";
     NextToFile => "next to the file · picked up automatically", "поруч із файлом · підхоплено самі";
     AddFromFile => "Add from File…", "Додати з файлу…";
     Shift => "Delay", "Зсув";
@@ -146,7 +148,7 @@ glide_sdk::catalogue! {
     CopyAll => "Copy All", "Скопіювати все";
     CloseInspector => "Close the inspector", "Закрити інспектор";
     Podcast => "audio", "звук";
-    Recognised => "{n} lines recognised · tesseract, on this computer", "Розпізнано рядків: {n} · tesseract, локально";
+    Recognised => "Recognised {lines} · tesseract, on this computer", "Розпізнано {lines} · tesseract, локально";
     NothingRecognised => "No text on this frame", "На кадрі немає тексту";
     Recognising => "Looking for text…", "Шукаємо текст…";
     NoTesseract => "Text recognition needs tesseract", "Для розпізнавання тексту потрібен tesseract";
@@ -268,6 +270,11 @@ pub fn span(lang: Lang, span: std::time::Duration) -> String {
 #[must_use]
 pub fn chapters(lang: Lang, n: usize) -> String {
     counted(lang, n, ["chapter", "chapters"], ["розділ", "розділи", "розділів"])
+}
+
+#[must_use]
+pub fn lines(lang: Lang, n: usize) -> String {
+    counted(lang, n, ["line", "lines"], ["рядок", "рядки", "рядків"])
 }
 
 #[must_use]

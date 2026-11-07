@@ -203,6 +203,7 @@ fn controls<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
         .marks(marks)
         .buckets(crate::app::BUCKETS)
         .preview(preview)
+        .unreadable(unreadable_from(media))
         .on_release(Message::SeekReleased);
     let elapsed = player::clock(media.at(), hours);
     let right_time = if app.remaining || media.live {
@@ -285,9 +286,18 @@ fn topline<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
         .into()
 }
 
+#[must_use]
+pub fn unreadable_from(media: &Media) -> Option<f32> {
+    let glide_video::media::Failure::Broken(_) = media.failure.as_ref()? else { return None };
+    let length = media.length().as_secs_f64();
+    (length > 0.0).then(|| (media.reached.as_secs_f64() / length).clamp(0.0, 1.0) as f32)
+}
+
 fn subtitles(media: &Media, shown: bool) -> Element<'_, Message> {
-    let Some((cue, _)) =
-        media.cue.as_ref().filter(|_| media.selected_of(glide_video::media::TrackKind::Text).is_some())
+    let Some((cue, _)) = media
+        .cue
+        .as_ref()
+        .filter(|_| media.failure.is_none() && media.selected_of(glide_video::media::TrackKind::Text).is_some())
     else {
         return Space::new().into();
     };
@@ -305,7 +315,7 @@ fn subtitles(media: &Media, shown: bool) -> Element<'_, Message> {
 
 #[must_use]
 pub fn view<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
-    let covered = matches!(app.exporting, Some(crate::app::Exporting::Form(_)));
+    let covered = matches!(app.exporting, Some(crate::app::Exporting::Form(_))) || app.ocr.is_some();
     let chrome = app.chrome.shown && !covered;
     let shown = (app.chrome.shown || app.mode != Mode::Play) && !covered;
     let editing = app.mode != Mode::Play;
@@ -319,7 +329,10 @@ pub fn view<'a>(app: &'a App, media: &'a Media) -> Element<'a, Message> {
     let bars = column![scrim(shown, SCRIM_TOP, true), Space::new().height(Fill), scrim(shown, SCRIM_BOTTOM, false)];
     let top = animate(if shown { 1.0 } else { 0.0 }, Speed::EXPAND, move |_| topline(app, media))
         .offset(|value| Vector::new(0.0, -TOP_TRAVEL * (1.0 - value)));
-    let mut layers: Vec<Element<'a, Message>> = vec![base, bars.into(), subtitles(media, shown || editing)];
+    let mut layers: Vec<Element<'a, Message>> = vec![base, bars.into()];
+    if app.ocr.is_none() {
+        layers.push(subtitles(media, shown || editing));
+    }
     if !editing {
         layers.push(top.into());
     }
