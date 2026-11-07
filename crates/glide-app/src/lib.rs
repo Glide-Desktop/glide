@@ -13,6 +13,7 @@ pub mod integration;
 pub mod menubar;
 pub mod quicklist;
 pub mod search_provider;
+pub mod window_traits;
 
 pub const BUS_NAME: &str = "org.glide.Shell";
 pub const PATH: &str = "/org/glide/Shell1";

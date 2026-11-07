@@ -86,9 +86,7 @@ pub fn track_flag(title: Option<&str>) -> Option<Key> {
     let lower = title?.trim().to_lowercase();
     let words: Vec<&str> =
         lower.split(|letter: char| !letter.is_alphanumeric()).filter(|word| !word.is_empty()).collect();
-    if words.iter().any(|word| matches!(*word, "sdh" | "cc" | "hi"))
-        || lower.contains("hearing")
-        || lower.contains("глух")
+    if words.iter().any(|word| matches!(*word, "sdh" | "cc")) || lower.contains("hearing") || lower.contains("глух")
     {
         Some(Key::ForDeaf)
     } else if words.contains(&"forced") || lower.contains("написи") {
@@ -388,6 +386,7 @@ mod tests {
         assert_eq!(track_flag(Some("Forced")), Some(Key::ForcedOnly));
         assert_eq!(track_flag(Some("Коментар автора")), None);
         assert_eq!(track_flag(Some("Chinese")), None);
+        assert_eq!(track_flag(Some("Hi-Fi mix")), None);
         assert_eq!(track_title(&text_track("en", Some("SDH")), 0, Lang::Uk), "English");
         assert_eq!(track_title(&text_track("uk", Some("Коментар автора")), 0, Lang::Uk), "Коментар автора");
         assert_eq!(track_title(&text_track("xx", Some("SDH")), 2, Lang::En), "SDH");

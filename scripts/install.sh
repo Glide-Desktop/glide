@@ -336,7 +336,6 @@ if command -v gst-inspect-1.0 >/dev/null 2>&1; then
 else
     players=" gstreamer"
 fi
-command -v tesseract >/dev/null 2>&1 || players="$players tesseract"
 
 echo
 if [ "$INSTALL_DM" -eq 1 ]; then
@@ -392,7 +391,7 @@ if [ -n "$players" ]; then
     echo "  gst-plugins-bad    the Wayland video surface, HLS and DASH streams, AV1 and hardware decoders"
     echo "  gst-libav          H.264, HEVC, AAC, AC-3 and other common codecs"
     echo "  gst-plugins-ugly   H.264 encoding for export without a hardware encoder (x264)"
-    echo "  tesseract          text on a frame; pacman -S tesseract tesseract-data-ukr tesseract-data-eng"
+    echo "  (text on a frame uses the tesseract listed for Folio)"
 fi
 if [ "$INSTALL_PAM" -eq 0 ] && ! grep -qs "$PAM_MODULE" "$DESTDIR$PAMDIR/greetd"; then
     echo
