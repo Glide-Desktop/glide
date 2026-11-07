@@ -126,6 +126,35 @@ fn run(uri: &str, width: u32, requests: &Receiver<Request>, results: &UnboundedS
 }
 
 #[must_use]
+pub fn sample_rgba(sample: &gst::Sample) -> Option<Frame> {
+    let caps = gst::Caps::builder("video/x-raw").field("format", "RGBA").build();
+    let converted = gstreamer_video::convert_sample(sample, &caps, Some(gst::ClockTime::from_seconds(2))).ok()?;
+    let info = gstreamer_video::VideoInfo::from_caps(converted.caps()?).ok()?;
+    let buffer = converted.buffer()?;
+    let map = buffer.map_readable().ok()?;
+    let (width, height, stride) = (info.width(), info.height(), info.stride()[0] as usize);
+    let row = width as usize * 4;
+    let mut rgba = Vec::with_capacity(row * height as usize);
+    for line in map.as_slice().chunks(stride).take(height as usize) {
+        rgba.extend_from_slice(line.get(..row)?);
+    }
+    let at = buffer.pts().map_or(Duration::ZERO, |pts| Duration::from_nanos(pts.nseconds()));
+    Some(Frame { tag: 0, at, width, height, rgba })
+}
+
+#[must_use]
+pub fn still(uri: &str, at: Duration, width: u32) -> Option<Frame> {
+    let (playbin, sink) = build(uri, width).ok()?;
+    playbin.set_state(gst::State::Paused).ok()?;
+    let frame = settle(&playbin)
+        .then(|| grab(&playbin, &sink, at, false))
+        .flatten()
+        .map(|(width, height, rgba)| Frame { tag: 0, at, width, height, rgba });
+    let _ = playbin.set_state(gst::State::Null);
+    frame
+}
+
+#[must_use]
 pub fn strip_times(duration: Duration, count: usize) -> Vec<Duration> {
     if count == 0 {
         return Vec::new();

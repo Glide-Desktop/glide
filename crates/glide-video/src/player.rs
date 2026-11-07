@@ -261,6 +261,21 @@ impl Player {
         self.playbin.set_property("text-offset", if earlier { -nanos } else { nanos });
     }
 
+    pub fn orient(&self, transform: crate::export::Transform) {
+        let Some(sink) = self.sink.as_ref().filter(|sink| sink.has_property("rotate-method")) else { return };
+        let nick = match transform.method() {
+            "clockwise" => "90r",
+            "rotate-180" => "180",
+            "counterclockwise" => "90l",
+            "horizontal-flip" => "horiz",
+            "vertical-flip" => "vert",
+            "upper-left-diagonal" => "ul-lr",
+            "upper-right-diagonal" => "ur-ll",
+            _ => "identity",
+        };
+        sink.set_property_from_str("rotate-method", nick);
+    }
+
     pub fn place(&self, rect: Rect) {
         if let Some(sink) = &self.sink {
             crate::sink::place(sink, rect);
@@ -281,6 +296,30 @@ impl Player {
     #[must_use]
     pub fn frame(&self) -> Option<gst::Sample> {
         self.sink.as_ref().and_then(|sink| sink.property::<Option<gst::Sample>>("last-sample"))
+    }
+
+    #[must_use]
+    pub fn decoder(&self) -> Option<(String, bool)> {
+        let bin = self.playbin.dynamic_cast_ref::<gst::Bin>()?;
+        bin.iterate_recurse().into_iter().filter_map(Result::ok).find_map(|element| {
+            let factory = element.factory()?;
+            let klass = factory.metadata("klass").unwrap_or_default().to_string();
+            if !klass.contains("Decoder") || !klass.contains("Video") {
+                return None;
+            }
+            let name = factory.name().to_string();
+            let hardware = klass.contains("Hardware")
+                || name.starts_with("va")
+                || name.starts_with("nv")
+                || name.starts_with("v4l2");
+            Some((name, hardware))
+        })
+    }
+
+    #[must_use]
+    pub fn dropped(&self) -> Option<u64> {
+        let sink = self.sink.as_ref().filter(|sink| sink.has_property("stats"))?;
+        sink.property::<gst::Structure>("stats").get::<u64>("dropped").ok()
     }
 
     #[must_use]

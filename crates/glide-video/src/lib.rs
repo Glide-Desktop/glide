@@ -1,7 +1,9 @@
+pub mod clipboard;
 pub mod export;
 pub mod frames;
 pub mod info;
 pub mod media;
+pub mod mpris;
 pub mod player;
 pub mod sink;
 pub mod surface;
