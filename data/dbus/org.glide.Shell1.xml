@@ -68,5 +68,35 @@
     <method name="OpenQuickSettings">
       <arg name="view" type="s" direction="in"/>
     </method>
+    <!--
+      Every window of the calling process keeps width:height while the user drags
+      its edges or corners. 0, 0 lets it resize freely again.
+    -->
+    <method name="SetAspect">
+      <arg name="width" type="u" direction="in"/>
+      <arg name="height" type="u" direction="in"/>
+    </method>
+    <!-- Every window of the calling process stays above other windows while keep is true. -->
+    <method name="SetKeepAbove">
+      <arg name="keep" type="b" direction="in"/>
+    </method>
+    <!--
+      on: the caller's windows become a small picture-in-picture window in the
+      bottom-right corner of their output, above other windows and on every
+      workspace, keeping the aspect set with SetAspect; off: they return to the
+      place and size they had before.
+    -->
+    <method name="SetPictureInPicture">
+      <arg name="on" type="b" direction="in"/>
+    </method>
+    <!--
+      regions: (x, y, width, height, radius) in the window's logical surface
+      coordinates. The shell blurs the window's own content (its subsurfaces,
+      such as a video) under each region, rounded by radius, beneath the window's
+      main surface. An empty list removes the blur.
+    -->
+    <method name="SetContentBlur">
+      <arg name="regions" type="a(iiiii)" direction="in"/>
+    </method>
   </interface>
 </node>

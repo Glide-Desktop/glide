@@ -76,6 +76,7 @@ pub enum Event {
     Osd(crate::osd::Reading),
     QuickSettings(Option<crate::topbar::Detail>),
     CopySecret { pid: i32, secret: zeroize::Zeroizing<String>, clear_after: u32, reply: crate::oneshot::Sender<bool> },
+    Traits { pid: i32, change: crate::window_traits::Change },
 }
 
 #[must_use]
@@ -225,6 +226,45 @@ impl Shell {
         (self.sink)(Event::QuickSettings(detail));
         Ok(())
     }
+
+    async fn set_aspect(
+        &self, width: u32, height: u32, #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> zbus::fdo::Result<()> {
+        let pid = sender_pid(&header, connection).await?;
+        let aspect = crate::window_traits::aspect(width, height);
+        (self.sink)(Event::Traits { pid, change: crate::window_traits::Change::Aspect(aspect) });
+        Ok(())
+    }
+
+    async fn set_keep_above(
+        &self, keep: bool, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
+    ) -> zbus::fdo::Result<()> {
+        let pid = sender_pid(&header, connection).await?;
+        (self.sink)(Event::Traits { pid, change: crate::window_traits::Change::KeepAbove(keep) });
+        Ok(())
+    }
+
+    async fn set_picture_in_picture(
+        &self, on: bool, #[zbus(header)] header: Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
+    ) -> zbus::fdo::Result<()> {
+        let pid = sender_pid(&header, connection).await?;
+        (self.sink)(Event::Traits { pid, change: crate::window_traits::Change::PictureInPicture(on) });
+        Ok(())
+    }
+
+    async fn set_content_blur(
+        &self, regions: Vec<(i32, i32, i32, i32, i32)>, #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> zbus::fdo::Result<()> {
+        if regions.len() > crate::window_traits::MAX_BLUR_REGIONS {
+            return Err(zbus::fdo::Error::InvalidArgs("too many blur regions".into()));
+        }
+        let pid = sender_pid(&header, connection).await?;
+        let regions = crate::window_traits::blur_regions(&regions);
+        (self.sink)(Event::Traits { pid, change: crate::window_traits::Change::Blur(regions) });
+        Ok(())
+    }
 }
 
 pub struct Handle {
@@ -316,7 +356,7 @@ mod tests {
         let _handle = serve(bus.builder(), Snapshot::default(), sink).expect("serve");
         let served = crate::test_bus::introspect(&bus, BUS_NAME, PATH);
         let contract = crate::test_bus::members(include_str!("../../../data/dbus/org.glide.Shell1.xml"), INTERFACE);
-        assert_eq!(contract.len(), 16, "ten properties and six methods");
+        assert_eq!(contract.len(), 20, "ten properties and ten methods");
         assert_eq!(
             crate::test_bus::members(&served, INTERFACE),
             contract,
@@ -366,6 +406,57 @@ mod tests {
         bus.client().call_method(Some(BUS_NAME), PATH, Some(INTERFACE), "FrameWindows", &()).expect("call");
         let pid = received.recv_timeout(std::time::Duration::from_secs(5)).expect("a frame request");
         assert_eq!(pid, i32::try_from(std::process::id()).expect("pid fits"));
+    }
+
+    #[test]
+    fn window_trait_calls_reach_the_shell_with_the_callers_pid() {
+        use crate::window_traits::{BlurRegion, Change};
+        let Some(bus) = crate::test_bus::private_bus() else {
+            return;
+        };
+        let (events, received) = mpsc::channel::<(i32, Change)>();
+        let events = Mutex::new(events);
+        let sink: Sink = Arc::new(move |event| {
+            if let Event::Traits { pid, change } = event {
+                let _ = events.lock().map(|events| events.send((pid, change)));
+            }
+        });
+        let _handle = serve(bus.builder(), Snapshot::default(), sink).expect("serve");
+        let client = bus.client();
+        let call = |member: &str, body: &dyn erased_body::Body| body.call(&client, member);
+        call("SetAspect", &(1920_u32, 1080_u32));
+        call("SetKeepAbove", &(true,));
+        call("SetPictureInPicture", &(true,));
+        call("SetContentBlur", &(vec![(320_i32, 614_i32, 640_i32, 82_i32, 12_i32)],));
+        let me = i32::try_from(std::process::id()).expect("pid fits");
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            let (pid, change) = received.recv_timeout(std::time::Duration::from_secs(5)).expect("a trait change");
+            assert_eq!(pid, me);
+            seen.push(change);
+        }
+        assert_eq!(seen[0], Change::Aspect(Some(1920.0 / 1080.0)));
+        assert_eq!(seen[1], Change::KeepAbove(true));
+        assert_eq!(seen[2], Change::PictureInPicture(true));
+        assert_eq!(seen[3], Change::Blur(vec![BlurRegion { x: 320, y: 614, width: 640, height: 82, radius: 12 }]));
+        let too_many: Vec<(i32, i32, i32, i32, i32)> = (0..40).map(|index| (index, 0, 4, 4, 0)).collect();
+        let refused =
+            client.call_method(Some(BUS_NAME), PATH, Some(INTERFACE), "SetContentBlur", &(too_many,)).is_err();
+        assert!(refused, "an absurd number of regions is refused");
+    }
+
+    mod erased_body {
+        pub trait Body {
+            fn call(&self, client: &zbus::blocking::Connection, member: &str);
+        }
+
+        impl<T: serde::Serialize + zbus::zvariant::DynamicType> Body for T {
+            fn call(&self, client: &zbus::blocking::Connection, member: &str) {
+                client
+                    .call_method(Some(super::BUS_NAME), super::PATH, Some(super::INTERFACE), member, self)
+                    .expect("call");
+            }
+        }
     }
 
     #[test]

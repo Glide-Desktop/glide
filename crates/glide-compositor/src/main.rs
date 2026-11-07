@@ -72,6 +72,7 @@ mod tiling;
 mod tray;
 mod welcome;
 mod window;
+mod window_traits;
 mod xembed;
 mod xwayland;
 

@@ -393,6 +393,7 @@ pub struct SessionServices {
     pub launch_origin: Option<crate::launcher::LaunchOrigin>,
     pub quicklists: HashMap<String, crate::launcher_entry::Quicklist>,
     pub framed_pids: crate::framed::FramedClients,
+    pub window_traits: crate::window_traits::WindowTraits,
     pub capture: Option<crate::screen_picker::Capture>,
     pub qr_scan: Option<crate::qr_scan::Scan>,
     pub end: crate::session_end::SessionEnd,
@@ -933,6 +934,7 @@ impl GlideState {
             return;
         }
         self.layout.set_app(id, self.dock_key(id));
+        self.apply_window_traits(id);
         let focused = self.layout.focused_window().filter(|&focused| focused != id && self.layout.is_mapped(focused));
         let client = |window: &GlideWindow| {
             window
@@ -4009,7 +4011,77 @@ impl GlideState {
                 }
                 self.queue_redraw();
             }
+            crate::shell_bus::Event::Traits { pid, change } => self.change_window_traits(pid, &change),
         }
+    }
+
+    fn windows_of_pid(&self, pid: i32) -> Vec<(glide_layout::WindowId, GlideWindow)> {
+        self.window_map
+            .iter()
+            .filter(|(_, window)| self.window_pid(window) == Some(pid))
+            .map(|(id, window)| (*id, window.clone()))
+            .collect()
+    }
+
+    pub fn change_window_traits(&mut self, pid: i32, change: &crate::window_traits::Change) {
+        use crate::window_traits::Change;
+        let before = self.session.window_traits.of(pid).is_some_and(|traits| traits.pip);
+        let traits = self.session.window_traits.change(pid, change).clone();
+        for (id, window) in self.windows_of_pid(pid) {
+            match change {
+                Change::Aspect(aspect) => crate::grabs::resize_grab::set_aspect_hint(&window, *aspect),
+                Change::KeepAbove(_) => {
+                    self.layout.set_keep_above(id, traits.above());
+                }
+                Change::PictureInPicture(on) if *on != before => self.picture_in_picture(pid, id, *on),
+                Change::PictureInPicture(_) | Change::Blur(_) => {}
+            }
+        }
+        self.reconcile_space();
+        self.queue_redraw();
+    }
+
+    fn picture_in_picture(&mut self, pid: i32, id: glide_layout::WindowId, on: bool) {
+        let Some(state) = self.layout.window_state(id).cloned() else { return };
+        if on {
+            let saved = crate::window_traits::Saved { frame: state.geometry, maximized: state.maximized };
+            if let Some(traits) = self.session.window_traits.of_mut(pid) {
+                traits.saved.insert(id, saved);
+            }
+            let aspect = self.session.window_traits.of(pid).and_then(|traits| traits.aspect);
+            let content = state.content_geometry();
+            let own = f64::from(content.size.width.max(1)) / f64::from(content.size.height.max(1));
+            let frame = crate::window_traits::pip_frame(self.layout.work_area_for_window(id), aspect, own);
+            self.morph_geometry(id, |shell| {
+                shell.layout.set_fullscreen(id, false);
+                shell.layout.set_maximized(id, false);
+                shell.layout.set_window_geometry(id, frame);
+                shell.layout.set_keep_above(id, true);
+                shell.layout.set_sticky(id, true);
+            });
+        } else {
+            let saved = self.session.window_traits.of_mut(pid).and_then(|traits| traits.saved.remove(&id));
+            let keep = self.session.window_traits.of(pid).is_some_and(|traits| traits.keep_above);
+            self.morph_geometry(id, |shell| {
+                shell.layout.set_sticky(id, false);
+                shell.layout.set_keep_above(id, keep);
+                if let Some(saved) = saved {
+                    shell.layout.set_window_geometry(id, saved.frame);
+                    if saved.maximized {
+                        shell.layout.set_maximized(id, true);
+                    }
+                }
+            });
+        }
+    }
+
+    pub fn apply_window_traits(&mut self, id: glide_layout::WindowId) {
+        let Some(window) = self.window_map.get(&id).cloned() else { return };
+        let Some(traits) = self.window_pid(&window).and_then(|pid| self.session.window_traits.of(pid)).cloned() else {
+            return;
+        };
+        crate::grabs::resize_grab::set_aspect_hint(&window, traits.aspect);
+        self.layout.set_keep_above(id, traits.above());
     }
 
     pub fn sync_session_hints(&mut self) {

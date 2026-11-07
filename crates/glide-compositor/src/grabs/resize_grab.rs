@@ -44,6 +44,52 @@ impl From<xdg_toplevel::ResizeEdge> for ResizeEdge {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct AspectHint(std::cell::Cell<Option<f64>>);
+
+pub fn set_aspect_hint(window: &GlideWindow, aspect: Option<f64>) {
+    let aspect = aspect.filter(|aspect| aspect.is_finite() && *aspect > 0.0);
+    window.user_data().insert_if_missing(AspectHint::default);
+    if let Some(hint) = window.user_data().get::<AspectHint>() {
+        hint.0.set(aspect);
+    }
+}
+
+#[must_use]
+pub fn aspect_hint(window: &GlideWindow) -> Option<f64> {
+    window.user_data().get::<AspectHint>().and_then(|hint| hint.0.get())
+}
+
+#[must_use]
+pub fn keep_aspect(
+    size: Size<i32, Logical>, edges: ResizeEdge, aspect: f64, min: Size<i32, Logical>, max: Size<i32, Logical>,
+) -> Size<i32, Logical> {
+    let horizontal = edges.intersects(ResizeEdge::LEFT | ResizeEdge::RIGHT);
+    let vertical = edges.intersects(ResizeEdge::TOP | ResizeEdge::BOTTOM);
+    let (width, height) = (f64::from(size.w), f64::from(size.h));
+    let by_width = match (horizontal, vertical) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => width / aspect >= height,
+    };
+    let (mut width, mut height) = if by_width { (width, width / aspect) } else { (height * aspect, height) };
+    let (min_w, min_h) = (f64::from(min.w), f64::from(min.h));
+    let (max_w, max_h) = (f64::from(max.w), f64::from(max.h));
+    if width < min_w {
+        (width, height) = (min_w, min_w / aspect);
+    }
+    if height < min_h {
+        (width, height) = (min_h * aspect, min_h);
+    }
+    if width > max_w {
+        (width, height) = (max_w, max_w / aspect);
+    }
+    if height > max_h {
+        (width, height) = (max_h * aspect, max_h);
+    }
+    Size::from((width.round() as i32, height.round() as i32))
+}
+
 struct ResizeCore {
     start: Point<f64, Logical>,
     window: GlideWindow,
@@ -95,10 +141,20 @@ impl ResizeCore {
         let max_width = if max_size.w == 0 { i32::MAX } else { max_size.w };
         let max_height = if max_size.h == 0 { i32::MAX } else { max_size.h };
 
-        self.last_window_size = Size::from((
+        let clamped = Size::from((
             new_window_width.max(min_width).min(max_width),
             new_window_height.max(min_height).min(max_height),
         ));
+        self.last_window_size = match aspect_hint(&self.window) {
+            Some(aspect) => keep_aspect(
+                clamped,
+                self.edges,
+                aspect,
+                Size::from((min_width, min_height)),
+                Size::from((max_width, max_height)),
+            ),
+            None => clamped,
+        };
 
         let xdg =
             self.window.toplevel().expect("only Window::new_wayland_window is used, so toplevel() is always Some");
@@ -283,4 +339,43 @@ pub fn handle_commit(space: &mut Space<GlideWindow>, surface: &WlSurface) -> Opt
     }
 
     Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn size(width: i32, height: i32) -> Size<i32, Logical> {
+        Size::from((width, height))
+    }
+
+    const WIDE: f64 = 16.0 / 9.0;
+
+    #[test]
+    fn a_side_edge_drives_the_other_dimension() {
+        let least = size(1, 1);
+        let most = size(i32::MAX, i32::MAX);
+        assert_eq!(keep_aspect(size(1600, 720), ResizeEdge::RIGHT, WIDE, least, most), size(1600, 900));
+        assert_eq!(keep_aspect(size(1280, 450), ResizeEdge::BOTTOM, WIDE, least, most), size(800, 450));
+        assert_eq!(keep_aspect(size(960, 720), ResizeEdge::LEFT, WIDE, least, most), size(960, 540));
+    }
+
+    #[test]
+    fn a_corner_follows_whichever_dimension_grew_more() {
+        let least = size(1, 1);
+        let most = size(i32::MAX, i32::MAX);
+        let corner = ResizeEdge::BOTTOM | ResizeEdge::RIGHT;
+        assert_eq!(keep_aspect(size(1920, 800), corner, WIDE, least, most), size(1920, 1080));
+        assert_eq!(keep_aspect(size(1000, 900), corner, WIDE, least, most), size(1600, 900));
+    }
+
+    #[test]
+    fn the_client_limits_win_and_the_shape_is_kept_inside_them() {
+        let least = size(480, 270);
+        let most = size(1920, 1080);
+        assert_eq!(keep_aspect(size(200, 270), ResizeEdge::RIGHT, WIDE, least, most), size(480, 270));
+        assert_eq!(keep_aspect(size(3000, 1080), ResizeEdge::RIGHT, WIDE, least, most), size(1920, 1080));
+        let tall = keep_aspect(size(480, 2000), ResizeEdge::BOTTOM, 9.0 / 16.0, least, most);
+        assert_eq!(tall, size(608, 1080));
+    }
 }
