@@ -93,6 +93,7 @@ impl glide_sdk::App for App {
             dropping: false,
             hovered_clip: None,
             queued: Vec::new(),
+            resized: None,
         };
         let recents = app.refresh_recents();
         let handles = glide_sdk::window::handles().map(Message::Handles);
@@ -150,7 +151,12 @@ impl glide_sdk::App for App {
     }
 
     fn window_changed(&mut self, shell: &mut Shell<Message>) -> Task<Message> {
+        let before = self.window.size;
         self.window = *shell.window();
+        if self.window.size != before {
+            let first = self.resized.map_or(before, |(_, first)| first);
+            self.resized = Some((std::time::Instant::now(), first));
+        }
         self.place();
         Task::none()
     }

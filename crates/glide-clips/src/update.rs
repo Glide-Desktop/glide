@@ -694,7 +694,7 @@ impl App {
         }
         let Some(media) = &mut self.media else { return Task::none() };
         if let Some(player) = &media.player {
-            if let Some(position) = player.position() {
+            if let Some(position) = player.position().filter(|_| media.handoff.is_none()) {
                 media.position = position;
             }
             if let Some(duration) = player.duration().filter(|duration| {
@@ -760,7 +760,7 @@ impl App {
             self.remember();
         }
         self.publish();
-        Task::none()
+        self.settle_resize()
     }
 
     fn clip_ended(&mut self) {

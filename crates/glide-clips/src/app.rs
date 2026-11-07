@@ -399,6 +399,7 @@ pub struct App {
     pub dropping: bool,
     pub hovered_clip: Option<usize>,
     pub queued: Vec<Task<Message>>,
+    pub resized: Option<(Instant, iced::Size)>,
 }
 
 async fn work<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -431,6 +432,28 @@ pub fn title_of(uri: &str, path: Option<&Path>) -> String {
 }
 
 pub const SIDECAR: &str = "glide-clips-sidecar";
+pub const RESIZE_SETTLE: Duration = Duration::from_millis(400);
+const LEAST: iced::Size = iced::Size::new(480.0, 270.0);
+
+#[must_use]
+pub fn snapped(now: iced::Size, before: iced::Size, aspect: f32) -> Option<iced::Size> {
+    if !aspect.is_finite() || aspect <= 0.0 {
+        return None;
+    }
+    let by_width = (now.width - before.width).abs() >= (now.height - before.height).abs();
+    let (mut width, mut height) =
+        if by_width { (now.width, now.width / aspect) } else { (now.height * aspect, now.height) };
+    if width < LEAST.width {
+        width = LEAST.width;
+        height = width / aspect;
+    }
+    if height < LEAST.height {
+        height = LEAST.height;
+        width = height * aspect;
+    }
+    let size = iced::Size::new(width.round(), height.round());
+    ((size.width - now.width).abs() >= 2.0 || (size.height - now.height).abs() >= 2.0).then_some(size)
+}
 
 #[must_use]
 pub fn styled_sidecar(uri: &str) -> bool {
@@ -797,6 +820,27 @@ impl App {
         iced::window::latest().and_then(move |id| iced::window::resize(id, iced::Size::new(w.round(), h.round())))
     }
 
+    pub(crate) fn settle_resize(&mut self) -> Task<Message> {
+        let Some((at, first)) = self.resized else { return Task::none() };
+        if at.elapsed() < RESIZE_SETTLE {
+            return Task::none();
+        }
+        self.resized = None;
+        let video = self
+            .media
+            .as_ref()
+            .filter(|media| media.aspect == Aspect::File && media.showing_video())
+            .and_then(Media::video_size);
+        let Some((width, height)) = video.filter(|(width, height)| *width > 0 && *height > 0) else {
+            return Task::none();
+        };
+        if self.window.frame != Frame::Floating {
+            return Task::none();
+        }
+        let Some(size) = snapped(self.window.size, first, width as f32 / height as f32) else { return Task::none() };
+        iced::window::latest().and_then(move |id| iced::window::resize(id, size))
+    }
+
     pub fn publish(&mut self) {
         let Some(server) = &mut self.mpris else { return };
         let state = match &self.media {
@@ -1150,5 +1194,41 @@ impl App {
             media.grabbers.insert(from, grabber);
         }
         media.grabbers.get(&from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iced::Size;
+
+    #[test]
+    fn a_resized_window_settles_to_the_video_shape_along_the_edge_that_was_dragged() {
+        let wide = 16.0 / 9.0;
+        assert_eq!(snapped(Size::new(1000.0, 720.0), Size::new(1280.0, 720.0), wide), Some(Size::new(1000.0, 563.0)));
+        assert_eq!(snapped(Size::new(1280.0, 500.0), Size::new(1280.0, 720.0), wide), Some(Size::new(889.0, 500.0)));
+        assert_eq!(snapped(Size::new(1280.0, 720.0), Size::new(1000.0, 563.0), wide), None, "already in shape");
+        assert_eq!(snapped(Size::new(1281.0, 720.0), Size::new(1280.0, 720.0), wide), None, "within a pixel");
+    }
+
+    #[test]
+    fn settling_never_goes_below_the_smallest_window() {
+        let tall = 9.0 / 16.0;
+        let settled = snapped(Size::new(480.0, 900.0), Size::new(480.0, 700.0), tall).unwrap();
+        assert!(settled.width >= 480.0 && settled.height >= 270.0, "{settled:?}");
+        assert!((settled.width / settled.height - tall).abs() < 0.01);
+        assert_eq!(snapped(Size::new(500.0, 300.0), Size::new(600.0, 300.0), f32::NAN), None);
+    }
+
+    #[test]
+    fn sidecar_languages_come_from_the_file_name() {
+        assert_eq!(sidecar_language("file:///v/Карпати.uk.ass").as_deref(), Some("uk"));
+        assert_eq!(sidecar_language("file:///v/film.eng.ssa").as_deref(), Some("eng"));
+        assert_eq!(sidecar_language("file:///v/film.ass"), None);
+        assert_eq!(sidecar_language("file:///v/film.2024.ass"), None);
+        assert!(styled_sidecar("file:///v/A.ASS"));
+        assert!(!styled_sidecar("file:///v/a.srt"));
+        assert_eq!(player_subtitle(Some("file:///v/a.ass")), None);
+        assert_eq!(player_subtitle(Some("file:///v/a.srt")).as_deref(), Some("file:///v/a.srt"));
     }
 }
