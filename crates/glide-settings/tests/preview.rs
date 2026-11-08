@@ -147,9 +147,10 @@ fn preview_page() {
     let appearance = std::env::var("GLIDE_SETTINGS_APPEARANCE").unwrap_or_else(|_| "light".into());
     assert!(matches!(appearance.as_str(), "light" | "dark"));
     let scheduled = std::env::var_os("GLIDE_SETTINGS_SCHEDULE").is_some();
+    let notification_schedule = std::env::var_os("GLIDE_SETTINGS_NOTIFICATION_SCHEDULE").is_some();
     let animations = std::env::var_os("GLIDE_SETTINGS_ANIMATIONS_OFF").is_none();
     let mut app = App::with_config(ConfigStore::parse(&format!(
-        "[topbar]\nappearance = \"{appearance}\"\nappearance-schedule = {scheduled}\n[general]\nlanguage = \"uk\"\n[animations]\nenabled = {animations}\n"
+        "[topbar]\nappearance = \"{appearance}\"\nappearance-schedule = {scheduled}\n[general]\nlanguage = \"uk\"\n[animations]\nenabled = {animations}\n[notifications]\nschedule = {notification_schedule}\n"
     )));
     let slug = std::env::var("GLIDE_SETTINGS_PANEL").unwrap_or_else(|_| "home".into());
     let panel = Panel::ALL.iter().copied().find(|panel| panel.slug() == slug).expect("unknown panel slug");

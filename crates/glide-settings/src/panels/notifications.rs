@@ -261,8 +261,8 @@ fn hero<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     };
     widgets::section_hero(
         c.theme,
-        if dnd { Icon::Moon } else { Icon::Bell },
-        super::Panel::Notifications.color(),
+        Icon::Moon,
+        if dnd { super::Panel::Notifications.color() } else { c.theme.fg_3() },
         c.t(T::Dnd),
         hint,
         Some(toggle(*c, dnd, Msg::Dnd)),
@@ -314,7 +314,7 @@ impl Page {
         let muted = config.get_str_array(SECTION, MUTED);
         let silent = config.get_str_array(SECTION, SILENT);
         let lines = self.lines(config);
-        let mut group = Group::new(t).title(c.t(T::Apps)).description(c.t(T::AppsHint));
+        let mut group = Group::new(t).title(c.t(T::Apps)).description(c.t(T::AppsHint)).stacked_header(t.compact);
         if lines.is_empty() {
             return group.push(widgets::list_empty(t, Icon::Bell, c.t(T::NoApps), "")).build();
         }
@@ -403,17 +403,20 @@ fn system<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     let t = c.theme;
     SYSTEM
         .iter()
-        .fold(Group::new(t).title(c.t(T::System)).description(c.t(T::SystemHint)), |group, (key, title, hint)| {
-            let on = config.bool_or(SECTION, key, true);
-            let key: &'static str = key;
-            group.push(
-                Row::new(t, c.t(*title))
-                    .subtitle(c.t(*hint))
-                    .changed(!on)
-                    .suffix(toggle(*c, on, move |on| Msg::System(key, on)))
-                    .build(),
-            )
-        })
+        .fold(
+            Group::new(t).title(c.t(T::System)).description(c.t(T::SystemHint)).stacked_header(t.compact),
+            |group, (key, title, hint)| {
+                let on = config.bool_or(SECTION, key, true);
+                let key: &'static str = key;
+                group.push(
+                    Row::new(t, c.t(*title))
+                        .subtitle(c.t(*hint))
+                        .changed(!on)
+                        .suffix(toggle(*c, on, move |on| Msg::System(key, on)))
+                        .build(),
+                )
+            },
+        )
         .build()
 }
 
