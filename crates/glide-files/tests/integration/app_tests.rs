@@ -1104,6 +1104,7 @@ fn the_trash_view_watches_the_trash_of_every_mounted_volume() {
     std::fs::write(files.join("photo.jpg"), "x").expect("trashed item");
     let mut app = listed_app();
     app.current = app.trash.files();
+    std::fs::create_dir_all(&app.current).expect("the home trash exists, as it does once anything was trashed");
     let found = survey(&app.trash, std::slice::from_ref(&usb), app.current.clone());
     assert_eq!((found.elsewhere.clone(), found.fallback.clone()), (vec![files.clone()], None));
     assert!(found.trash_count >= 1, "the item on the stick is counted");
