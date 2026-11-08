@@ -17,7 +17,7 @@ jobs:
       - run: |
           pacman -Syu --noconfirm --needed git rustup pkgconf seatd systemd-libs libinput mesa libxkbcommon \
             libdisplay-info dbus tzdata pam gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly \
-            gst-libav
+            gst-libav adwaita-fonts
           ln -sf /usr/share/zoneinfo/UTC /etc/localtime
       - uses: actions/checkout@v4
       - run: rustup toolchain install --profile minimal
