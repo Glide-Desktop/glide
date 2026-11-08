@@ -240,7 +240,7 @@ impl Page {
         page.push(self.events(c)).into()
     }
 
-    fn summary_facts(&self, c: &Ctx) -> Vec<glide_sdk::widget::Fact> {
+    fn summary_facts(&self, c: &Ctx, now: SystemTime) -> Vec<glide_sdk::widget::Fact> {
         let snapshot = &self.snapshot;
         if !snapshot.status.state.is_connected() {
             return Vec::new();
@@ -264,6 +264,28 @@ impl Page {
                     resources.len(),
                 ),
             ));
+        }
+        if let Some(deadline) = snapshot.status.session_expires_at {
+            let left = nb::remaining_until(deadline, now);
+            let value = if left == Remaining::Expired {
+                c.t(T::SessionExpired).to_string()
+            } else {
+                c.t(T::SessionLeft).replace("{time}", &remaining_text(c, left))
+            };
+            facts.push(glide_sdk::widget::Fact::new(c.t(T::Session), value));
+        }
+        if !snapshot.features.disable_profiles && !snapshot.active.username.trim().is_empty() {
+            facts.push(glide_sdk::widget::Fact::new(c.t(T::Account), &snapshot.active.username));
+        }
+        if let Some(config) = &snapshot.config
+            && !config.interface_name.trim().is_empty()
+        {
+            let value = if config.mtu > 0 {
+                format!("{} · MTU {}", config.interface_name, config.mtu)
+            } else {
+                config.interface_name.clone()
+            };
+            facts.push(glide_sdk::widget::Fact::new(c.t(T::Interface), value));
         }
         facts
     }
@@ -324,7 +346,7 @@ impl Page {
         }
         info.push((c.t(T::DaemonVersion).to_string(), status.daemon_version.clone()));
         let mut group = Group::new(t).title(c.t(T::Connection));
-        let summary = self.summary_facts(c);
+        let summary = self.summary_facts(c, SystemTime::now());
         if !summary.is_empty() {
             group = group.push(glide_sdk::widget::kv_grid(&t.paint, summary, if t.compact { 1 } else { 3 }));
         }
@@ -1193,7 +1215,8 @@ mod tests {
 
     fn populated() -> Page {
         let mut page = Page { installed: true, loaded: true, ..Page::default() };
-        page.snapshot.active = nb::ActiveProfile { id: "default".into(), name: "default".into(), ..Default::default() };
+        page.snapshot.active =
+            nb::ActiveProfile { id: "default".into(), name: "default".into(), username: "me@example.com".into() };
         let now = SystemTime::now();
         page.snapshot.status = nb::Status {
             state: State::Connected,
@@ -1219,6 +1242,8 @@ mod tests {
             ..nb::Status::default()
         };
         page.snapshot.config = Some(nb::Config {
+            interface_name: "wt0".into(),
+            mtu: 1280,
             server_ssh_allowed: true,
             rosenpass_enabled: true,
             pre_shared_key_set: true,
@@ -1252,8 +1277,12 @@ mod tests {
     fn summary_uses_connected_peers_and_excludes_exit_nodes() {
         let mut page = populated();
         let c = ctx();
+        let now = SystemTime::UNIX_EPOCH;
+        page.snapshot.status.session_expires_at = None;
+        page.snapshot.active.username.clear();
+        page.snapshot.config = None;
         assert_eq!(
-            page.summary_facts(&c),
+            page.summary_facts(&c, now),
             vec![
                 glide_sdk::widget::Fact::new(c.t(T::Profiles), "default"),
                 glide_sdk::widget::Fact::new(c.t(T::TabPeers), count(&c, T::PeersCount, 1, 2)),
@@ -1262,9 +1291,35 @@ mod tests {
         );
         page.snapshot.features.disable_profiles = true;
         page.snapshot.features.disable_networks = true;
-        assert_eq!(page.summary_facts(&c).len(), 1);
+        assert_eq!(page.summary_facts(&c, now).len(), 1);
         page.snapshot.status.state = State::Idle;
-        assert!(page.summary_facts(&c).is_empty());
+        assert!(page.summary_facts(&c, now).is_empty());
+    }
+
+    #[test]
+    fn summary_includes_only_available_account_session_and_interface() {
+        let mut page = populated();
+        let c = ctx();
+        let now = SystemTime::UNIX_EPOCH;
+        page.snapshot.status.session_expires_at = Some(now + Duration::from_hours(2));
+        page.snapshot.active.username = "me@example.com".into();
+        let config = page.snapshot.config.as_mut().unwrap();
+        config.interface_name = "wt0".into();
+        config.mtu = 1280;
+        let facts = page.summary_facts(&c, now);
+        assert!(facts.contains(&glide_sdk::widget::Fact::new(c.t(T::Account), "me@example.com")));
+        assert!(facts.contains(&glide_sdk::widget::Fact::new(c.t(T::Interface), "wt0 · MTU 1280")));
+        assert!(
+            facts.contains(&glide_sdk::widget::Fact::new(
+                c.t(T::Session),
+                c.t(T::SessionLeft)
+                    .replace("{time}", &remaining_text(&c, nb::remaining_until(now + Duration::from_hours(2), now)))
+            ))
+        );
+        page.snapshot.active.username.clear();
+        page.snapshot.config = None;
+        page.snapshot.status.session_expires_at = None;
+        assert_eq!(page.summary_facts(&c, now).len(), 3);
     }
 
     #[test]

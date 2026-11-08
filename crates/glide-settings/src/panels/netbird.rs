@@ -52,6 +52,7 @@ mod tr {
         Userspace => "Userspace WireGuard", "WireGuard у просторі користувача";
         Port => "Port", "Порт";
         Session => "Session", "Сесія";
+        Account => "Account", "Обліковий запис";
         SessionLeft => "Expires in {time}", "Спливає через {time}";
         Renew => "Renew", "Подовжити";
         Renewing => "Waiting for the browser…", "Очікування браузера…";
