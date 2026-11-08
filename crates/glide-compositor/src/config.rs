@@ -208,19 +208,19 @@ fn set_keeping_decor(table: &mut dyn toml_edit::TableLike, key: &str, mut item: 
 }
 
 pub fn write_appearance(path: &Path, appearance: glide_theme::Appearance) -> Result<(), String> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err.to_string()),
-    };
-    let updated = with_appearance(&text, appearance)?;
-    if updated == text {
-        return Ok(());
-    }
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|err| err.to_string())?;
-    }
-    write_atomic(path, updated.as_bytes()).map_err(|err| err.to_string())
+    glide_config::with_file_lock(path, || {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => return Err(err),
+        };
+        let updated = with_appearance(&text, appearance).map_err(std::io::Error::other)?;
+        if updated != text {
+            write_atomic(path, updated.as_bytes())?;
+        }
+        Ok(())
+    })
+    .map_err(|err| err.to_string())
 }
 
 pub fn persist_appearance(appearance: glide_theme::Appearance) {
@@ -1640,7 +1640,7 @@ mod tests {
         write_appearance(&path, Appearance::Light).expect("written");
         let written = fs::read_to_string(&path).expect("readable");
         assert!(written.contains("appearance = \"light\""));
-        assert_eq!(file_names(&dir), vec!["glide.toml".to_owned()], "no temporary file is left behind");
+        assert_eq!(file_names(&dir), vec!["glide.toml".to_owned(), "glide.toml.lock".to_owned()]);
     }
 
     #[test]

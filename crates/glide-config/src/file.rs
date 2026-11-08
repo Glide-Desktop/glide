@@ -111,6 +111,16 @@ fn set_attribute(fd: RawFd, name: &CStr, value: &[u8]) -> bool {
     unsafe { libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(), value.len(), 0) == 0 }
 }
 
+pub fn with_file_lock<T>(path: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    let target = resolve_symlinks(path)?;
+    let target = if let (Some(folder), Some(name)) = (target.parent(), target.file_name()) {
+        fs::canonicalize(folder).map_or(target.clone(), |folder| folder.join(name))
+    } else {
+        target
+    };
+    locked(&target, work)
+}
+
 pub(crate) fn locked<T>(path: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     let folder = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
     fs::create_dir_all(folder)?;
@@ -302,6 +312,34 @@ mod tests {
         assert_eq!(fs::read_link(&first).unwrap(), Path::new("second"));
         assert_eq!(fs::read_link(&second).unwrap(), Path::new("first"));
         assert_eq!(names(&dir), [OsString::from("first"), OsString::from("second")]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn file_lock_serializes_read_modify_write_transactions() {
+        let dir = scratch("locked-transactions");
+        let path = dir.join("settings.toml");
+        fs::write(&path, "0").unwrap();
+        let link = dir.join("link.toml");
+        std::os::unix::fs::symlink("settings.toml", &link).unwrap();
+        let threads: Vec<_> = (0..4)
+            .map(|index| {
+                let path = if index % 2 == 0 { path.clone() } else { link.clone() };
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        with_file_lock(&path, || {
+                            let count: u32 = fs::read_to_string(&path)?.parse().unwrap();
+                            write_atomic(&path, (count + 1).to_string().as_bytes(), 0o644)
+                        })
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), "100");
         fs::remove_dir_all(dir).unwrap();
     }
 }
