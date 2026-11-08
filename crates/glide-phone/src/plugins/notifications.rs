@@ -452,7 +452,7 @@ fn build_badged_notification_icon_with_kind(
     if !file_path.is_file() {
         let side_u32 = u32::try_from(ICON_SIDE).ok()?;
         let png_bytes = glide_shell::image::Image::from_bgra(side_u32, side_u32, buf)?.png().ok()?;
-        std::fs::write(&file_path, png_bytes).ok()?;
+        glide_config::write_atomic(&file_path, &png_bytes, 0o644).ok()?;
     }
     Some((file_path.to_string_lossy().into_owned(), has_avatar))
 }
