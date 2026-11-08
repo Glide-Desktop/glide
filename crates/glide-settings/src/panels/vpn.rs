@@ -14,6 +14,14 @@ use crate::theme::{self, Tone};
 use crate::widgets::{self, Group, Row};
 use crate::widgets::{actions, form_row, note, sheet};
 
+fn protocol_mark(vpn: &Vpn) -> &'static str {
+    match vpn.protocol().as_str() {
+        "WireGuard" => "WG",
+        "OpenVPN" => "OV",
+        _ => "VPN",
+    }
+}
+
 mod tr {
     crate::i18n::catalogue! {
         Title => "VPN", "VPN";
@@ -41,6 +49,10 @@ mod tr {
         DeleteConfirm => "Delete this connection and its saved secrets?", "Видалити це з'єднання та збережені секрети?";
         Import => "Import a configuration", "Імпорт конфігурації";
         ImportHint => "OpenVPN (.ovpn), WireGuard (.conf) or Cisco vpnc (.pcf) files", "Файли OpenVPN (.ovpn), WireGuard (.conf) або Cisco vpnc (.pcf)";
+        AddVpn => "Add VPN", "Додати VPN";
+        ChooseFile => "Choose a file…", "Вибрати файл…";
+        ChooseHint => "Choose a configuration file from your VPN provider", "Виберіть файл конфігурації від постачальника VPN";
+        OpenFile => "Open", "Відкрити";
         Path => "File", "Файл";
         PathPlaceholder => "~/Downloads/office.ovpn", "~/Downloads/office.ovpn";
         Check => "Check", "Перевірити";
@@ -88,6 +100,8 @@ pub enum Msg {
     CancelDelete,
     Delete(String),
     PathInput(String),
+    ChooseFile(String, String),
+    FileChosen(glide_sdk::chooser::Chosen),
     Inspect,
     Inspected(String, Option<Result<(PathBuf, String), String>>),
     Pick(PathBuf, String),
@@ -351,6 +365,27 @@ impl Page {
                 self.path = path;
                 self.selected = None;
             }
+            Msg::ChooseFile(title, accept) => {
+                let ask = glide_sdk::chooser::Ask {
+                    purpose: glide_sdk::chooser::Purpose::Open,
+                    title,
+                    accept,
+                    name: None,
+                    folder: glide_config::home(),
+                };
+                return Task::perform(glide_sdk::chooser::spawn(ask), |chosen| {
+                    Msg::FileChosen(chosen.unwrap_or(glide_sdk::chooser::Chosen::Cancelled))
+                });
+            }
+            Msg::FileChosen(glide_sdk::chooser::Chosen::Paths(paths)) => {
+                if let Some(path) = paths.into_iter().next() {
+                    self.path = path.to_string_lossy().into_owned();
+                    self.selected = None;
+                    return self.update(Msg::Inspect);
+                }
+            }
+            Msg::FileChosen(glide_sdk::chooser::Chosen::Failed(error)) => self.jobs.error = Some(error),
+            Msg::FileChosen(glide_sdk::chooser::Chosen::Cancelled) => {}
             Msg::Inspect => {
                 let path = self.path.clone();
                 let asked = path.clone();
@@ -425,22 +460,18 @@ impl Page {
         } else {
             widgets::status_pill(t, Tone::Ok, c.t(K::Connected))
         };
-        let mut page = column![widgets::section_hero(
-            t,
-            Icon::Shield,
-            super::Panel::Vpn.color(),
-            c.t(T::Title),
-            status,
-            Some(pill),
-        )]
-        .spacing(theme::SECTION_GAP);
+        let protocols = active.iter().map(|vpn| vpn.protocol()).collect::<Vec<_>>().join(", ");
+        let mut page =
+            column![widgets::section_hero(t, Icon::Shield, super::Panel::Vpn.color(), status, protocols, Some(pill),)]
+                .spacing(theme::SECTION_GAP);
         if let Some(error) = &self.jobs.error {
             page = page.push(widgets::banner(t, crate::theme::Tone::Danger, Icon::Warning, error.as_str(), None));
         }
         if self.notice.is_some() {
             page = page.push(widgets::banner(t, crate::theme::Tone::Ok, Icon::Check, c.t(T::Imported), None));
         }
-        let mut list = Group::new(t).title(c.t(T::Connections)).description(c.t(T::ConnectionsHint));
+        let mut list =
+            Group::new(t).title(c.t(T::Connections)).description(c.t(T::ConnectionsHint)).stacked_header(t.compact);
         if self.state.connections.is_empty() {
             list = list.push(widgets::list_empty(t, Icon::Shield, c.t(T::Empty), c.t(T::EmptyHint)));
         }
@@ -484,10 +515,17 @@ impl Page {
         };
         Row::new(t, vpn.name.clone())
             .subtitle(subtitle)
-            .prefix(if vpn.active {
-                widgets::tile(Icon::Shield, super::Panel::Vpn.color(), 28.0)
-            } else {
-                container(widgets::icon(Icon::Shield, 18.0, t.fg_2())).center_x(28.0).center_y(28.0).into()
+            .prefix({
+                let background = t.fill_2();
+                container(
+                    glide_sdk::widget::text(protocol_mark(vpn), glide_sdk::theme::TextStyle::MICRO).color(t.fg_2()),
+                )
+                .center(32.0)
+                .style(move |_| container::Style {
+                    background: Some(background.into()),
+                    border: iced::Border { radius: glide_sdk::theme::R2.into(), ..Default::default() },
+                    ..Default::default()
+                })
             })
             .suffix(
                 row![control, widgets::icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }, 14.0, t.fg_3()),]
@@ -637,9 +675,20 @@ impl Page {
     fn import(&self, c: &Ctx) -> Element<'_, Msg> {
         let t = c.theme;
         let mut group = Group::new(t)
-            .title(c.t(T::Import))
-            .description(c.t(T::ImportHint))
+            .title(c.t(T::AddVpn))
             .suffix(widgets::icon_button(t, Icon::Refresh, Some(Msg::Rescan)))
+            .push(
+                Row::new(t, c.t(T::ChooseHint))
+                    .subtitle(c.t(T::ImportHint))
+                    .prefix(widgets::icon(Icon::Folder, 24.0, t.fg_2()))
+                    .suffix(widgets::secondary(
+                        t,
+                        c.t(T::ChooseFile),
+                        Some(Msg::ChooseFile(c.t(T::Import).into(), c.t(T::OpenFile).into())),
+                    ))
+                    .stacked(t.compact)
+                    .build(),
+            )
             .push(
                 Row::new(t, c.t(T::Path))
                     .suffix(widgets::flexible(
@@ -663,6 +712,7 @@ impl Page {
                         .align_y(Alignment::Center),
                         420.0,
                     ))
+                    .stacked(t.compact)
                     .build(),
             );
         if let Some((path, kind)) = &self.selected {
@@ -715,7 +765,45 @@ impl Page {
         Group::new(t)
             .title(c.t(T::Plugins))
             .description(c.t(T::PluginsHint))
+            .stacked_header(t.compact)
             .push(container(chips.wrap().vertical_spacing(6)).padding([12.0, theme::ROW_PADDING_X]).width(Fill))
             .build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_marks_follow_the_connection_type() {
+        let mut vpn = Vpn { kind: "wireguard".into(), ..Vpn::default() };
+        assert_eq!(protocol_mark(&vpn), "WG");
+        vpn.kind = "vpn".into();
+        vpn.service = "org.freedesktop.NetworkManager.openvpn".into();
+        assert_eq!(protocol_mark(&vpn), "OV");
+        vpn.service = "org.freedesktop.NetworkManager.openconnect".into();
+        assert_eq!(protocol_mark(&vpn), "VPN");
+    }
+
+    #[test]
+    fn chooser_cancellation_preserves_path_and_failure_is_reported() {
+        let mut page = Page::default();
+        let _ = page.update(Msg::PathInput("existing.conf".into()));
+        let _ = page.update(Msg::FileChosen(glide_sdk::chooser::Chosen::Cancelled));
+        assert_eq!(page.path, "existing.conf");
+        let _ = page.update(Msg::FileChosen(glide_sdk::chooser::Chosen::Failed("chooser failed".into())));
+        assert_eq!(page.jobs.error.as_deref(), Some("chooser failed"));
+    }
+
+    #[test]
+    fn chooser_selection_invalidates_previous_file_and_inspects_new_path() {
+        let mut page = Page::default();
+        let _ = page.update(Msg::Pick("old.conf".into(), "wireguard".into()));
+        let _ = page.update(Msg::FileChosen(glide_sdk::chooser::Chosen::Paths(vec!["new.conf".into()])));
+        assert_eq!(page.path, "new.conf");
+        assert!(page.selected.is_none());
+        let _ = page.update(Msg::Inspected("old.conf".into(), Some(Ok(("old.conf".into(), "wireguard".into())))));
+        assert!(page.selected.is_none());
     }
 }

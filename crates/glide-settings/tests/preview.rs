@@ -54,6 +54,32 @@ fn fixture_bluetooth(app: &mut App) {
     let _ = app.update(Message::Bluetooth(Msg::Expand("94:DB:00:00:00:3E".into())));
 }
 
+fn fixture_vpn(app: &mut App) {
+    use glide_settings::panels::vpn::Msg;
+    use glide_settings::services::vpn::{Vpn, VpnState};
+
+    let connection = |name: &str, uuid: &str, kind: &str, active: bool| Vpn {
+        name: name.into(),
+        uuid: uuid.into(),
+        kind: kind.into(),
+        active,
+        state: if active { "activated" } else { "disconnected" }.into(),
+        ..Vpn::default()
+    };
+    let state = VpnState {
+        available: true,
+        connections: vec![
+            connection("Офіс", "office", "wireguard", true),
+            Vpn {
+                service: "org.freedesktop.NetworkManager.openvpn".into(),
+                ..connection("Домашній сервер", "home", "vpn", false)
+            },
+        ],
+        ..VpnState::default()
+    };
+    let _ = app.update(Message::Vpn(Msg::Loaded(0, state)));
+}
+
 fn fixture_wallpaper(app: &mut App) {
     let items = [[179, 202, 237], [231, 188, 191], [122, 184, 159], [44, 47, 68], [235, 215, 167]]
         .into_iter()
@@ -130,6 +156,9 @@ fn preview_page() {
     let _ = app.update(Message::PanelSelected(panel));
     if panel == Panel::Bluetooth && std::env::var_os("GLIDE_SETTINGS_BLUETOOTH_FIXTURE").is_some() {
         fixture_bluetooth(&mut app);
+    }
+    if panel == Panel::Vpn && std::env::var_os("GLIDE_SETTINGS_VPN_FIXTURE").is_some() {
+        fixture_vpn(&mut app);
     }
     if panel == Panel::Home && std::env::var_os("GLIDE_SETTINGS_HOME_LOADING").is_none() {
         let _ = app.update(Message::Home(home::Msg::Loaded(1, Box::default())));

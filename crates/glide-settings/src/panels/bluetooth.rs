@@ -263,19 +263,15 @@ impl Pane for Page {
         let (title, status) = hero_text(&c, &self.state);
         let blocked = (self.state.blocked && !self.state.powered)
             .then(|| widgets::banner(t, Tone::Warn, Icon::Warning, c.t(K::BluetoothBlocked), None));
-        let page = column![
-            widgets::section_hero(
-                t,
-                Icon::Bluetooth,
-                super::Panel::Bluetooth.color(),
-                title,
-                status,
-                Some(widgets::switch(t, self.state.powered, Msg::Power)),
-            ),
-            blocked,
-            error_banner(t, self.jobs.error.as_deref()),
-        ]
-        .spacing(theme::SECTION_GAP);
+        let labels = column![sdk::text(title, sdk::HERO_TITLE), sdk::text(status, sdk::SECTION_NOTE).color(t.fg_3()),]
+            .width(Fill);
+        let power = widgets::switch(t, self.state.powered, Msg::Power);
+        let hero: Element<'_, Msg> = if t.compact {
+            sdk::card(&t.paint, column![labels, power].spacing(8))
+        } else {
+            sdk::card(&t.paint, row![labels, power].align_y(Alignment::Center))
+        };
+        let page = column![hero, blocked, error_banner(t, self.jobs.error.as_deref()),].spacing(theme::SECTION_GAP);
         if !self.state.powered {
             return page.into();
         }
@@ -295,10 +291,23 @@ impl Pane for Page {
         } else {
             widgets::tonal(t, c.t(K::Search), Some(Msg::Scan))
         };
-        let mut nearby = Group::new(t)
-            .title(c.t(K::NearbyDevices))
-            .description(if self.scanning { c.t(T::SearchHint) } else { c.t(K::NearbyHint) })
-            .suffix(scan);
+        let hint = if self.scanning { c.t(T::SearchHint) } else { c.t(K::NearbyHint) };
+        let mut nearby = Group::new(t);
+        let header: Option<Element<'_, Msg>> = if t.compact {
+            Some(
+                column![
+                    row![sdk::text(c.t(K::NearbyDevices), glide_sdk::theme::TextStyle::HEAD).width(Fill), scan]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    sdk::text(hint, sdk::SECTION_NOTE).color(t.fg_2()),
+                ]
+                .spacing(4)
+                .into(),
+            )
+        } else {
+            nearby = nearby.title(c.t(K::NearbyDevices)).description(hint).suffix(scan);
+            None
+        };
         let others: Vec<&BtDevice> = self.state.nearby().collect();
         if others.is_empty() {
             nearby = nearby.push(widgets::list_empty(t, Icon::Search, c.t(K::NoNearbyDevices), ""));
@@ -309,7 +318,7 @@ impl Pane for Page {
         if !c.online && (self.scanning || self.state.nearby().next().is_some()) {
             nearby = nearby.push(note(t, Icon::Info, c.t(T::PinHint)));
         }
-        page.push(mine.build()).push(nearby.build()).push(self.adapter(&c)).into()
+        page.push(mine.build()).push(column![header, nearby.build()].spacing(8)).push(self.adapter(&c)).into()
     }
 
     fn tick(&mut self, _c: Ctx) -> Task<Msg> {
@@ -414,10 +423,7 @@ impl Page {
         let subtitle = if busy {
             c.t(K::Working).to_string()
         } else if device.connected {
-            match device.battery {
-                Some(level) => format!("{} · {level}%", c.t(K::Connected)),
-                None => c.t(K::Connected).to_string(),
-            }
+            format!("{kind} · {}", c.t(K::Connected))
         } else if device.paired {
             format!("{kind} · {}", c.t(K::NotConnected))
         } else {
@@ -428,12 +434,14 @@ impl Page {
         if device.paired {
             if device.blocked {
                 suffix = suffix.push(widgets::pill(t, Tone::Danger, c.t(T::Blocked)));
+            } else if device.connected {
+                suffix = suffix.push(widgets::status_dot(t.ok(), 8.0));
+                if let Some(level) = device.battery {
+                    suffix = suffix.push(sdk::text(format!("{level}%"), sdk::SECTION_NOTE).color(t.fg_2()));
+                }
             } else {
-                suffix = suffix.push(if device.connected {
-                    widgets::secondary(t, c.t(K::Disconnect), idle.then(|| Msg::Disconnect(address.clone())))
-                } else {
-                    widgets::primary(t, c.t(K::Connect), idle.then(|| Msg::Connect(address.clone())))
-                });
+                suffix =
+                    suffix.push(widgets::secondary(t, c.t(K::Connect), idle.then(|| Msg::Connect(address.clone()))));
             }
             let open = self.expanded.as_ref() == Some(&device.address);
             suffix = suffix.push(chevron(t, open));
@@ -475,19 +483,18 @@ impl Page {
         let valid = bluetooth::clean_alias(&self.device_name).is_some();
         let changed = self.device_name.trim() != device.name;
         let save = (valid && changed).then(|| Msg::SaveDeviceName(address.clone()));
-        rows.push(form_row(
-            t,
-            c.t(T::DeviceName),
-            None,
-            row![
-                widgets::field(t, c.t(T::DeviceName), &self.device_name, Msg::DeviceName, save.clone(), !valid,)
-                    .width(Fill),
-                widgets::secondary(t, c.t(T::Save), save),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .into(),
-        ));
+        let rename = row![
+            widgets::field(t, c.t(T::DeviceName), &self.device_name, Msg::DeviceName, save.clone(), !valid,)
+                .width(Fill),
+            widgets::secondary(t, c.t(T::Save), save),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        rows.push(if t.compact {
+            Row::new(t, c.t(T::DeviceName)).suffix(rename).stacked(true).build()
+        } else {
+            form_row(t, c.t(T::DeviceName), None, rename.into())
+        });
         let idle = self.jobs.busy.is_none();
         let connection = sdk::compact_button(
             &t.paint,
@@ -505,7 +512,7 @@ impl Page {
             &t.paint,
             c.t(if device.blocked { T::UnblockAction } else { T::BlockAction }),
             if device.blocked { sdk::Tone::Neutral } else { sdk::Tone::Danger },
-            idle.then(|| Msg::Block(address, !device.blocked)),
+            idle.then_some(Msg::Block(address, !device.blocked)),
         );
         rows.push(sdk::split_actions(vec![connection, forget], vec![block]));
         sdk::detail_band(&t.paint, rows)

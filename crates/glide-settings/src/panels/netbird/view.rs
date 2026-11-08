@@ -295,7 +295,12 @@ impl Page {
             }
         }
         info.push((c.t(T::DaemonVersion).to_string(), status.daemon_version.clone()));
-        let mut group = Group::new(t).title(c.t(T::Connection)).push(lines(t, info));
+        let mut group = Group::new(t).title(c.t(T::Connection));
+        if status.management.error.is_empty() && status.signal.error.is_empty() {
+            let facts = info.drain(..3).map(|(label, value)| glide_sdk::widget::Fact::new(label, value)).collect();
+            group = group.push(glide_sdk::widget::kv_grid(&t.paint, facts, if t.compact { 1 } else { 3 }));
+        }
+        group = group.push(lines(t, info));
         if let Some(row) = self.session_row(c) {
             group = group.push(row);
         }
@@ -1208,6 +1213,41 @@ mod tests {
         });
         page.privilege = Some(("Needs root".into(), "sudo netbird up --allow-server-ssh".into()));
         page
+    }
+
+    #[test]
+    #[ignore = "writes a populated NetBird preview"]
+    fn preview_populated_netbird() {
+        use iced::advanced::renderer::{self, Headless};
+        use iced::advanced::widget::Tree;
+        use iced::advanced::{Layout, layout};
+        use iced::{Font, Pixels, Rectangle, Renderer, Size, mouse};
+
+        glide_sdk::theme::motion::set_scale(0.0);
+        glide_sdk::theme::use_ui_family(None);
+        let mut c = ctx();
+        c.theme = crate::theme::ThemeState::new(crate::theme::Appearance::Light, crate::theme::Accent::default());
+        let mut page = populated();
+        page.privilege = None;
+        let mut element = page.view(c);
+        let mut tree = Tree::new(&element);
+        let mut renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(Font::DEFAULT, Pixels(14.0)));
+        let size = Size::new(880.0, 2200.0);
+        let node = element.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        element.as_widget().draw(
+            &tree,
+            &mut renderer,
+            &c.theme.paint.iced_theme(),
+            &renderer::Style { text_color: c.theme.fg_1() },
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &Rectangle::with_size(size),
+        );
+        let Renderer::Secondary(renderer) = &mut renderer else { unreachable!() };
+        let rgba = renderer.screenshot(Size::new(880, 2200), 1.0, c.theme.win_bg());
+        let path = std::env::var_os("GLIDE_NETBIRD_PREVIEW")
+            .map_or_else(|| std::path::PathBuf::from("/tmp/opencode/netbird-populated.png"), std::path::PathBuf::from);
+        image::save_buffer(path, &rgba, 880, 2200, image::ColorType::Rgba8).expect("preview is saved");
     }
 
     #[test]

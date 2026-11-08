@@ -89,13 +89,21 @@ pub struct Group<'a, M> {
     title: Option<String>,
     description: Option<String>,
     suffix: Option<Element<'a, M>>,
+    stacked_header: bool,
     rows: Vec<Element<'a, M>>,
 }
 
 impl<'a, M: 'a> Group<'a, M> {
     #[must_use]
     pub fn new(paint: impl Into<Paint>) -> Self {
-        Self { paint: paint.into(), title: None, description: None, suffix: None, rows: Vec::new() }
+        Self {
+            paint: paint.into(),
+            title: None,
+            description: None,
+            suffix: None,
+            stacked_header: false,
+            rows: Vec::new(),
+        }
     }
 
     #[must_use]
@@ -113,6 +121,12 @@ impl<'a, M: 'a> Group<'a, M> {
     #[must_use]
     pub fn suffix(mut self, suffix: impl Into<Element<'a, M>>) -> Self {
         self.suffix = Some(suffix.into());
+        self
+    }
+
+    #[must_use]
+    pub fn stacked_header(mut self, stacked: bool) -> Self {
+        self.stacked_header = stacked;
         self
     }
 
@@ -149,18 +163,29 @@ impl<'a, M: 'a> Group<'a, M> {
 
 impl<'a, M: 'a> From<Group<'a, M>> for Element<'a, M> {
     fn from(group: Group<'a, M>) -> Self {
-        let Group { paint, title, description, suffix, rows } = group;
+        let Group { paint, title, description, suffix, stacked_header, rows } = group;
         let mut outer = Column::new().spacing(SP2);
         if title.is_some() || description.is_some() || suffix.is_some() {
             let heading = text(title.unwrap_or_default(), TextStyle::HEAD).width(Fill);
             let mut header = row![heading].spacing(SP3).align_y(Alignment::End);
-            if let Some(description) = description {
-                header = header.push(text(description, SECTION_NOTE).color(paint.fg_2()));
+            if stacked_header {
+                if let Some(suffix) = suffix {
+                    header = header.push(suffix);
+                }
+                let mut header = column![header].spacing(SP1);
+                if let Some(description) = description {
+                    header = header.push(text(description, SECTION_NOTE).color(paint.fg_2()));
+                }
+                outer = outer.push(container(header).padding(Padding::from([0, 2])));
+            } else {
+                if let Some(description) = description {
+                    header = header.push(text(description, SECTION_NOTE).color(paint.fg_2()));
+                }
+                if let Some(suffix) = suffix {
+                    header = header.push(suffix);
+                }
+                outer = outer.push(container(header).padding(Padding::from([0, 2])));
             }
-            if let Some(suffix) = suffix {
-                header = header.push(suffix);
-            }
-            outer = outer.push(container(header).padding(Padding::from([0, 2])));
         }
         if !rows.is_empty() {
             outer = outer.push(list(&paint, rows));
@@ -1016,6 +1041,28 @@ pub fn surface<'a, M: 'a>(background: Color, content: impl Into<Element<'a, M>>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iced::advanced::layout;
+    use iced::advanced::widget::Tree;
+    use iced::{Renderer, Size};
+
+    #[test]
+    fn stacked_group_header_keeps_description_below_title() {
+        let paint = Paint::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue);
+        let mut element: Element<'_, ()> = Group::new(paint)
+            .title("Installed VPN plugins")
+            .description("WireGuard is built in. Other types need a plugin such as network-manager-openvpn.")
+            .stacked_header(true)
+            .build();
+        let mut tree = Tree::new(&element);
+        let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
+        let limits = layout::Limits::new(Size::new(220.0, 0.0), Size::new(220.0, 400.0));
+        let node = element.as_widget_mut().layout(&mut tree, &renderer, &limits);
+        let [header] = node.children() else { panic!("header is the only child") };
+        let [content] = header.children() else { panic!("header contains a column") };
+        let [title, description] = content.children() else { panic!("header has a title and description") };
+        assert!(description.bounds().y >= title.bounds().y + title.size().height);
+        assert!(description.size().width <= 220.0);
+    }
 
     #[test]
     fn a_boxed_row_is_fifty_two_pixels_with_room_for_one_control() {
