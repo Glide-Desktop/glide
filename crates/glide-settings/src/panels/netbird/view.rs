@@ -240,6 +240,34 @@ impl Page {
         page.push(self.events(c)).into()
     }
 
+    fn summary_facts(&self, c: &Ctx) -> Vec<glide_sdk::widget::Fact> {
+        let snapshot = &self.snapshot;
+        if !snapshot.status.state.is_connected() {
+            return Vec::new();
+        }
+        let mut facts = Vec::new();
+        if !snapshot.features.disable_profiles && !snapshot.active.name.is_empty() {
+            facts.push(glide_sdk::widget::Fact::new(c.t(T::Profiles), &snapshot.active.name));
+        }
+        facts.push(glide_sdk::widget::Fact::new(
+            c.t(T::TabPeers),
+            count(c, T::PeersCount, snapshot.status.connected_peers(), snapshot.status.peers.len()),
+        ));
+        if !snapshot.features.disable_networks {
+            let resources = nb::resources(&snapshot.networks);
+            facts.push(glide_sdk::widget::Fact::new(
+                c.t(T::TabResources),
+                count(
+                    c,
+                    T::ResourcesCount,
+                    resources.iter().filter(|resource| resource.selected).count(),
+                    resources.len(),
+                ),
+            ));
+        }
+        facts
+    }
+
     fn connection(&self, c: &Ctx) -> Element<'_, Msg> {
         let t = c.theme;
         let status = &self.snapshot.status;
@@ -296,6 +324,10 @@ impl Page {
         }
         info.push((c.t(T::DaemonVersion).to_string(), status.daemon_version.clone()));
         let mut group = Group::new(t).title(c.t(T::Connection));
+        let summary = self.summary_facts(c);
+        if !summary.is_empty() {
+            group = group.push(glide_sdk::widget::kv_grid(&t.paint, summary, if t.compact { 1 } else { 3 }));
+        }
         if status.management.error.is_empty() && status.signal.error.is_empty() {
             let facts = info.drain(..3).map(|(label, value)| glide_sdk::widget::Fact::new(label, value)).collect();
             group = group.push(glide_sdk::widget::kv_grid(&t.paint, facts, if t.compact { 1 } else { 3 }));
@@ -1161,6 +1193,7 @@ mod tests {
 
     fn populated() -> Page {
         let mut page = Page { installed: true, loaded: true, ..Page::default() };
+        page.snapshot.active = nb::ActiveProfile { id: "default".into(), name: "default".into(), ..Default::default() };
         let now = SystemTime::now();
         page.snapshot.status = nb::Status {
             state: State::Connected,
@@ -1213,6 +1246,25 @@ mod tests {
         });
         page.privilege = Some(("Needs root".into(), "sudo netbird up --allow-server-ssh".into()));
         page
+    }
+
+    #[test]
+    fn summary_uses_connected_peers_and_excludes_exit_nodes() {
+        let mut page = populated();
+        let c = ctx();
+        assert_eq!(
+            page.summary_facts(&c),
+            vec![
+                glide_sdk::widget::Fact::new(c.t(T::Profiles), "default"),
+                glide_sdk::widget::Fact::new(c.t(T::TabPeers), count(&c, T::PeersCount, 1, 2)),
+                glide_sdk::widget::Fact::new(c.t(T::TabResources), count(&c, T::ResourcesCount, 1, 1)),
+            ]
+        );
+        page.snapshot.features.disable_profiles = true;
+        page.snapshot.features.disable_networks = true;
+        assert_eq!(page.summary_facts(&c).len(), 1);
+        page.snapshot.status.state = State::Idle;
+        assert!(page.summary_facts(&c).is_empty());
     }
 
     #[test]
