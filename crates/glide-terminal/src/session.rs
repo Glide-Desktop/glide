@@ -473,7 +473,9 @@ mod tests {
         let ssh = seen("ssh", &["-c", "sleep 5; :", "artem@prod-01"]);
         assert_eq!(ssh.address().as_deref(), Some("artem@prod-01"));
         assert_eq!(seen("sudo", &["-c", "sleep 5; :"]), Context::Elevated);
-        assert_eq!(seen("plain", &["-c", "sleep 5; :"]), Context::Local);
+        let as_root = std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").expect("own process")) == 0;
+        let plain = if as_root { Context::Elevated } else { Context::Local };
+        assert_eq!(seen("plain", &["-c", "sleep 5; :"]), plain, "a plain program is elevated only when run as root");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
