@@ -358,17 +358,24 @@ impl Pane for Page {
             Msg::PauseOnDisconnect,
         ));
         extras.extend(self.test_sound_row(&c));
-        page = page
-            .push(self.channel_group(&c, Channel::Output, max, extras))
-            .push(self.device_group(&c, Channel::Output));
+        page = page.push(self.device_group(&c, Channel::Output)).push(self.channel_group(
+            &c,
+            Channel::Output,
+            max,
+            extras,
+        ));
+        let input_extras =
+            (self.state.meter && self.state.input.is_some()).then(|| self.meter_row(&c)).into_iter().collect();
+        page = page.push(self.device_group(&c, Channel::Input)).push(self.channel_group(
+            &c,
+            Channel::Input,
+            1.0,
+            input_extras,
+        ));
         if self.state.streams_supported {
             page = page.push(self.streams_group(&c));
         }
-        let input_extras =
-            (self.state.meter && self.state.input.is_some()).then(|| self.meter_row(&c)).into_iter().collect();
-        page.push(self.channel_group(&c, Channel::Input, 1.0, input_extras))
-            .push(self.device_group(&c, Channel::Input))
-            .into()
+        page.into()
     }
 
     fn tick(&mut self, _c: Ctx) -> Task<Msg> {

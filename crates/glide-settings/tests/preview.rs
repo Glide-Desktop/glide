@@ -80,6 +80,26 @@ fn fixture_vpn(app: &mut App) {
     let _ = app.update(Message::Vpn(Msg::Loaded(0, state)));
 }
 
+fn fixture_sound(app: &mut App) {
+    use glide_settings::panels::sound::Msg;
+    use glide_settings::services::audio::{AudioState, Device, Level, Stereo, Stream};
+
+    let device = |id, name: &str, is_default| Device { id, name: name.into(), is_default };
+    let state = AudioState {
+        available: true,
+        sinks: vec![device(1, "Bluetooth Headphones", true), device(2, "Speakers", false)],
+        sources: vec![device(3, "Built-in Microphone", true)],
+        output: Some(Level { volume: 0.62, muted: false }),
+        input: Some(Level { volume: 0.8, muted: false }),
+        streams: vec![Stream { index: 1, app: "Browser".into(), title: "Video".into(), volume: 0.7, muted: false }],
+        streams_supported: true,
+        stereo: Some(Stereo { left: 1.0, right: 1.0 }),
+        meter: true,
+        ..AudioState::default()
+    };
+    let _ = app.update(Message::Sound(Msg::Loaded(state)));
+}
+
 fn fixture_wallpaper(app: &mut App) {
     let items = [[179, 202, 237], [231, 188, 191], [122, 184, 159], [44, 47, 68], [235, 215, 167]]
         .into_iter()
@@ -160,6 +180,9 @@ fn preview_page() {
     }
     if panel == Panel::Vpn && std::env::var_os("GLIDE_SETTINGS_VPN_FIXTURE").is_some() {
         fixture_vpn(&mut app);
+    }
+    if panel == Panel::Sound && std::env::var_os("GLIDE_SETTINGS_SOUND_FIXTURE").is_some() {
+        fixture_sound(&mut app);
     }
     if panel == Panel::Home && std::env::var_os("GLIDE_SETTINGS_HOME_LOADING").is_none() {
         let _ = app.update(Message::Home(home::Msg::Loaded(1, Box::default())));
