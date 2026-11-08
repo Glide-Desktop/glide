@@ -9,6 +9,7 @@ depends=(
     dbus
     gcc-libs
     glibc
+    gst-plugins-bad-libs
     gst-plugins-base
     gst-plugins-base-libs
     gstreamer
@@ -35,9 +36,14 @@ optdepends=(
     'bluez-utils: Bluetooth in quick settings'
     'udisks2: removable drives in Glide Files'
     'greetd: Glide as the display manager (glide --greeter)'
-    'gst-plugins-good: screen mirroring'
-    'gst-plugins-bad: screen mirroring with hardware encoders'
+    'gst-plugins-good: screen mirroring and video playback in Glide Clips'
+    'gst-plugins-bad: screen mirroring with hardware encoders, video output in Glide Clips'
     'gst-plugins-ugly: screen mirroring with x264'
+    'gst-libav: H.264, AAC and other codecs in Glide Clips'
+    'tesseract: text recognition in Glide Clips and Glide Folio'
+    'ghostscript: PostScript and EPS in Glide Folio'
+    'djvulibre: DjVu in Glide Folio'
+    'libarchive: comic archives in Glide Folio'
     'adw-gtk-theme: GTK 3, Chrome and Electron apps in Glide colours'
     'qt6ct: Qt 6 apps in Glide colours'
     'kvantum: Qt controls in Glide shapes'
