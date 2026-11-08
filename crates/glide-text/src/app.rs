@@ -2777,6 +2777,12 @@ mod tests {
         let _ = app.update(Message::Dialog(Answer::Save));
         assert_eq!(encoding_dialog(&app), None);
         assert_eq!(app.doc().unwrap().encoding, Encoding::Utf8);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::fs::read(&path).unwrap() != "caféж".as_bytes() || std::fs::read_dir(&folder).unwrap().count() != 1
+        {
+            assert!(std::time::Instant::now() < deadline, "the converted save reaches the disk on the io thread");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         std::fs::remove_dir_all(&folder).unwrap();
     }
 
