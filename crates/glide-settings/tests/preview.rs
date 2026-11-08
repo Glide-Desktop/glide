@@ -22,6 +22,38 @@ fn fixture_toolkits(app: &mut App) {
     }
 }
 
+fn fixture_bluetooth(app: &mut App) {
+    use glide_settings::panels::bluetooth::Msg;
+    use glide_settings::services::bluetooth::{Adapter, BluetoothState, BtDevice};
+
+    let device = |address: &str, name: &str, icon: &str, paired, connected, battery| BtDevice {
+        address: address.into(),
+        name: name.into(),
+        icon: icon.into(),
+        paired,
+        connected,
+        trusted: paired,
+        battery,
+        ..BtDevice::default()
+    };
+    let state = BluetoothState {
+        available: true,
+        powered: true,
+        alias: "laptop".into(),
+        adapter: Adapter { powered: true, pairable: true, ..Adapter::default() },
+        devices: vec![
+            device("94:DB:00:00:00:3E", "WH-1000XM4", "audio-headphones", true, true, Some(70)),
+            device("11:22:33:44:55:01", "MX Master 3S", "input-mouse", true, true, Some(45)),
+            device("11:22:33:44:55:02", "Keychron K3", "input-keyboard", true, false, None),
+            device("11:22:33:44:55:03", "Pixel 8", "phone", false, false, None),
+            device("11:22:33:44:55:04", "JBL Flip 6", "audio-speakers", false, false, None),
+        ],
+        ..BluetoothState::default()
+    };
+    let _ = app.update(Message::Bluetooth(Msg::Loaded(0, state)));
+    let _ = app.update(Message::Bluetooth(Msg::Expand("94:DB:00:00:00:3E".into())));
+}
+
 fn fixture_wallpaper(app: &mut App) {
     let items = [[179, 202, 237], [231, 188, 191], [122, 184, 159], [44, 47, 68], [235, 215, 167]]
         .into_iter()
@@ -96,6 +128,9 @@ fn preview_page() {
     let slug = std::env::var("GLIDE_SETTINGS_PANEL").unwrap_or_else(|_| "home".into());
     let panel = Panel::ALL.iter().copied().find(|panel| panel.slug() == slug).expect("unknown panel slug");
     let _ = app.update(Message::PanelSelected(panel));
+    if panel == Panel::Bluetooth && std::env::var_os("GLIDE_SETTINGS_BLUETOOTH_FIXTURE").is_some() {
+        fixture_bluetooth(&mut app);
+    }
     if panel == Panel::Home && std::env::var_os("GLIDE_SETTINGS_HOME_LOADING").is_none() {
         let _ = app.update(Message::Home(home::Msg::Loaded(1, Box::default())));
     }

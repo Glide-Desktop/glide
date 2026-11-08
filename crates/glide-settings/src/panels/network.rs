@@ -31,7 +31,7 @@ mod tr {
         Ghz6 => "6 GHz", "6 ГГц";
         Channel => "channel", "канал";
         Nearby => "Networks nearby", "Мережі поруч";
-        UpdatedNow => "Updated just now", "Оновлено щойно";
+        Updated => "Updated", "Оновлено";
         NoNetworks => "No networks in range", "Немає мереж поблизу";
         Connected => "Connected", "Підключено";
         Connecting => "Connecting…", "Підключення…";
@@ -149,6 +149,7 @@ pub enum Msg {
 #[derive(Debug, Default)]
 pub struct Page {
     state: NetworkState,
+    networks_read_at: Option<std::time::Instant>,
     jobs: Jobs,
     loaded: bool,
     folded: bool,
@@ -295,6 +296,7 @@ impl Page {
             Msg::Loaded(generation, _) if !self.jobs.generation.is_current(generation) => {}
             Msg::Loaded(_, state) => {
                 let before = self.state.active().map(|point| point.ssid.clone());
+                self.networks_read_at = state.wifi_list_read.then(std::time::Instant::now);
                 self.state = state;
                 self.jobs.loading = false;
                 self.loaded = true;
@@ -521,7 +523,11 @@ impl Page {
 
     fn nearby(&self, c: &Ctx) -> Element<'_, Msg> {
         let t = c.theme;
-        let mut group = Group::new(t).title(c.t(T::Nearby)).description(c.t(T::UpdatedNow));
+        let mut group = Group::new(t).title(c.t(T::Nearby));
+        if let Some(read_at) = self.networks_read_at {
+            let age = glide_sdk::i18n::ago(read_at.elapsed().as_secs(), c.lang);
+            group = group.description(format!("{} {age}", c.t(T::Updated)));
+        }
         if self.state.networks.is_empty() {
             group = group.push(widgets::list_empty(t, Icon::WifiOff, c.t(T::NoNetworks), ""));
         }
@@ -866,4 +872,175 @@ fn saved_dns(details: Option<&Details>) -> String {
 #[must_use]
 pub(crate) fn ssid_too_long(ssid: &str) -> bool {
     ssid.trim().len() > network::MAX_SSID_BYTES
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_update_time_requires_a_successful_current_list_read() {
+        let mut page = Page::default();
+        let generation = page.jobs.generation.current();
+        let read = NetworkState { wifi_list_read: true, ..NetworkState::default() };
+        let _ = page.update(Msg::Loaded(generation.wrapping_add(1), read.clone()));
+        assert!(page.networks_read_at.is_none());
+        let _ = page.update(Msg::Loaded(generation, read));
+        assert!(page.networks_read_at.is_some());
+        let _ = page.update(Msg::Loaded(generation, NetworkState::default()));
+        assert!(page.networks_read_at.is_none());
+    }
+
+    fn populated_page() -> Page {
+        let point = AccessPoint {
+            ssid: "Домашня".into(),
+            signal: 78,
+            secured: true,
+            in_use: true,
+            known: true,
+            profile: Some("home".into()),
+            security: "WPA2".into(),
+            frequency: 5220,
+            channel: 44,
+            rate: 866,
+        };
+        let nearby = AccessPoint {
+            ssid: "Кав’ярня".into(),
+            signal: 45,
+            secured: false,
+            in_use: false,
+            known: false,
+            profile: None,
+            security: String::new(),
+            frequency: 0,
+            channel: 0,
+            rate: 0,
+        };
+        let saved =
+            AccessPoint {
+                ssid: "Домашня-2.4".into(), in_use: false, frequency: 2412, channel: 1, ..point.clone()
+            };
+        let protected = AccessPoint {
+            ssid: "Kyivstar_5G_31A".into(),
+            in_use: false,
+            known: false,
+            profile: None,
+            security: "WPA3".into(),
+            ..point
+        };
+        let enterprise = AccessPoint {
+            ssid: "Office-Corp".into(),
+            in_use: false,
+            known: false,
+            profile: None,
+            security: "802.1X".into(),
+            ..point
+        };
+        Page {
+            loaded: true,
+            networks_read_at: Some(std::time::Instant::now()),
+            state: NetworkState {
+                available: true,
+                wifi_enabled: true,
+                wifi_hardware: true,
+                wifi_device: Some("wlan0".into()),
+                wifi_list_read: true,
+                networks: vec![point, saved, protected, nearby, enterprise],
+                wired: vec![network::Wired {
+                    device: "eth0".into(),
+                    cable: false,
+                    connected: false,
+                    connection: String::new(),
+                }],
+                rfkill: true,
+                internet: true,
+                ..NetworkState::default()
+            },
+            details: Some(Details {
+                device: "wlan0".into(),
+                mac: "3C:9C:0F:00:00:1A".into(),
+                ipv4: vec!["192.168.1.24".into()],
+                gateway: "192.168.1.1".into(),
+                dns: vec!["192.168.1.1".into()],
+                ipv6: vec!["fd00::8a3c:1f2e".into()],
+                settings: Some(network::ProfileSettings { autoconnect: true, ..network::ProfileSettings::default() }),
+            }),
+            proxy: ProxySettings { available: true, ..ProxySettings::default() },
+            ..Page::default()
+        }
+    }
+
+    #[test]
+    #[ignore = "writes a populated network preview"]
+    fn preview_populated_network() {
+        use iced::advanced::renderer::{self, Headless};
+        use iced::advanced::widget::Tree;
+        use iced::advanced::{Layout, Shell, clipboard, layout};
+        use iced::{Event, Font, Pixels, Point, Rectangle, Renderer, Size, mouse, window};
+
+        glide_sdk::theme::motion::set_scale(0.0);
+        glide_sdk::theme::use_ui_family(None);
+        let appearance = if std::env::var("GLIDE_SETTINGS_APPEARANCE").as_deref() == Ok("dark") {
+            crate::theme::Appearance::Dark
+        } else {
+            crate::theme::Appearance::Light
+        };
+        let c = Ctx {
+            theme: crate::theme::ThemeState::new(appearance, crate::theme::Accent::Azurit),
+            lang: Lang::Uk,
+            writable: true,
+            online: true,
+        };
+        let page = populated_page();
+        let config = ConfigStore::parse("");
+        let mut element = <Page as Pane>::view(&page, c, &config);
+        let mut tree = Tree::new(&element);
+        let mut renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(Font::DEFAULT, Pixels(14.0)));
+        let size = Size::new(880.0, 1200.0);
+        let node = element.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        element.as_widget_mut().update(
+            &mut tree,
+            &Event::Window(window::Event::RedrawRequested(std::time::Instant::now())),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &renderer,
+            &mut clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(size),
+        );
+        element.as_widget().draw(
+            &tree,
+            &mut renderer,
+            &c.theme.paint.iced_theme(),
+            &renderer::Style { text_color: c.theme.fg_1() },
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &Rectangle::with_size(size),
+        );
+        let cursor = mouse::Cursor::Available(Point::new(840.0, 44.0));
+        for event in [
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ] {
+            let mut shell = Shell::new(&mut messages);
+            element.as_widget_mut().update(
+                &mut tree,
+                &event,
+                Layout::new(&node),
+                cursor,
+                &renderer,
+                &mut clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(size),
+            );
+        }
+        assert!(matches!(messages.as_slice(), [Msg::ToggleWifi(false)]));
+        let Renderer::Secondary(renderer) = &mut renderer else { unreachable!() };
+        let rgba = renderer.screenshot(Size::new(880, 1200), 1.0, c.theme.win_bg());
+        let path = std::env::var_os("GLIDE_NETWORK_PREVIEW")
+            .map_or_else(|| std::path::PathBuf::from("/tmp/opencode/network-populated.png"), std::path::PathBuf::from);
+        image::save_buffer(path, &rgba, 880, 1200, image::ColorType::Rgba8).expect("preview is saved");
+    }
 }

@@ -358,8 +358,208 @@ fn save_writes_atomically_and_creates_the_directory() {
     let written = std::fs::read_to_string(&path).expect("file exists");
     assert!(written.contains("wallpaper-fit = \"tile\""));
     let leftovers = std::fs::read_dir(path.parent().expect("has parent")).expect("dir exists").count();
-    assert_eq!(leftovers, 1);
+    assert_eq!(leftovers, 2);
     std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn failed_save_keeps_edits_dirty_until_retry_succeeds() {
+    let dir = std::env::temp_dir().join(format!("glide-settings-retry-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let parent = dir.join("blocked");
+    let path = parent.join("glide.toml");
+    let mut config = ConfigStore::load_from(&path);
+    config.set_wallpaper_fit(WallpaperFit::Tile);
+    std::fs::write(&parent, "not a directory").expect("block directory creation");
+    assert!(config.save_dirty().is_err());
+    assert!(config.to_text().contains("wallpaper-fit = \"tile\""));
+    assert!(!config.refresh_if_changed());
+    std::fs::remove_file(&parent).expect("unblock directory creation");
+    assert_eq!(config.save_dirty(), Ok(true));
+    assert_eq!(config.save_dirty(), Ok(false));
+    assert!(std::fs::read_to_string(&path).expect("saved file").contains("wallpaper-fit = \"tile\""));
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn concurrent_settings_writes_reject_stale_snapshots_without_losing_edits() {
+    let dir = std::env::temp_dir().join(format!("glide-settings-conflict-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let path = dir.join("glide.toml");
+    std::fs::write(&path, "[topbar]\naccent = \"blue\"\n").expect("write initial settings");
+    let mut first = ConfigStore::load_from(&path);
+    let mut second = ConfigStore::load_from(&path);
+    first.set_accent(Accent::Malachite);
+    second.set_wallpaper_fit(WallpaperFit::Tile);
+    assert_eq!(first.save_dirty(), Ok(true));
+    let written = std::fs::read(&path).expect("read first save");
+    assert!(second.save_dirty().is_err());
+    assert!(second.is_dirty());
+    assert!(second.to_text().contains("wallpaper-fit = \"tile\""));
+    assert_eq!(std::fs::read(&path).unwrap(), written);
+    assert!(second.history().entries().is_empty());
+    std::fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn history_records_only_successful_file_saves_and_survives_refresh() {
+    use glide_settings::services::history::Setting;
+
+    let dir = std::env::temp_dir().join(format!("glide-settings-history-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let parent = dir.join("config");
+    let path = parent.join("glide.toml");
+    let mut config = ConfigStore::load_from(&path);
+    config.set_accent(Accent::Amber);
+    let saved = config.get_str("topbar", "accent").unwrap().to_owned();
+    std::fs::write(&parent, "not a directory").expect("block directory creation");
+    assert!(config.save_dirty().is_err());
+    assert!(config.history().entries().is_empty());
+    std::fs::remove_file(&parent).expect("unblock directory creation");
+    assert_eq!(config.save_dirty(), Ok(true));
+    let entry = &config.history().entries()[0];
+    assert_eq!(entry.setting, Setting::Accent);
+    assert_eq!(entry.before, None);
+    assert_eq!(entry.after.as_deref(), Some(saved.as_str()));
+    std::fs::remove_file(&path).expect("remove file externally");
+    assert!(config.refresh_if_changed());
+    assert_eq!(config.history().entries().len(), 1);
+    config.set_accent(Accent::Amber);
+    assert_eq!(config.save_dirty(), Ok(true));
+    assert_eq!(config.history().entries().len(), 2);
+    assert_eq!(config.history().entries()[0].before, None);
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn history_never_treats_wrong_typed_settings_as_absent() {
+    let dir = std::env::temp_dir().join(format!("glide-settings-history-types-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let path = dir.join("glide.toml");
+    std::fs::write(&path, "[topbar]\naccent = 123\n").expect("write initial settings");
+    let mut config = ConfigStore::load_from(&path);
+    config.set_accent(Accent::Malachite);
+    assert_eq!(config.save_dirty(), Ok(true));
+    assert!(config.history().entries().is_empty());
+    config.set_accent(Accent::Amber);
+    assert_eq!(config.save_dirty(), Ok(true));
+    let change = &config.history().entries()[0];
+    assert_eq!(change.before.as_deref(), Some("teal"));
+    assert_eq!(change.after.as_deref(), Some("amber"));
+    std::fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn undo_check_reads_disk_and_refuses_conflicts_or_unsaved_edits() {
+    use glide_settings::services::history::Undo;
+
+    let dir = std::env::temp_dir().join(format!("glide-settings-undo-check-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let path = dir.join("glide.toml");
+    std::fs::write(&path, "[topbar]\naccent = \"blue\"\n").expect("write initial settings");
+    let mut config = ConfigStore::load_from(&path);
+    config.set_accent(Accent::Malachite);
+    assert_eq!(config.save_dirty(), Ok(true));
+    assert!(matches!(config.check_history_undo(0), Ok(Undo::Ready(_))));
+    assert_eq!(config.check_history_undo(1), Ok(Undo::Missing));
+
+    let unrelated = "[topbar]\naccent = \"teal\"\n[general]\nterminal = \"foot\"\n";
+    std::fs::write(&path, unrelated).expect("change another setting externally");
+    assert!(matches!(config.check_history_undo(0), Ok(Undo::Ready(_))));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), unrelated);
+    let external = "[topbar]\naccent = \"amber\"\n[general]\nterminal = \"foot\"\n";
+    std::fs::write(&path, external).expect("change setting externally");
+    assert_eq!(config.check_history_undo(0), Ok(Undo::Conflict));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+    std::fs::write(&path, "[topbar]\naccent = 123\n").expect("write wrong type");
+    assert_eq!(config.check_history_undo(0), Ok(Undo::Conflict));
+    std::fs::write(&path, "[topbar\n").expect("write malformed settings");
+    assert!(config.check_history_undo(0).is_err());
+
+    config.set_wallpaper_fit(WallpaperFit::Tile);
+    assert!(config.check_history_undo(0).is_err());
+    assert!(config.is_dirty());
+    assert!(config.to_text().contains("wallpaper-fit = \"tile\""));
+    assert_eq!(config.history().entries().len(), 1);
+    std::fs::remove_dir_all(&dir).expect("cleanup");
+}
+
+#[test]
+fn undo_history_writes_only_the_recorded_key_and_rejects_external_changes() {
+    let dir = std::env::temp_dir().join(format!("glide-settings-undo-write-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let path = dir.join("glide.toml");
+    std::fs::write(&path, "# kept\n[topbar]\naccent = \"blue\" # accent\n[general]\nterminal = \"foot\"\n")
+        .expect("write initial settings");
+    let mut config = ConfigStore::load_from(&path);
+    config.set_accent(Accent::Malachite);
+    assert_eq!(config.save_dirty(), Ok(true));
+    let change = config.history().entries()[0].clone();
+    let external = "# external\n[topbar]\naccent = \"teal\"\n[general]\nterminal = \"kitty\"\n";
+    std::fs::write(&path, external).expect("external edit");
+    assert!(config.undo_history(&change).is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+    assert_eq!(config.history().entries().len(), 1);
+    assert!(config.refresh_if_changed());
+    assert_eq!(config.undo_history(&change), Ok(true));
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("# external"));
+    assert!(written.contains("accent = \"blue\""));
+    assert!(written.contains("terminal = \"kitty\""));
+    assert!(config.history().entries().is_empty());
+    assert_eq!(config.undo_history(&change), Ok(false));
+    std::fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn undo_history_keeps_record_on_unsaved_edits_or_io_failure() {
+    let dir = std::env::temp_dir().join(format!("glide-settings-undo-errors-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let path = dir.join("glide.toml");
+    let mut config = ConfigStore::load_from(&path);
+    config.set_accent(Accent::Malachite);
+    assert_eq!(config.save_dirty(), Ok(true));
+    let change = config.history().entries()[0].clone();
+    let original = std::fs::read(&path).unwrap();
+    config.set_wallpaper_fit(WallpaperFit::Tile);
+    assert!(config.undo_history(&change).is_err());
+    assert!(config.is_dirty());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(config.history().entries().len(), 1);
+    assert!(config.take_dirty());
+    std::fs::remove_file(&path).unwrap();
+    assert!(config.undo_history(&change).is_err());
+    assert_eq!(config.history().entries().len(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn undo_transform_preserves_unrelated_settings_and_refuses_conflicts() {
+    use glide_settings::services::config::prepare_history_undo_text;
+    use glide_settings::services::history::{History, Setting};
+
+    let mut history = History::default();
+    history.record_saved(Setting::Accent, Some("blue".into()), Some("teal".into()));
+    let change = &history.entries()[0];
+    let text = "# kept\n[topbar]\naccent = \"teal\" # accent\n[general]\nterminal = \"foot\"\n";
+    let result = prepare_history_undo_text(text, change).unwrap().unwrap();
+    assert!(result.contains("# kept"));
+    assert!(result.contains("accent = \"blue\" # accent"));
+    assert!(result.contains("terminal = \"foot\""));
+    assert_eq!(prepare_history_undo_text("[topbar]\naccent = \"amber\"\n", change), Ok(None));
+    assert_eq!(prepare_history_undo_text("[topbar]\naccent = 12\n", change), Ok(None));
+    assert!(prepare_history_undo_text("[topbar\n", change).is_err());
+
+    history.record_saved(Setting::DockAutohide, None, Some("always".into()));
+    let result = prepare_history_undo_text("[dock]\nautohide = \"always\"\nitem-size = 64\n", &history.entries()[0])
+        .unwrap()
+        .unwrap();
+    assert!(!result.contains("autohide"));
+    assert!(result.contains("item-size = 64"));
+    history.record_saved(Setting::Accent, Some("blue".into()), None);
+    let result = prepare_history_undo_text("[general]\nterminal = \"foot\"\n", &history.entries()[0]).unwrap().unwrap();
+    assert!(result.contains("accent = \"blue\""));
+    assert!(result.contains("terminal = \"foot\""));
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::time::Instant;
 
 const LIMIT: usize = 64;
 
@@ -24,6 +25,14 @@ pub struct Change {
     pub setting: Setting,
     pub before: Option<String>,
     pub after: Option<String>,
+    saved_at: Instant,
+}
+
+impl Change {
+    #[must_use]
+    pub fn age_seconds(&self, now: Instant) -> u64 {
+        now.saturating_duration_since(self.saved_at).as_secs()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +42,7 @@ pub enum Undo {
     Missing,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct History {
     entries: VecDeque<Change>,
     next_id: u64,
@@ -45,7 +54,7 @@ impl History {
             return;
         }
         self.next_id = self.next_id.wrapping_add(1);
-        self.entries.push_front(Change { id: self.next_id, setting, before, after });
+        self.entries.push_front(Change { id: self.next_id, setting, before, after, saved_at: Instant::now() });
         self.entries.truncate(LIMIT);
     }
 
@@ -54,10 +63,16 @@ impl History {
         &self.entries
     }
 
+    pub fn discard_setting(&mut self, setting: Setting) {
+        self.entries.retain(|change| change.setting != setting);
+    }
+
     #[must_use]
     pub fn prepare_undo(&self, index: usize, current: Option<&str>) -> Undo {
         let Some(change) = self.entries.get(index) else { return Undo::Missing };
-        if change.after.as_deref() != current {
+        if change.after.as_deref() != current
+            || self.entries.iter().take(index).any(|newer| newer.setting == change.setting)
+        {
             return Undo::Conflict;
         }
         Undo::Ready(change.clone())
@@ -67,6 +82,9 @@ impl History {
         let Some(index) = self.entries.iter().position(|entry| entry.id == change.id && entry == change) else {
             return false;
         };
+        if self.entries.iter().take(index).any(|newer| newer.setting == change.setting) {
+            return false;
+        }
         self.entries.remove(index);
         true
     }
@@ -102,6 +120,22 @@ mod tests {
     }
 
     #[test]
+    fn undo_requires_latest_change_of_each_setting_even_when_values_repeat() {
+        let mut history = History::default();
+        history.record_saved(Setting::Accent, Some("blue".into()), Some("teal".into()));
+        let Undo::Ready(stale) = history.prepare_undo(0, Some("teal")) else { panic!("matching value") };
+        history.record_saved(Setting::Accent, Some("teal".into()), Some("blue".into()));
+        history.record_saved(Setting::Accent, Some("blue".into()), Some("teal".into()));
+        history.record_saved(Setting::DockAutohide, None, Some("always".into()));
+        assert_eq!(history.prepare_undo(3, Some("teal")), Undo::Conflict);
+        assert!(!history.acknowledge_undo(&stale));
+        let Undo::Ready(latest) = history.prepare_undo(1, Some("teal")) else { panic!("latest accent") };
+        assert!(history.acknowledge_undo(&latest));
+        assert!(matches!(history.prepare_undo(1, Some("blue")), Undo::Ready(_)));
+        assert!(matches!(history.prepare_undo(0, Some("always")), Undo::Ready(_)));
+    }
+
+    #[test]
     fn records_are_bounded_newest_first_and_noops_are_ignored() {
         let mut history = History::default();
         history.record_saved(Setting::Accent, Some("blue".into()), Some("blue".into()));
@@ -112,5 +146,25 @@ mod tests {
         assert_eq!(history.entries().len(), LIMIT);
         assert_eq!(history.entries()[0].after.as_deref(), Some("70"));
         assert_eq!(history.entries().back().unwrap().before.as_deref(), Some("6"));
+    }
+
+    #[test]
+    fn age_uses_monotonic_save_time_and_never_underflows() {
+        let mut history = History::default();
+        let before = Instant::now();
+        history.record_saved(Setting::Accent, None, Some("teal".into()));
+        let change = &history.entries()[0];
+        assert_eq!(change.age_seconds(before), 0);
+        assert_eq!(change.age_seconds(change.saved_at + std::time::Duration::from_secs(125)), 125);
+    }
+
+    #[test]
+    fn discarding_a_setting_preserves_other_history() {
+        let mut history = History::default();
+        history.record_saved(Setting::Accent, None, Some("blue".into()));
+        history.record_saved(Setting::DockAutohide, None, Some("always".into()));
+        history.discard_setting(Setting::Accent);
+        assert_eq!(history.entries().len(), 1);
+        assert_eq!(history.entries()[0].setting, Setting::DockAutohide);
     }
 }

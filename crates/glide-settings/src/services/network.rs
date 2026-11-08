@@ -78,6 +78,7 @@ pub struct NetworkState {
     pub wifi_enabled: bool,
     pub wifi_hardware: bool,
     pub wifi_device: Option<String>,
+    pub wifi_list_read: bool,
     pub networks: Vec<AccessPoint>,
     pub wired: Vec<Wired>,
     pub profiles: Vec<Profile>,
@@ -573,16 +574,21 @@ pub fn read(rescan: Rescan) -> NetworkState {
             ],
         )
         .map(|text| parse_networks(&text, &known))
-        .unwrap_or_default()
     } else {
-        Vec::new()
+        None
     };
+    let wifi_list_read = networks.is_some();
     NetworkState {
         available: true,
         wifi_enabled,
         wifi_hardware: radios.wifi_hardware,
         wifi_device,
-        networks: networks.into_iter().filter(|point| !sharing || Some(&point.ssid) != hotspot_ssid.as_ref()).collect(),
+        wifi_list_read,
+        networks: networks
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|point| !sharing || Some(&point.ssid) != hotspot_ssid.as_ref())
+            .collect(),
         wired,
         profiles,
         hotspot_ssid,

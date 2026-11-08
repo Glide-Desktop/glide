@@ -1,3 +1,4 @@
+use glide_sdk::widget::{self as sdk, Fact};
 use iced::widget::{column, container, row};
 use iced::{Alignment, Element, Fill, Task};
 
@@ -10,7 +11,7 @@ use crate::services::config::ConfigStore;
 use crate::services::run::{Jobs, blocking};
 use crate::theme::{self, Tone};
 use crate::widgets::{self, Group, Row};
-use crate::widgets::{actions, chevron, form_row, lines, note, sheet};
+use crate::widgets::{chevron, form_row, note};
 
 mod tr {
     crate::i18n::catalogue! {
@@ -32,6 +33,8 @@ mod tr {
         TrustedHint => "Connects without asking and reconnects automatically", "Під'єднується без запиту й автоматично перепід'єднується";
         Blocked => "Blocked", "Заблокований";
         BlockedHint => "Refuse every connection from this device", "Відхиляти будь-які з'єднання від цього пристрою";
+        BlockAction => "Block", "Заблокувати";
+        UnblockAction => "Unblock", "Розблокувати";
         DeviceName => "Device name", "Назва пристрою";
         Headphones => "Headphones", "Навушники";
         Speaker => "Speaker", "Колонка";
@@ -46,11 +49,58 @@ mod tr {
         SearchHint => "Searching for 20 seconds. New devices appear as they are found.", "Пошук триває 20 секунд. Нові пристрої з'являються щойно їх знайдено.";
         PinHint => "Glide is not running, so devices that ask for a PIN code cannot be paired", "Glide не запущено, тож пристрої, що просять PIN-код, не вдасться спарити";
         Paired => "Paired", "Спарений";
+        Status => "Status", "Стан";
         NameInvalid => "Enter a name", "Введіть назву";
+        Enabled => "Enabled", "Увімкнено";
+        AdapterName => "Computer name", "Назва комп’ютера";
+        ConnectedOne => "device connected", "пристрій підключено";
+        ConnectedFew => "devices connected", "пристрої підключено";
+        ConnectedMany => "devices connected", "пристроїв підключено";
     }
 }
 
 use tr::Key as T;
+
+fn hero_text(c: &Ctx, state: &BluetoothState) -> (String, String) {
+    if !state.powered {
+        return ("Bluetooth".to_string(), c.t(K::BluetoothOff).to_string());
+    }
+    let connected = state.devices.iter().filter(|device| device.connected).count();
+    let title = if connected == 0 {
+        c.t(T::Enabled).to_string()
+    } else {
+        let count = glide_sdk::i18n::count(
+            u64::try_from(connected).unwrap_or(u64::MAX),
+            c.lang,
+            [c.t(T::ConnectedOne), c.t(T::ConnectedFew), c.t(T::ConnectedMany)],
+        );
+        format!("{} · {count}", c.t(T::Enabled))
+    };
+    let label = if state.adapter.discoverable { c.t(K::VisibleAs) } else { c.t(T::AdapterName) };
+    let description = if state.alias.is_empty() { String::new() } else { format!("{label} “{}”", state.alias) };
+    (title, description)
+}
+
+fn device_facts(c: &Ctx, device: &BtDevice) -> Vec<Fact> {
+    vec![
+        Fact::new(c.t(T::Kind), kind_label(c, bluetooth::device_kind(&device.icon))),
+        Fact::new(c.t(T::Status), c.t(if device.connected { K::Connected } else { K::NotConnected })),
+        Fact::new(c.t(T::Address), if device.address.is_empty() { "—" } else { &device.address }).mono(),
+    ]
+}
+
+fn connection_action(device: &BtDevice, idle: bool) -> Option<Msg> {
+    if !idle {
+        return None;
+    }
+    if device.connected {
+        Some(Msg::Disconnect(device.address.clone()))
+    } else if !device.blocked {
+        Some(Msg::Connect(device.address.clone()))
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -210,11 +260,7 @@ impl Pane for Page {
             };
             return widgets::empty_state(t, Icon::Bluetooth, title, hint);
         }
-        let status = if self.state.powered {
-            format!("{} “{}”", c.t(K::VisibleAs), self.state.alias)
-        } else {
-            c.t(K::BluetoothOff).to_string()
-        };
+        let (title, status) = hero_text(&c, &self.state);
         let blocked = (self.state.blocked && !self.state.powered)
             .then(|| widgets::banner(t, Tone::Warn, Icon::Warning, c.t(K::BluetoothBlocked), None));
         let page = column![
@@ -222,7 +268,7 @@ impl Pane for Page {
                 t,
                 Icon::Bluetooth,
                 super::Panel::Bluetooth.color(),
-                "Bluetooth",
+                title,
                 status,
                 Some(widgets::switch(t, self.state.powered, Msg::Power)),
             ),
@@ -233,7 +279,6 @@ impl Pane for Page {
         if !self.state.powered {
             return page.into();
         }
-        let page = page.push(self.adapter(&c));
         let mut mine = Group::new(t).title(c.t(K::MyDevices));
         let paired: Vec<&BtDevice> = self.state.paired().collect();
         if paired.is_empty() {
@@ -264,7 +309,7 @@ impl Pane for Page {
         if !c.online && (self.scanning || self.state.nearby().next().is_some()) {
             nearby = nearby.push(note(t, Icon::Info, c.t(T::PinHint)));
         }
-        page.push(mine.build()).push(nearby.build()).into()
+        page.push(mine.build()).push(nearby.build()).push(self.adapter(&c)).into()
     }
 
     fn tick(&mut self, _c: Ctx) -> Task<Msg> {
@@ -412,21 +457,21 @@ impl Page {
         let t = c.theme;
         let address = device.address.clone();
         let mut rows: Vec<Element<'a, Msg>> = Vec::new();
-        let mut info = vec![
-            (c.t(T::Kind).to_string(), kind_label(c, bluetooth::device_kind(&device.icon)).to_string()),
-            (c.t(T::Address).to_string(), device.address.clone()),
-            (
-                c.t(T::Paired).to_string(),
-                c.t(if device.connected { K::Connected } else { K::NotConnected }).to_string(),
-            ),
-        ];
+        rows.push(sdk::kv_grid(&t.paint, device_facts(c, device), if t.compact { 2 } else { 3 }));
         if let Some(level) = device.battery {
-            info.push((c.t(T::Battery).to_string(), format!("{level}%")));
+            let bar = container(widgets::progress_bar(t, f32::from(level) / 100.0)).width(140);
+            let value = sdk::text(format!("{level}%"), glide_sdk::theme::TextStyle::CALL);
+            rows.push(
+                Row::new(t, c.t(T::Battery)).suffix(row![bar, value].spacing(8).align_y(Alignment::Center)).build(),
+            );
         }
-        rows.push(lines(t, info));
-        if let Some(level) = device.battery {
-            rows.push(container(widgets::progress_bar(t, f32::from(level) / 100.0)).padding([2, 8]).into());
-        }
+        let trusted_address = address.clone();
+        rows.push(
+            Row::new(t, c.t(T::Trusted))
+                .subtitle(c.t(T::TrustedHint))
+                .suffix(widgets::switch(t, device.trusted, move |on| Msg::Trust(trusted_address.clone(), on)))
+                .build(),
+        );
         let valid = bluetooth::clean_alias(&self.device_name).is_some();
         let changed = self.device_name.trim() != device.name;
         let save = (valid && changed).then(|| Msg::SaveDeviceName(address.clone()));
@@ -443,24 +488,27 @@ impl Page {
             .align_y(Alignment::Center)
             .into(),
         ));
-        for (title, hint, value, msg) in [
-            (T::Trusted, T::TrustedHint, device.trusted, Msg::Trust as fn(_, _) -> _),
-            (T::Blocked, T::BlockedHint, device.blocked, Msg::Block),
-        ] {
-            let address = address.clone();
-            rows.push(
-                Row::new(t, c.t(title))
-                    .subtitle(c.t(hint))
-                    .suffix(widgets::switch(t, value, move |on| msg(address.clone(), on)))
-                    .build(),
-            );
-        }
-        rows.push(actions(vec![widgets::danger(
-            t,
+        let idle = self.jobs.busy.is_none();
+        let connection = sdk::compact_button(
+            &t.paint,
+            c.t(if device.connected { K::Disconnect } else { K::Connect }),
+            sdk::Tone::Neutral,
+            connection_action(device, idle),
+        );
+        let forget = sdk::compact_button(
+            &t.paint,
             c.t(K::Forget),
-            self.jobs.busy.is_none().then_some(Msg::Remove(address)),
-        )]));
-        sheet(t, rows)
+            sdk::Tone::Neutral,
+            idle.then(|| Msg::Remove(address.clone())),
+        );
+        let block = sdk::compact_button(
+            &t.paint,
+            c.t(if device.blocked { T::UnblockAction } else { T::BlockAction }),
+            if device.blocked { sdk::Tone::Neutral } else { sdk::Tone::Danger },
+            idle.then(|| Msg::Block(address, !device.blocked)),
+        );
+        rows.push(sdk::split_actions(vec![connection, forget], vec![block]));
+        sdk::detail_band(&t.paint, rows)
     }
 }
 
@@ -476,4 +524,87 @@ fn kind_label(c: &Ctx, kind: DeviceKind) -> &'static str {
         DeviceKind::Computer => T::Computer,
         DeviceKind::Other => T::Other,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::Lang;
+    use crate::theme::{Accent, Appearance, ThemeState};
+
+    #[test]
+    fn hero_reports_actual_visibility_and_connected_device_count() {
+        let c = Ctx {
+            theme: ThemeState::new(Appearance::Light, Accent::Azurit),
+            lang: Lang::Uk,
+            writable: true,
+            online: true,
+        };
+        let mut state = BluetoothState { powered: true, alias: "laptop".into(), ..BluetoothState::default() };
+        assert_eq!(hero_text(&c, &state), ("Увімкнено".into(), "Назва комп’ютера “laptop”".into()));
+        state.devices = vec![BtDevice { connected: true, ..BtDevice::default() }; 2];
+        state.adapter.discoverable = true;
+        assert_eq!(hero_text(&c, &state), ("Увімкнено · 2 пристрої підключено".into(), "Видимий як “laptop”".into()));
+        state.devices.push(BtDevice { connected: false, ..BtDevice::default() });
+        assert_eq!(hero_text(&c, &state).0, "Увімкнено · 2 пристрої підключено");
+        state.devices.extend(vec![BtDevice { connected: true, ..BtDevice::default() }; 3]);
+        assert_eq!(hero_text(&c, &state).0, "Увімкнено · 5 пристроїв підключено");
+        let english = Ctx { lang: Lang::En, ..c };
+        assert_eq!(hero_text(&english, &state).0, "Enabled · 5 devices connected");
+    }
+
+    #[test]
+    fn device_facts_show_real_state_and_unknown_address() {
+        let c = Ctx {
+            theme: ThemeState::new(Appearance::Light, Accent::Azurit),
+            lang: Lang::Uk,
+            writable: true,
+            online: true,
+        };
+        let device = BtDevice { icon: "audio-headphones".into(), battery: Some(45), ..BtDevice::default() };
+        assert_eq!(
+            device_facts(&c, &device),
+            vec![
+                Fact::new("Тип", "Навушники"),
+                Fact::new("Стан", c.t(K::NotConnected)),
+                Fact::new("Адреса", "—").mono(),
+            ]
+        );
+    }
+
+    #[test]
+    fn expanded_device_keeps_rename_trust_and_block_actions() {
+        let c = Ctx {
+            theme: ThemeState::new(Appearance::Light, Accent::Azurit),
+            lang: Lang::Uk,
+            writable: true,
+            online: true,
+        };
+        let address = "94:DB:00:00:00:3E".to_string();
+        let device =
+            BtDevice { address: address.clone(), name: "Headphones".into(), paired: true, ..BtDevice::default() };
+        let mut page =
+            Page { state: BluetoothState { devices: vec![device], ..BluetoothState::default() }, ..Page::default() };
+        let mut config = ConfigStore::parse("");
+        let _ = page.update(Msg::Expand(address.clone()), c, &mut config);
+        assert_eq!(page.expanded.as_deref(), Some(address.as_str()));
+        assert_eq!(page.device_name, "Headphones");
+        let _ = page.update(Msg::DeviceName("New name".into()), c, &mut config);
+        assert_eq!(page.device_name, "New name");
+        let _ = page.update(Msg::Trust(address.clone(), true), c, &mut config);
+        let _ = page.update(Msg::Block(address.clone(), true), c, &mut config);
+        let device = page.state.device(&address).unwrap();
+        assert!(device.trusted && device.blocked);
+    }
+
+    #[test]
+    fn connection_action_respects_connection_block_and_busy_state() {
+        let mut device = BtDevice { address: "device".into(), paired: true, ..BtDevice::default() };
+        assert!(matches!(connection_action(&device, true), Some(Msg::Connect(address)) if address == "device"));
+        assert!(connection_action(&device, false).is_none());
+        device.blocked = true;
+        assert!(connection_action(&device, true).is_none());
+        device.connected = true;
+        assert!(matches!(connection_action(&device, true), Some(Msg::Disconnect(address)) if address == "device"));
+    }
 }

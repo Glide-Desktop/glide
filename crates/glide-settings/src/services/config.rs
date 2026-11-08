@@ -6,6 +6,36 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 use crate::i18n::Lang;
 use crate::theme::{Accent, Appearance};
 
+pub fn prepare_history_undo_text(text: &str, change: &super::history::Change) -> Result<Option<String>, String> {
+    let mut doc = text.parse::<DocumentMut>().map_err(|err| err.to_string())?;
+    let (table, key) = change.setting.key();
+    let item = match doc.get(table) {
+        Some(table) if table.as_table_like().is_none() => return Ok(None),
+        Some(table) => table.get(key),
+        None => None,
+    };
+    if item.is_some_and(|item| item.as_str().is_none()) || item.and_then(Item::as_str) != change.after.as_deref() {
+        return Ok(None);
+    }
+    match &change.before {
+        Some(before) => {
+            let table = doc.as_table_mut().entry(table).or_insert_with(|| Item::Table(Table::new()));
+            let table = table.as_table_like_mut().expect("table was validated");
+            let mut replacement = value(before.as_str());
+            if let (Some(old), Some(new)) = (table.get(key).and_then(Item::as_value), replacement.as_value_mut()) {
+                *new.decor_mut() = old.decor().clone();
+            }
+            table.insert(key, replacement);
+        }
+        None => {
+            if let Some(table) = doc.get_mut(table).and_then(Item::as_table_like_mut) {
+                table.remove(key);
+            }
+        }
+    }
+    Ok(Some(doc.to_string()))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WallpaperFit {
     #[default]
@@ -163,10 +193,19 @@ fn modified(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HistoryValue {
+    Value(Option<String>),
+    Unsupported,
+}
+
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
     path: Option<PathBuf>,
     doc: DocumentMut,
+    saved_file: Option<Vec<u8>>,
+    saved_history_values: [HistoryValue; 2],
+    history: super::history::History,
     error: Option<(ConfigFault, String)>,
     dirty: bool,
     modified: Option<SystemTime>,
@@ -178,6 +217,9 @@ impl Default for ConfigStore {
         Self {
             path: None,
             doc: DocumentMut::new(),
+            saved_file: None,
+            saved_history_values: [HistoryValue::Value(None), HistoryValue::Value(None)],
+            history: super::history::History::default(),
             error: None,
             dirty: false,
             modified: None,
@@ -199,8 +241,8 @@ impl ConfigStore {
     pub fn load_from(path: &Path) -> Self {
         let stamp = modified(path);
         let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Ok(text) => Some(text),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
                 return Self {
                     path: Some(path.to_path_buf()),
@@ -210,7 +252,8 @@ impl ConfigStore {
                 };
             }
         };
-        let mut store = Self::parse(&text);
+        let mut store = Self::parse(text.as_deref().unwrap_or_default());
+        store.saved_file = text.map(String::into_bytes);
         store.path = Some(path.to_path_buf());
         store.modified = stamp;
         store
@@ -219,7 +262,11 @@ impl ConfigStore {
     #[must_use]
     pub fn parse(text: &str) -> Self {
         match text.parse::<DocumentMut>() {
-            Ok(doc) => Self { doc, ..Self::default() },
+            Ok(doc) => {
+                let mut store = Self { doc, ..Self::default() };
+                store.saved_history_values = store.history_values();
+                store
+            }
             Err(err) => Self {
                 error: Some((
                     ConfigFault::Parse,
@@ -238,7 +285,9 @@ impl ConfigStore {
             return false;
         }
         let system_language = self.system_language;
+        let history = std::mem::take(&mut self.history);
         *self = Self::load_from(&path).with_system_language(system_language);
+        self.history = history;
         true
     }
 
@@ -267,6 +316,20 @@ impl ConfigStore {
     }
 
     #[must_use]
+    pub const fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn save_dirty(&mut self) -> Result<bool, String> {
+        if !self.dirty {
+            return Ok(false);
+        }
+        self.save()?;
+        self.dirty = false;
+        Ok(true)
+    }
+
+    #[must_use]
     pub fn to_text(&self) -> String {
         self.doc.to_string()
     }
@@ -278,13 +341,117 @@ impl ConfigStore {
         let Some(path) = self.path.clone() else {
             return Ok(());
         };
-        let target = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if let Some(dir) = target.parent() {
-            std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
-        }
-        write_atomic(&target, self.doc.to_string().as_bytes()).map_err(|err| err.to_string())?;
+        let contents = self.doc.to_string().into_bytes();
+        glide_config::with_file_lock(&path, || {
+            let current = match std::fs::read(&path) {
+                Ok(contents) => Some(contents),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => return Err(err),
+            };
+            if current != self.saved_file {
+                return Err(std::io::Error::other("settings file changed since it was read"));
+            }
+            write_atomic(&path, &contents)
+        })
+        .map_err(|err| err.to_string())?;
+        self.saved_file = Some(contents);
         self.modified = modified(&path);
+        let values = self.history_values();
+        for (index, setting) in
+            [super::history::Setting::Accent, super::history::Setting::DockAutohide].into_iter().enumerate()
+        {
+            if let (HistoryValue::Value(before), HistoryValue::Value(after)) =
+                (&self.saved_history_values[index], &values[index])
+            {
+                self.history.record_saved(setting, before.clone(), after.clone());
+            } else if self.saved_history_values[index] != values[index] {
+                self.history.discard_setting(setting);
+            }
+        }
+        self.saved_history_values = values;
         Ok(())
+    }
+
+    fn history_values(&self) -> [HistoryValue; 2] {
+        [super::history::Setting::Accent, super::history::Setting::DockAutohide].map(|setting| {
+            let (table, key) = setting.key();
+            let Some(table) = self.doc.get(table) else { return HistoryValue::Value(None) };
+            let Some(table) = table.as_table_like() else { return HistoryValue::Unsupported };
+            match table.get(key) {
+                Some(value) => value
+                    .as_str()
+                    .map_or(HistoryValue::Unsupported, |value| HistoryValue::Value(Some(value.to_owned()))),
+                None => HistoryValue::Value(None),
+            }
+        })
+    }
+
+    #[must_use]
+    pub const fn history(&self) -> &super::history::History {
+        &self.history
+    }
+
+    pub fn undo_history(&mut self, change: &super::history::Change) -> Result<bool, String> {
+        use super::history::Undo;
+
+        if self.dirty {
+            return Err("unsaved settings".to_string());
+        }
+        if let Some(error) = self.error() {
+            return Err(error.to_string());
+        }
+        let Some(index) = self.history.entries().iter().position(|entry| entry == change) else {
+            return Ok(false);
+        };
+        if !matches!(self.history.prepare_undo(index, change.after.as_deref()), Undo::Ready(_)) {
+            return Ok(false);
+        }
+        let path = self.path.clone().ok_or_else(|| "settings file has no path".to_string())?;
+        let updated = glide_config::with_file_lock(&path, || {
+            let bytes = std::fs::read(&path)?;
+            if self.saved_file.as_ref() != Some(&bytes) {
+                return Err(std::io::Error::other("settings file changed since it was read"));
+            }
+            let text = std::str::from_utf8(&bytes).map_err(std::io::Error::other)?;
+            let updated = prepare_history_undo_text(text, change)
+                .map_err(std::io::Error::other)?
+                .ok_or_else(|| std::io::Error::other("settings value changed"))?;
+            write_atomic(&path, updated.as_bytes())?;
+            Ok(updated)
+        })
+        .map_err(|err| err.to_string())?;
+        let mut refreshed = Self::parse(&updated).with_system_language(self.system_language);
+        refreshed.path = Some(path.clone());
+        refreshed.saved_file = Some(updated.into_bytes());
+        refreshed.modified = modified(&path);
+        refreshed.history = std::mem::take(&mut self.history);
+        assert!(refreshed.history.acknowledge_undo(change));
+        *self = refreshed;
+        Ok(true)
+    }
+
+    pub fn check_history_undo(&self, index: usize) -> Result<super::history::Undo, String> {
+        use super::history::Undo;
+
+        let Some(change) = self.history.entries().get(index) else {
+            return Ok(Undo::Missing);
+        };
+        if self.dirty {
+            return Err("unsaved settings".to_string());
+        }
+        let path = self.path.as_ref().ok_or_else(|| "settings file has no path".to_string())?;
+        let text = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
+        let doc = text.parse::<DocumentMut>().map_err(|err| err.to_string())?;
+        let (table, key) = change.setting.key();
+        let item = match doc.get(table) {
+            Some(table) if table.as_table_like().is_none() => return Ok(Undo::Conflict),
+            Some(table) => table.get(key),
+            None => None,
+        };
+        if item.is_some_and(|item| item.as_str().is_none()) {
+            return Ok(Undo::Conflict);
+        }
+        Ok(self.history.prepare_undo(index, item.and_then(Item::as_str)))
     }
 
     fn item(&self, table: &str, key: &str) -> Option<&Item> {

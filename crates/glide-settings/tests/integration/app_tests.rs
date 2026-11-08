@@ -11,6 +11,24 @@ fn app(config: &str) -> App {
 }
 
 #[test]
+fn overview_undo_message_restores_saved_setting() {
+    let dir = std::env::temp_dir().join(format!("glide-settings-overview-undo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("glide.toml");
+    std::fs::write(&path, "[topbar]\naccent = \"blue\"\n").unwrap();
+    let mut config = ConfigStore::load_from(&path);
+    config.set_accent(Accent::Malachite);
+    assert_eq!(config.save_dirty(), Ok(true));
+    let change = config.history().entries()[0].clone();
+    let mut app = App::with_config(config);
+    let _ = app.update(Message::Home(glide_settings::panels::home::Msg::Undo(change)));
+    assert_eq!(app.config().get_str("topbar", "accent"), Some("blue"));
+    assert!(app.config().history().entries().is_empty());
+    assert!(std::fs::read_to_string(&path).unwrap().contains("accent = \"blue\""));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn every_key_is_translated_in_both_languages() {
     for key in Key::ALL {
         assert!(!key.en().trim().is_empty(), "{key:?} has no English text");

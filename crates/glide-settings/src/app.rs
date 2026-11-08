@@ -381,12 +381,12 @@ impl App {
     }
 
     fn commit(&mut self, task: Task<Message>) -> Task<Message> {
-        if !self.config.take_dirty() {
-            return task;
+        if self.config.is_dirty() {
+            self.apply_edited_look();
         }
-        self.apply_edited_look();
-        match self.config.save() {
-            Ok(()) => Task::batch([task, Task::perform(blocking(ipc::reload), Message::Reloaded)]),
+        match self.config.save_dirty() {
+            Ok(false) => task,
+            Ok(true) => Task::batch([task, Task::perform(blocking(ipc::reload), Message::Reloaded)]),
             Err(err) => {
                 self.notice = Some(Notice { text: format!("{}: {err}", K::SaveFailed.text(self.lang)), error: true });
                 task
@@ -396,6 +396,18 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Home(home::Msg::Undo(change)) => match self.config.undo_history(&change) {
+                Ok(true) => {
+                    self.apply_edited_look();
+                    Task::perform(blocking(ipc::reload), Message::Reloaded)
+                }
+                Ok(false) => Task::none(),
+                Err(err) => {
+                    self.notice =
+                        Some(Notice { text: format!("{}: {err}", K::SaveFailed.text(self.lang)), error: true });
+                    Task::none()
+                }
+            },
             Message::PanelSelected(panel)
             | Message::Home(home::Msg::Open(panel))
             | Message::LockScreen(lock_screen::Msg::Open(panel))
@@ -572,7 +584,7 @@ impl glide_sdk::App for App {
     type Message = Message;
 
     fn close_requested(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
-        if self.pages.displays.abandon(&mut self.config) && self.config.take_dirty() && self.config.save().is_ok() {
+        if self.pages.displays.abandon(&mut self.config) && self.config.save_dirty() == Ok(true) {
             let _ = ipc::reload();
         }
         shell.exit();

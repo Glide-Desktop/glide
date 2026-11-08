@@ -6,6 +6,7 @@ use iced::{Element, Task};
 use super::{Category, Ctx, Pane, Panel};
 use crate::services::audio::{self, AudioState};
 use crate::services::config::ConfigStore;
+use crate::services::history::{Change, Setting};
 use crate::services::network::{self, NetworkState, Rescan};
 use crate::services::power::{self, PowerState};
 use crate::services::run::{Generation, blocking};
@@ -61,10 +62,52 @@ mod tr {
         Saver => "Power Saver", "Економія";
         Balanced => "Balanced", "Збалансований";
         Performance => "Performance", "Продуктивність";
+        RecentChanges => "Recently changed", "Нещодавно змінено";
+        ThisSession => "This session", "За цей сеанс";
+        Accent => "Accent colour", "Акцентний колір";
+        DockAutohide => "Dock autohide", "Автоприховування дока";
+        DefaultValue => "Default", "Типове значення";
+        WhenCovered => "When covered", "Коли перекрито";
+        Always => "Always", "Завжди";
+        Never => "Never", "Ніколи";
+        Appearance => "Appearance", "Вигляд";
+        Desktop => "Desktop", "Робочий стіл";
+        Undo => "Revert", "Повернути";
     }
 }
 
 use tr::Key as T;
+
+fn history_value<'a>(c: &Ctx, setting: Setting, value: Option<&'a str>) -> &'a str {
+    let Some(value) = value else { return c.t(T::DefaultValue) };
+    match setting {
+        Setting::Accent => crate::theme::Accent::ALL
+            .iter()
+            .find(|accent| crate::services::config::accent_key(**accent) == value)
+            .map_or(value, |accent| match c.lang {
+                crate::i18n::Lang::Uk => accent.name_uk(),
+                crate::i18n::Lang::En => accent.name(),
+            }),
+        Setting::DockAutohide => match value {
+            "smart" => c.t(T::WhenCovered),
+            "always" => c.t(T::Always),
+            "never" => c.t(T::Never),
+            _ => value,
+        },
+    }
+}
+
+fn history_label(c: &Ctx, change: &Change) -> String {
+    let name = match change.setting {
+        Setting::Accent => c.t(T::Accent),
+        Setting::DockAutohide => c.t(T::DockAutohide),
+    };
+    format!(
+        "{name}: {} → {}",
+        history_value(c, change.setting, change.before.as_deref()),
+        history_value(c, change.setting, change.after.as_deref())
+    )
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -99,6 +142,7 @@ pub enum Msg {
     Loaded(u64, Box<Snapshot>),
     Toggle(Problem),
     Open(Panel),
+    Undo(Change),
 }
 
 #[derive(Debug, Default)]
@@ -344,7 +388,7 @@ impl Pane for Page {
                     self.open.push(problem);
                 }
             }
-            Msg::Open(_) => {}
+            Msg::Open(_) | Msg::Undo(_) => {}
         }
         Task::none()
     }
@@ -392,7 +436,33 @@ impl Pane for Page {
             .spacing(8)
             .push(sdk::section_heading(&widgets::paint(&t), c.t(T::Now)))
             .push(sdk::grid(tiles, per_line, 12.0));
-        page.push(now).into()
+        page = page.push(now);
+        if !config.history().entries().is_empty() {
+            let now = std::time::Instant::now();
+            let rows = config.history().entries().iter().take(3).enumerate().map(|(index, change)| {
+                let section = match change.setting {
+                    Setting::Accent => c.t(T::Appearance),
+                    Setting::DockAutohide => c.t(T::Desktop),
+                };
+                let age = glide_sdk::i18n::ago(change.age_seconds(now), c.lang);
+                let enabled = !config.is_dirty()
+                    && matches!(
+                        config.history().prepare_undo(index, change.after.as_deref()),
+                        crate::services::history::Undo::Ready(_)
+                    );
+                let action = sdk::sized_button(
+                    &widgets::paint(&t),
+                    c.t(T::Undo),
+                    sdk::Tone::Neutral,
+                    sdk::Size::Small,
+                    enabled.then(|| Msg::Undo(change.clone())),
+                );
+                Row::new(t, history_label(&c, change)).subtitle(format!("{section} · {age}")).suffix(action).build()
+            });
+            page = page
+                .push(Group::new(t).title(c.t(T::RecentChanges)).description(c.t(T::ThisSession)).extend(rows).build());
+        }
+        page.into()
     }
 }
 
@@ -453,12 +523,91 @@ mod tests {
     }
 
     #[test]
+    fn history_labels_show_actual_values_in_both_languages() {
+        let mut history = crate::services::history::History::default();
+        history.record_saved(Setting::Accent, Some("blue".into()), Some("teal".into()));
+        let change = &history.entries()[0];
+        let c = context(Appearance::Light);
+        assert_eq!(history_label(&c, change), "Акцентний колір: Азурит → Малахіт");
+        assert_eq!(history_label(&Ctx { lang: Lang::En, ..c }, change), "Accent colour: Azurit → Malachite");
+        history.record_saved(Setting::DockAutohide, None, Some("always".into()));
+        assert_eq!(history_label(&c, &history.entries()[0]), "Автоприховування дока: Типове значення → Завжди");
+    }
+
+    #[test]
+    fn clicking_revert_emits_action_and_restores_the_saved_setting() {
+        use iced::advanced::widget::Tree;
+        use iced::advanced::{Layout, Shell, clipboard, layout};
+        use iced::{Event, Font, Pixels, Point, Rectangle, Renderer, Size, mouse, window};
+
+        let dir = std::env::temp_dir().join(format!("glide-home-click-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("glide.toml");
+        std::fs::write(&path, "[topbar]\naccent = \"blue\"\n").unwrap();
+        let mut config = ConfigStore::load_from(&path);
+        config.set_accent(Accent::Malachite);
+        assert_eq!(config.save_dirty(), Ok(true));
+        let page = Page {
+            snapshot: Some(Snapshot {
+                network: NetworkState { networks: vec![access_point()], wifi_enabled: true, ..NetworkState::default() },
+                audio: AudioState {
+                    sinks: vec![audio::Device { id: 1, name: "Навушники".into(), is_default: true }],
+                    output: Some(audio::Level { volume: 0.62, muted: false }),
+                    ..AudioState::default()
+                },
+                power: PowerState {
+                    battery: Some(power::Battery { percent: 82, charging: false, full: false }),
+                    profile: Some(power::Profile::Balanced),
+                    ..PowerState::default()
+                },
+                disk: Some(disk()),
+                toolkits: None,
+            }),
+            ..Page::default()
+        };
+        let c = context(Appearance::Light);
+        let mut element = page.view(c, &config);
+        let mut tree = Tree::new(&element);
+        let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(Font::DEFAULT, Pixels(14.0)));
+        let size = Size::new(880.0, 700.0);
+        let bounds = Rectangle::with_size(size);
+        let node = element.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        let cursor = mouse::Cursor::Available(Point::new(820.0, 522.0));
+        let mut messages = Vec::new();
+        for event in [
+            Event::Window(window::Event::RedrawRequested(std::time::Instant::now())),
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ] {
+            let mut shell = Shell::new(&mut messages);
+            element.as_widget_mut().update(
+                &mut tree,
+                &event,
+                Layout::new(&node),
+                cursor,
+                &renderer,
+                &mut clipboard::Null,
+                &mut shell,
+                &bounds,
+            );
+        }
+        drop(element);
+        let [Msg::Undo(change)] = messages.as_slice() else { panic!("revert click must publish an undo message") };
+        let mut app = crate::App::with_config(config);
+        let _ = app.update(crate::app::Message::Home(Msg::Undo(change.clone())));
+        assert_eq!(app.config().get_str("topbar", "accent"), Some("blue"));
+        assert!(app.config().history().entries().is_empty());
+        assert!(std::fs::read_to_string(path).unwrap().contains("accent = \"blue\""));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     #[ignore = "writes a populated overview preview"]
     fn preview_populated_overview() {
         use iced::advanced::renderer::{self, Headless};
         use iced::advanced::widget::Tree;
-        use iced::advanced::{Layout, layout};
-        use iced::{Font, Pixels, Rectangle, Renderer, Size, mouse};
+        use iced::advanced::{Layout, Shell, clipboard, layout};
+        use iced::{Event, Font, Pixels, Rectangle, Renderer, Size, mouse, window};
 
         glide_sdk::theme::motion::set_scale(0.0);
         glide_sdk::theme::use_ui_family(None);
@@ -484,12 +633,28 @@ mod tests {
             toolkits: None,
         };
         let page = Page { snapshot: Some(snapshot), ..Page::default() };
-        let config = ConfigStore::parse("");
+        let dir = std::env::temp_dir().join(format!("glide-home-preview-{}", std::process::id()));
+        let path = dir.join("glide.toml");
+        let mut config = ConfigStore::load_from(&path);
+        config.set_accent(Accent::Malachite);
+        config.save_dirty().expect("save preview history");
         let mut element = page.view(c, &config);
         let mut tree = Tree::new(&element);
         let mut renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(Font::DEFAULT, Pixels(14.0)));
         let size = Size::new(880.0, 700.0);
         let node = element.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(size, size));
+        let mut messages = Vec::new();
+        let mut shell = Shell::new(&mut messages);
+        element.as_widget_mut().update(
+            &mut tree,
+            &Event::Window(window::Event::RedrawRequested(std::time::Instant::now())),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &renderer,
+            &mut clipboard::Null,
+            &mut shell,
+            &Rectangle::with_size(size),
+        );
         element.as_widget().draw(
             &tree,
             &mut renderer,
@@ -504,5 +669,6 @@ mod tests {
         let path = std::env::var_os("GLIDE_HOME_PREVIEW")
             .map_or_else(|| std::path::PathBuf::from("/tmp/opencode/home-populated.png"), std::path::PathBuf::from);
         image::save_buffer(path, &rgba, 880, 700, image::ColorType::Rgba8).expect("preview is saved");
+        std::fs::remove_dir_all(dir).expect("clean preview config");
     }
 }
