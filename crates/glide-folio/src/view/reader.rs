@@ -116,6 +116,15 @@ fn header<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
             doc.tool.is_some(),
             Size::Medium,
         ));
+    if doc.form && doc.editable() {
+        bar = bar.trailing(ui::sized_button(
+            &paint,
+            app.t(Key::AddSignature),
+            ui::Tone::Neutral,
+            Size::Small,
+            Some(Message::Form(Form::Sign(None))),
+        ));
+    }
     if doc.form && doc.form_dirty() {
         bar = bar.trailing(ui::sized_button(
             &paint,
@@ -204,7 +213,13 @@ fn layer(app: &App, doc: &Doc, page: usize, zoom: f32) -> Layer {
             .notes
             .iter()
             .filter(|n| n.page == page && n.mark == Mark::Ink)
-            .map(|n| (n.stroke.clone(), hue_color(n.hue)))
+            .flat_map(|n| n.strokes.iter().map(|stroke| (stroke.clone(), hue_color(n.hue))))
+            .chain(
+                doc.stamps
+                    .iter()
+                    .filter(|stamp| stamp.page == page)
+                    .flat_map(|stamp| stamp.strokes.iter().map(|stroke| (stroke.clone(), paper(doc.memory.paper).ink))),
+            )
             .collect(),
         tool,
         ink: hue_color(doc.hue),
@@ -221,6 +236,42 @@ fn form_overlay<'a>(app: &'a App, doc: &'a Doc, page: usize, zoom: f32) -> Optio
     for (index, field) in doc.opened.fields.iter().enumerate().filter(|(_, f)| f.page == page) {
         let (x, y, w, h) = (field.rect.x * zoom, field.rect.y * zoom, field.rect.w * zoom, field.rect.h * zoom);
         let control: Element<'a, Message> = match &field.kind {
+            FieldKind::Choice(options) if !options.is_empty() => {
+                let value = doc.values.get(&field.name).map(String::as_str).unwrap_or_default();
+                let chosen = options
+                    .iter()
+                    .find(|option| option.value == value)
+                    .or_else(|| options.iter().find(|option| option.label == value))
+                    .cloned();
+                let name = field.name.clone();
+                let pick = ui::dropdown_compact(
+                    &paint,
+                    options.clone(),
+                    chosen,
+                    move |option| Message::Form(Form::Value(name.clone(), option.value)),
+                    w.max(48.0),
+                );
+                container(pick).width(w.max(48.0)).height(h).center_y(h).into()
+            }
+            FieldKind::Radio(states) => {
+                let value = doc.values.get(&field.name).cloned().unwrap_or_default();
+                for (state, rect) in states {
+                    let mark = ui::radio_mark(
+                        &paint,
+                        *state == value,
+                        Some(Message::Form(Form::Value(field.name.clone(), state.clone()))),
+                    );
+                    let (w, h) = (rect.w * zoom, rect.h * zoom);
+                    layers.push(
+                        container(container(mark).width(w).height(h).center(Length::Shrink))
+                            .padding(Padding { top: rect.y * zoom, left: rect.x * zoom, right: 0.0, bottom: 0.0 })
+                            .width(Fill)
+                            .height(Fill)
+                            .into(),
+                    );
+                }
+                continue;
+            }
             FieldKind::Text | FieldKind::Choice(_) => {
                 let value = doc.values.get(&field.name).cloned().unwrap_or_default();
                 let name = field.name.clone();
@@ -243,28 +294,10 @@ fn form_overlay<'a>(app: &'a App, doc: &'a Doc, page: usize, zoom: f32) -> Optio
                 .center(Length::Shrink)
                 .into()
             }
-            FieldKind::Signature { signed: false, .. } if !doc.stamps.iter().any(|(f, _)| *f == index) => {
-                ui::sign_here(&paint, app.t(Key::SignHere), w, h, Message::Form(Form::Sign(index)))
+            FieldKind::Signature { signed: false, .. } if !doc.stamped(index) && doc.editable() => {
+                ui::sign_here(&paint, app.t(Key::SignHere), w, h, Message::Form(Form::Sign(Some(index))))
             }
-            FieldKind::Signature { .. } => {
-                let strokes: Vec<(Vec<(f32, f32)>, Color)> = doc
-                    .stamps
-                    .iter()
-                    .filter(|(f, _)| *f == index)
-                    .flat_map(|(_, s)| {
-                        s.iter().map(|stroke| {
-                            (
-                                stroke.iter().map(|(sx, sy)| (sx - field.rect.x, sy - field.rect.y)).collect(),
-                                Color::from_rgb8(0x1b, 0x1a, 0x17),
-                            )
-                        })
-                    })
-                    .collect();
-                if strokes.is_empty() {
-                    continue;
-                }
-                ui::page_layer(Layer { scale: zoom, strokes, ..Layer::default() }, w, h, |_| Message::Ignore)
-            }
+            FieldKind::Signature { .. } => continue,
         };
         layers.push(
             container(control)
@@ -277,11 +310,37 @@ fn form_overlay<'a>(app: &'a App, doc: &'a Doc, page: usize, zoom: f32) -> Optio
     (!layers.is_empty()).then(|| stack(layers).into())
 }
 
+fn text_notes<'a>(doc: &'a Doc, page: usize, zoom: f32) -> Option<Element<'a, Message>> {
+    let layers: Vec<Element<'a, Message>> = doc
+        .notes
+        .iter()
+        .filter(|n| n.page == page && n.mark == Mark::Text && !n.comment.is_empty())
+        .filter_map(|n| {
+            let rect = n.rects.first()?;
+            let words = iced::widget::text(n.comment.as_str())
+                .size((12.0 * zoom).max(4.0))
+                .color(paper(doc.memory.paper).ink)
+                .width((rect.w * zoom).max(1.0));
+            Some(
+                container(words)
+                    .padding(Padding { top: rect.y * zoom, left: rect.x * zoom, right: 0.0, bottom: 0.0 })
+                    .width(Fill)
+                    .height(Fill)
+                    .into(),
+            )
+        })
+        .collect();
+    (!layers.is_empty()).then(|| stack(layers).into())
+}
+
 fn page<'a>(app: &'a App, doc: &'a Doc, index: usize, zoom: f32) -> Element<'a, Message> {
     let size = doc.size(index);
     let (w, h) = ((size.w * zoom).round(), (size.h * zoom).round());
     let mut over: Vec<Element<'a, Message>> =
         vec![ui::page_layer(layer(app, doc, index, zoom), w, h, move |event| Message::Read(Read::Page(index, event)))];
+    if let Some(notes) = text_notes(doc, index, zoom) {
+        over.push(notes);
+    }
     if let Some(form) = form_overlay(app, doc, index, zoom) {
         over.push(form);
     }
@@ -317,7 +376,9 @@ pub fn page_origin(doc: &Doc, index: usize) -> (f32, f32) {
     let at = doc.row_of(index);
     let row = rows.get(at).cloned().unwrap_or_default();
     let width = row_width(doc, &row, zoom);
-    let mut x = ((doc.viewport.width - width) / 2.0).max(MARGIN);
+    let widest = rows.iter().map(|row| row_width(doc, row, zoom)).fold(0.0, f32::max);
+    let column = content_width(doc.viewport.width, widest);
+    let mut x = ((column - width) / 2.0).max(MARGIN) - doc.scroll_x;
     for p in &row {
         if *p == index {
             break;
@@ -371,7 +432,7 @@ fn pages<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
             vertical: scrollable::Scrollbar::new(),
             horizontal: scrollable::Scrollbar::new(),
         })
-        .on_scroll(|viewport| Message::Read(Read::Scrolled(viewport.bounds(), viewport.absolute_offset().y)))
+        .on_scroll(|viewport| Message::Read(Read::Scrolled(viewport.bounds(), viewport.absolute_offset())))
         .width(Fill)
         .height(Fill)
         .style(move |theme, status| {
@@ -407,7 +468,10 @@ fn reflow<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
         column = column.push(words);
     }
     let _ = app;
-    let body = scrollable(container(column).center_x(Fill)).id(PAGES_ID).height(Fill);
+    let body = scrollable(container(column).center_x(Fill))
+        .id(PAGES_ID)
+        .height(Fill)
+        .on_scroll(|viewport| Message::Read(Read::Reflowed(viewport.relative_offset().y)));
     container(body)
         .width(Fill)
         .height(Fill)
@@ -714,7 +778,7 @@ fn link_float<'a>(app: &'a App, doc: &'a Doc) -> Option<Element<'a, Message>> {
                 &address,
                 app.t(Key::ExternalLink),
                 (app.t(Key::Open), Message::Read(Read::Follow(link.target.clone()))),
-                (app.t(Key::CopyAddress), Message::Toast(uri.clone())),
+                (app.t(Key::CopyAddress), Message::Copy(uri.clone())),
             )
         }
     };
@@ -773,11 +837,20 @@ fn ocr_float<'a>(app: &'a App, doc: &'a Doc) -> Option<Element<'a, Message>> {
                 .width(560)
                 .into()
         }
-        Ocr::Running { done, total } => column![
+        Ocr::Running { done, total, .. } => column![
             row![
                 ui::text(app.t(Key::Recognising), TextStyle::HEAD).width(Fill),
-                ui::text(format!("{done} / {total}"), TextStyle::NUM).color(paint.fg_2())
-            ],
+                ui::text(format!("{done} / {total}"), TextStyle::NUM).color(paint.fg_2()),
+                ui::sized_button(
+                    &paint,
+                    app.t(Key::Stop),
+                    ui::Tone::Ghost,
+                    Size::Small,
+                    Some(Message::Show(Show::OcrDismiss))
+                ),
+            ]
+            .spacing(SP2)
+            .align_y(Alignment::Center),
             ui::progress(&paint, Some(*done as f32 / (*total).max(1) as f32)),
             ui::text(app.t(Key::KeepReading), TextStyle::CAP).color(paint.fg_2()),
         ]
@@ -831,14 +904,10 @@ fn damaged_float<'a>(app: &'a App, doc: &'a Doc) -> Option<Element<'a, Message>>
 
 fn signing_float<'a>(app: &'a App, doc: &'a Doc) -> Option<Element<'a, Message>> {
     let signing = doc.signing.as_ref()?;
-    let field = doc.opened.fields.get(signing.field)?;
     let paint = app.paint;
     let zoom = doc.zoom();
-    let (x, y) = page_origin(doc, field.page);
-    let modes = [(0u8, app.t(Key::Draw)), (1u8, app.t(Key::Type)), (2u8, app.t(Key::Picture))];
     let content = column![
         ui::text(app.t(Key::YourSignature), TextStyle::HEAD),
-        ui::segmented_fill(&paint, &modes, 0u8, |_| Message::Ignore),
         stack![
             ui::signature_pad(&paint, signing.strokes.clone(), 120.0, |stroke| Message::Form(Form::Stroke(stroke))),
             container(ui::sized_button(
@@ -873,16 +942,29 @@ fn signing_float<'a>(app: &'a App, doc: &'a Doc) -> Option<Element<'a, Message>>
     .spacing(SP3)
     .width(crate::view::SIGNATURE_PAD.0);
     let card = crate::view::SIGNATURE_PAD.0 + 28.0 + 16.0;
-    let right = x + (field.rect.x + field.rect.w) * zoom + 16.0;
-    let left = if right + card <= doc.viewport.width { right } else { (x + field.rect.x * zoom - card).max(8.0) };
-    Some(place(ui::floating(&paint, content, 14), left, (y + field.rect.y * zoom - 120.0).max(8.0)))
+    let tall = crate::view::SIGNATURE_PAD.1 + 132.0;
+    let field = signing.field.and_then(|index| doc.opened.fields.get(index));
+    let (left, top) = match field {
+        Some(field) => {
+            let (x, y) = page_origin(doc, field.page);
+            let right = x + (field.rect.x + field.rect.w) * zoom + 16.0;
+            let left = if right + card <= doc.viewport.width { right } else { x + field.rect.x * zoom - card };
+            (left, y + field.rect.y * zoom - 120.0)
+        }
+        None => ((doc.viewport.width - card) / 2.0, doc.viewport.height * 0.18),
+    };
+    let left = left.min(doc.viewport.width - card - 8.0).max(8.0);
+    let top = top.min(doc.viewport.height - tall - 8.0).max(8.0);
+    Some(place(ui::floating(&paint, content, 14), left, top))
 }
 
 fn status<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
     let paint = app.paint;
     let fraction = (doc.page() + 1) as f32 / doc.count().max(1) as f32;
     let percent = (fraction * 100.0).round() as u32;
-    let left: Vec<Element<'a, Message>> = if doc.tool.is_some() {
+    let left: Vec<Element<'a, Message>> = if doc.placing.is_some() {
+        vec![ui::text(app.t(Key::PlaceHint), TextStyle::CAP).color(paint.acc_text()).into()]
+    } else if doc.tool.is_some() {
         let hint = match doc.tool {
             Some(Tool::Highlight) => Key::HintHighlight,
             Some(Tool::Underline) => Key::HintUnderline,

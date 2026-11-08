@@ -57,4 +57,9 @@ fn installer_stages_the_welcome_binary_desktop_entry_and_icon() {
     assert_eq!(std::fs::read(desktop).unwrap(), std::fs::read(root.join("data/glide-welcome.desktop")).unwrap());
     let icon = destination.join("usr/share/icons/hicolor/scalable/apps/glide-welcome.svg");
     assert_eq!(std::fs::read(icon).unwrap(), std::fs::read(root.join("data/glide.svg")).unwrap());
+    let folio_desktop = destination.join("opt/glide-test/share/applications/glide-folio.desktop");
+    let folio_desktop = std::fs::read_to_string(folio_desktop).unwrap();
+    assert!(folio_desktop.lines().any(|line| line == "Icon=glide-folio"));
+    let folio_icon = destination.join("usr/share/icons/hicolor/scalable/apps/glide-folio.svg");
+    assert_eq!(std::fs::read(folio_icon).unwrap(), std::fs::read(root.join("data/glide-folio.svg")).unwrap());
 }

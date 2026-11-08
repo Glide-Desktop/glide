@@ -70,6 +70,24 @@ pub fn fold(text: &str) -> String {
         .collect()
 }
 
+fn folded_with_origin(text: &str, case: bool) -> (String, Vec<usize>) {
+    let mut folded = String::new();
+    let mut origin = Vec::new();
+    let mut buffer = [0u8; 4];
+    for (index, c) in text.chars().enumerate() {
+        if case {
+            folded.push(c);
+            origin.push(index);
+            continue;
+        }
+        for f in fold(c.encode_utf8(&mut buffer)).chars() {
+            folded.push(f);
+            origin.push(index);
+        }
+    }
+    (folded, origin)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
     pub page: usize,
@@ -80,15 +98,132 @@ pub struct Hit {
 }
 
 #[must_use]
-pub fn find(page: usize, text: &PageText, query: &str, whole_word: bool, case: bool) -> Vec<Hit> {
-    let needle = if case { query.trim().to_string() } else { fold(query.trim()) };
+pub fn mentions(text: &str, query: &str, whole_word: bool, case: bool) -> bool {
+    let (hay, needle) =
+        if case { (text.to_string(), query.trim().to_string()) } else { (fold(text), fold(query.trim())) };
     if needle.is_empty() {
-        return Vec::new();
+        return false;
     }
-    let norm = |s: &str| if case { s.to_string() } else { fold(s) };
+    hay.match_indices(&needle).any(|(at, found)| {
+        let before = hay[..at].chars().next_back();
+        let after = hay[at + found.len()..].chars().next();
+        !whole_word || !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    Start,
+    End,
+    Whole,
+}
+
+fn locate(text: &str, token: &str, case: bool, anchor: Anchor, whole: bool) -> Option<(usize, usize)> {
+    let (hay, origin) = folded_with_origin(text, case);
+    let lead = hay.len() - hay.trim_start_matches(|c: char| !c.is_alphanumeric()).len();
+    let trail = hay.trim_end_matches(|c: char| !c.is_alphanumeric()).len();
+    if lead >= trail || token.is_empty() {
+        return None;
+    }
+    let core = &hay[lead..trail];
+    let at = if whole || anchor == Anchor::Whole {
+        (core == token).then_some(lead)?
+    } else if anchor == Anchor::End {
+        core.ends_with(token).then(|| trail - token.len())?
+    } else {
+        core.starts_with(token).then_some(lead)?
+    };
+    let first = hay[..at].chars().count();
+    let start = *origin.get(first)?;
+    let end = origin.get(first + token.chars().count() - 1).map_or(start + 1, |last| last + 1);
+    Some((start, end))
+}
+
+fn span(word: &Word, start: usize, end: usize) -> Rect {
+    let count = word.text.chars().count().max(1) as f32;
+    let share = |n: usize| word.rect.w * n as f32 / count;
+    Rect::new(word.rect.x + share(start), word.rect.y, (share(end) - share(start)).max(2.0), word.rect.h)
+}
+
+fn context(text: &PageText, first: usize, last: usize, prefix: &str, suffix: &str) -> (String, String) {
+    let before_words: Vec<&str> = text.words[first.saturating_sub(5)..first].iter().map(|w| w.text.as_str()).collect();
+    let after_words: Vec<&str> = text.words.iter().skip(last + 1).take(6).map(|w| w.text.as_str()).collect();
+    let mut before = before_words.join(" ");
+    if !before.is_empty() {
+        before.push(' ');
+    }
+    before.push_str(prefix);
+    let mut after = suffix.to_string();
+    if !after_words.is_empty() {
+        after.push(' ');
+        after.push_str(&after_words.join(" "));
+    }
+    (before, after)
+}
+
+fn find_phrase(page: usize, text: &PageText, tokens: &[String], whole_word: bool, case: bool) -> Vec<Hit> {
+    let count = tokens.len();
+    let mut hits = Vec::new();
+    for index in 0..text.words.len().saturating_sub(count - 1) {
+        let words = &text.words[index..index + count];
+        let Some(head) = locate(&words[0].text, &tokens[0], case, Anchor::End, whole_word) else {
+            continue;
+        };
+        let middle = (1..count - 1).all(|i| locate(&words[i].text, &tokens[i], case, Anchor::Whole, true).is_some());
+        if !middle {
+            continue;
+        }
+        let Some(tail) = locate(&words[count - 1].text, &tokens[count - 1], case, Anchor::Start, whole_word) else {
+            continue;
+        };
+        let mut rects: Vec<(u32, Rect)> = Vec::new();
+        let mut parts: Vec<String> = Vec::new();
+        for (i, word) in words.iter().enumerate() {
+            let chars: Vec<char> = word.text.chars().collect();
+            let (start, end) = if i == 0 {
+                (head.0, chars.len())
+            } else if i == count - 1 {
+                (0, tail.1)
+            } else {
+                (0, chars.len())
+            };
+            parts.push(chars[start.min(chars.len())..end.min(chars.len())].iter().collect());
+            let rect = span(word, start, end);
+            match rects.last_mut() {
+                Some((line, joined)) if *line == word.line => *joined = joined.union(&rect),
+                _ => rects.push((word.line, rect)),
+            }
+        }
+        let first: Vec<char> = words[0].text.chars().collect();
+        let last: Vec<char> = words[count - 1].text.chars().collect();
+        let prefix: String = first[..head.0.min(first.len())].iter().collect();
+        let suffix: String = last[tail.1.min(last.len())..].iter().collect();
+        let (before, after) = context(text, index, index + count - 1, &prefix, &suffix);
+        hits.push(Hit {
+            page,
+            rects: rects.into_iter().map(|(_, rect)| rect).collect(),
+            before,
+            matched: parts.join(" "),
+            after,
+        });
+    }
+    hits
+}
+
+#[must_use]
+pub fn find(page: usize, text: &PageText, query: &str, whole_word: bool, case: bool) -> Vec<Hit> {
+    let tokens: Vec<String> =
+        query.split_whitespace().map(|token| if case { token.to_string() } else { fold(token) }).collect();
+    if tokens.len() > 1 {
+        return find_phrase(page, text, &tokens, whole_word, case);
+    }
+    let Some(needle) = tokens.into_iter().next() else {
+        return Vec::new();
+    };
+    let needle_chars = needle.chars().count();
     let mut hits = Vec::new();
     for (index, word) in text.words.iter().enumerate() {
-        let hay = norm(&word.text);
+        let (hay, origin) = folded_with_origin(&word.text, case);
         let Some(at) = hay.find(&needle) else {
             continue;
         };
@@ -99,26 +234,14 @@ pub fn find(page: usize, text: &PageText, query: &str, whole_word: bool, case: b
             }
         }
         let chars: Vec<char> = word.text.chars().collect();
-        let start = hay[..at].chars().count();
-        let len = needle.chars().count().min(chars.len().saturating_sub(start));
-        let share = |n: usize| word.rect.w * n as f32 / chars.len().max(1) as f32;
-        let rect = Rect::new(word.rect.x + share(start), word.rect.y, share(len).max(2.0), word.rect.h);
-        let before_words: Vec<&str> =
-            text.words[index.saturating_sub(5)..index].iter().map(|w| w.text.as_str()).collect();
-        let after_words: Vec<&str> = text.words.iter().skip(index + 1).take(6).map(|w| w.text.as_str()).collect();
+        let first = hay[..at].chars().count();
+        let start = origin.get(first).copied().unwrap_or(0).min(chars.len());
+        let end = origin.get(first + needle_chars - 1).map_or(chars.len(), |last| last + 1).clamp(start, chars.len());
+        let rect = span(word, start, end);
         let prefix: String = chars[..start].iter().collect();
-        let suffix: String = chars[start + len..].iter().collect();
-        let mut before = before_words.join(" ");
-        if !before.is_empty() {
-            before.push(' ');
-        }
-        before.push_str(&prefix);
-        let mut after = suffix;
-        if !after_words.is_empty() {
-            after.push(' ');
-            after.push_str(&after_words.join(" "));
-        }
-        hits.push(Hit { page, rects: vec![rect], before, matched: chars[start..start + len].iter().collect(), after });
+        let suffix: String = chars[end..].iter().collect();
+        let (before, after) = context(text, index, index, &prefix, &suffix);
+        hits.push(Hit { page, rects: vec![rect], before, matched: chars[start..end].iter().collect(), after });
     }
     hits
 }
@@ -214,6 +337,50 @@ mod tests {
         assert!(prefix[0].rects[0].w < text.words[1].rect.w);
         assert!(find(6, &text, "прост", true, false).is_empty());
         assert!(find(6, &text, "простір", false, true).is_empty());
+    }
+
+    #[test]
+    fn a_match_after_a_letter_that_folds_into_two_maps_back_to_the_original_letters() {
+        let mut glyphs = Vec::new();
+        let mut x = 10.0;
+        for c in "İZMİR".chars() {
+            glyphs.push(glyph(&c.to_string(), x, 20.0));
+            x += 6.0;
+        }
+        let text = words(&glyphs, Vec::new());
+        let hits = find(0, &text, "r", false, false);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].matched, "R");
+        assert_eq!(hits[0].before, "İZMİ");
+        let whole = find(0, &text, "mi̇r", false, false);
+        assert_eq!(whole[0].matched, "MİR");
+    }
+
+    #[test]
+    fn a_phrase_is_found_across_words_and_lines() {
+        let text = sample();
+        let same_line = find(0, &text, "робочі  простори", false, false);
+        assert_eq!(same_line.len(), 1);
+        assert_eq!(same_line[0].matched, "Робочі простори");
+        assert_eq!(same_line[0].rects.len(), 1);
+        let across = find(0, &text, "простори простір", false, false);
+        assert_eq!(across.len(), 1);
+        assert_eq!(across[0].rects.len(), 2, "one box per line");
+        assert_eq!(across[0].after, " зникає");
+        let partial = find(0, &text, "очі прос", false, false);
+        assert_eq!(partial[0].matched, "очі прос");
+        assert_eq!(partial[0].before, "Роб");
+        assert!(find(0, &text, "очі прос", true, false).is_empty());
+        assert!(find(0, &text, "простори зникає", false, false).is_empty());
+    }
+
+    #[test]
+    fn notes_are_searched_with_the_case_and_whole_word_switches() {
+        assert!(mentions("Перевірити робочі простори", "робочі простори", false, false));
+        assert!(mentions("Перевірити", "перевір", false, false));
+        assert!(!mentions("Перевірити", "перевір", true, false));
+        assert!(mentions("Перевірити, потім", "перевірити", true, false));
+        assert!(!mentions("Перевірити", "перевірити", false, true));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
-use crate::doc::{self, Engine, Format};
+use crate::doc::{self, Format};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Layout {
@@ -62,6 +62,7 @@ pub struct Memory {
     pub notes: usize,
     pub unsigned: bool,
     pub filled: (usize, usize),
+    pub offset: f32,
 }
 
 impl Default for Memory {
@@ -84,6 +85,7 @@ impl Default for Memory {
             notes: 0,
             unsigned: false,
             filled: (0, 0),
+            offset: 0.0,
         }
     }
 }
@@ -126,8 +128,24 @@ pub fn load_memories() -> BTreeMap<String, Memory> {
         .unwrap_or_default()
 }
 
+pub const MEMORY_LIMIT: usize = 2000;
+
+#[must_use]
+pub fn trimmed(memories: &BTreeMap<String, Memory>) -> BTreeMap<String, Memory> {
+    let gone = |key: &str| {
+        let path = Path::new(key);
+        path.parent().is_some_and(Path::is_dir) && !path.exists()
+    };
+    let mut kept: Vec<(&String, &Memory)> = memories.iter().filter(|(key, _)| !gone(key)).collect();
+    if kept.len() > MEMORY_LIMIT {
+        kept.sort_by_key(|(_, memory)| std::cmp::Reverse(memory.opened));
+        kept.truncate(MEMORY_LIMIT);
+    }
+    kept.into_iter().map(|(key, memory)| (key.clone(), memory.clone())).collect()
+}
+
 pub fn save_memories(memories: &BTreeMap<String, Memory>) {
-    if let (Some(path), Ok(text)) = (state_file(), toml::to_string(memories)) {
+    if let (Some(path), Ok(text)) = (state_file(), toml::to_string(&trimmed(memories))) {
         let _ = write_atomic(&path, &text);
     }
 }
@@ -321,11 +339,16 @@ pub fn cover(path: &Path) -> Option<PathBuf> {
     if failed.exists() {
         return None;
     }
+    if !Format::of(path)
+        .is_some_and(|format| matches!(format, Format::Pdf | Format::Comic | Format::Tiff | Format::Epub))
+    {
+        return None;
+    }
     let made = std::panic::catch_unwind(|| {
-        let mut engine: Box<dyn Engine> = doc::open(path, None).ok()?;
-        let size = *engine.opened().pages.first()?;
-        let scale = COVER_SIDE as f32 / size.w.max(size.h);
-        engine.render(0, scale)
+        let mut session = crate::worker::Session::open(path, None).ok()?;
+        let size = *session.opened().pages.first()?;
+        let scale = COVER_SIDE as f32 / size.w.max(size.h).max(1.0);
+        session.render(0, scale)
     })
     .ok()
     .flatten();
@@ -346,6 +369,29 @@ pub fn cover(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleted_files_are_forgotten_but_files_on_a_missing_drive_are_kept() {
+        let dir = std::env::temp_dir().join(format!("glide-folio-trim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let here = dir.join("here.pdf");
+        std::fs::write(&here, b"%PDF").unwrap();
+        let mut memories = BTreeMap::new();
+        for path in [here.clone(), dir.join("deleted.pdf"), PathBuf::from("/run/media/nobody-here/book.pdf")] {
+            memories.insert(key(&path), Memory::default());
+        }
+        let kept = trimmed(&memories);
+        assert!(kept.contains_key(&key(&here)));
+        assert!(!kept.contains_key(&key(&dir.join("deleted.pdf"))));
+        assert!(kept.contains_key("/run/media/nobody-here/book.pdf"));
+        let many: BTreeMap<String, Memory> = (0..MEMORY_LIMIT + 5)
+            .map(|n| (format!("/nowhere-{n}/f.pdf"), Memory { opened: n as u64, ..Memory::default() }))
+            .collect();
+        let kept = trimmed(&many);
+        assert_eq!(kept.len(), MEMORY_LIMIT);
+        assert!(!kept.contains_key("/nowhere-0/f.pdf"), "the oldest go first");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn recent_files_come_from_the_xbel_in_order_without_duplicates() {

@@ -151,6 +151,26 @@ fn read_entry(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Optio
     Some(text)
 }
 
+fn resolve_href(base: &str, href: &str) -> String {
+    let href = href.split(['#', '?']).next().unwrap_or("");
+    let decoded = String::from_utf8_lossy(&glide_config::uri::decode(href)).into_owned();
+    let joined = match decoded.strip_prefix('/') {
+        Some(rooted) => rooted.to_string(),
+        None => format!("{base}{decoded}"),
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for part in joined.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
+}
+
 fn spine(archive: &mut zip::ZipArchive<std::fs::File>) -> Result<(Vec<String>, Info), OpenError> {
     let container = read_entry(archive, "META-INF/container.xml").ok_or(OpenError::Damaged)?;
     let root = attribute(&container, "full-path").ok_or(OpenError::Damaged)?;
@@ -160,7 +180,7 @@ fn spine(archive: &mut zip::ZipArchive<std::fs::File>) -> Result<(Vec<String>, I
     for item in opf.split("<item ").skip(1) {
         let tag = item.split('>').next().unwrap_or("");
         if let (Some(id), Some(href)) = (attribute(tag, "id"), attribute(tag, "href")) {
-            manifest.insert(id, format!("{base}{href}"));
+            manifest.insert(id, resolve_href(&base, &href));
         }
     }
     let order: Vec<String> = opf
@@ -277,6 +297,14 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn manifest_links_are_decoded_and_resolved_against_the_package_folder() {
+        assert_eq!(resolve_href("OEBPS/", "Text/chapter%201.xhtml#start"), "OEBPS/Text/chapter 1.xhtml");
+        assert_eq!(resolve_href("OEBPS/Content/", "../Text/./x.xhtml"), "OEBPS/Text/x.xhtml");
+        assert_eq!(resolve_href("", "x.xhtml"), "x.xhtml");
+        assert_eq!(resolve_href("OEBPS/", "/root.xhtml"), "root.xhtml");
+    }
 
     #[test]
     fn markup_becomes_blocks() {

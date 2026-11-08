@@ -48,7 +48,7 @@ impl<T> std::fmt::Debug for Slot<T> {
     }
 }
 
-pub type Sessions = Result<(Session, Session), OpenError>;
+pub type Sessions = Result<(Session, Session, u64), OpenError>;
 
 #[derive(Debug, Clone)]
 pub enum Screen {
@@ -59,10 +59,19 @@ pub enum Screen {
     Reading,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum After {
+    Stay,
+    Quit,
+    Library,
+    Open(PathBuf),
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Window(Action),
     Close,
+    Copy(String),
     Ignore,
     Tick,
     Frame(Instant),
@@ -95,12 +104,13 @@ pub struct App {
     pub query: String,
     pub doc: Option<Doc>,
     pub generation: u64,
+    pub scans: u64,
     pub password: Option<String>,
     pub props: Option<PropsTab>,
     pub page_input: Option<String>,
     pub modifiers: keyboard::Modifiers,
     pub dpr: f32,
-    pub saved_memory: Option<Memory>,
+    pub saved_memory: Option<(String, Memory)>,
     pub now: Instant,
     pub commented: bool,
     pub pointer: iced::Point,
@@ -167,6 +177,7 @@ impl App {
             query: String::new(),
             doc: None,
             generation: 0,
+            scans: 0,
             password: None,
             props: None,
             page_input: None,
@@ -190,7 +201,11 @@ impl App {
                 shell.window_action(action);
                 Task::none()
             }
-            Message::Close => self.close(shell),
+            Message::Close => self.leave(After::Quit, shell),
+            Message::Copy(text) => {
+                shell.toast(self.t(Key::Copied));
+                iced::clipboard::write(text)
+            }
             Message::Ignore => Task::none(),
             Message::Tick => self.tick(),
             Message::Frame(now) => {
@@ -212,7 +227,7 @@ impl App {
                 self.request_visible()
             }
             Message::Library(lib) => self.library(lib, shell),
-            Message::OpenPath(path) => self.open(path, None),
+            Message::OpenPath(path) => self.leave(After::Open(path), shell),
             Message::Opened(generation, path, slot) => self.opened(generation, path, &slot),
             Message::Read(read) => self.read(read, shell),
             Message::Find(find) => self.find(find),
@@ -227,39 +242,68 @@ impl App {
         }
     }
 
-    fn close(&mut self, shell: &mut Shell<Message>) -> Task<Message> {
+    pub fn leave(&mut self, after: After, shell: &mut Shell<Message>) -> Task<Message> {
         if let Some(doc) = &self.doc
-            && doc.dirty()
-            && !shell.has_dialog()
+            && (doc.dirty() || doc.form_dirty())
         {
-            let dialog = glide_sdk::Dialog::new(
+            let mut dialog = glide_sdk::Dialog::new(
                 crate::i18n::fill(self.t(Key::UnsavedTitle), &[("name", &doc.name)]),
                 self.t(Key::UnsavedBody),
             )
-            .choice(self.t(Key::DontSave), glide_sdk::Tone::Danger, Message::Note(NoteMsg::Discard(true)))
-            .cancel(self.t(Key::Cancel))
-            .choice(self.t(Key::Save), glide_sdk::Tone::Accent, Message::Note(NoteMsg::SaveAndQuit));
+            .choice(self.t(Key::DontSave), glide_sdk::Tone::Danger, Message::Note(NoteMsg::Discard(after.clone())))
+            .cancel(self.t(Key::Cancel));
+            if doc.editable() {
+                dialog =
+                    dialog.choice(self.t(Key::Save), glide_sdk::Tone::Accent, Message::Note(NoteMsg::SaveThen(after)));
+            }
             shell.dialog(dialog);
             return Task::none();
         }
-        self.remember_doc();
-        shell.exit();
-        Task::none()
+        self.proceed(after, shell)
+    }
+
+    pub fn proceed(&mut self, after: After, shell: &mut Shell<Message>) -> Task<Message> {
+        match after {
+            After::Stay => Task::none(),
+            After::Quit => {
+                self.remember_doc();
+                shell.exit();
+                Task::none()
+            }
+            After::Library => {
+                self.remember_doc();
+                self.doc = None;
+                self.screen = Screen::Library;
+                self.rescan()
+            }
+            After::Open(path) => self.load(path, None),
+        }
     }
 
     pub fn remember_doc(&mut self) {
+        self.note_doc(true);
+    }
+
+    fn note_doc(&mut self, eager: bool) {
         let Some(doc) = &self.doc else {
             return;
         };
-        let mut memory = doc.memory.clone();
+        let mut memory = doc.lasting_memory();
         memory.opened = unix_now();
         memory.notes = doc.notes.len();
-        memory.unsigned =
-            doc.opened.fields.iter().any(|f| matches!(f.kind, crate::doc::FieldKind::Signature { signed: false, .. }));
+        memory.unsigned = doc.opened.fields.iter().enumerate().any(|(index, f)| {
+            matches!(f.kind, crate::doc::FieldKind::Signature { signed: false, stamped: false, .. })
+                && !doc.stamped(index)
+        });
         memory.filled = doc.filled();
-        self.memories.insert(store::key(&doc.path), memory.clone());
-        if self.saved_memory.as_ref() != Some(&memory) {
-            self.saved_memory = Some(memory);
+        let key = store::key(&doc.path);
+        let unchanged = self.saved_memory.as_ref().is_some_and(|(known, saved)| {
+            *known == key
+                && if eager { *saved == memory } else { Memory { opened: saved.opened, ..memory.clone() } == *saved }
+        });
+        self.memories.insert(key.clone(), memory.clone());
+        if !unchanged {
+            self.saved_memory = Some((key, memory));
             drop(store::save_memories_later(self.memories.clone()));
         }
     }
@@ -273,14 +317,14 @@ impl App {
             doc.back_chip = None;
         }
         if self.doc.is_some() {
-            self.remember_doc();
+            self.note_doc(false);
         }
         self.pump_covers()
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![iced::time::every(Duration::from_secs(2)).map(|_| Message::Tick)];
-        if self.doc.as_ref().is_some_and(|doc| doc.present.as_ref().is_some_and(|p| p.paused.is_none())) {
+        if self.doc.as_ref().is_some_and(|doc| doc.present.is_some()) {
             subs.push(iced::time::every(Duration::from_millis(500)).map(|_| Message::Frame(Instant::now())));
         }
         Subscription::batch(subs)
@@ -319,19 +363,20 @@ impl App {
             }
             return Task::none();
         }
+        let reading = self.doc.is_some() && !modifiers.control() && !modifiers.alt() && !modifiers.logo();
+        let mirrored = self.doc.as_ref().is_some_and(|d| d.memory.rtl);
+        let step = |by: i32| Some(Message::Read(Read::Step(by)));
         let message = match key.as_ref() {
             keyboard::Key::Named(Named::Escape) => self.escape(),
-            keyboard::Key::Named(Named::PageDown | Named::ArrowRight) if self.doc.is_some() => {
-                Some(Message::Read(Read::Step(1)))
-            }
-            keyboard::Key::Named(Named::PageUp | Named::ArrowLeft) if self.doc.is_some() => {
-                Some(Message::Read(Read::Step(-1)))
-            }
+            keyboard::Key::Named(Named::PageDown) if reading => Some(Message::Read(Read::Scroll(1))),
+            keyboard::Key::Named(Named::PageUp) if reading => Some(Message::Read(Read::Scroll(-1))),
+            keyboard::Key::Named(Named::ArrowRight) if reading => step(if mirrored { -1 } else { 1 }),
+            keyboard::Key::Named(Named::ArrowLeft) if reading => step(if mirrored { 1 } else { -1 }),
             keyboard::Key::Named(Named::Space) if self.doc.as_ref().is_some_and(|d| d.present.is_some()) => {
                 Some(Message::Show(Show::Slide(1)))
             }
-            keyboard::Key::Named(Named::Home) if self.doc.is_some() => Some(Message::Read(Read::Go(0))),
-            keyboard::Key::Named(Named::End) if self.doc.is_some() => Some(Message::Read(Read::Go(usize::MAX))),
+            keyboard::Key::Named(Named::Home) if reading => Some(Message::Read(Read::Go(0))),
+            keyboard::Key::Named(Named::End) if reading => Some(Message::Read(Read::Go(usize::MAX))),
             keyboard::Key::Named(Named::F3) if self.doc.is_some() => {
                 Some(Message::Find(if modifiers.shift() { FindMsg::Previous } else { FindMsg::Next }))
             }
@@ -348,7 +393,7 @@ impl App {
         if doc.bare {
             return Some(Message::Show(Show::Bare(false)));
         }
-        if doc.signing.is_some() {
+        if doc.signing.is_some() || doc.placing.is_some() {
             return Some(Message::Form(Form::SignCancel));
         }
         if doc.popover {
@@ -365,6 +410,9 @@ impl App {
         }
         if doc.tool.is_some() {
             return Some(Message::Note(NoteMsg::Tool(None)));
+        }
+        if matches!(doc.ocr, crate::reader::Ocr::Running { .. } | crate::reader::Ocr::Starting) {
+            return Some(Message::Show(Show::OcrDismiss));
         }
         None
     }
@@ -524,7 +572,7 @@ impl glide_sdk::App for App {
         let mut app = Self::new(shell);
         let scan = app.rescan();
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let open = app.reopened(&args);
+        let open = app.reopened(&args, shell);
         let scale = iced::window::latest().and_then(iced::window::scale_factor).map(Message::ScaleFactor);
         (app, Task::batch([scan, open, scale]))
     }
@@ -572,10 +620,10 @@ impl glide_sdk::App for App {
     }
 
     fn close_requested(&mut self, shell: &mut Shell<Message>) -> Task<Message> {
-        self.close(shell)
+        self.leave(After::Quit, shell)
     }
 
-    fn reopened(&mut self, args: Vec<String>, _: &mut Shell<Message>) -> Task<Message> {
-        Self::reopened(self, &args)
+    fn reopened(&mut self, args: Vec<String>, shell: &mut Shell<Message>) -> Task<Message> {
+        Self::reopened(self, &args, shell)
     }
 }

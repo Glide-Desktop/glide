@@ -162,15 +162,28 @@ pub struct Note {
     pub comment: String,
     pub author: String,
     pub modified: String,
-    pub stroke: Vec<(f32, f32)>,
+    pub strokes: Vec<Vec<(f32, f32)>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Choice {
+    pub value: String,
+    pub label: String,
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FieldKind {
     Text,
     Check(bool),
-    Choice(Vec<String>),
-    Signature { signed: bool, signer: String, when: String },
+    Choice(Vec<Choice>),
+    Radio(Vec<(String, Rect)>),
+    Signature { signed: bool, signer: String, when: String, changed: bool, stamped: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -92,25 +92,33 @@ fn tiff_pages(path: &Path) -> Result<Vec<RgbaImage>, OpenError> {
 }
 
 fn extract(path: &Path) -> Result<Vec<PathBuf>, OpenError> {
-    let target = super::convert::cache_dir().join(super::convert::cache_key(path));
-    if !target.is_dir() {
-        let tool = super::convert::find(&["bsdtar", "7z", "unrar"])
+    use super::convert::{TOOL_TIMEOUT, cache_dir, cache_key, find, prune, run, scratch, touch};
+    let root = cache_dir();
+    let target = root.join(cache_key(path));
+    if target.is_dir() {
+        touch(&target);
+    } else {
+        let tool = find(&["bsdtar", "7z", "unrar"])
             .ok_or_else(|| OpenError::Missing { tool: "bsdtar".into(), package: "libarchive".into() })?;
-        std::fs::create_dir_all(&target).map_err(|e| OpenError::Io(e.to_string()))?;
+        std::fs::create_dir_all(&root).map_err(|e| OpenError::Io(e.to_string()))?;
+        prune(&root);
+        let work = scratch(&target);
+        std::fs::create_dir_all(&work).map_err(|e| OpenError::Io(e.to_string()))?;
         let mut command = std::process::Command::new(&tool);
         match tool.file_name().and_then(|n| n.to_str()) {
-            Some("7z") => command.arg("x").arg("-y").arg(format!("-o{}", target.display())).arg(path),
-            Some("unrar") => command.arg("x").arg("-o+").arg(path).arg(&target),
-            _ => command.arg("-xf").arg(path).arg("-C").arg(&target),
+            Some("7z") => command.arg("x").arg("-y").arg(format!("-o{}", work.display())).arg("--").arg(path),
+            Some("unrar") => command.arg("x").arg("-o+").arg("--").arg(path).arg(&work),
+            _ => command.arg("-xf").arg(path).arg("-C").arg(&work),
         };
-        let ok = command
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-        if !ok {
-            let _ = std::fs::remove_dir_all(&target);
+        if !run(&mut command, TOOL_TIMEOUT) {
+            let _ = std::fs::remove_dir_all(&work);
             return Err(OpenError::Damaged);
+        }
+        if std::fs::rename(&work, &target).is_err() {
+            let _ = std::fs::remove_dir_all(&work);
+            if !target.is_dir() {
+                return Err(OpenError::Damaged);
+            }
         }
     }
     let mut found = Vec::new();
@@ -118,7 +126,13 @@ fn extract(path: &Path) -> Result<Vec<PathBuf>, OpenError> {
     while let Some(dir) = stack.pop() {
         for entry in std::fs::read_dir(&dir).map_err(|e| OpenError::Io(e.to_string()))?.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
                 stack.push(path);
             } else if path.to_str().is_some_and(is_image) {
                 found.push(path);

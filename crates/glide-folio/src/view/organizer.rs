@@ -134,7 +134,12 @@ pub fn view<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
         }
         grid = grid.push(line);
     }
-    let mut layers: Vec<Element<'a, Message>> = vec![scrollable(container(grid).center_x(Fill)).height(Fill).into()];
+    let mut layers: Vec<Element<'a, Message>> = vec![
+        scrollable(container(grid).center_x(Fill))
+            .height(Fill)
+            .on_scroll(|viewport| Message::Org(Org::Scrolled(viewport.relative_offset().y)))
+            .into(),
+    ];
     if let Some(bar) = actions(app, org.selected.len()) {
         layers.push(bar);
     }

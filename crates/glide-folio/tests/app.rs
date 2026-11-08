@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use glide_folio::App;
-use glide_folio::app::{FindMsg, Lib, Message, NoteMsg, Org, Read, Screen, Slot};
+use glide_folio::app::{After, FindMsg, Form, Lib, Message, NoteMsg, Org, Read, Screen, Show, Slot};
 use glide_folio::reader::Tool;
+use glide_folio::store::Layout;
 use glide_folio::worker::Session;
+use glide_sdk::widget::PageEvent;
 use glide_sdk::{Harness, Lang, Look};
 use lopdf::content::{Content, Operation};
 use lopdf::{Document, Object, Stream, dictionary};
@@ -61,8 +63,27 @@ fn isolate() -> PathBuf {
 fn open(app: &mut Harness<App>, path: &Path) {
     app.message(Message::OpenPath(path.to_path_buf()));
     let generation = app.app().generation;
-    let sessions = Ok((Session::local(path, None).unwrap(), Session::local(path, None).unwrap()));
+    let bytes = std::fs::metadata(path).unwrap().len();
+    let sessions = Ok((Session::local(path, None).unwrap(), Session::local(path, None).unwrap(), bytes));
     app.message(Message::Opened(generation, path.to_path_buf(), Slot::new(sessions)));
+}
+
+fn sign_anywhere(app: &mut Harness<App>) {
+    app.message(Message::Form(Form::Mode(true)));
+    app.message(Message::Form(Form::Sign(None)));
+    assert!(app.app().doc.as_ref().unwrap().signing.is_some(), "a document without fields can still be signed");
+    app.message(Message::Form(Form::Stroke(vec![(20.0, 60.0), (120.0, 40.0), (200.0, 70.0)])));
+    app.message(Message::Form(Form::Place));
+    assert!(app.app().doc.as_ref().unwrap().placing.is_some(), "placing waits for a click on the page");
+    app.message(Message::Read(Read::Page(2, PageEvent::Click(300.0, 400.0))));
+    let doc = app.app().doc.as_ref().unwrap();
+    assert!(doc.placing.is_none());
+    assert_eq!(doc.stamps.len(), 1);
+    assert_eq!(doc.stamps[0].page, 2);
+    assert!(doc.stamps[0].rect.contains(300.0, 400.0), "the signature lands where the page was clicked");
+    assert!(doc.form_dirty(), "the placed signature waits to be saved");
+    app.message(Message::Form(Form::Clear));
+    app.message(Message::Form(Form::Mode(false)));
 }
 
 #[test]
@@ -129,7 +150,21 @@ fn reading_a_document_end_to_end() {
     assert_eq!(org.pages[0].rotate, 90);
     app.message(Message::Org(Org::Exit));
 
+    sign_anywhere(&mut app);
+
+    app.message(Message::Read(Read::Layout(Layout::Spread)));
+    app.message(Message::Show(Show::Present));
+    assert_eq!(app.app().doc.as_ref().unwrap().memory.layout, Layout::Single);
+    app.message(Message::Show(Show::Exit));
+    assert_eq!(app.app().doc.as_ref().unwrap().memory.layout, Layout::Spread, "the presentation gives the layout back");
+    app.message(Message::Read(Read::Layout(Layout::Continuous)));
+
+    app.message(Message::Note(NoteMsg::Tool(Some(Tool::Highlight))));
+    app.message(Message::Note(NoteMsg::Selected(1, vec![0])));
     app.message(Message::Read(Read::Library));
+    assert!(matches!(app.app().screen, Screen::Reading), "unsaved notes keep the document open until answered");
+    assert_eq!(app.app().doc.as_ref().unwrap().notes.len(), 1);
+    app.message(Message::Note(NoteMsg::Discard(After::Library)));
     assert!(matches!(app.app().screen, Screen::Library));
     let memories = app.app().memories.clone();
     let memory = memories.get(&glide_folio::store::key(&path)).expect("the position was remembered");
@@ -148,7 +183,11 @@ fn reading_a_document_end_to_end() {
     );
 
     let entries = glide_folio::store::entries(&glide_folio::store::load_prefs(), &memories);
-    app.message(Message::Library(Lib::Scanned(entries)));
+    let scan = app.app().scans;
+    let before = app.app().entries.len();
+    app.message(Message::Library(Lib::Scanned(scan.saturating_sub(1), vec![entries[0].clone(); before + 3])));
+    assert_eq!(app.app().entries.len(), before, "an older scan that finishes late is dropped");
+    app.message(Message::Library(Lib::Scanned(scan, entries)));
     assert_eq!(app.app().continuing().len(), 1, "a half-read document is offered to continue");
     let _ = std::fs::remove_dir_all(root);
 }

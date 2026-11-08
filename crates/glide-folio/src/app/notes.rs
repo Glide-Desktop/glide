@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use glide_sdk::Shell;
 use iced::Task;
 
-use super::{App, Message, iso_now, later};
+use super::{After, App, Message, iso_now, later};
 use crate::doc::text;
 use crate::doc::write::{self, WriteError};
 use crate::doc::{Hue, Mark, Note, Rect};
@@ -32,9 +32,9 @@ pub enum NoteMsg {
     Remove(u64),
     Undo,
     Save,
-    SaveAndQuit,
-    Saved(Result<Vec<Note>, String>, bool),
-    Discard(bool),
+    SaveThen(After),
+    Saved(u64, Result<(Vec<Note>, Vec<Note>), String>, After),
+    Discard(After),
     Export,
     Exported(PathBuf),
     Bookmark,
@@ -94,6 +94,16 @@ impl App {
         let Some(doc) = self.doc.as_mut() else {
             return Task::none();
         };
+        let adds = match &message {
+            NoteMsg::Tool(Some(tool)) => *tool != Tool::Select,
+            NoteMsg::Mark(_) | NoteMsg::Comment => true,
+            _ => false,
+        };
+        if adds && !doc.keeps_notes() {
+            doc.tool = None;
+            shell.toast(t(Key::NotesUnsupported));
+            return Task::none();
+        }
         match message {
             NoteMsg::Tool(tool) => {
                 doc.tool = tool;
@@ -142,7 +152,7 @@ impl App {
                         comment: String::new(),
                         author,
                         modified: iso_now(),
-                        stroke: Vec::new(),
+                        strokes: Vec::new(),
                     };
                     doc.draft = Some((note.id, String::new()));
                     doc.add_note(note);
@@ -175,7 +185,7 @@ impl App {
                         comment: String::new(),
                         author,
                         modified: iso_now(),
-                        stroke: points,
+                        strokes: vec![points],
                     };
                     doc.add_note(note);
                 }
@@ -228,9 +238,16 @@ impl App {
                 Task::none()
             }
             NoteMsg::DraftSave => {
-                if let Some((id, text)) = doc.draft.take()
-                    && let Some(note) = doc.notes.iter_mut().find(|n| n.id == id)
-                {
+                let Some((id, text)) = doc.draft.take() else {
+                    return Task::none();
+                };
+                let edits = doc.notes.iter().find(|n| n.id == id).is_some_and(|n| n.comment != text);
+                let fresh = doc.notes.iter().find(|n| n.id == id).is_some_and(|n| n.comment.is_empty())
+                    && doc.undo.last().is_some_and(|before| !before.iter().any(|n| n.id == id));
+                if edits && !fresh {
+                    doc.remember();
+                }
+                if let Some(note) = doc.notes.iter_mut().find(|n| n.id == id) {
                     note.comment = text;
                     note.modified = iso_now();
                 }
@@ -271,34 +288,35 @@ impl App {
                 }
                 Task::none()
             }
-            NoteMsg::Save => self.save_notes(false, shell),
-            NoteMsg::SaveAndQuit => self.save_notes(true, shell),
-            NoteMsg::Saved(result, quit) => {
+            NoteMsg::Save => self.save_notes(After::Stay, shell),
+            NoteMsg::SaveThen(after) => self.save_notes(after, shell),
+            NoteMsg::Saved(generation, result, after) => {
+                let Some(doc) = self.doc.as_mut().filter(|d| d.generation == generation) else {
+                    return Task::none();
+                };
                 match result {
-                    Ok(notes) => {
-                        if let Some(doc) = self.doc.as_mut() {
-                            doc.notes.clone_from(&notes);
-                            doc.saved = notes;
+                    Ok((sent, written)) => {
+                        if doc.notes == sent && doc.draft.is_none() {
+                            doc.notes.clone_from(&written);
+                            doc.saved = written;
                             doc.undo.clear();
+                            doc.focus = None;
+                        } else {
+                            doc.saved = sent;
                         }
-                        if quit {
-                            self.remember_doc();
-                            shell.exit();
-                        }
+                        self.proceed(after, shell)
                     }
-                    Err(reason) => shell.toast(reason),
+                    Err(reason) => {
+                        shell.toast(reason);
+                        Task::none()
+                    }
                 }
-                Task::none()
             }
-            NoteMsg::Discard(quit) => {
+            NoteMsg::Discard(after) => {
                 if let Some(doc) = self.doc.as_mut() {
                     doc.notes = doc.saved.clone();
                 }
-                if quit {
-                    self.remember_doc();
-                    shell.exit();
-                }
-                Task::none()
+                self.proceed(after, shell)
             }
             NoteMsg::Export => {
                 let stem = doc.path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
@@ -358,28 +376,31 @@ impl App {
         }
     }
 
-    fn save_notes(&mut self, quit: bool, shell: &mut Shell<Message>) -> Task<Message> {
+    fn save_notes(&mut self, after: After, shell: &mut Shell<Message>) -> Task<Message> {
         let Some(doc) = self.doc.as_ref() else {
             return Task::none();
         };
         if doc.form_dirty() {
-            return self.form(super::Form::Save, shell);
+            return self.save_form(after, shell);
         }
         if !doc.editable() {
             shell.toast(self.t(if doc.opened.info.encrypted { Key::EncryptedSave } else { Key::NotesInCopy }));
             return Task::none();
         }
-        let (path, notes) = (doc.path.clone(), doc.notes.clone());
+        let (path, notes, generation) = (doc.path.clone(), doc.notes.clone(), doc.generation);
         let failed = self.t(Key::SaveFailed).to_string();
         later(
-            move || {
+            move || -> Result<(Vec<Note>, Vec<Note>), String> {
                 write::save_notes(&path, &path, &notes).map_err(|error| match error {
                     WriteError::Io(reason) => reason,
                     _ => String::new(),
                 })?;
-                crate::doc::open(&path, None).map(|engine| engine.opened().notes.clone()).map_err(|_| String::new())
+                let written = crate::worker::Session::open(&path, None)
+                    .map(|session| session.opened().notes.clone())
+                    .map_err(|_| String::new())?;
+                Ok((notes, written))
             },
-            move |result| Message::Note(NoteMsg::Saved(result.map_err(|_| failed.clone()), quit)),
+            move |result| Message::Note(NoteMsg::Saved(generation, result.map_err(|_| failed.clone()), after.clone())),
         )
     }
 }
@@ -400,7 +421,7 @@ mod tests {
             comment: comment.into(),
             author: String::new(),
             modified: String::new(),
-            stroke: Vec::new(),
+            strokes: Vec::new(),
         };
         let notes = vec![note(6, "друга", "", 50.0), note(6, "перша", "Перевірити", 10.0), note(10, "інша", "", 0.0)];
         let labels: Vec<String> = (1..=12).map(|n| n.to_string()).collect();

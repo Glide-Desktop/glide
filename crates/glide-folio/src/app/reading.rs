@@ -3,22 +3,50 @@ use glide_sdk::widget::PageEvent;
 use iced::Task;
 use iced::widget::image::Handle;
 
-use super::{App, Message, NoteMsg, Screen, later};
+use super::{App, Message, NoteMsg, later};
 use crate::doc::text;
 use crate::doc::{Link, PageText, Target};
+use crate::i18n::Key;
 use crate::reader::{Doc, Find, Hover, STEPS, Scope, ZOOM_LEVELS, tint};
 use crate::store::{Layout, Paper, Tab, Zoom};
 
 pub const THUMB_ROW: f32 = 158.0;
 const FIND_CHUNK: usize = 6;
 
+#[must_use]
+pub fn rendered_scale(session: &crate::worker::Session, page: usize, width: u32, asked: f32) -> f32 {
+    session.opened().pages.get(page).filter(|size| size.w > 0.0).map_or(asked, |size| width as f32 / size.w)
+}
+
+#[must_use]
+pub fn openable(uri: &str) -> bool {
+    let scheme = uri.split_once(':').map(|(scheme, _)| scheme.to_ascii_lowercase());
+    matches!(scheme.as_deref(), Some("http" | "https" | "mailto"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_web_and_mail_links_leave_the_document() {
+        assert!(super::openable("https://glide.example/doc"));
+        assert!(super::openable("HTTP://glide.example"));
+        assert!(super::openable("mailto:someone@example.com"));
+        assert!(!super::openable("file:///etc/passwd"));
+        assert!(!super::openable("smb://server/share"));
+        assert!(!super::openable("steam://run/1"));
+        assert!(!super::openable("javascript:alert(1)"));
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Read {
     Library,
-    Tile(u64, (usize, usize, Paper), Option<Handle>),
+    Tile(u64, bool, (usize, usize, Paper), Option<Handle>),
     Thumb(u64, usize, Option<Handle>),
     Text(u64, usize, PageText, Vec<Link>),
-    Scrolled(iced::Rectangle, f32),
+    Scrolled(iced::Rectangle, iced::widget::scrollable::AbsoluteOffset),
+    Reflowed(f32),
+    Scroll(i32),
     ThumbsScrolled(f32),
     Go(usize),
     Step(i32),
@@ -79,6 +107,7 @@ impl App {
                     let scale = STEPS[step];
                     let images = if paper != Paper::White && keep { session.text(page).images } else { Vec::new() };
                     let mut image = session.render(page, scale)?;
+                    let scale = rendered_scale(&session, page, image.width(), scale);
                     let keep: Vec<(u32, u32, u32, u32)> = images
                         .iter()
                         .map(|r| {
@@ -94,7 +123,7 @@ impl App {
                     let (w, h) = image.dimensions();
                     Some(Handle::from_rgba(w, h, image.into_raw()))
                 },
-                move |handle| Message::Read(Read::Tile(generation, key, handle)),
+                move |handle| Message::Read(Read::Tile(generation, keep, key, handle)),
             ));
         }
         for page in doc.visible() {
@@ -176,13 +205,19 @@ impl App {
         let Some(doc) = self.doc.as_ref() else {
             return Task::none();
         };
+        if doc.reflow() {
+            return iced::widget::operation::snap_to(
+                crate::view::PAGES_ID,
+                iced::widget::scrollable::RelativeOffset { x: 0.0, y: doc.memory.offset.clamp(0.0, 1.0) },
+            );
+        }
         if doc.memory.layout == Layout::Single {
             return Task::none();
         }
         let y = (doc.top_of(doc.page()) - crate::reader::MARGIN).max(0.0);
         iced::widget::operation::scroll_to(
             crate::view::PAGES_ID,
-            iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+            iced::widget::scrollable::AbsoluteOffset { x: doc.scroll_x, y },
         )
     }
 
@@ -207,18 +242,18 @@ impl App {
     pub fn read(&mut self, read: Read, shell: &mut Shell<Message>) -> Task<Message> {
         let generation = self.doc.as_ref().map_or(0, |d| d.generation);
         match read {
-            Read::Library => {
-                self.remember_doc();
-                self.doc = None;
-                self.screen = Screen::Library;
-                self.rescan()
-            }
-            Read::Tile(at, key, handle) => {
+            Read::Library => self.leave(super::After::Library, shell),
+            Read::Tile(at, keep, key, handle) => {
                 if let Some(doc) = self.doc.as_mut().filter(|_| at == generation) {
+                    if keep != doc.memory.keep_images && key.2 != Paper::White {
+                        doc.pending.remove(&key);
+                        return self.request_visible();
+                    }
                     if let Some(handle) = handle {
                         doc.store_tile(key, handle);
                     } else {
                         doc.pending.remove(&key);
+                        doc.failed.insert((key.0, key.1));
                         if !doc.opened.broken.contains(&key.0) {
                             doc.opened.broken.push(key.0);
                         }
@@ -249,6 +284,47 @@ impl App {
                 }
                 Task::none()
             }
+            Read::Reflowed(offset) => {
+                if let Some(doc) = self.doc.as_mut()
+                    && offset.is_finite()
+                {
+                    doc.memory.offset = offset.clamp(0.0, 1.0);
+                    doc.overflows = Some(doc.page());
+                }
+                Task::none()
+            }
+            Read::Scroll(by) => {
+                let Some(doc) = self.doc.as_mut() else {
+                    return Task::none();
+                };
+                if !doc.reflow() {
+                    return self.read(Read::Step(by), shell);
+                }
+                if doc.overflows != Some(doc.page()) {
+                    if doc.nudged == Some(doc.page()) {
+                        doc.nudged = None;
+                        return self.read(Read::Step(by), shell);
+                    }
+                    doc.nudged = Some(doc.page());
+                }
+                if doc.memory.offset >= 0.999 && by > 0 {
+                    return self.read(Read::Step(1), shell);
+                }
+                if doc.memory.offset <= 0.001 && by < 0 {
+                    if doc.page() == 0 {
+                        return Task::none();
+                    }
+                    let page = doc.page() - 1;
+                    doc.go(page, false);
+                    doc.memory.offset = 1.0;
+                    return self.scroll_to_page();
+                }
+                let distance = doc.viewport.height * 0.9 * by as f32;
+                iced::widget::operation::scroll_by(
+                    crate::view::PAGES_ID,
+                    iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: distance },
+                )
+            }
             Read::Scrolled(bounds, offset) => {
                 let Some(doc) = self.doc.as_mut() else {
                     return Task::none();
@@ -256,7 +332,8 @@ impl App {
                 let resized = (doc.viewport.width - bounds.width).abs() > 1.0
                     || (doc.viewport.height - bounds.height).abs() > 1.0;
                 doc.viewport = bounds.size();
-                doc.scroll = offset;
+                doc.scroll = offset.y;
+                doc.scroll_x = offset.x;
                 let current = doc.page_at_centre();
                 if current != doc.memory.page && doc.memory.layout != Layout::Single {
                     doc.memory.page = current;
@@ -382,7 +459,11 @@ impl App {
             Read::Follow(target) => match target {
                 Target::Page(page) => self.jump(page, true),
                 Target::Uri(uri) => {
-                    let _ = glide_sdk::system::open(&uri, crate::APP_ID);
+                    if openable(&uri) {
+                        let _ = glide_sdk::system::open(&uri, crate::APP_ID);
+                    } else {
+                        shell.toast(self.t(Key::LinkBlocked));
+                    }
                     Task::none()
                 }
             },
@@ -433,6 +514,9 @@ impl App {
                 let Some(doc) = self.doc.as_ref() else {
                     return Task::none();
                 };
+                if doc.placing.is_some() {
+                    return self.form(super::Form::Drop(page, x, y), shell);
+                }
                 let link = doc
                     .links
                     .get(&page)
@@ -550,10 +634,9 @@ impl App {
             return Task::none();
         }
         if find.scope == Scope::Notes {
-            let needle = text::fold(find.query.trim());
             for note in &doc.notes {
                 let hay = format!("{} {}", note.quote, note.comment);
-                if text::fold(&hay).contains(&needle) {
+                if text::mentions(&hay, &find.query, find.whole, find.case) {
                     find.hits.push(text::Hit {
                         page: note.page,
                         rects: note.rects.clone(),

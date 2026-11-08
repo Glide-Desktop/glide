@@ -273,16 +273,18 @@ fn form<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
     }
     let mut cards = Column::new().spacing(SP2).padding(Padding::from([0.0, SP3]));
     for (index, field) in doc.opened.fields.iter().enumerate() {
-        let FieldKind::Signature { signed, signer, when } = &field.kind else {
+        let FieldKind::Signature { signed, signer, when, changed, stamped } = &field.kind else {
             continue;
         };
-        let stamped = doc.stamps.iter().any(|(f, _)| *f == index);
+        let stamped = *stamped || doc.stamped(index);
         let (verdict, lines) = if *signed {
-            let mut lines = vec![app.t(Key::SignedIntact).to_string(), app.t(Key::CertificateNotChecked).to_string()];
+            let (verdict, said) =
+                if *changed { (Verdict::Changed, Key::SignedChanged) } else { (Verdict::Intact, Key::SignedIntact) };
+            let mut lines = vec![app.t(said).to_string(), app.t(Key::CertificateNotChecked).to_string()];
             if !when.is_empty() {
                 lines.push(i18n::date(app.lang, when, true));
             }
-            (Verdict::Intact, lines)
+            (verdict, lines)
         } else if stamped {
             (Verdict::Intact, vec![app.t(Key::NotDigital).to_string()])
         } else {
@@ -294,7 +296,8 @@ fn form<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
             verdict,
             &who,
             lines,
-            (!*signed && !stamped).then(|| (app.t(Key::SignHere), Message::Form(Form::Sign(index)))),
+            (!*signed && !stamped && doc.editable())
+                .then(|| (app.t(Key::SignHere), Message::Form(Form::Sign(Some(index))))),
         ));
     }
     column![

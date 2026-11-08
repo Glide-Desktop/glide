@@ -45,7 +45,7 @@ impl Chip {
 
 #[derive(Debug, Clone)]
 pub enum Lib {
-    Scanned(Vec<Entry>),
+    Scanned(u64, Vec<Entry>),
     Cover(PathBuf, Option<PathBuf>),
     Place(Place),
     Chip(Chip),
@@ -63,10 +63,12 @@ pub enum Lib {
 }
 
 impl App {
-    pub fn rescan(&self) -> Task<Message> {
+    pub fn rescan(&mut self) -> Task<Message> {
+        self.scans += 1;
+        let scan = self.scans;
         let prefs = self.prefs.clone();
         let memories = self.memories.clone();
-        later(move || store::entries(&prefs, &memories), |entries| Message::Library(Lib::Scanned(entries)))
+        later(move || store::entries(&prefs, &memories), move |entries| Message::Library(Lib::Scanned(scan, entries)))
     }
 
     pub fn pump_covers(&mut self) -> Task<Message> {
@@ -133,7 +135,8 @@ impl App {
 
     pub fn library(&mut self, lib: Lib, shell: &mut Shell<Message>) -> Task<Message> {
         match lib {
-            Lib::Scanned(entries) => {
+            Lib::Scanned(scan, _) if scan != self.scans => Task::none(),
+            Lib::Scanned(_, entries) => {
                 self.covers_pending = entries
                     .iter()
                     .rev()
@@ -181,7 +184,9 @@ impl App {
                     _ => Message::Ignore,
                 })
             }
-            Lib::Chosen(paths) => paths.into_iter().next().map_or_else(Task::none, |path| self.open(path, None)),
+            Lib::Chosen(paths) => {
+                paths.into_iter().next().map_or_else(Task::none, |path| self.leave(super::After::Open(path), shell))
+            }
             Lib::Watch => {
                 let ask = glide_sdk::chooser::Ask {
                     purpose: glide_sdk::chooser::Purpose::Folder,
@@ -242,12 +247,12 @@ impl App {
                     return Task::none();
                 };
                 let (path, text) = (path.clone(), text.clone());
-                self.open(path, Some(text))
+                self.load(path, Some(text))
             }
         }
     }
 
-    pub fn open(&mut self, path: PathBuf, password: Option<String>) -> Task<Message> {
+    pub fn load(&mut self, path: PathBuf, password: Option<String>) -> Task<Message> {
         self.remember_doc();
         self.doc = None;
         self.generation += 1;
@@ -261,7 +266,8 @@ impl App {
             move || -> Sessions {
                 let raster = Session::open(&target, password.as_deref())?;
                 let index = Session::open(&target, password.as_deref())?;
-                Ok((raster, index))
+                let bytes = std::fs::metadata(&target).map_or(0, |meta| meta.len());
+                Ok((raster, index, bytes))
             },
             move |sessions| Message::Opened(generation, path.clone(), Slot::new(sessions)),
         )
@@ -275,17 +281,21 @@ impl App {
             return Task::none();
         };
         match result {
-            Ok((raster, index)) => {
+            Ok((raster, index, bytes)) => {
                 let opened = raster.opened().clone();
                 let memory = self.memory(&path);
                 let mut doc = Doc::new(path, opened, raster, index, memory, generation);
                 doc.dpr = self.dpr;
+                doc.bytes = bytes;
                 if doc.opened.format == Format::Djvu || doc.opened.format == Format::Tiff {
                     doc.ocr = crate::reader::Ocr::Offer;
                 }
-                let unsigned =
-                    doc.opened.fields.iter().any(|f| matches!(f.kind, FieldKind::Signature { signed: false, .. }));
-                if unsigned {
+                let unsigned = doc
+                    .opened
+                    .fields
+                    .iter()
+                    .any(|f| matches!(f.kind, FieldKind::Signature { signed: false, stamped: false, .. }));
+                if unsigned && doc.editable() {
                     doc.form = true;
                 }
                 self.doc = Some(doc);
@@ -310,11 +320,11 @@ impl App {
         }
     }
 
-    pub fn reopened(&mut self, args: &[String]) -> Task<Message> {
+    pub fn reopened(&mut self, args: &[String], shell: &mut Shell<Message>) -> Task<Message> {
         let Some(path) = args.iter().filter(|a| !a.starts_with("--")).map(PathBuf::from).find(|p| p.is_file()) else {
             return Task::none();
         };
         let path = std::path::absolute(&path).unwrap_or(path);
-        self.open(path, None)
+        self.leave(super::After::Open(path), shell)
     }
 }

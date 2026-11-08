@@ -163,7 +163,7 @@ pub fn properties<'a>(app: &'a App, doc: &'a Doc, tab: PropsTab) -> Element<'a, 
 fn props_body<'a>(app: &'a App, doc: &'a Doc, tab: PropsTab) -> Element<'a, Message> {
     let paint = app.paint;
     let info = &doc.opened.info;
-    let bytes = std::fs::metadata(&doc.path).map_or(0, |m| m.len());
+    let bytes = doc.bytes;
     let page = doc.size(0);
     let mm = |pt: f32| (pt * 25.4 / 72.0).round();
     let none = app.t(Key::None).to_string();

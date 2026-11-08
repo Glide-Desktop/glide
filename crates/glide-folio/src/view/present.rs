@@ -84,7 +84,7 @@ pub fn view<'a>(app: &'a App, doc: &'a Doc) -> Element<'a, Message> {
         };
         ui::glass(column![ui::text(app.t(Key::Next), TextStyle::CAP).color(GLASS_INK), face].spacing(6)).padding(8)
     });
-    let recent = doc.present.as_ref().is_some_and(|p| p.moved.elapsed().as_secs() < 2);
+    let recent = doc.present.as_ref().is_some_and(|p| app.now.saturating_duration_since(p.moved).as_secs() < 2);
     let mut layers: Vec<Element<'a, Message>> = vec![container(slide).center(Fill).into()];
     if recent {
         layers.push(

@@ -1,4 +1,22 @@
+use std::path::Path;
+use std::process::{Command, Stdio};
+
 use crate::doc::{PageText, Rect, Word};
+
+const WANTED: [&str; 2] = ["ukr", "eng"];
+
+#[must_use]
+pub fn pick_languages(listed: &str) -> Option<String> {
+    let available: Vec<&str> = listed.lines().skip(1).map(str::trim).collect();
+    let picked: Vec<&str> = WANTED.into_iter().filter(|lang| available.contains(lang)).collect();
+    (!picked.is_empty()).then(|| picked.join("+"))
+}
+
+#[must_use]
+pub fn languages(tool: &Path) -> Option<String> {
+    let output = Command::new(tool).arg("--list-langs").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    pick_languages(&String::from_utf8_lossy(&output.stdout))
+}
 
 #[must_use]
 pub fn parse_tsv(tsv: &str, scale: f32) -> PageText {
@@ -32,6 +50,14 @@ pub fn parse_tsv(tsv: &str, scale: f32) -> PageText {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognition_uses_only_the_installed_languages() {
+        let listed = "List of available languages in \"/usr/share/tessdata/\" (3):\neng\nosd\nukr\n";
+        assert_eq!(pick_languages(listed).as_deref(), Some("ukr+eng"));
+        assert_eq!(pick_languages("List (2):\neng\nosd\n").as_deref(), Some("eng"));
+        assert_eq!(pick_languages("List (1):\nosd\n"), None);
+    }
 
     #[test]
     fn tesseract_words_become_positioned_text() {

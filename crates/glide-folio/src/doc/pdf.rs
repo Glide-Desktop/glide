@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
@@ -16,8 +17,8 @@ use lopdf::{Document, Object, ObjectId};
 
 use super::text::{self, Glyph};
 use super::{
-    Engine, Field, FieldKind, FontInfo, Format, Heading, Hue, Info, Link, Mark, Note, OpenError, Opened, PageText,
-    Rect, Size, Target,
+    Choice, Engine, Field, FieldKind, FontInfo, Format, Heading, Hue, Info, Link, Mark, Note, OpenError, Opened,
+    PageText, Rect, Size, Target,
 };
 
 pub const MANAGED: [&[u8]; 8] =
@@ -42,6 +43,7 @@ impl PdfEngine {
         bytes: Vec<u8>, password: Option<&str>, format: Format, view_only: Option<PathBuf>,
     ) -> Result<Self, OpenError> {
         let lo = load_structure(&bytes, password);
+        let content_end = bytes.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(0, |at| at + 1);
         let original = match Pdf::new_with_password(bytes, password.unwrap_or("")) {
             Ok(pdf) => pdf,
             Err(LoadPdfError::Decryption(_)) => return Err(OpenError::Locked { wrong: password.is_some() }),
@@ -84,7 +86,7 @@ impl PdfEngine {
         };
         let mut links = vec![Vec::new(); opened.pages.len()];
         if let Some(doc) = lo.as_ref() {
-            structure(doc, &transforms, &mut opened, &mut links);
+            structure(doc, content_end, &transforms, &mut opened, &mut links);
         }
         Ok(Self { pdf, opened, transforms, links })
     }
@@ -375,7 +377,7 @@ pub fn note_id(id: ObjectId) -> u64 {
     (u64::from(id.0) << 16) | u64::from(id.1)
 }
 
-fn structure(doc: &Document, transforms: &[Affine], opened: &mut Opened, links: &mut [Vec<Link>]) {
+fn structure(doc: &Document, content_end: usize, transforms: &[Affine], opened: &mut Opened, links: &mut [Vec<Link>]) {
     let pages: Vec<ObjectId> = doc.get_pages().values().copied().collect();
     if let Ok(toc) = doc.get_toc() {
         opened.outline = toc
@@ -389,7 +391,13 @@ fn structure(doc: &Document, transforms: &[Affine], opened: &mut Opened, links: 
             .collect();
     }
     read_annotations(doc, &pages, transforms, opened, links);
-    read_catalog(doc, &pages, transforms, opened);
+    read_catalog(doc, &pages, content_end, transforms, opened);
+    let stamped = signature_stamps(doc, &pages);
+    for field in &mut opened.fields {
+        if let FieldKind::Signature { stamped: on, .. } = &mut field.kind {
+            *on = stamped.contains(&field.name);
+        }
+    }
     opened.info.fonts = read_fonts(doc, &pages);
 }
 
@@ -453,18 +461,22 @@ fn read_annotations(
             };
             let color = dict.get(b"C").map(|c| numbers(doc, c)).unwrap_or_default();
             let hue = if color.len() == 3 { Hue::nearest([color[0], color[1], color[2]]) } else { Hue::Yellow };
-            let stroke = dict
+            let strokes: Vec<Vec<(f32, f32)>> = dict
                 .get(b"InkList")
                 .ok()
                 .and_then(|list| resolve(doc, list).as_array().ok())
-                .and_then(|list| list.first())
-                .map(|first| {
-                    numbers(doc, first)
-                        .chunks_exact(2)
-                        .map(|p| {
-                            let point = transform * Point::new(f64::from(p[0]), f64::from(p[1]));
-                            (point.x as f32, point.y as f32)
+                .map(|list| {
+                    list.iter()
+                        .map(|stroke| {
+                            numbers(doc, stroke)
+                                .chunks_exact(2)
+                                .map(|p| {
+                                    let point = transform * Point::new(f64::from(p[0]), f64::from(p[1]));
+                                    (point.x as f32, point.y as f32)
+                                })
+                                .collect::<Vec<_>>()
                         })
+                        .filter(|stroke| !stroke.is_empty())
                         .collect()
                 })
                 .unwrap_or_default();
@@ -478,22 +490,28 @@ fn read_annotations(
                 comment: string(doc, dict, b"Contents"),
                 author: string(doc, dict, b"T"),
                 modified: date(&string(doc, dict, b"M")),
-                stroke,
+                strokes,
             });
         }
     }
 }
 
-fn read_catalog(doc: &Document, pages: &[ObjectId], transforms: &[Affine], opened: &mut Opened) {
+fn read_catalog(doc: &Document, pages: &[ObjectId], content_end: usize, transforms: &[Affine], opened: &mut Opened) {
     let page_of = |id: ObjectId| pages.iter().position(|page| *page == id);
     let catalog = doc.catalog().ok();
     if let Some(catalog) = catalog {
         if let Some(form) = catalog.get(b"AcroForm").ok().map(|f| resolve(doc, f)).and_then(|f| f.as_dict().ok())
             && let Some(fields) = form.get(b"Fields").ok().map(|f| resolve(doc, f)).and_then(|f| f.as_array().ok())
         {
+            let widget_pages: HashMap<ObjectId, usize> = pages
+                .iter()
+                .enumerate()
+                .flat_map(|(index, page)| annotation_ids(doc, *page).into_iter().map(move |id| (id, index)))
+                .collect();
+            let scan = Scan { doc, page_of: &page_of, widget_pages: &widget_pages, transforms, content_end };
             for field in fields {
                 if let Ok(id) = field.as_reference() {
-                    collect_field(doc, id, "", None, &page_of, transforms, &mut opened.fields, 0);
+                    collect_field(&scan, id, "", None, &mut opened.fields, 0);
                 }
             }
         }
@@ -568,11 +586,145 @@ fn read_fonts(doc: &Document, pages: &[ObjectId]) -> Vec<FontInfo> {
     fonts
 }
 
-#[allow(clippy::too_many_arguments)] // Recursive walk of the AcroForm field tree; every argument is state the walk threads through
+struct Scan<'a> {
+    doc: &'a Document,
+    page_of: &'a dyn Fn(ObjectId) -> Option<usize>,
+    widget_pages: &'a HashMap<ObjectId, usize>,
+    transforms: &'a [Affine],
+    content_end: usize,
+}
+
+fn appearance_states(doc: &Document, widget: &lopdf::Dictionary) -> Vec<String> {
+    widget
+        .get(b"AP")
+        .ok()
+        .map(|ap| resolve(doc, ap))
+        .and_then(|ap| ap.as_dict().ok())
+        .and_then(|ap| ap.get(b"N").ok())
+        .map(|n| resolve(doc, n))
+        .and_then(|n| n.as_dict().ok())
+        .map(|n| {
+            n.iter()
+                .map(|(state, _)| String::from_utf8_lossy(state).into_owned())
+                .filter(|state| state != "Off")
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn signature_changed(doc: &Document, signature: &lopdf::Dictionary, content_end: usize) -> bool {
+    let range: Vec<i64> = signature
+        .get(b"ByteRange")
+        .ok()
+        .map(|r| resolve(doc, r))
+        .and_then(|r| r.as_array().ok())
+        .map(|r| r.iter().filter_map(|v| resolve(doc, v).as_i64().ok()).collect())
+        .unwrap_or_default();
+    let [_, _, from, length] = range[..] else {
+        return true;
+    };
+    usize::try_from(from.saturating_add(length)).map_or(true, |end| end < content_end)
+}
+
+pub const SIGNATURE_STAMP: &str = "folio-signature:";
+
+fn signature_stamps(doc: &Document, pages: &[ObjectId]) -> Vec<String> {
+    pages
+        .iter()
+        .flat_map(|page| annotation_ids(doc, *page))
+        .filter_map(|id| {
+            let dict = doc.get_dictionary(id).ok()?;
+            let stamp = dict.get(b"Subtype").ok().and_then(|s| s.as_name().ok()) == Some(b"Stamp");
+            stamp.then(|| string(doc, dict, b"NM").strip_prefix(SIGNATURE_STAMP).map(str::to_string)).flatten()
+        })
+        .collect()
+}
+
+fn field_flags(doc: &Document, field: &lopdf::Dictionary) -> i64 {
+    let mut current = field;
+    for _ in 0..32 {
+        if let Ok(flags) = current.get(b"Ff").map(|f| resolve(doc, f)).and_then(Object::as_i64) {
+            return flags;
+        }
+        let Some(parent) =
+            current.get(b"Parent").ok().and_then(|p| p.as_reference().ok()).and_then(|p| doc.get_dictionary(p).ok())
+        else {
+            return 0;
+        };
+        current = parent;
+    }
+    0
+}
+
+fn widget_page(scan: &Scan<'_>, id: ObjectId, widget: &lopdf::Dictionary) -> Option<usize> {
+    widget
+        .get(b"P")
+        .ok()
+        .and_then(|p| p.as_reference().ok())
+        .and_then(scan.page_of)
+        .or_else(|| scan.widget_pages.get(&id).copied())
+}
+
+fn button_kind(
+    scan: &Scan<'_>, widgets: &[ObjectId], page: usize, flags: i64, value: &mut String,
+) -> Option<FieldKind> {
+    if flags & (1 << 16) != 0 {
+        return None;
+    }
+    if flags & (1 << 15) == 0 {
+        return Some(FieldKind::Check(!value.is_empty() && value != "Off"));
+    }
+    let doc = scan.doc;
+    let transform = scan.transforms.get(page).copied()?;
+    let mut states: Vec<(String, Rect)> = Vec::new();
+    for id in widgets {
+        let Ok(widget) = doc.get_dictionary(*id) else {
+            continue;
+        };
+        if widget_page(scan, *id, widget).is_some_and(|on| on != page) {
+            continue;
+        }
+        let Some(rect) = rect_of(doc, widget).map(|rect| map_rect(transform, rect)) else {
+            continue;
+        };
+        for state in appearance_states(doc, widget) {
+            if !states.iter().any(|(known, _)| *known == state) {
+                states.push((state, rect));
+            }
+        }
+    }
+    if value == "Off" {
+        value.clear();
+    }
+    Some(FieldKind::Radio(states))
+}
+
+fn choices(doc: &Document, field: &lopdf::Dictionary) -> Vec<Choice> {
+    let Some(items) = field.get(b"Opt").ok().map(|o| resolve(doc, o)).and_then(|o| o.as_array().ok()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| match resolve(doc, item) {
+            Object::String(bytes, _) => {
+                let text = decode(bytes);
+                Some(Choice { value: text.clone(), label: text })
+            }
+            Object::Array(pair) => {
+                let part = |at: usize| pair.get(at).map(|p| resolve(doc, p)).and_then(|p| p.as_str().ok()).map(decode);
+                let value = part(0)?;
+                let label = part(1).unwrap_or_else(|| value.clone());
+                Some(Choice { value, label })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn collect_field(
-    doc: &Document, id: ObjectId, prefix: &str, inherited: Option<&[u8]>, page_of: &dyn Fn(ObjectId) -> Option<usize>,
-    transforms: &[Affine], out: &mut Vec<Field>, depth: u8,
+    scan: &Scan<'_>, id: ObjectId, prefix: &str, inherited: Option<&[u8]>, out: &mut Vec<Field>, depth: u8,
 ) {
+    let doc = scan.doc;
     let Ok(dict) = doc.get_dictionary(id) else {
         return;
     };
@@ -598,7 +750,7 @@ fn collect_field(
             kids.iter().filter_map(|k| k.as_reference().ok()).any(|k| doc.get_dictionary(k).is_ok_and(|d| d.has(b"T")));
         if fields_below {
             for kid in kids.iter().filter_map(|k| k.as_reference().ok()) {
-                collect_field(doc, kid, &name, kind_name.as_deref(), page_of, transforms, out, depth + 1);
+                collect_field(scan, kid, &name, kind_name.as_deref(), out, depth + 1);
             }
             return;
         }
@@ -606,51 +758,37 @@ fn collect_field(
     let Some(kind_name) = kind_name else {
         return;
     };
-    let widget = dict
+    let widgets: Vec<ObjectId> = dict
         .get(b"Kids")
         .map(|k| resolve(doc, k))
         .and_then(Object::as_array)
-        .ok()
-        .and_then(|kids| kids.first())
-        .and_then(|k| k.as_reference().ok())
-        .and_then(|k| doc.get_dictionary(k).ok())
-        .unwrap_or(dict);
-    let page = widget.get(b"P").ok().and_then(|p| p.as_reference().ok()).and_then(page_of).unwrap_or(0);
+        .map(|kids| kids.iter().filter_map(|k| k.as_reference().ok()).collect())
+        .unwrap_or_default();
+    let (widget_id, widget) =
+        widgets.first().and_then(|k| doc.get_dictionary(*k).ok().map(|d| (*k, d))).unwrap_or((id, dict));
+    let page = widget_page(scan, widget_id, widget).unwrap_or(0);
     let rect = rect_of(doc, widget)
-        .zip(transforms.get(page))
+        .zip(scan.transforms.get(page))
         .map(|(rect, transform)| map_rect(*transform, rect))
         .unwrap_or_default();
-    let flags = dict.get(b"Ff").and_then(Object::as_i64).unwrap_or(0);
-    let value = string(doc, dict, b"V");
+    let flags = field_flags(doc, dict);
+    let mut value = string(doc, dict, b"V");
     let kind = match kind_name.as_slice() {
         b"Btn" => {
-            if flags & (1 << 16) != 0 {
+            let Some(kind) = button_kind(scan, &widgets, page, flags, &mut value) else {
                 return;
-            }
-            FieldKind::Check(!value.is_empty() && value != "Off")
+            };
+            kind
         }
-        b"Ch" => FieldKind::Choice(
-            dict.get(b"Opt")
-                .map(|o| resolve(doc, o))
-                .and_then(Object::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| match resolve(doc, item) {
-                            Object::String(bytes, _) => Some(decode(bytes)),
-                            Object::Array(pair) => pair.get(1).and_then(|p| p.as_str().ok()).map(decode),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-        ),
+        b"Ch" => FieldKind::Choice(choices(doc, dict)),
         b"Sig" => {
             let signature = dict.get(b"V").ok().map(|v| resolve(doc, v)).and_then(|v| v.as_dict().ok());
             FieldKind::Signature {
                 signed: signature.is_some(),
                 signer: signature.map(|s| string(doc, s, b"Name")).unwrap_or_default(),
                 when: signature.map(|s| date(&string(doc, s, b"M"))).unwrap_or_default(),
+                changed: signature.is_some_and(|s| signature_changed(doc, s, scan.content_end)),
+                stamped: false,
             }
         }
         _ => FieldKind::Text,

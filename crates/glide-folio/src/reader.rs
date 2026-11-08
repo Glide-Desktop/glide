@@ -181,16 +181,56 @@ pub struct Present {
 pub enum Ocr {
     Hidden,
     Offer,
-    Running { done: usize, total: usize },
+    Starting,
+    Running { done: usize, total: usize, tool: PathBuf, langs: String },
     Done,
 }
 
-pub type Stamp = (usize, Vec<Vec<(f32, f32)>>);
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stamp {
+    pub field: Option<usize>,
+    pub page: usize,
+    pub rect: Rect,
+    pub strokes: Vec<Vec<(f32, f32)>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Signing {
-    pub field: usize,
+    pub field: Option<usize>,
     pub strokes: Vec<Vec<(f32, f32)>>,
+}
+
+fn bounds(strokes: &[Vec<(f32, f32)>]) -> Option<(f32, f32, f32, f32)> {
+    let mut points = strokes.iter().flatten();
+    let &(x, y) = points.next()?;
+    Some(points.fold((x, y, x, y), |(x0, y0, x1, y1), &(x, y)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y))))
+}
+
+#[must_use]
+pub fn fit_strokes(strokes: &[Vec<(f32, f32)>], target: Rect) -> Vec<Vec<(f32, f32)>> {
+    let Some((x0, y0, x1, y1)) = bounds(strokes) else {
+        return Vec::new();
+    };
+    let (w, h) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
+    let scale = (target.w * 0.9 / w).min(target.h * 0.9 / h);
+    let left = target.x + (target.w - (x1 - x0) * scale) / 2.0;
+    let top = target.y + (target.h - (y1 - y0) * scale) / 2.0;
+    strokes
+        .iter()
+        .map(|stroke| stroke.iter().map(|(x, y)| (left + (x - x0) * scale, top + (y - y0) * scale)).collect())
+        .collect()
+}
+
+pub const FREE_SIGNATURE_WIDTH: f32 = 160.0;
+
+#[must_use]
+pub fn free_rect(strokes: &[Vec<(f32, f32)>], page: Size, x: f32, y: f32) -> Rect {
+    let aspect = bounds(strokes).map_or(0.35, |(x0, y0, x1, y1)| (y1 - y0).max(1.0) / (x1 - x0).max(1.0));
+    let w = FREE_SIGNATURE_WIDTH.min(page.w * 0.8);
+    let h = (w * aspect).clamp(24.0, 96.0).min(page.h * 0.8);
+    let left = (x - w / 2.0).clamp(0.0, (page.w - w).max(0.0));
+    let top = (y - h / 2.0).clamp(0.0, (page.h - h).max(0.0));
+    Rect::new(left, top, w, h)
 }
 
 pub struct Doc {
@@ -204,6 +244,7 @@ pub struct Doc {
     pub tiles: HashMap<(usize, usize, Paper), Handle>,
     pub order: VecDeque<(usize, usize, Paper)>,
     pub pending: HashSet<(usize, usize, Paper)>,
+    pub failed: HashSet<(usize, usize)>,
     pub thumbs: HashMap<usize, Handle>,
     pub thumbs_pending: HashSet<usize>,
     pub texts: HashMap<usize, PageText>,
@@ -224,12 +265,18 @@ pub struct Doc {
     pub popover: bool,
     pub viewport: iced::Size,
     pub scroll: f32,
+    pub scroll_x: f32,
+    pub overflows: Option<usize>,
+    pub nudged: Option<usize>,
     pub organizer: Option<Organizer>,
     pub present: Option<Present>,
     pub bare: bool,
+    pub restore: Option<(Layout, Zoom)>,
     pub values: HashMap<String, String>,
     pub signing: Option<Signing>,
+    pub placing: Option<Vec<Vec<(f32, f32)>>>,
     pub stamps: Vec<Stamp>,
+    pub bytes: u64,
     pub form: bool,
     pub ocr: Ocr,
     pub step: i8,
@@ -244,10 +291,12 @@ impl Doc {
     ) -> Self {
         let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let notes = opened.notes.clone();
-        let form = opened
-            .fields
-            .iter()
-            .any(|f| f.required && f.value.is_empty() || matches!(f.kind, FieldKind::Signature { signed: false, .. }));
+        let writable = opened.format.annotates_in_place() && !opened.info.encrypted && opened.view_only.is_none();
+        let form = writable
+            && opened.fields.iter().any(|f| {
+                f.required && f.value.is_empty()
+                    || matches!(f.kind, FieldKind::Signature { signed: false, stamped: false, .. })
+            });
         let values = opened
             .fields
             .iter()
@@ -274,6 +323,7 @@ impl Doc {
             tiles: HashMap::new(),
             order: VecDeque::new(),
             pending: HashSet::new(),
+            failed: HashSet::new(),
             thumbs: HashMap::new(),
             thumbs_pending: HashSet::new(),
             texts: HashMap::new(),
@@ -294,12 +344,18 @@ impl Doc {
             popover: false,
             viewport: iced::Size::new(1000.0, 680.0),
             scroll: 0.0,
+            scroll_x: 0.0,
+            overflows: None,
+            nudged: None,
             organizer: None,
             present: None,
             bare: false,
+            restore: None,
             values,
             signing: None,
+            placing: None,
             stamps: Vec::new(),
+            bytes: 0,
             form,
             ocr: Ocr::Hidden,
             step: 0,
@@ -332,6 +388,12 @@ impl Doc {
 
     #[must_use]
     pub fn zoom(&self) -> f32 {
+        if self.reflow() {
+            return match self.memory.zoom {
+                Zoom::Percent(percent) => f32::from(percent) / 100.0,
+                _ => 1.0,
+            };
+        }
         let widest = self.widest();
         let columns = if self.memory.layout == Layout::Spread { 2.0 } else { 1.0 };
         let width = (self.viewport.width - 2.0 * MARGIN - (columns - 1.0) * 4.0).max(100.0);
@@ -469,6 +531,8 @@ impl Doc {
 
     pub fn store_tile(&mut self, key: (usize, usize, Paper), handle: Handle) {
         self.pending.remove(&key);
+        self.opened.broken.retain(|page| *page != key.0);
+        self.failed.retain(|(page, _)| *page != key.0);
         self.tiles.insert(key, handle);
         self.order.retain(|k| *k != key);
         self.order.push_back(key);
@@ -486,7 +550,9 @@ impl Doc {
         self.visible()
             .into_iter()
             .map(|p| (p, step, paper))
-            .filter(|key| !self.tiles.contains_key(key) && !self.pending.contains(key))
+            .filter(|key| {
+                !self.tiles.contains_key(key) && !self.pending.contains(key) && !self.failed.contains(&(key.0, key.1))
+            })
             .collect()
     }
 
@@ -498,6 +564,33 @@ impl Doc {
     #[must_use]
     pub fn new_notes(&self) -> usize {
         self.notes.iter().filter(|n| !self.saved.iter().any(|s| s.id == n.id)).count()
+    }
+
+    pub fn leave_full_screen_mode(&mut self) {
+        let Some((layout, zoom)) = self.restore else {
+            return;
+        };
+        if self.present.is_some() {
+            return;
+        }
+        self.memory.layout = layout;
+        if self.bare {
+            self.memory.zoom = Zoom::FitPage;
+            self.restore = Some((layout, zoom));
+            return;
+        }
+        self.memory.zoom = zoom;
+        self.restore = None;
+    }
+
+    #[must_use]
+    pub fn lasting_memory(&self) -> Memory {
+        let mut memory = self.memory.clone();
+        if let Some((layout, zoom)) = self.restore {
+            memory.layout = layout;
+            memory.zoom = zoom;
+        }
+        memory
     }
 
     pub fn remember(&mut self) {
@@ -537,7 +630,7 @@ impl Doc {
             comment: String::new(),
             author: author.to_string(),
             modified: now.to_string(),
-            stroke: Vec::new(),
+            strokes: Vec::new(),
         })
     }
 
@@ -552,6 +645,9 @@ impl Doc {
             std::cmp::Ordering::Less => -1,
             std::cmp::Ordering::Equal => 0,
         };
+        if page != self.memory.page {
+            self.memory.offset = 0.0;
+        }
         self.memory.page = page;
         page
     }
@@ -600,6 +696,22 @@ impl Doc {
     }
 
     #[must_use]
+    pub fn stamped(&self, field: usize) -> bool {
+        self.stamps.iter().any(|stamp| stamp.field == Some(field))
+            || self
+                .opened
+                .fields
+                .get(field)
+                .is_some_and(|f| matches!(f.kind, FieldKind::Signature { stamped: true, .. }))
+    }
+
+    #[must_use]
+    pub fn keeps_notes(&self) -> bool {
+        !self.opened.info.encrypted
+            && (self.opened.format == Format::Pdf || crate::doc::convert::tool_for(self.opened.format).is_some())
+    }
+
+    #[must_use]
     pub fn editable(&self) -> bool {
         self.opened.format.annotates_in_place() && !self.opened.info.encrypted && self.opened.view_only.is_none()
     }
@@ -639,6 +751,23 @@ pub fn tint(image: &mut image::RgbaImage, paper: Paper, keep: &[(u32, u32, u32, 
 mod tests {
     use super::*;
     use crate::doc::{Info, Opened};
+
+    #[test]
+    fn a_drawn_signature_keeps_its_shape_inside_the_box() {
+        let pad = vec![vec![(20.0, 40.0), (200.0, 60.0)], vec![(100.0, 20.0), (120.0, 100.0)]];
+        let target = Rect::new(300.0, 500.0, 200.0, 40.0);
+        let fitted = fit_strokes(&pad, target);
+        let points: Vec<(f32, f32)> = fitted.iter().flatten().copied().collect();
+        assert!(points.iter().all(|(x, y)| target.contains(*x, *y)), "{points:?}");
+        let width =
+            points.iter().map(|p| p.0).fold(f32::MIN, f32::max) - points.iter().map(|p| p.0).fold(f32::MAX, f32::min);
+        let height =
+            points.iter().map(|p| p.1).fold(f32::MIN, f32::max) - points.iter().map(|p| p.1).fold(f32::MAX, f32::min);
+        assert!((width / height - 180.0 / 80.0).abs() < 0.01, "the strokes are scaled evenly, not stretched");
+        let free = free_rect(&pad, Size { w: 612.0, h: 792.0 }, 600.0, 10.0);
+        assert!(free.right() <= 612.0 && free.y >= 0.0, "a signature dropped at the edge stays on the page");
+        assert!((free.h / free.w - 80.0 / 180.0).abs() < 0.01);
+    }
 
     pub fn opened(pages: usize) -> Opened {
         Opened {
@@ -692,6 +821,19 @@ mod tests {
     }
 
     #[test]
+    fn a_book_reads_at_its_own_size_and_starts_each_chapter_at_the_top() {
+        let mut doc = doc(4);
+        doc.opened.format = Format::Epub;
+        doc.viewport = iced::Size::new(1600.0, 900.0);
+        assert_eq!(doc.percent(), 100, "the window width does not blow the text up");
+        doc.memory.zoom = Zoom::Percent(125);
+        assert_eq!(doc.percent(), 125);
+        doc.memory.offset = 0.6;
+        doc.go(1, false);
+        assert!(doc.memory.offset.abs() < f32::EPSILON, "a new chapter opens at its beginning");
+    }
+
+    #[test]
     fn the_page_at_the_viewport_centre_is_current() {
         let mut doc = doc(3);
         doc.viewport = iced::Size::new(660.0, 600.0);
@@ -742,7 +884,7 @@ mod tests {
             comment: "x".into(),
             author: String::new(),
             modified: String::new(),
-            stroke: vec![],
+            strokes: vec![],
         };
         doc.add_note(note);
         assert!(doc.dirty());

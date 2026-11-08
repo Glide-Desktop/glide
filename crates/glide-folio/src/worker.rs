@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::Duration;
 
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
@@ -122,6 +123,43 @@ enum Backend {
 pub struct Session {
     backend: Backend,
     opened: Opened,
+    path: PathBuf,
+    password: Option<String>,
+    restarts: u8,
+}
+
+const MAX_RESTARTS: u8 = 8;
+const REPLY_TIMEOUT: Duration = Duration::from_mins(1);
+const OPEN_TIMEOUT: Duration = Duration::from_secs(doc::convert::TOOL_TIMEOUT.as_secs() + 30);
+
+fn guarded<T>(process: &mut Process, timeout: Duration, work: impl FnOnce(&mut Process) -> T) -> T {
+    let (done, waiting) = std::sync::mpsc::channel::<()>();
+    let Ok(pid) = libc::pid_t::try_from(process.child.id()) else {
+        return work(process);
+    };
+    let watchdog = std::thread::Builder::new().name("glide-folio-watchdog".into()).spawn(move || {
+        if waiting.recv_timeout(timeout) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            // SAFETY: the pid is the renderer child this session spawned and has not reaped yet, so it cannot name another process; SIGKILL takes no pointers.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    });
+    let result = work(process);
+    drop(done);
+    drop(watchdog);
+    result
+}
+
+fn open_in(process: &mut Process, path: &Path, password: Option<&str>) -> Result<Opened, OpenError> {
+    let request = Request::Open { path: path.to_path_buf(), password: password.map(str::to_string) };
+    let reply = guarded(process, OPEN_TIMEOUT, |process| {
+        send(&mut process.input, &request).and_then(|()| receive::<Reply>(&mut process.output))
+    });
+    match reply {
+        Ok(Reply::Opened(result)) => *result,
+        _ => Err(OpenError::Damaged),
+    }
 }
 
 fn spawn() -> Option<Process> {
@@ -139,15 +177,14 @@ fn spawn() -> Option<Process> {
 impl Session {
     pub fn open(path: &Path, password: Option<&str>) -> Result<Self, OpenError> {
         if let Some(mut process) = spawn() {
-            let request = Request::Open { path: path.to_path_buf(), password: password.map(str::to_string) };
-            let reply = send(&mut process.input, &request).and_then(|()| receive::<Reply>(&mut process.output));
-            return match reply {
-                Ok(Reply::Opened(result)) => match *result {
-                    Ok(opened) => Ok(Self { backend: Backend::Process(process), opened }),
-                    Err(error) => Err(error),
-                },
-                _ => Err(OpenError::Damaged),
-            };
+            let opened = open_in(&mut process, path, password)?;
+            return Ok(Self {
+                backend: Backend::Process(process),
+                opened,
+                path: path.to_path_buf(),
+                password: password.map(str::to_string),
+                restarts: 0,
+            });
         }
         Self::local(path, password)
     }
@@ -155,7 +192,65 @@ impl Session {
     pub fn local(path: &Path, password: Option<&str>) -> Result<Self, OpenError> {
         let engine = doc::open(path, password)?;
         let opened = engine.opened().clone();
-        Ok(Self { backend: Backend::Local(engine), opened })
+        Ok(Self {
+            backend: Backend::Local(engine),
+            opened,
+            path: path.to_path_buf(),
+            password: password.map(str::to_string),
+            restarts: 0,
+        })
+    }
+
+    fn restart(&mut self) -> bool {
+        if !matches!(self.backend, Backend::Process(_)) || self.restarts >= MAX_RESTARTS {
+            return false;
+        }
+        self.restarts += 1;
+        let Some(mut process) = spawn() else {
+            return false;
+        };
+        if open_in(&mut process, &self.path, self.password.as_deref()).is_err() {
+            return false;
+        }
+        self.backend = Backend::Process(process);
+        true
+    }
+
+    fn exchange(&mut self, request: &Request) -> std::io::Result<(Reply, Option<Vec<u8>>)> {
+        let Backend::Process(process) = &mut self.backend else {
+            return Err(std::io::Error::other("not a process"));
+        };
+        guarded(process, REPLY_TIMEOUT, |process| {
+            send(&mut process.input, request)?;
+            let reply: Reply = receive(&mut process.output)?;
+            let Reply::Image { w, h } = reply else {
+                return Ok((reply, None));
+            };
+            if w == 0 || h == 0 {
+                return Ok((Reply::Blank, None));
+            }
+            if w > MAX_SIDE || h > MAX_SIDE {
+                return Err(std::io::Error::other("an image larger than the renderer may send"));
+            }
+            let mut bytes = vec![0; (w as usize) * (h as usize) * 4];
+            process.output.read_exact(&mut bytes)?;
+            Ok((reply, Some(bytes)))
+        })
+    }
+
+    fn ask(&mut self, request: &Request) -> Option<(Reply, Option<Vec<u8>>)> {
+        if let Ok(answer) = self.exchange(request) {
+            self.restarts = 0;
+            return Some(answer);
+        }
+        if !self.restart() {
+            return None;
+        }
+        let retried = self.exchange(request).ok();
+        if retried.is_none() {
+            self.restart();
+        }
+        retried
     }
 
     #[must_use]
@@ -163,28 +258,16 @@ impl Session {
         &self.opened
     }
 
-    fn ask(&mut self, request: &Request) -> Option<Reply> {
-        let Backend::Process(process) = &mut self.backend else {
-            return None;
-        };
-        send(&mut process.input, request).ok()?;
-        receive(&mut process.output).ok()
-    }
-
     pub fn render(&mut self, page: usize, scale: f32) -> Option<RgbaImage> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
         if let Backend::Local(engine) = &mut self.backend {
             let scale = scale_within(engine.as_ref(), page, scale);
             return engine.render(page, scale);
         }
         match self.ask(&Request::Render { page, scale })? {
-            Reply::Image { w, h } => {
-                let Backend::Process(process) = &mut self.backend else {
-                    return None;
-                };
-                let mut bytes = vec![0; (w as usize) * (h as usize) * 4];
-                process.output.read_exact(&mut bytes).ok()?;
-                RgbaImage::from_raw(w, h, bytes)
-            }
+            (Reply::Image { w, h }, Some(bytes)) => RgbaImage::from_raw(w, h, bytes),
             _ => None,
         }
     }
@@ -194,7 +277,7 @@ impl Session {
             return engine.text(page);
         }
         match self.ask(&Request::Text { page }) {
-            Some(Reply::Text(text)) => text,
+            Some((Reply::Text(text), _)) => text,
             _ => PageText::default(),
         }
     }
@@ -204,7 +287,7 @@ impl Session {
             return engine.links(page);
         }
         match self.ask(&Request::Links { page }) {
-            Some(Reply::Links(links)) => links,
+            Some((Reply::Links(links), _)) => links,
             _ => Vec::new(),
         }
     }
