@@ -552,6 +552,8 @@ pub struct Launcher {
     scroll: f64,
     scroll_latched: bool,
     page_offset: glide_ui::Tween,
+    page_release: Option<glide_theme::motion::Release>,
+    page_scrubbing: Option<f64>,
     hover: glide_ui::HoverAnimation<usize>,
     pointer_selected: bool,
     hover_layers: LayerTweens,
@@ -673,6 +675,8 @@ impl Launcher {
             scroll: 0.0,
             scroll_latched: false,
             page_offset: glide_ui::Tween::at(0.0),
+            page_release: None,
+            page_scrubbing: None,
             hover: glide_ui::HoverAnimation::default(),
             pointer_selected: false,
             chip_hover: glide_ui::HoverAnimation::default(),
@@ -1107,8 +1111,13 @@ impl Launcher {
             let provided = self.provided_entries();
             self.entries.extend(provided);
         }
+        let was_sliding = self.page_is_sliding();
         self.page = 0;
-        if self.page_is_sliding() {
+        let from = self.page_position();
+        self.page_offset.jump(from);
+        self.page_release = None;
+        self.page_scrubbing = None;
+        if was_sliding {
             self.page_offset.retarget(0.0, page_anim(), ease_out);
         } else {
             self.page_offset.jump(0.0);
@@ -1165,6 +1174,12 @@ impl Launcher {
     }
 
     fn slide_to(&mut self, page: usize) {
+        let from = self.page_position();
+        let dots_from = self.dot_position();
+        self.page_offset.jump(from);
+        self.dot_tween.jump(dots_from);
+        self.page_release = None;
+        self.page_scrubbing = None;
         self.page = page;
         self.page_offset.retarget(page_as_f64(page), page_anim(), ease_out);
         self.dot_tween.retarget(page_as_f64(page), dot_anim(), ease_out);
@@ -1172,11 +1187,56 @@ impl Launcher {
     }
 
     fn page_position(&self) -> f64 {
-        self.page_offset.value(page_anim(), ease_out)
+        let release = self.page_release;
+        let duration = release.map_or_else(page_anim, |release| release.duration);
+        self.page_offset.value(duration, |t| release.map_or_else(|| ease_out(t), |release| release.at(t)))
     }
 
     fn page_is_sliding(&self) -> bool {
-        self.page_offset.is_animating(page_anim())
+        self.page_offset.is_animating(self.page_release.map_or_else(page_anim, |release| release.duration))
+    }
+
+    fn dot_position(&self) -> f64 {
+        if self.page_scrubbing.is_some() || self.page_release.is_some() {
+            self.page_position()
+        } else {
+            self.dot_tween.value(dot_anim(), ease_out)
+        }
+    }
+
+    pub fn scrub_pages(&mut self, progress: f64) -> bool {
+        if self.is_listing() {
+            return false;
+        }
+        let origin = self.page_scrubbing.unwrap_or_else(|| self.page_position());
+        let position = (origin + progress.clamp(-1.0, 1.0)).clamp(0.0, page_as_f64(self.page_count() - 1));
+        self.page_release = None;
+        self.page_scrubbing = Some(origin);
+        self.page_offset.jump(position);
+        self.dots = None;
+        true
+    }
+
+    pub fn release_pages(&mut self, direction: i32, velocity: f64) -> bool {
+        if self.page_scrubbing.is_none() {
+            return false;
+        }
+        let from = self.page_position();
+        let page = match direction.cmp(&0) {
+            std::cmp::Ordering::Greater => (self.page + 1).min(self.page_count() - 1),
+            std::cmp::Ordering::Less => self.page.saturating_sub(1),
+            std::cmp::Ordering::Equal => self.page,
+        };
+        self.page = page;
+        self.page_scrubbing = None;
+        let target = page_as_f64(page);
+        let release = glide_theme::motion::Release::new(target - from, velocity, page_anim());
+        self.page_release = Some(release);
+        self.page_offset.jump(from);
+        self.page_offset.retarget(target, release.duration, ease_out);
+        self.dot_tween.jump(target);
+        self.dots = None;
+        true
     }
 
     #[must_use]
@@ -1504,6 +1564,21 @@ impl Launcher {
 
     pub fn scroll_by(&mut self, amount: f64, gesture: bool) -> bool {
         const DETENT: f64 = 15.0;
+        if gesture && !self.is_listing() {
+            if !self.scroll_latched {
+                self.scroll_latched = true;
+                self.scroll = self.page_position() - page_as_f64(self.page);
+            }
+            self.page_release = None;
+            self.page_scrubbing = None;
+            let stride = f64::from(self.area.size.w.max(grid_for(self.area).rect.size.w + CELL_WIDTH).max(1));
+            self.scroll = (self.scroll + amount / stride).clamp(-1.0, 1.0);
+            let position = (page_as_f64(self.page) + self.scroll).clamp(0.0, page_as_f64(self.page_count() - 1));
+            self.page_offset.jump(position);
+            self.dot_tween.jump(position);
+            self.dots = None;
+            return true;
+        }
         if self.scroll_latched && !self.is_listing() {
             return false;
         }
@@ -1530,9 +1605,16 @@ impl Launcher {
         turned
     }
 
-    pub fn end_scroll(&mut self) {
+    pub fn end_scroll(&mut self) -> bool {
+        let sliding = self.scroll_latched && !self.is_listing();
+        if sliding {
+            let position = self.page_position();
+            let page = (position.round() as usize).min(self.page_count() - 1);
+            self.slide_to(page);
+        }
         self.scroll = 0.0;
         self.scroll_latched = false;
+        sliding
     }
 
     fn page_passes(&self) -> Vec<(std::ops::Range<usize>, f64)> {
@@ -1576,6 +1658,8 @@ impl Launcher {
             self.page = selected / self.grid().per_page();
         }
         self.page_offset.jump(page_as_f64(self.page));
+        self.page_release = None;
+        self.page_scrubbing = None;
         self.dot_tween.jump(page_as_f64(self.page));
         self.list_scroll = 0;
         self.ensure_selection_visible();
@@ -1592,7 +1676,7 @@ impl Launcher {
         if !strip.to_f64().contains(pos) {
             return None;
         }
-        let position = self.dot_tween.value(dot_anim(), ease_out);
+        let position = self.dot_position();
         dot_layout(pages, position).into_iter().position(|(x, width, _)| {
             Rectangle::new(
                 Point::from((strip.loc.x + x - DOT_GAP / 2, strip.loc.y)),
@@ -1815,7 +1899,7 @@ fn push_grid<R: ShellRenderer>(
     launcher: &mut Launcher, frame: &mut Frame<'_, R>, icons: &mut IconLoader, layers: &Layers, recede: Recede,
 ) {
     let grid = grid_for(frame.area);
-    let grid_width = f64::from(grid.rect.size.w + CELL_WIDTH);
+    let grid_width = f64::from(frame.area.size.w.max(grid.rect.size.w + CELL_WIDTH));
     let swap = launcher.swap_progress();
     let swap_shift = (launcher.swap_dir * SWAP_SHIFT * (1.0 - swap)).round() as i32;
     let recede = Recede { alpha: recede.alpha * glide_theme::motion::assist(swap), ..recede };
@@ -2321,7 +2405,7 @@ fn push_dots<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>
     frame.layer_in(progress, DOT_RISE, recede);
     let (theme, output_scale, area) = (frame.theme, frame.output_scale, frame.area);
     let width = dots_width(pages);
-    let position = launcher.dot_tween.value(dot_anim(), ease_out);
+    let position = launcher.dot_position();
     let step = (position * DOT_STEPS).round() as i64;
     let cache = keyed(&mut launcher.dots, (pages, step));
     if let Some(buffer) = cached(cache, output_scale, || {
@@ -3279,18 +3363,47 @@ mod tests {
         }
 
         #[test]
-        fn one_touchpad_swipe_turns_one_page_however_long_it_runs() {
+        fn touchpad_pages_follow_the_finger_and_settle_on_release() {
             let mut launcher = launcher(per_page() * 3 + 1);
-            let mut turned = 0;
-            for _ in 0..40 {
-                if launcher.scroll_by(20.0, true) {
-                    turned += 1;
-                }
-            }
-            assert_eq!((turned, launcher.page), (1, 1));
-            launcher.end_scroll();
-            assert!(launcher.scroll_by(20.0, true), "a new swipe turns again");
-            assert_eq!(launcher.page, 2);
+            let stride = f64::from(area().size.w.max(grid_for(area()).rect.size.w + CELL_WIDTH));
+            assert!(launcher.scroll_by(stride * 0.6, true));
+            assert!((launcher.page_position() - 0.6).abs() < 1e-9);
+            assert_eq!(launcher.page, 0);
+            assert!(launcher.end_scroll());
+            assert_eq!(launcher.page, 1);
+            assert!(launcher.scroll_by(stride * 4.0, true));
+            assert!(launcher.end_scroll());
+            assert_eq!(launcher.page, 2, "one gesture advances at most one page");
+        }
+
+        #[test]
+        fn three_finger_paging_tracks_progress_and_keeps_release_velocity() {
+            let mut launcher = launcher(per_page() * 3);
+            assert!(launcher.scrub_pages(0.2));
+            assert!((launcher.page_position() - 0.2).abs() < 1e-9);
+            assert!((launcher.dot_position() - 0.2).abs() < 1e-9);
+            assert!(launcher.release_pages(1, 2.0));
+            assert_eq!(launcher.page, 1);
+            assert!(launcher.page_release.expect("release").slope > 0.0);
+            assert!((launcher.page_position() - 0.2).abs() < 0.05);
+            assert!(launcher.scrub_pages(-0.2));
+            assert!(launcher.release_pages(0, -2.0));
+            assert_eq!(launcher.page, 1, "cancelling returns to the current page");
+        }
+
+        #[test]
+        fn three_finger_paging_stays_at_the_first_and_last_page() {
+            let mut launcher = launcher(per_page() * 2);
+            assert!(launcher.scrub_pages(-0.5));
+            assert_eq!(launcher.page_position(), 0.0);
+            assert!(launcher.release_pages(-1, -2.0));
+            assert_eq!(launcher.page, 0);
+            launcher.slide_to(1);
+            launcher.page_offset.jump(1.0);
+            assert!(launcher.scrub_pages(0.5));
+            assert_eq!(launcher.page_position(), 1.0);
+            assert!(launcher.release_pages(1, 2.0));
+            assert_eq!(launcher.page, 1);
         }
 
         #[test]

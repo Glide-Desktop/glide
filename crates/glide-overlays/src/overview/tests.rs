@@ -233,7 +233,7 @@ fn the_label_pill_makes_room_for_the_app_icon_and_ellipsises_inside_its_padding(
     assert_eq!(label_metrics(100, 28, true, 1000), LabelMetrics { width: 141, text: (29, 129) });
     assert_eq!(label_metrics(400, 28, true, 200), LabelMetrics { width: 200, text: (29, 188) });
     assert_eq!(label_metrics(400, 28, true, 20).text, (29, 29));
-    assert!((LABEL_RISE - 4.0).abs() < f64::EPSILON);
+    const { assert!(LABEL_RISE >= 6.0) };
     assert_eq!((label_offset(28), label_offset(40)), (-14, -20));
 }
 

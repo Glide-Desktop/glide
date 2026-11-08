@@ -975,6 +975,9 @@ impl GlideState {
         self.touchpad_gesture = None;
         self.gestures.practice = None;
         self.discard_tracking_workspace_swipe();
+        if self.launcher.as_mut().is_some_and(|launcher| launcher.release_pages(0, 0.0)) {
+            self.queue_animation_redraw();
+        }
     }
 
     fn practising(&mut self) -> bool {
@@ -1001,6 +1004,15 @@ impl GlideState {
         match (role, kind) {
             (_, GestureKind::Undecided) | (SwipeRole::Windows, GestureKind::Overview) => {}
             (SwipeRole::Windows, GestureKind::Workspace) => self.drive_app_switch(accum_dx),
+            (SwipeRole::Shell, GestureKind::Workspace)
+                if self.gestures.config.workspace_swipe
+                    && self.launcher.as_ref().is_some_and(|launcher| !launcher.is_closing()) =>
+            {
+                let progress = normalized_progress(accum_dx, SWIPE_DISTANCE);
+                if self.launcher.as_mut().is_some_and(|launcher| launcher.scrub_pages(progress)) {
+                    self.queue_animation_redraw();
+                }
+            }
             (SwipeRole::Shell, GestureKind::Workspace)
                 if self.gestures.config.workspace_swipe && self.overview_takes_pages() =>
             {
@@ -1197,8 +1209,15 @@ impl GlideState {
         let target = decide_workspace_settlement(1, 3, progress, velocity, cancelled).target;
         let forward = target == Some(glide_layout::WorkspaceTarget::Next);
         if let Some(launcher) = self.launcher.as_mut().filter(|l| !l.is_closing()) {
-            if target.is_some() && launcher.turn_page(forward) {
-                self.queue_redraw();
+            let direction = if target.is_none() {
+                0
+            } else if forward {
+                1
+            } else {
+                -1
+            };
+            if launcher.release_pages(direction, velocity) {
+                self.queue_animation_redraw();
             }
             return;
         }
@@ -3130,8 +3149,8 @@ impl GlideState {
                 return;
             };
             if amount == 0.0 {
-                if finger {
-                    launcher.end_scroll();
+                if finger && launcher.end_scroll() {
+                    self.queue_redraw();
                 }
             } else if launcher.scroll_by(amount, finger) {
                 self.queue_redraw();

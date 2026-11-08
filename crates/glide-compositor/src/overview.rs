@@ -47,7 +47,7 @@ where
     let real = content_origin.to_f64().to_physical(scale).to_i32_round();
     let anchor = frame.loc.to_f64().to_physical(scale).to_i32_round();
     let target = draw.rect.loc.to_physical(scale).to_i32_round();
-    let shape = crate::window::PreviewShape { radius: draw.radius, scale: factor };
+    let shape = crate::window::PreviewShape { radius: draw.radius, scale: factor, shadow_alpha: draw.shadow_alpha };
     window.preview_render_elements(renderer, real, scale, draw.alpha, shape).into_iter().map(move |element| {
         let scaled = RescaleRenderElement::from_element(element, anchor, factor);
         OverviewRenderElement::Preview(RelocateRenderElement::from_element(scaled, target - anchor, Relocate::Relative))

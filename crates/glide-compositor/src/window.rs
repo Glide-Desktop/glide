@@ -614,7 +614,8 @@ impl GlideWindow {
         layers.extend(content);
         layers.extend(chrome);
 
-        if preview.is_none() {
+        let shadow_alpha = preview.map_or(1.0, |shape| shape.shadow_alpha);
+        if shadow_alpha > 0.0 {
             let buffer_scale = self.decoration_buffer_scale(scale);
             let box_deco = decoration::shadow_and_border_buffer(self, buffer_scale);
             let fade = decoration::shadow_and_border_fade(self, buffer_scale).map(|(mut buf, fade_alpha)| {
@@ -622,7 +623,7 @@ impl GlideWindow {
                 buf
             });
             layers.extend(fade.iter().chain(&box_deco).filter_map(|deco_buf| {
-                Self::decoration_layer(renderer, deco_buf, header_location, scale, alpha, None)
+                Self::decoration_layer(renderer, deco_buf, header_location, scale, alpha * shadow_alpha, None)
             }));
         }
 
@@ -704,6 +705,7 @@ where
 pub(crate) struct PreviewShape {
     pub(crate) radius: f32,
     pub(crate) scale: f64,
+    pub(crate) shadow_alpha: f32,
 }
 
 impl GlideWindow {

@@ -124,7 +124,8 @@ fn dock_thumbnail(
     ));
     let real = content_origin.to_f64().to_physical(scale).to_i32_round();
     let frame_physical = frame_origin.to_f64().to_physical(scale).to_i32_round();
-    let shape = crate::window::PreviewShape { radius: crate::dock_preview::THUMB_RADIUS, scale: factor };
+    let shape =
+        crate::window::PreviewShape { radius: crate::dock_preview::THUMB_RADIUS, scale: factor, shadow_alpha: 0.0 };
     window
         .preview_render_elements(renderer, real, scale, live.alpha, shape)
         .into_iter()
@@ -2069,7 +2070,7 @@ impl GlideState {
                 .to_f64()
                 .to_physical(fractional)
                 .to_i32_round();
-            let shape = crate::window::PreviewShape { radius: capture.clip, scale: 1.0 };
+            let shape = crate::window::PreviewShape { radius: capture.clip, scale: 1.0, shadow_alpha: 0.0 };
             let alone = window.preview_render_elements(gles_renderer, location, scale, 1.0, shape);
             match super::screenshot::capture_elements(
                 gles_renderer,

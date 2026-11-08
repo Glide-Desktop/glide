@@ -52,6 +52,7 @@ pub struct WindowDraw {
     pub rect: Rectangle<f64, Logical>,
     pub alpha: f32,
     pub radius: f32,
+    pub shadow_alpha: f32,
 }
 
 pub enum Layer<R: ShellRenderer> {
@@ -1069,7 +1070,7 @@ pub enum Direction {
 const LABEL_PADDING: i32 = 12;
 const LABEL_ICON_INSET: i32 = 5;
 const LABEL_ICON_GAP: i32 = 6;
-const LABEL_RISE: f64 = 4.0;
+const LABEL_RISE: f64 = 6.0;
 const OV_CLOSE_SIZE: i32 = 26;
 const OV_CLOSE_OUTSET: i32 = 10;
 const OV_CLOSE_HOVER_SCALE: f64 = 1.12;
@@ -1342,6 +1343,7 @@ impl OverviewUi {
                     rect: mini_rect(p.frame, thumb, output),
                     alpha,
                     radius: MINI_RADIUS,
+                    shadow_alpha: 0.0,
                 })
             }));
         }
@@ -1382,6 +1384,7 @@ impl OverviewUi {
                 rect: drag.rect(),
                 alpha: exit_alpha,
                 radius: corner,
+                shadow_alpha: 0.0,
             }));
         }
 
@@ -1404,6 +1407,7 @@ impl OverviewUi {
                 rect,
                 alpha: exit_alpha,
                 radius: (MINI_RADIUS - corner).mul_add(eased, corner),
+                shadow_alpha: 0.0,
             }));
         }
 
@@ -1460,23 +1464,7 @@ impl OverviewUi {
         }
 
         if t > 0.0 && dragged.is_none() {
-            let rise = ((1.0 - t) * LABEL_RISE).round() as i32;
             let label_alpha = t.clamp(0.0, 1.0) as f32 * exit_alpha;
-            if theme.label {
-                for &(index, rect, active) in &tiles {
-                    if !active {
-                        continue;
-                    }
-                    let Some(tile) = (frame.lookup)(self.previews[index].id) else {
-                        continue;
-                    };
-                    if let Some(element) =
-                        self.render_label(renderer, (index, round_rect(rect)), &tile, &mut frame, (label_alpha, rise))
-                    {
-                        layers.push(Layer::chrome(element));
-                    }
-                }
-            }
             let hovered = self.hover.target();
             if let Some(&(index, rect, _)) =
                 tiles.iter().find(|(index, _, active)| *active && Some(self.previews[*index].id) == hovered)
@@ -1495,10 +1483,20 @@ impl OverviewUi {
         }
 
         for (index, rect, active) in tiles {
-            let preview = &self.previews[index];
-            if (frame.lookup)(preview.id).is_none() {
+            let id = self.previews[index].id;
+            let Some(tile) = (frame.lookup)(id) else {
                 continue;
+            };
+            if active && theme.label && t > 0.0 && dragged.is_none() {
+                let rise = ((1.0 - t) * LABEL_RISE).round() as i32;
+                let alpha = glide_theme::motion::assist(t) as f32 * exit_alpha;
+                if let Some(element) =
+                    self.render_label(renderer, (index, round_rect(rect)), &tile, &mut frame, (alpha, rise))
+                {
+                    layers.push(Layer::chrome(element));
+                }
             }
+            let preview = &self.previews[index];
             let alpha = if active { exit_alpha } else { exit_alpha * NEIGHBOUR_ALPHA };
             layers.push(Layer::Window(WindowDraw {
                 id: preview.id,
@@ -1506,6 +1504,7 @@ impl OverviewUi {
                 rect,
                 alpha,
                 radius: corner,
+                shadow_alpha: (1.0 - t).clamp(0.0, 1.0) as f32,
             }));
         }
 
