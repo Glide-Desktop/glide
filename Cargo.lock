@@ -2063,7 +2063,7 @@ dependencies = [
 
 [[package]]
 name = "glide-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-channel",
  "glide-appmenu",
@@ -2123,7 +2123,7 @@ dependencies = [
 
 [[package]]
 name = "glide-compositor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -2174,7 +2174,7 @@ dependencies = [
 
 [[package]]
 name = "glide-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "serde",
@@ -2195,7 +2195,7 @@ dependencies = [
 
 [[package]]
 name = "glide-files"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "glide-app",
  "glide-config",
@@ -2319,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "glide-launcher"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "glide-config",
  "glide-netbird",
@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "glide-layout"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "glide-geom",
 ]
@@ -2399,7 +2399,7 @@ dependencies = [
 
 [[package]]
 name = "glide-overlays"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "glide-launcher",
  "glide-layout",
@@ -2513,7 +2513,7 @@ dependencies = [
 
 [[package]]
 name = "glide-sdk"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "glide-app",
  "glide-config",
@@ -2553,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "glide-settings"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "glide-config",
  "glide-ipc",
