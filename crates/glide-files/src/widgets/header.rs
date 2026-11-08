@@ -173,7 +173,9 @@ pub fn trail(app: &App) -> Vec<Crumb> {
     if let [only] = crumbs.as_mut_slice()
         && face(only) > budget
     {
-        only.label = elide(&only.label, budget - (face(only) - measure(&only.label, CURRENT)), CURRENT);
+        let room = budget - (face(only) - measure(&only.label, CURRENT));
+        let elided = elide(&only.label, room, CURRENT);
+        only.label = if measure(&elided, CURRENT) <= room { elided } else { elide_end(&only.label, room, CURRENT) };
     }
     crumbs
 }
