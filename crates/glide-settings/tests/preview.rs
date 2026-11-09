@@ -100,6 +100,34 @@ fn fixture_sound(app: &mut App) {
     let _ = app.update(Message::Sound(Msg::Loaded(state)));
 }
 
+fn click_sound_output(
+    element: &mut glide_sdk::iced::Element<'_, Message>, tree: &mut Tree, renderer: &Renderer, node: &layout::Node,
+    bounds: &Rectangle, messages: &mut Vec<Message>,
+) {
+    messages.clear();
+    let cursor = mouse::Cursor::Available(glide_sdk::iced::Point::new(800.0, 285.0));
+    for event in [mouse::Event::ButtonPressed(mouse::Button::Left), mouse::Event::ButtonReleased(mouse::Button::Left)] {
+        let mut shell = Shell::new(messages);
+        element.as_widget_mut().update(
+            tree,
+            &Event::Mouse(event),
+            Layout::new(node),
+            cursor,
+            renderer,
+            &mut clipboard::Null,
+            &mut shell,
+            bounds,
+        );
+    }
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        Message::Sound(glide_settings::panels::sound::Msg::Device(
+            glide_settings::panels::sound::Channel::Output,
+            device
+        )) if device.id == 2
+    )));
+}
+
 fn fixture_wallpaper(app: &mut App) {
     let items = [[179, 202, 237], [231, 188, 191], [122, 184, 159], [44, 47, 68], [235, 215, 167]]
         .into_iter()
@@ -231,6 +259,13 @@ fn preview_page() {
         mouse::Cursor::Unavailable,
         &bounds,
     );
+    if panel == Panel::Sound
+        && std::env::var_os("GLIDE_SETTINGS_SOUND_FIXTURE").is_some()
+        && width == 1500
+        && height == 1800
+    {
+        click_sound_output(&mut element, &mut tree, &renderer, &node, &bounds, &mut messages);
+    }
     let Renderer::Secondary(renderer) = &mut renderer else { unreachable!() };
     let rgba = renderer.screenshot(Size::new(width, height), 1.0, Color::BLACK);
     let path = std::env::var_os("GLIDE_SETTINGS_PREVIEW")

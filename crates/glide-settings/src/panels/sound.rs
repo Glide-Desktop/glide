@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget as sdk;
-use iced::widget::{column, row, space};
-use iced::{Alignment, Element, Task};
+use iced::widget::{column, container, mouse_area, row, space};
+use iced::{Alignment, Element, Fill, Task, mouse};
 
 use super::common::{error_banner, switch_row};
 use super::{Ctx, Pane, Panel};
@@ -571,7 +571,10 @@ impl Page {
 
     fn streams_group(&self, c: &Ctx) -> Element<'_, Msg> {
         let t = c.theme;
-        let mut group = Group::new(t).title(c.t(tr::Key::Applications)).description(c.t(tr::Key::ApplicationsHint));
+        let mut group = Group::new(t)
+            .title(c.t(tr::Key::Applications))
+            .description(c.t(tr::Key::ApplicationsHint))
+            .stacked_header(t.compact);
         if self.state.streams.is_empty() {
             return group
                 .push(
@@ -612,6 +615,42 @@ impl Page {
                         .build(),
                 )
                 .build();
+        }
+        if channel == Channel::Output {
+            let cards = devices
+                .iter()
+                .map(|device| {
+                    let selected = device.is_default;
+                    let paint = t.paint;
+                    let face = container(sdk::text(device.name.clone(), TextStyle::HEAD))
+                        .padding(16)
+                        .width(Fill)
+                        .height(80)
+                        .style(move |_| container::Style {
+                            background: Some(paint.card_bg().into()),
+                            border: iced::Border {
+                                color: if selected { paint.acc_bg() } else { paint.line() },
+                                width: if selected { 2.0 } else { 1.0 },
+                                radius: glide_sdk::theme::R3.into(),
+                            },
+                            ..Default::default()
+                        });
+                    if selected {
+                        face.into()
+                    } else {
+                        let message = Msg::Device(channel, device.clone());
+                        let card =
+                            mouse_area(face).on_release(message.clone()).interaction(mouse::Interaction::Pointer);
+                        sdk::focusable(&paint, card, glide_sdk::theme::R3).on_activate(Some(message)).into()
+                    }
+                })
+                .collect();
+            return column![
+                sdk::text(c.t(title), TextStyle::HEAD),
+                sdk::grid(cards, if t.compact { 1 } else { 3 }, 12.0),
+            ]
+            .spacing(8)
+            .into();
         }
         for device in devices {
             let active = device.is_default;
