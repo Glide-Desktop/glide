@@ -6,7 +6,7 @@ use glide_sdk::glide_app::menubar::Handles;
 use glide_sdk::glide_app::window_traits;
 use glide_sdk::glide_theme::Accent;
 use glide_sdk::widget::player::Trim;
-use glide_sdk::window::{Action, Frame};
+use glide_sdk::window::Action;
 use glide_sdk::{Lang, Paint};
 use glide_video::export::{self, Codec, Progress, Quality};
 use glide_video::frames::{self, Grabber};
@@ -402,7 +402,6 @@ pub struct App {
     pub dropping: bool,
     pub hovered_clip: Option<usize>,
     pub queued: Vec<Task<Message>>,
-    pub resized: Option<(Instant, iced::Size)>,
     pub pip: bool,
     pub aspect_sent: Option<(u32, u32)>,
     pub blur_sent: Option<Vec<window_traits::Region>>,
@@ -438,35 +437,13 @@ pub fn title_of(uri: &str, path: Option<&Path>) -> String {
 }
 
 pub const SIDECAR: &str = "glide-clips-sidecar";
-pub const RESIZE_SETTLE: Duration = Duration::from_millis(400);
 const TOPLINE_INSET: f32 = 14.0;
 const TOPLINE_GAP: f32 = 8.0;
 const DISC: f32 = 28.0;
 const DISC_TOP: f32 = TOPLINE_INSET + (TITLE_HEIGHT - DISC) / 2.0;
 const TITLE_HEIGHT: f32 = 36.0;
-const LEAST: iced::Size = WINDOW_LEAST;
 pub const WINDOW_LEAST: iced::Size = iced::Size::new(480.0, 270.0);
 pub const PIP_LEAST: iced::Size = iced::Size::new(384.0, 216.0);
-
-#[must_use]
-pub fn snapped(now: iced::Size, before: iced::Size, aspect: f32) -> Option<iced::Size> {
-    if !aspect.is_finite() || aspect <= 0.0 {
-        return None;
-    }
-    let by_width = (now.width - before.width).abs() >= (now.height - before.height).abs();
-    let (mut width, mut height) =
-        if by_width { (now.width, now.width / aspect) } else { (now.height * aspect, now.height) };
-    if width < LEAST.width {
-        width = LEAST.width;
-        height = width / aspect;
-    }
-    if height < LEAST.height {
-        height = LEAST.height;
-        width = height * aspect;
-    }
-    let size = iced::Size::new(width.round(), height.round());
-    ((size.width - now.width).abs() >= 2.0 || (size.height - now.height).abs() >= 2.0).then_some(size)
-}
 
 #[must_use]
 pub fn styled_sidecar(uri: &str) -> bool {
@@ -817,25 +794,6 @@ impl App {
         self.publish();
     }
 
-    pub(crate) fn resize_to_video(&self) -> Task<Message> {
-        let Some((width, height)) = self.media.as_ref().and_then(Media::video_size) else { return Task::none() };
-        if self.window.frame != Frame::Floating || width == 0 || height == 0 {
-            return Task::none();
-        }
-        let aspect = width as f32 / height as f32;
-        let (w, h) = if aspect >= 1.0 {
-            let w = self.window.size.width.clamp(640.0, 1600.0);
-            (w, (w / aspect).clamp(270.0, 1000.0))
-        } else {
-            let h = self.window.size.height.clamp(480.0, 900.0);
-            ((h * aspect).max(270.0), h)
-        };
-        if (w - self.window.size.width).abs() < 2.0 && (h - self.window.size.height).abs() < 2.0 {
-            return Task::none();
-        }
-        iced::window::latest().and_then(move |id| iced::window::resize(id, iced::Size::new(w.round(), h.round())))
-    }
-
     #[must_use]
     pub fn wanted_aspect(&self) -> (u32, u32) {
         let Some(media) = self.media.as_ref().filter(|media| media.showing_video()) else { return (0, 0) };
@@ -913,30 +871,6 @@ impl App {
         iced::window::latest()
             .and_then(move |id| iced::window::set_min_size(id, Some(least)))
             .chain(Task::done(Message::PipAsk(on)))
-    }
-
-    pub(crate) fn settle_resize(&mut self) -> Task<Message> {
-        let Some((at, first)) = self.resized else { return Task::none() };
-        if at.elapsed() < RESIZE_SETTLE {
-            return Task::none();
-        }
-        self.resized = None;
-        if self.pip {
-            return Task::none();
-        }
-        let video = self
-            .media
-            .as_ref()
-            .filter(|media| media.aspect == Aspect::File && media.showing_video())
-            .and_then(Media::video_size);
-        let Some((width, height)) = video.filter(|(width, height)| *width > 0 && *height > 0) else {
-            return Task::none();
-        };
-        if self.window.frame != Frame::Floating {
-            return Task::none();
-        }
-        let Some(size) = snapped(self.window.size, first, width as f32 / height as f32) else { return Task::none() };
-        iced::window::latest().and_then(move |id| iced::window::resize(id, size))
     }
 
     pub fn publish(&mut self) {
@@ -1298,25 +1232,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::Size;
-
-    #[test]
-    fn a_resized_window_settles_to_the_video_shape_along_the_edge_that_was_dragged() {
-        let wide = 16.0 / 9.0;
-        assert_eq!(snapped(Size::new(1000.0, 720.0), Size::new(1280.0, 720.0), wide), Some(Size::new(1000.0, 563.0)));
-        assert_eq!(snapped(Size::new(1280.0, 500.0), Size::new(1280.0, 720.0), wide), Some(Size::new(889.0, 500.0)));
-        assert_eq!(snapped(Size::new(1280.0, 720.0), Size::new(1000.0, 563.0), wide), None, "already in shape");
-        assert_eq!(snapped(Size::new(1281.0, 720.0), Size::new(1280.0, 720.0), wide), None, "within a pixel");
-    }
-
-    #[test]
-    fn settling_never_goes_below_the_smallest_window() {
-        let tall = 9.0 / 16.0;
-        let settled = snapped(Size::new(480.0, 900.0), Size::new(480.0, 700.0), tall).unwrap();
-        assert!(settled.width >= 480.0 && settled.height >= 270.0, "{settled:?}");
-        assert!((settled.width / settled.height - tall).abs() < 0.01);
-        assert_eq!(snapped(Size::new(500.0, 300.0), Size::new(600.0, 300.0), f32::NAN), None);
-    }
 
     #[test]
     fn sidecar_languages_come_from_the_file_name() {

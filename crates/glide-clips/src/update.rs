@@ -772,7 +772,7 @@ impl App {
             self.remember();
         }
         self.publish();
-        self.settle_resize()
+        Task::none()
     }
 
     fn clip_ended(&mut self) {
@@ -1009,12 +1009,10 @@ impl App {
         let cover = media.path.clone();
         self.place();
         self.sync_aspect();
-        let resize = if self.pip { Task::none() } else { self.resize_to_video() };
-        let thumb = match cover {
+        match cover {
             Some(path) => later_cover(path),
             None => Task::none(),
-        };
-        Task::batch([resize, thumb])
+        }
     }
 
     fn command(&mut self, command: Command, shell: &mut Shell<Message>) -> Task<Message> {

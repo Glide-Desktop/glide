@@ -12,9 +12,9 @@ use crate::app::{App, Media, Message, Mode};
 use crate::i18n::{self, Key};
 use crate::icons::Icon;
 
-const SCRIM_TOP: f32 = 136.0;
-const SCRIM_BOTTOM: f32 = 220.0;
-const TOP_TRAVEL: f32 = 24.0;
+const SCRIM_TOP: f32 = 104.0;
+const SCRIM_BOTTOM: f32 = 168.0;
+const TOP_TRAVEL: f32 = 80.0;
 const SUBTITLE_SHOWN: f32 = 140.0;
 const SUBTITLE_HIDDEN: f32 = 52.0;
 const BUTTON: f32 = 32.0;

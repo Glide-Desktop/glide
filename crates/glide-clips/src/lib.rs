@@ -93,7 +93,6 @@ impl glide_sdk::App for App {
             dropping: false,
             hovered_clip: None,
             queued: Vec::new(),
-            resized: None,
             pip: false,
             aspect_sent: None,
             blur_sent: None,
@@ -155,12 +154,7 @@ impl glide_sdk::App for App {
     }
 
     fn window_changed(&mut self, shell: &mut Shell<Message>) -> Task<Message> {
-        let before = self.window.size;
         self.window = *shell.window();
-        if self.window.size != before {
-            let first = self.resized.map_or(before, |(_, first)| first);
-            self.resized = Some((std::time::Instant::now(), first));
-        }
         self.place();
         self.sync_blur();
         Task::none()
