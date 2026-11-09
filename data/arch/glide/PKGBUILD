@@ -1,5 +1,5 @@
 pkgname=glide
-pkgver=0.1.2
+pkgver=0.1.3
 pkgrel=1
 pkgdesc="Wayland desktop: compositor with its own shell (top bar, dock, launcher, overview, notifications) and apps"
 arch=(x86_64)

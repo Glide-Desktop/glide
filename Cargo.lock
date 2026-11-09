@@ -2108,7 +2108,7 @@ dependencies = [
 
 [[package]]
 name = "glide-clips"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "glide-config",
  "glide-sdk",
@@ -2123,7 +2123,7 @@ dependencies = [
 
 [[package]]
 name = "glide-compositor"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -2289,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "glide-keychain"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "aes 0.8.4",
  "argon2",
@@ -2553,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "glide-settings"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "glide-config",
  "glide-ipc",
