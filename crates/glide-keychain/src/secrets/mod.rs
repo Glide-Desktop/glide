@@ -527,10 +527,10 @@ impl ItemObject {
         Ok(path(NONE))
     }
 
-    async fn get_secret(&self, session: ObjectPath<'_>) -> Result<SecretValue, Error> {
+    async fn get_secret(&self, session: ObjectPath<'_>) -> Result<(SecretValue,), Error> {
         let key = self.secrets.check_session(&session)?;
         let item = self.current().await?;
-        Secrets::secret_of(&item, &session, key.as_ref())
+        Secrets::secret_of(&item, &session, key.as_ref()).map(|secret| (secret,))
     }
 
     async fn set_secret(

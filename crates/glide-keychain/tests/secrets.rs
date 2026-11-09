@@ -283,7 +283,7 @@ fn programs_store_and_read_secrets_that_stay_encrypted() {
     let (iv, value) = key.seal(b"sealed-write").unwrap();
     let item_proxy = proxy(&client, item.as_str(), ITEM);
     let () = item_proxy.call("SetSecret", &((sealed_session, iv, value, "text/plain"),)).unwrap();
-    let plain: SecretValue = item_proxy.call("GetSecret", &(session.clone(),)).unwrap();
+    let (plain,): (SecretValue,) = item_proxy.call("GetSecret", &(session.clone(),)).unwrap();
     assert_eq!(plain.2, b"sealed-write", "a sealed write is stored as its plain text");
 
     let keyring = std::fs::read(path.with_file_name("login-keyring")).unwrap();
@@ -294,7 +294,12 @@ fn programs_store_and_read_secrets_that_stay_encrypted() {
     let item_proxy = proxy(&client, item.as_str(), ITEM);
     let secret = (session.clone(), Vec::<u8>::new(), b"rotated".to_vec(), "text/plain");
     let () = item_proxy.call("SetSecret", &(secret,)).unwrap();
-    let value: SecretValue = item_proxy.call("GetSecret", &(session,)).unwrap();
+    let reply = item_proxy.call_method("GetSecret", &(session,)).unwrap();
+    assert!(
+        reply.data().windows(10).any(|field| field == b"\x08(oayays)\0"),
+        "GetSecret answers one Secret struct, as go-keyring (gh) and the spec expect, not four loose arguments"
+    );
+    let (value,): (SecretValue,) = reply.body().deserialize().unwrap();
     assert_eq!(value.2, b"rotated");
     let deleted: OwnedObjectPath = item_proxy.call("Delete", &()).unwrap();
     assert_eq!(deleted.as_str(), "/");
