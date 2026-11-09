@@ -7,50 +7,87 @@ url="https://github.com/Glide-Desktop/glide"
 license=(GPL-3.0-or-later)
 depends=(
     dbus
+    dconf
+    fontconfig
     gcc-libs
+    glib2
     glibc
+    gsettings-desktop-schemas
+    gst-libav
+    gst-plugins-bad
     gst-plugins-bad-libs
     gst-plugins-base
     gst-plugins-base-libs
+    gst-plugins-good
     gstreamer
+    hicolor-icon-theme
     libdisplay-info
     libinput
+    libpulse
     libxkbcommon
     mesa
     pam
+    pipewire
+    pipewire-audio
+    pipewire-pulse
+    polkit
     seatd
     systemd-libs
+    wireplumber
+    wl-clipboard
+    xdg-desktop-portal
+    xdg-desktop-portal-gtk
+    xdg-desktop-portal-wlr
+    xdg-utils
+    xwayland-satellite
 )
 makedepends=(cargo git pkgconf)
 optdepends=(
-    'xwayland-satellite: X11 applications'
-    'xdg-desktop-portal: file dialogs and screen sharing for sandboxed apps'
-    'xdg-desktop-portal-gtk: portal fallbacks'
-    'xdg-desktop-portal-wlr: screen sharing'
-    'pipewire: audio and screen sharing'
-    'wireplumber: volume keys and sound devices (wpctl)'
-    'libpulse: sound device lists (pactl)'
-    'rtkit: realtime priority for PipeWire'
-    'brightnessctl: brightness keys'
-    'networkmanager: Wi-Fi and VPN in quick settings'
-    'bluez-utils: Bluetooth in quick settings'
+    'rtkit: realtime priority for PipeWire; without it sound crackles under load'
+    'brightnessctl: brightness and keyboard backlight keys'
+    'networkmanager: Wi-Fi, VPN, hotspot and screen mirroring in quick settings and Settings'
+    'networkmanager-openvpn: importing OpenVPN connections in Settings'
+    'bluez: Bluetooth'
+    'bluez-utils: Bluetooth devices in quick settings (bluetoothctl)'
+    'upower: battery charge limit in quick settings and Settings'
+    'power-profiles-daemon: power profiles in quick settings and Settings'
+    'accountsservice: Users in Settings'
+    'cups: Printers in Settings'
+    'pciutils: graphics card name in Settings › About'
+    'iw: Wi-Fi network name without NetworkManager'
     'udisks2: removable drives in Glide Files'
+    'ntfs-3g: NTFS drives that the kernel driver refuses'
+    'ntfsprogs: repairing NTFS drives in Glide Files'
+    'gvfs-mtp: phones in Glide Files'
+    'gvfs-gphoto2: cameras in Glide Files'
     'greetd: Glide as the display manager (glide --greeter)'
-    'gst-plugins-good: screen mirroring and video playback in Glide Clips'
-    'gst-plugins-bad: screen mirroring with hardware encoders, video output in Glide Clips'
-    'gst-plugins-ugly: screen mirroring with x264'
-    'gst-libav: H.264, AAC and other codecs in Glide Clips'
+    'gst-plugin-va: hardware video decoding, tone mapping and encoding in Glide Clips and screen mirroring'
+    'gst-plugin-pipewire: sound in screen mirroring'
+    'gst-plugins-ugly: screen mirroring and export with x264'
+    'intel-media-driver: hardware video on Intel graphics'
     'tesseract: text recognition in Glide Clips and Glide Folio'
+    'tesseract-data-ukr: Ukrainian text recognition'
     'ghostscript: PostScript and EPS in Glide Folio'
     'djvulibre: DjVu in Glide Folio'
+    'libgxps: XPS and OXPS in Glide Folio'
+    'libreoffice-fresh: Office documents in Glide Folio'
     'libarchive: comic archives in Glide Folio'
-    'adw-gtk-theme: GTK 3, Chrome and Electron apps in Glide colours'
-    'qt6ct: Qt 6 apps in Glide colours'
-    'kvantum: Qt controls in Glide shapes'
-    'papirus-icon-theme: icons when Colloid is not installed'
+    '7zip: CB7 comics in Glide Folio'
+    'unrar: CBR comics in Glide Folio'
     'libheif: HEIC and HEIF in Glide Photos'
     'libjxl: JPEG XL in Glide Photos'
     'imagemagick: AVIF, PSD and other formats in Glide Photos'
+    'man-db: Open man Page in Glide Terminal'
+    'sound-theme-freedesktop: notification and bell sounds'
+    'adwaita-cursors: a cursor theme'
+    'noto-fonts-emoji: emoji'
+    'noto-fonts-cjk: Chinese, Japanese and Korean text'
+    'adw-gtk-theme: GTK 3, Chrome and Electron apps in Glide colours'
+    'qt6ct: Qt 6 apps in Glide colours'
+    'qt5ct: Qt 5 apps in Glide colours'
+    'kvantum: Qt controls in Glide shapes'
+    'colloid-icon-theme-git: the default icon theme (AUR)'
+    'papirus-icon-theme: icons when Colloid is not installed'
     'netbird: NetBird VPN integration'
 )
 provides=(org.freedesktop.secrets)

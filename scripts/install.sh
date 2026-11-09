@@ -292,7 +292,7 @@ if [ -z "$DESTDIR" ]; then
 fi
 
 missing=""
-TOOLS="xwayland-satellite wpctl pactl brightnessctl nmcli bluetoothctl udisksctl"
+TOOLS="xwayland-satellite wpctl pactl brightnessctl nmcli bluetoothctl udisksctl wl-copy xdg-open gsettings pkexec"
 if [ "$INSTALL_DM" -eq 1 ]; then
     TOOLS="$TOOLS greetd"
 fi
@@ -353,6 +353,10 @@ if [ -n "$missing" ]; then
     echo "  rtkit   realtime priority for PipeWire; without it sound crackles and drops under load"
     echo "  nmcli (NetworkManager), bluetoothctl (bluez)   Wi-Fi and Bluetooth in quick settings"
     echo "  udisksctl (udisks2)   removable drives in Glide Files"
+    echo "  wl-copy (wl-clipboard)   clipboard for terminal programs"
+    echo "  xdg-open (xdg-utils)   opening links and files from the shell and the apps"
+    echo "  gsettings (glib2, gsettings-desktop-schemas, dconf)   theme, fonts and cursor for GTK apps"
+    echo "  pkexec (polkit)   administrator actions in Settings"
 fi
 if [ -n "$themes" ]; then
     echo
