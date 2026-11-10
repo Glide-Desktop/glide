@@ -2,7 +2,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{fixture, scratch, uri};
+use common::{fixture, scratch, serial, uri};
 use futures_util::StreamExt;
 use glide_video::export::{self, Codec, Job, Progress, Quality, Segment, Transform, Turn};
 use glide_video::frames::Grabber;
@@ -18,6 +18,7 @@ fn length(path: &std::path::Path) -> Duration {
 
 #[test]
 fn discovery_reads_streams_size_and_chapters() {
+    let _serial = serial();
     let path = fixture("info.mkv", 3, &[(0, "Перший"), (1, "Другий")]);
     let found = info::discover(&uri(&path), Duration::from_secs(10)).unwrap();
     let video = found.video.as_ref().unwrap();
@@ -32,6 +33,7 @@ fn discovery_reads_streams_size_and_chapters() {
 
 #[test]
 fn grabber_returns_scaled_frames_for_each_time() {
+    let _serial = serial();
     let path = fixture("frames.mkv", 3, &[]);
     let (grabber, results) = Grabber::spawn(&uri(&path), 160);
     grabber.request(7, vec![Duration::from_millis(500), Duration::from_secs(2)], false);
@@ -47,6 +49,7 @@ fn grabber_returns_scaled_frames_for_each_time() {
 
 #[test]
 fn transcode_joins_rotated_segments() {
+    let _serial = serial();
     let path = fixture("join.mkv", 4, &[]);
     let source = uri(&path);
     let output = scratch("joined.mp4");
@@ -89,6 +92,7 @@ fn transcode_joins_rotated_segments() {
 
 #[test]
 fn transcode_joins_clips_from_different_files() {
+    let _serial = serial();
     let first = fixture("first.mkv", 3, &[]);
     let second = fixture("second.mp4", 3, &[]);
     let output = scratch("mixed.mp4");
@@ -127,6 +131,7 @@ fn transcode_joins_clips_from_different_files() {
 
 #[test]
 fn lossless_trim_snaps_to_keyframes() {
+    let _serial = serial();
     for name in ["cut.mkv", "cut.mp4"] {
         let path = fixture(name, 4, &[]);
         let output = scratch(&format!("trimmed-{name}"));
@@ -155,6 +160,7 @@ fn lossless_trim_snaps_to_keyframes() {
 
 #[test]
 fn audio_only_export_has_no_picture() {
+    let _serial = serial();
     let path = fixture("sound.mkv", 2, &[]);
     let output = scratch("sound.m4a");
     let _ = std::fs::remove_file(&output);
@@ -182,6 +188,7 @@ fn audio_only_export_has_no_picture() {
 
 #[test]
 fn cancelling_removes_the_partial_file() {
+    let _serial = serial();
     let path = fixture("cancel.mkv", 4, &[]);
     let output = scratch("cancelled.mp4");
     let _ = std::fs::remove_file(&output);

@@ -313,6 +313,33 @@ fn discard(pipeline: &gst::Pipeline, pad: &gst::Pad) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PadKind {
+    Video,
+    Audio,
+    Other,
+}
+
+fn pad_kind(pad: &gst::Pad) -> PadKind {
+    if let Some(kind) = pad.stream().map(|stream| stream.stream_type()) {
+        if kind.contains(gst::StreamType::VIDEO) {
+            return PadKind::Video;
+        }
+        if kind.contains(gst::StreamType::AUDIO) {
+            return PadKind::Audio;
+        }
+        if !kind.is_empty() {
+            return PadKind::Other;
+        }
+    }
+    let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
+    match caps.structure(0).map(|structure| structure.name().to_string()) {
+        Some(name) if name.starts_with("video/") => PadKind::Video,
+        Some(name) if name.starts_with("audio/") => PadKind::Audio,
+        _ => PadKind::Other,
+    }
+}
+
 fn preroll(pipeline: &gst::Pipeline, linked: &AtomicUsize, expect: usize) -> Result<(), String> {
     if expect == 0 {
         return Ok(());
@@ -572,17 +599,16 @@ fn decode_into(pass: &Pass<'_>, cancel: &AtomicBool, sender: &UnboundedSender<Pr
     let counter = linked.clone();
     source.connect_pad_added(move |_, pad| {
         let Some(pipeline) = weak.upgrade() else { return };
-        let Some(caps) = pad.current_caps().or_else(|| Some(pad.query_caps(None))) else { return };
-        let Some(name) = caps.structure(0).map(|structure| structure.name().to_string()) else { return };
         let sink = AppSink::builder().sync(false).build();
-        let picked = if name.starts_with("video/") {
-            size.zip(video_target.clone())
-                .and_then(|(size, target)| video_chain(size, fps, transform).map(|chain| (chain, target)))
-        } else if name.starts_with("audio/") {
-            seen.store(true, Ordering::Relaxed);
-            audio_chain().map(|chain| (chain, audio_target.clone()))
-        } else {
-            None
+        let picked = match pad_kind(pad) {
+            PadKind::Video => size
+                .zip(video_target.clone())
+                .and_then(|(size, target)| video_chain(size, fps, transform).map(|chain| (chain, target))),
+            PadKind::Audio => {
+                seen.store(true, Ordering::Relaxed);
+                audio_chain().map(|chain| (chain, audio_target.clone()))
+            }
+            PadKind::Other => None,
         };
         let Some((chain, target)) = picked else {
             discard(&pipeline, pad);

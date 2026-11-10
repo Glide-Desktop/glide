@@ -2,7 +2,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{fixture, scratch, uri};
+use common::{fixture, scratch, serial, uri};
 use glide_video::gstreamer as gst;
 use glide_video::media::{Failure, TrackKind};
 use glide_video::player::{Event, Options, Playback, Player};
@@ -31,6 +31,7 @@ fn headless() -> Options {
 
 #[test]
 fn opens_paused_and_reports_tracks_and_duration() {
+    let _serial = serial();
     let path = fixture("plain.mkv", 3, &[]);
     let player = Player::open(&uri(&path), &headless()).unwrap();
     let seen = wait(&player, |event| matches!(event, Event::State(Playback::Paused)));
@@ -47,6 +48,7 @@ fn opens_paused_and_reports_tracks_and_duration() {
 
 #[test]
 fn plays_seeks_and_reaches_the_end() {
+    let _serial = serial();
     let path = fixture("seek.mkv", 3, &[]);
     let player = Player::open(&uri(&path), &headless()).unwrap();
     wait(&player, |event| matches!(event, Event::State(Playback::Paused)));
@@ -68,6 +70,7 @@ fn plays_seeks_and_reaches_the_end() {
 
 #[test]
 fn speed_change_keeps_pitch_through_scaletempo() {
+    let _serial = serial();
     let path = fixture("rate.mkv", 3, &[]);
     let mut player = Player::open(&uri(&path), &headless()).unwrap();
     wait(&player, |event| matches!(event, Event::State(Playback::Paused)));
@@ -87,6 +90,7 @@ fn speed_change_keeps_pitch_through_scaletempo() {
 
 #[test]
 fn chapters_come_from_the_container() {
+    let _serial = serial();
     let path = fixture("chapters.mkv", 4, &[(0, "Світанок"), (2, "Туман")]);
     let player = Player::open(&uri(&path), &headless()).unwrap();
     let seen = wait(&player, |event| matches!(event, Event::Chapters(list) if !list.is_empty()));
@@ -97,12 +101,26 @@ fn chapters_come_from_the_container() {
 }
 
 #[test]
-fn sidecar_subtitles_arrive_as_cues() {
+fn embedded_subtitles_arrive_as_cues() {
+    let _serial = serial();
     let path = fixture("subs.mkv", 3, &[]);
     let srt = scratch("subs.srt");
     std::fs::write(&srt, "1\n00:00:00,200 --> 00:00:01,500\n<i>Дивись, туман</i>\n\n").unwrap();
-    let options = Options { subtitle: Some(uri(&srt)), ..headless() };
-    let player = Player::open(&uri(&path), &options).unwrap();
+    let muxed = scratch("subs-srt.mkv");
+    let _ = std::fs::remove_file(&muxed);
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-y", "-i"])
+        .arg(&path)
+        .arg("-i")
+        .arg(&srt)
+        .args(["-map", "0", "-map", "1", "-c", "copy"])
+        .arg(&muxed)
+        .status();
+    if !made.is_ok_and(|status| status.success()) {
+        eprintln!("ffmpeg is not installed; skipping the embedded subtitle check");
+        return;
+    }
+    let player = Player::open(&uri(&muxed), &headless()).unwrap();
     wait(&player, |event| matches!(event, Event::State(Playback::Paused)));
     player.play();
     let seen = wait(&player, |event| matches!(event, Event::Subtitle(Some(_))));
@@ -113,6 +131,7 @@ fn sidecar_subtitles_arrive_as_cues() {
 
 #[test]
 fn styled_subtitles_are_composed_into_the_picture_instead_of_sent_as_text() {
+    let _serial = serial();
     let path = fixture("styled.mkv", 3, &[]);
     let ass = scratch("styled.ass");
     std::fs::write(
@@ -170,6 +189,7 @@ fn subtitle_codecs_with_styles_or_pictures_are_recognised() {
 
 #[test]
 fn a_missing_file_is_reported_as_not_found() {
+    let _serial = serial();
     let player = Player::open(&uri(&scratch("absent.mkv")), &headless()).unwrap();
     let seen = wait(&player, |event| matches!(event, Event::Failed(_)));
     assert_eq!(seen.last(), Some(&Event::Failed(Failure::NotFound)));
@@ -177,6 +197,7 @@ fn a_missing_file_is_reported_as_not_found() {
 
 #[test]
 fn garbage_is_reported_as_broken_or_unknown() {
+    let _serial = serial();
     let path = scratch("garbage.mp4");
     std::fs::write(&path, vec![0x5a; 4096]).unwrap();
     let player = Player::open(&uri(&path), &headless()).unwrap();

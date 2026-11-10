@@ -99,6 +99,9 @@ fn a_video_opens_plays_and_is_edited_through_the_whole_app() {
         .ok()
         .map(Box::new);
     harness.message(Message::Info(generation, info));
+    let lines = glide_clips::app::read_sidecar(harness.app().media.as_ref().unwrap().suburi.as_deref().unwrap());
+    assert_eq!(lines.len(), 1, "the SubRip file is read by the app, not by playbin");
+    harness.message(Message::SidecarLines(generation, lines));
 
     pump(harness, |app| app.media.as_ref().is_some_and(|media| media.playback == Playback::Playing));
     let media = harness.app().media.as_ref().unwrap();

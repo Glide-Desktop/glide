@@ -1228,7 +1228,7 @@ impl App {
         let Some(media) = &mut self.media else { return Task::none() };
         let uri = uri_of(subtitle);
         media.suburi = Some(uri.clone());
-        if crate::app::styled_sidecar(&uri) {
+        if crate::app::read_by_app(&uri) {
             media.sidecar_lines.clear();
             media.tracks.retain(|track| track.id != crate::app::SIDECAR);
             return self.load_sidecar(uri);

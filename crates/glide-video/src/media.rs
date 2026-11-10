@@ -163,6 +163,29 @@ fn ass_time(raw: &str) -> Option<Duration> {
     Some(Duration::from_millis(((hours * 60 + minutes) * 60 + whole) * 1000 + millis))
 }
 
+fn cue_time(raw: &str) -> Option<Duration> {
+    let stamp = raw.trim().replace(',', ".");
+    if stamp.matches(':').count() == 1 { ass_time(&format!("0:{stamp}")) } else { ass_time(&stamp) }
+}
+
+#[must_use]
+pub fn cue_script(script: &str) -> Vec<Line> {
+    let mut lines = Vec::new();
+    let mut rows = script.lines().map(|row| row.trim_start_matches('\u{feff}').trim_end_matches('\r'));
+    while let Some(row) = rows.next() {
+        let Some((from, to)) = row.split_once("-->") else { continue };
+        let to = to.split_whitespace().next().unwrap_or_default();
+        let (Some(start), Some(end)) = (cue_time(from), cue_time(to)) else { continue };
+        let body: Vec<&str> = rows.by_ref().take_while(|row| !row.trim().is_empty()).collect();
+        let text = plain_text(&body.join("\n"));
+        if end > start && !text.is_empty() {
+            lines.push(Line { start, end, text });
+        }
+    }
+    lines.sort_by_key(|line| line.start);
+    lines
+}
+
 #[must_use]
 pub fn ass_script(script: &str) -> Vec<Line> {
     let mut events = false;
@@ -294,6 +317,33 @@ mod tests {
         assert_eq!(ass_time("1:02:03.45"), Some(Duration::from_millis(3_723_450)));
         assert_eq!(ass_time("0:00:00.5"), Some(Duration::from_millis(500)));
         assert_eq!(ass_time("nonsense"), None);
+    }
+
+    #[test]
+    fn subrip_and_webvtt_files_become_timed_lines() {
+        let srt = "\u{feff}1\r\n00:00:00,200 --> 00:00:01,500\r\n<i>Дивись, туман</i>\r\n\r\n\
+                   2\r\n00:01:02,000 --> 00:01:03,250\r\nсходить\r\nпросто під нами\r\n";
+        assert_eq!(
+            cue_script(srt),
+            vec![
+                Line {
+                    start: Duration::from_millis(200),
+                    end: Duration::from_millis(1500),
+                    text: "Дивись, туман".into()
+                },
+                Line {
+                    start: Duration::from_secs(62),
+                    end: Duration::from_millis(63_250),
+                    text: "сходить\nпросто під нами".into()
+                },
+            ]
+        );
+        let vtt = "WEBVTT\n\nNOTE опис\n\n00:01.000 --> 00:02.500 align:start\n<c.yellow>Угорі</c>\n";
+        assert_eq!(
+            cue_script(vtt),
+            vec![Line { start: Duration::from_secs(1), end: Duration::from_millis(2500), text: "Угорі".into() }]
+        );
+        assert!(cue_script("00:00:05,000 --> 00:00:04,000\nназад\n").is_empty(), "a cue that ends first is dropped");
     }
 
     #[test]

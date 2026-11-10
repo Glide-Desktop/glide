@@ -445,16 +445,24 @@ const TITLE_HEIGHT: f32 = 36.0;
 pub const WINDOW_LEAST: iced::Size = iced::Size::new(480.0, 270.0);
 pub const PIP_LEAST: iced::Size = iced::Size::new(384.0, 216.0);
 
+fn sidecar_kind(uri: &str) -> Option<&'static str> {
+    let extension = std::path::Path::new(uri).extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "ass" | "ssa" => Some("ASS"),
+        "srt" => Some("SubRip"),
+        "vtt" => Some("WebVTT"),
+        _ => None,
+    }
+}
+
 #[must_use]
-pub fn styled_sidecar(uri: &str) -> bool {
-    std::path::Path::new(uri)
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("ass") || extension.eq_ignore_ascii_case("ssa"))
+pub fn read_by_app(uri: &str) -> bool {
+    sidecar_kind(uri).is_some()
 }
 
 #[must_use]
 pub fn player_subtitle(suburi: Option<&str>) -> Option<String> {
-    suburi.filter(|uri| !styled_sidecar(uri)).map(str::to_string)
+    suburi.filter(|uri| !read_by_app(uri)).map(str::to_string)
 }
 
 #[must_use]
@@ -472,7 +480,7 @@ pub fn sidecar_track(suburi: Option<&str>) -> glide_video::media::Track {
         kind: TrackKind::Text,
         language: suburi.and_then(sidecar_language),
         title: None,
-        codec: Some("ASS".into()),
+        codec: suburi.and_then(sidecar_kind).map(Into::into),
         channels: None,
         format: None,
         external: true,
@@ -486,7 +494,12 @@ pub fn read_sidecar(uri: &str) -> Vec<glide_video::media::Line> {
     if bytes.len() > 16 * 1024 * 1024 {
         return Vec::new();
     }
-    glide_video::media::ass_script(&String::from_utf8_lossy(&bytes))
+    let text = String::from_utf8_lossy(&bytes);
+    if sidecar_kind(uri) == Some("ASS") {
+        glide_video::media::ass_script(&text)
+    } else {
+        glide_video::media::cue_script(&text)
+    }
 }
 
 #[must_use]
@@ -766,7 +779,7 @@ impl App {
         if let Some(results) = results {
             tasks.push(Task::run(results, move |frame| Message::Frame(generation, frame)));
         }
-        if let Some(sidecar) = subtitle.filter(|uri| styled_sidecar(uri)) {
+        if let Some(sidecar) = subtitle.filter(|uri| read_by_app(uri)) {
             tasks.push(self.load_sidecar(sidecar));
         }
         let probe = uri;
@@ -1239,9 +1252,16 @@ mod tests {
         assert_eq!(sidecar_language("file:///v/film.eng.ssa").as_deref(), Some("eng"));
         assert_eq!(sidecar_language("file:///v/film.ass"), None);
         assert_eq!(sidecar_language("file:///v/film.2024.ass"), None);
-        assert!(styled_sidecar("file:///v/A.ASS"));
-        assert!(!styled_sidecar("file:///v/a.srt"));
-        assert_eq!(player_subtitle(Some("file:///v/a.ass")), None);
-        assert_eq!(player_subtitle(Some("file:///v/a.srt")).as_deref(), Some("file:///v/a.srt"));
+    }
+
+    #[test]
+    fn subtitle_files_the_app_reads_never_reach_playbin_whose_suburi_selection_races() {
+        for uri in ["file:///v/A.ASS", "file:///v/a.ssa", "file:///v/a.srt", "file:///v/a.uk.vtt"] {
+            assert!(read_by_app(uri), "{uri}");
+            assert_eq!(player_subtitle(Some(uri)), None, "{uri}");
+        }
+        assert!(!read_by_app("file:///v/a.sub"));
+        assert_eq!(player_subtitle(Some("file:///v/a.sub")).as_deref(), Some("file:///v/a.sub"));
+        assert_eq!(sidecar_track(Some("file:///v/a.uk.srt")).codec.as_deref(), Some("SubRip"));
     }
 }

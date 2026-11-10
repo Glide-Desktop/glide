@@ -5,6 +5,12 @@ use std::path::{Path, PathBuf};
 use glide_video::gstreamer as gst;
 use gst::prelude::*;
 
+static PIPELINES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn serial() -> std::sync::MutexGuard<'static, ()> {
+    PIPELINES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 pub fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("glide-video-tests-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
