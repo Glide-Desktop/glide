@@ -399,7 +399,8 @@ fn watch(
     if power_key.is_none() {
         tracing::warn!("no power key inhibitor; logind will act on the power button without asking");
     }
-    gate(sleep).hold(inhibit(&connection, SLEEP_DELAY));
+    let delay = inhibit(&connection, SLEEP_DELAY);
+    gate(sleep).hold(delay);
     for message in MessageIterator::from(&connection) {
         let Ok(message) = message else {
             continue;
