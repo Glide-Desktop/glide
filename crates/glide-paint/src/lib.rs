@@ -663,6 +663,13 @@ pub fn render_png_tinted(data: &[u8], side: i32, tint: Color) -> Option<Vec<u8>>
     Some(bytes)
 }
 
+#[must_use]
+pub fn tinted(shape: &[u8], tint: Color) -> Vec<u8> {
+    let mut bytes = shape.to_vec();
+    tint_buffer(&mut bytes, tint);
+    bytes
+}
+
 fn tint_buffer(bytes: &mut [u8], tint: Color) {
     let [r, g, b, a] = tint.0;
     for pixel in bytes.chunks_exact_mut(4) {

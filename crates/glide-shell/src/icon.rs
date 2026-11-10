@@ -29,10 +29,13 @@ pub struct IconLoader {
     theme: Option<String>,
     index: ThemeIndex,
     rendered: HashMap<(String, i32), Option<Vec<u8>>>,
+    symbolic_shapes: HashMap<(String, i32), Option<Vec<u8>>>,
     symbolic_rendered: HashMap<(String, i32, [u8; 4]), Option<Vec<u8>>>,
     refreshed: Option<Instant>,
     generation: u64,
 }
+
+const MAX_TINTED: usize = 1024;
 
 impl Default for IconLoader {
     fn default() -> Self {
@@ -51,6 +54,7 @@ impl IconLoader {
             theme,
             index,
             rendered: HashMap::new(),
+            symbolic_shapes: HashMap::new(),
             symbolic_rendered: HashMap::new(),
             refreshed: None,
             generation: next_generation(),
@@ -77,12 +81,12 @@ impl IconLoader {
             return false;
         }
         self.refreshed = Some(now);
-        let missing =
-            self.rendered.values().any(Option::is_none) || self.symbolic_rendered.values().any(Option::is_none);
+        let missing = self.rendered.values().any(Option::is_none) || self.symbolic_shapes.values().any(Option::is_none);
         if !missing || !self.index.refresh() {
             return false;
         }
         self.rendered.retain(|_, pixels| pixels.is_some());
+        self.symbolic_shapes.retain(|_, pixels| pixels.is_some());
         self.symbolic_rendered.retain(|_, pixels| pixels.is_some());
         self.generation = next_generation();
         true
@@ -109,15 +113,22 @@ impl IconLoader {
         let theme = self.theme_name();
         let name = cache_name(icon);
         if let Some(stale) = stamp_prefix(icon, &name) {
+            self.symbolic_shapes.retain(|(key, _), _| !key.starts_with(&stale) || *key == name);
             self.symbolic_rendered.retain(|(key, _, _), _| !key.starts_with(&stale) || *key == name);
         }
-        let index = &mut self.index;
-        self.symbolic_rendered
-            .entry((name, side, tint.to_buffer_bytes()))
-            .or_insert_with(|| {
-                index.resolve_symbolic(icon, &theme, side).and_then(|path| render(&path, side, Some(tint)))
-            })
-            .as_deref()
+        let key = (name, side, tint.to_buffer_bytes());
+        if !self.symbolic_rendered.contains_key(&key) {
+            if self.symbolic_rendered.len() >= MAX_TINTED {
+                self.symbolic_rendered.clear();
+            }
+            let index = &mut self.index;
+            let shape = self.symbolic_shapes.entry((key.0.clone(), side)).or_insert_with(|| {
+                index.resolve_symbolic(icon, &theme, side).and_then(|path| render_shape(&path, side))
+            });
+            let pixels = shape.as_deref().map(|shape| glide_paint::tinted(shape, tint));
+            self.symbolic_rendered.insert(key.clone(), pixels);
+        }
+        self.symbolic_rendered.get(&key)?.as_deref()
     }
 
     pub fn load(&mut self, app_id: &str, side: i32) -> Option<&[u8]> {
@@ -1055,6 +1066,15 @@ pub fn render(path: &Path, side: i32, tint: Option<Color>) -> Option<Vec<u8>> {
     }
 }
 
+fn render_shape(path: &Path, side: i32) -> Option<Vec<u8>> {
+    let data = read_bounded(path)?;
+    match Format::sniff(&data, path)? {
+        Format::Svg => glide_paint::render_svg(&data, side),
+        Format::Png => glide_paint::render_png(&data, side),
+        Format::Photo => None,
+    }
+}
+
 fn read_bounded(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
@@ -1417,6 +1437,35 @@ mod tests {
                 None,
                 "an empty raster must fall through to the built-in fallback"
             );
+        }
+
+        #[test]
+        fn a_tint_that_animates_reuses_one_rendered_shape_and_the_tinted_copies_stay_bounded() {
+            let root = tree("tints");
+            let dir = root.join("T/scalable/status");
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            std::fs::write(
+                root.join("T/index.theme"),
+                "[Icon Theme]\nDirectories=scalable/status\n[scalable/status]\nSize=16\nMinSize=8\nMaxSize=512\nType=Scalable\n",
+            )
+            .expect("index");
+            let file = dir.join("dot-symbolic.svg");
+            std::fs::write(
+                &file,
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>"#,
+            )
+            .expect("svg");
+            let mut loader = IconLoader::with_roots("T", vec![root]);
+            let red = loader.load_symbolic("dot", 8, Color([1.0, 0.0, 0.0, 1.0])).map(<[u8]>::to_vec).expect("renders");
+            assert_eq!(&red[..4], [0, 0, 255, 255], "the shape takes the tint, in buffer order");
+            std::fs::remove_file(&file).expect("the file is gone");
+            for step in 0..MAX_TINTED * 2 {
+                let tint = Color::rgb(u32::try_from(step).expect("a small step"));
+                assert!(loader.load_symbolic("dot", 8, tint).is_some(), "tinted from the cached shape");
+            }
+            assert_eq!(loader.symbolic_shapes.len(), 1, "the file was rendered once");
+            assert!(loader.symbolic_rendered.len() <= MAX_TINTED);
+            assert_eq!(loader.load_symbolic("dot", 8, Color([1.0, 0.0, 0.0, 1.0])), Some(red.as_slice()));
         }
     }
 
