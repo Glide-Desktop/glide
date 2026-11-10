@@ -1626,28 +1626,36 @@ impl Dock {
     }
 
     #[must_use]
+    pub fn next_wake(&self) -> Option<Instant> {
+        if !self.is_enabled() {
+            return None;
+        }
+        let now = glide_ui::clock::now();
+        let dwell = self.hover_since.filter(|_| self.menu.is_none() && self.drag.is_none());
+        let waits = [
+            dwell.map(|since| since + TOOLTIP_DELAY),
+            self.hide_pending.map(|since| since + AUTOHIDE_DELAY),
+            self.edge_since.filter(|_| self.is_hidden()).map(|since| since + REVEAL_DWELL),
+            self.reveal_until,
+        ];
+        waits.into_iter().flatten().filter(|at| *at > now).min()
+    }
+
+    #[must_use]
     pub fn is_animating(&self) -> bool {
         if !self.is_enabled() {
             return false;
         }
         let now = glide_ui::clock::now();
         let run = t3();
-        let tooltip_pending = self.menu.is_none()
-            && self.drag.is_none()
-            && self.hover_since.is_some_and(|since| since.elapsed() < TOOLTIP_DELAY);
-        let autohide = self.hide_pending.is_some()
-            || self.hide.is_animating()
-            || self.reveal_until.is_some_and(|until| now < until)
-            || (self.edge_since.is_some() && self.is_hidden());
         let preview = self.preview.as_ref().is_some_and(crate::preview::Preview::is_animating);
-        autohide
+        self.hide.is_animating()
             || self.frame_until.is_some_and(|until| now < until)
             || preview
             || any_animating(&self.focus_wells, t2())
             || self.is_bouncing(now)
             || self.badge_fades_animating()
             || self.hover.is_animating(t2())
-            || tooltip_pending
             || (!run.is_zero() && self.run_changed.iter().any(|stamp| glide_ui::clock::since(*stamp) < run))
             || self.slides.values().any(|tile| tile.is_moving(now, t2()))
             || self.arrivals.values().any(|born| now.saturating_duration_since(*born) < t2())
@@ -1842,7 +1850,7 @@ impl Dock {
         let dots = dots_width(state.dots());
         let (from, to) = if state.focused { (dots, RUN_BAR) } else { (RUN_BAR, dots) };
         let duration = t3();
-        let elapsed = self.run_changed.get(index).map_or(duration, Instant::elapsed);
+        let elapsed = self.run_changed.get(index).map_or(duration, |stamp| glide_ui::clock::since(*stamp));
         if duration.is_zero() || elapsed >= duration {
             return to;
         }
@@ -2979,7 +2987,7 @@ mod tests {
             assert!(dock.is_hidden());
             assert!(!dock.update_autohide(false, true), "a brush past the edge");
             assert!(dock.is_hidden());
-            assert!(dock.is_animating(), "a pending dwell keeps frames coming");
+            assert!(dock.next_wake().is_some(), "a pending dwell asks to be woken when it ends");
             if let Some(since) = dock.edge_since.as_mut() {
                 *since -= REVEAL_DWELL;
             }
@@ -3021,13 +3029,17 @@ mod tests {
         }
 
         #[test]
-        fn a_lapsed_reveal_no_longer_keeps_the_frame_pump_alive() {
+        fn a_reveal_waits_on_a_timer_instead_of_the_frame_pump() {
             let mut dock = dock(DockAutohide::Never);
             assert!(!dock.is_animating());
+            assert_eq!(dock.next_wake(), None);
+            let before = glide_ui::clock::now();
             dock.reveal_for(ATTENTION_REVEAL);
-            assert!(dock.is_animating(), "a reveal still running wakes the pump to end it");
+            assert!(!dock.is_animating(), "nothing is drawn while the reveal lasts");
+            assert!(dock.next_wake().is_some_and(|at| at >= before + ATTENTION_REVEAL), "woken when it ends");
             dock.reveal_until = glide_ui::clock::now().checked_sub(Duration::from_millis(1));
             assert!(dock.reveal_until.is_some(), "nothing has cleared the lapsed reveal yet");
+            assert_eq!(dock.next_wake(), None, "a deadline that passed is never armed again");
             assert!(!dock.is_animating());
         }
 
@@ -3043,6 +3055,7 @@ mod tests {
             assert!(dock.begin_launch("app 0", "App 0", "true"));
             assert!(dock.set_urgent("app 1", true));
             assert!(!dock.is_animating());
+            assert_eq!(dock.next_wake(), None);
         }
 
         #[test]
@@ -3050,7 +3063,8 @@ mod tests {
             let mut dock = dock(DockAutohide::Always);
             assert!(!dock.update_autohide(false, false));
             assert!(!dock.is_hidden());
-            assert!(dock.is_animating(), "a pending hide keeps the frame pump alive");
+            assert!(dock.next_wake().is_some(), "a pending hide asks to be woken when its delay ends");
+            assert!(!dock.is_animating(), "and draws nothing until then");
 
             let mut fade = AutohideFade::shown();
             assert!(fade.set(true));
@@ -3578,9 +3592,10 @@ mod tests {
             assert_eq!(dock.tooltip_index(), None);
             dock.set_hover(Some(1));
             assert_eq!(dock.tooltip_index(), None, "too early");
-            assert!(dock.is_animating(), "the frame pump must stay alive");
+            assert!(dock.next_wake().is_some(), "the wait for the tooltip ends on a timer");
             dock.hover_since = glide_ui::clock::now().checked_sub(TOOLTIP_DELAY);
             assert_eq!(dock.tooltip_index(), Some(1));
+            assert_eq!(dock.next_wake(), None, "the delay has passed");
 
             let rects = dock.item_rects(area());
             dock.begin_press(1, centre_of(rects[1]), area());
