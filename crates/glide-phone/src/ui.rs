@@ -57,6 +57,7 @@ pub struct PhoneApp {
     pub devices: Vec<PhoneCardData>,
     pub selected: Option<String>,
     pub ringing_local: bool,
+    refreshing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,31 @@ pub enum Message {
     DismissNotification(String, String),
     ClearNotifications(String),
     Refresh,
+    Loaded(Option<Snapshot>),
+}
+
+type Snapshot = Option<(Vec<PhoneCardData>, bool)>;
+
+fn snapshot() -> Snapshot {
+    if let Some(proxy) = get_proxy()
+        && let Ok(json) = proxy.list_devices_json()
+        && let Ok(cards) = serde_json::from_str::<Vec<PhoneCardData>>(&json)
+    {
+        return Some((cards, proxy.is_ringing().unwrap_or(false)));
+    }
+    let guard = global_manager()?.try_lock().ok()?;
+    Some((guard.sorted_cards(), guard.is_ringing()))
+}
+
+fn off_thread<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> impl Future<Output = Option<T>> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let spawned = std::thread::Builder::new().name("glide-phone-refresh".into()).spawn(move || {
+        let _ = sender.send(job());
+    });
+    async move {
+        spawned.ok()?;
+        receiver.await.ok()
+    }
 }
 
 impl PhoneApp {
@@ -347,7 +373,7 @@ impl App for PhoneApp {
     type Message = Message;
 
     fn new(_shell: &mut Shell<Message>) -> (Self, Task<Message>) {
-        (Self { devices: Vec::new(), selected: None, ringing_local: false }, Task::none())
+        (Self { devices: Vec::new(), selected: None, ringing_local: false, refreshing: false }, Task::none())
     }
 
     fn title(&self, shell: &Shell<Message>) -> String {
@@ -437,21 +463,15 @@ impl App for PhoneApp {
                 }
             }
             Message::Refresh => {
-                if let Some(proxy) = get_proxy()
-                    && let Ok(json_str) = proxy.list_devices_json()
-                    && let Ok(cards) = serde_json::from_str::<Vec<PhoneCardData>>(&json_str)
-                {
-                    self.devices = cards;
-                    self.ringing_local = proxy.is_ringing().unwrap_or(false);
-                    return Task::none();
+                if !std::mem::replace(&mut self.refreshing, true) {
+                    return Task::perform(off_thread(snapshot), Message::Loaded);
                 }
-
-                if let Some(m) = global_manager() {
-                    let mgr = m.try_lock();
-                    if let Ok(ref guard) = mgr {
-                        self.ringing_local = guard.is_ringing();
-                        self.devices = guard.sorted_cards();
-                    }
+            }
+            Message::Loaded(state) => {
+                self.refreshing = false;
+                if let Some((devices, ringing)) = state.flatten() {
+                    self.devices = devices;
+                    self.ringing_local = ringing;
                 }
             }
         }
