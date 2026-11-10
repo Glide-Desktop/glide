@@ -71,6 +71,11 @@ const PASSWORD_CAPACITY: usize = MAX_PASSWORD_CHARS * 4;
 const ERROR_HOLD: Duration = Duration::from_millis(2500);
 const SPINNER_PERIOD: Duration = Duration::from_millis(800);
 const SPINNER_STEPS: u32 = 36;
+const SUBMIT_SPINNER: i32 = 16;
+const BUSY_SPINNER: i32 = 18;
+const BUSY_GAP: i32 = 10;
+const TOAST_SPINNER: i32 = 14;
+const MAX_SPINNER_BUFFERS: usize = SPINNER_STEPS as usize * 6;
 const MAX_CACHED_ICONS: usize = 256;
 const SCRIM_ROWS: i32 = 64;
 const FAILLOCK_CONF: &str = "/etc/security/faillock.conf";
@@ -495,6 +500,7 @@ pub struct Layout {
     pub media_buttons: [Rect; 3],
     pub notices: Rect,
     pub toast: Rect,
+    pub busy_spinner: Rect,
 }
 
 struct Layer {
@@ -548,6 +554,7 @@ pub struct GreeterUi {
     palette: Palette,
     layout: Option<Layout>,
     layers: HashMap<(Part, i32), Layer>,
+    spinners: HashMap<(i32, i32, u32), MemoryRenderBuffer>,
     icons: IconCache,
     scrim: MemoryRenderBuffer,
     dirty: bool,
@@ -672,6 +679,7 @@ impl GreeterUi {
             palette: Palette::new(accent),
             layout: None,
             layers: HashMap::new(),
+            spinners: HashMap::new(),
             icons: HashMap::new(),
             scrim: scrim_buffer(),
             dirty: true,
@@ -1462,6 +1470,12 @@ impl GreeterUi {
         layout.field_frame = Rect::new(centre - BLOCK_W / 2, layout.field.y - 8, BLOCK_W, FIELD_H + 16);
         layout.submit = Rect::new(layout.field.right() - 5 - GO, layout.field.y + (FIELD_H - GO) / 2, GO, GO);
         layout.hint = Rect::new(centre - BLOCK_W / 2, layout.field.bottom() + 12, BLOCK_W, HINT_H);
+        if self.auth == AuthState::Success {
+            let total = BUSY_SPINNER + BUSY_GAP + text_w(painter, &self.busy_label(), &BUSY_STYLE);
+            let field = layout.field;
+            let (x, y) = (field.x + (field.w - total) / 2, field.y + (FIELD_H - BUSY_SPINNER) / 2);
+            layout.busy_spinner = Rect::new(x, y, BUSY_SPINNER, BUSY_SPINNER);
+        }
 
         if !others.is_empty() {
             let widths: Vec<i32> = others
@@ -1563,7 +1577,8 @@ impl GreeterUi {
                     .bool(placeholder)
                     .bool(self.auth == AuthState::Error)
                     .bool(self.editable())
-                    .u64(if self.busy() { u64::from(self.spinner_step()) + 1 } else { 0 })
+                    .bool(self.busy())
+                    .bool(self.auth == AuthState::Success)
                     .str(locked.as_deref().unwrap_or_default())
                     .str(&self.busy_label())
             }
@@ -1603,7 +1618,7 @@ impl GreeterUi {
                 }
                 key
             }
-            Part::Toast => base.str(self.toast_label().unwrap_or_default()).u64(u64::from(self.spinner_step())),
+            Part::Toast => base.str(self.toast_label().unwrap_or_default()),
         }
         .finish()
     }
@@ -1687,8 +1702,7 @@ impl GreeterUi {
         let pill = layout.toast.local_to(frame);
         canvas.fill(pill, shape::R_ROUND, Color::from_rgb8(30, 29, 35, 0.8));
         canvas.stroke(pill, 1.0, shape::R_ROUND, p.white.with_alpha(0.1));
-        canvas.icon(&spinner_svg(self.spinner_step()), pill.x + 16, pill.y + (TOAST_H - 14) / 2, 14, p.white);
-        let text = Rect::new(pill.x + 16 + 14 + 8, pill.y, pill.w - 16 - 14 - 8 - 12, TOAST_H);
+        let text = Rect::new(pill.x + 16 + TOAST_SPINNER + 8, pill.y, pill.w - 16 - TOAST_SPINNER - 8 - 12, TOAST_H);
         canvas.text(text, label, p.text, &MENU_STYLE, TextAlign::Left);
     }
 
@@ -1802,10 +1816,8 @@ impl GreeterUi {
         if self.auth == AuthState::Success {
             let label = self.busy_label();
             let text_w = text_w(canvas.painter, &label, &BUSY_STYLE);
-            let total = 18 + 10 + text_w;
-            let x = field.x + (field.w - total) / 2;
-            canvas.icon(&spinner_svg(self.spinner_step()), x, field.y + (FIELD_H - 18) / 2, 18, p.white);
-            let rect = Rect::new(x + 18 + 10, field.y, text_w + 2, FIELD_H);
+            let spinner = layout.busy_spinner.local_to(frame);
+            let rect = Rect::new(spinner.right() + BUSY_GAP, field.y, text_w + 2, FIELD_H);
             canvas.text(rect, &label, p.text, &BUSY_STYLE, TextAlign::Left);
             return;
         }
@@ -1851,12 +1863,41 @@ impl GreeterUi {
         if ready {
             self.layered(canvas, submit, shape::R_ROUND, p.acc_bg_hover, GreeterHit::Submit);
         }
-        let (x, y) = submit.centre_square(16);
-        if busy {
-            canvas.icon(&spinner_svg(self.spinner_step()), x, y, 16, p.white);
-        } else {
-            canvas.icon(&svg(2.4, icon::ARROW_RIGHT), x, y, 16, p.white);
+        if !busy {
+            let (x, y) = submit.centre_square(SUBMIT_SPINNER);
+            canvas.icon(&svg(2.4, icon::ARROW_RIGHT), x, y, SUBMIT_SPINNER, p.white);
         }
+    }
+
+    fn spinner_spot(&self, part: Part, layout: &Layout) -> Option<Rect> {
+        match part {
+            Part::Toast if self.toast_label().is_some() => {
+                let pill = layout.toast;
+                Some(Rect::new(pill.x + 16, pill.y + (TOAST_H - TOAST_SPINNER) / 2, TOAST_SPINNER, TOAST_SPINNER))
+            }
+            Part::Field if self.auth == AuthState::Success => Some(layout.busy_spinner),
+            Part::Field if self.locked_out().is_none() && self.busy() => {
+                let (x, y) = layout.submit.centre_square(SUBMIT_SPINNER);
+                Some(Rect::new(x, y, SUBMIT_SPINNER, SUBMIT_SPINNER))
+            }
+            _ => None,
+        }
+    }
+
+    fn spinner_buffer(&mut self, side: i32, buffer_scale: i32, painter: &Painter) -> Option<&MemoryRenderBuffer> {
+        let key = (side, buffer_scale, self.spinner_step());
+        if !self.spinners.contains_key(&key) {
+            if self.spinners.len() >= MAX_SPINNER_BUFFERS {
+                self.spinners.clear();
+            }
+            let mut icons = std::mem::take(&mut self.icons);
+            let mut canvas = Canvas::new(side, side, buffer_scale, painter, &mut icons);
+            canvas.icon(&spinner_svg(key.2), 0, 0, side, self.palette.white);
+            let buffer = canvas.finish();
+            self.icons = icons;
+            self.spinners.insert(key, buffer);
+        }
+        self.spinners.get(&key)
     }
 
     fn draw_users(&self, layout: &Layout, frame: Rect, canvas: &mut Canvas<'_>) {
@@ -2006,20 +2047,37 @@ impl GreeterUi {
                 if alpha <= 0.0 {
                     continue;
                 }
+                let placed = |at: Rect| {
+                    let location = Point::<f64, Logical>::from((f64::from(at.x) + dx, f64::from(at.y) + dy));
+                    let location = location.to_physical(scale);
+                    Point::from((location.x.round(), location.y.round()))
+                };
+                let alpha = Some(alpha.clamp(0.0, 1.0) as f32);
+                if let Some(spot) = self.spinner_spot(part, &layout)
+                    && let Some(buffer) = self.spinner_buffer(spot.w, buffer_scale, painter)
+                    && let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        placed(spot),
+                        buffer,
+                        alpha,
+                        None,
+                        None,
+                        Kind::Unspecified,
+                    )
+                {
+                    out.push(element);
+                }
                 let Some(frame) = self.layer(part, &layout, painter, buffer_scale) else {
                     continue;
                 };
                 let Some(layer) = self.layers.get(&(part, buffer_scale)) else {
                     continue;
                 };
-                let location =
-                    Point::<f64, Logical>::from((f64::from(frame.x) + dx, f64::from(frame.y) + dy)).to_physical(scale);
-                let location = Point::from((location.x.round(), location.y.round()));
                 if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
-                    location,
+                    placed(frame),
                     &layer.buffer,
-                    Some(alpha.clamp(0.0, 1.0) as f32),
+                    alpha,
                     None,
                     None,
                     Kind::Unspecified,
@@ -2122,11 +2180,27 @@ impl<'a> Canvas<'a> {
     }
 
     fn shadow(&mut self, r: Rect, radius: f32, dy: i32, blur: f32, color: Color) {
-        let mut layer = vec![0u8; self.buf.len()];
-        Painter::fill_rounded_rect_over(&mut layer, self.w, self.h, r.x, r.y + dy, r.w, r.h, self.scale, color, radius);
-        let radius_px = glide_paint::css_blur_box_radius(blur) * self.scale;
-        glide_paint::box_blur_rgba(&mut layer, self.w * self.scale, self.h * self.scale, radius_px);
-        composite_over(&mut self.buf, &layer);
+        let (w, h, scale, len) = (self.w, self.h, self.scale, self.buf.len());
+        let mut key = Revision::new().str("shadow").color(color);
+        for value in [w, h, scale, r.x, r.y, r.w, r.h, dy] {
+            key = key.i32(value);
+        }
+        let key = key.u64(u64::from(radius.to_bits())).u64(u64::from(blur.to_bits())).finish();
+        if self.icons.len() > MAX_CACHED_ICONS && !self.icons.contains_key(&key) {
+            self.icons.clear();
+        }
+        let layer = self.icons.entry(key).or_insert_with(|| {
+            let mut layer = vec![0u8; len];
+            Painter::fill_rounded_rect_over(&mut layer, w, h, r.x, r.y + dy, r.w, r.h, scale, color, radius);
+            glide_paint::box_blur_rgba(
+                &mut layer,
+                w * scale,
+                h * scale,
+                glide_paint::css_blur_box_radius(blur) * scale,
+            );
+            layer
+        });
+        composite_over(&mut self.buf, layer);
     }
 
     pub(crate) fn finish(self) -> MemoryRenderBuffer {
@@ -2731,8 +2805,43 @@ mod tests {
             let mut canvas = Canvas::new(frame.w, frame.h, scale, painter, &mut icons);
             ui.draw_part(part, &layout, frame, &mut canvas);
             image.blit(&canvas.buf, glide_shell::raster::rect(frame.x, frame.y, frame.w, frame.h));
+            if let Some(spot) = ui.spinner_spot(part, &layout) {
+                let mut canvas = Canvas::new(spot.w, spot.h, scale, painter, &mut icons);
+                canvas.icon(&spinner_svg(ui.spinner_step()), 0, 0, spot.w, ui.palette.white);
+                image.blit(&canvas.buf, glide_shell::raster::rect(spot.x, spot.y, spot.w, spot.h));
+            }
         }
         image.buf
+    }
+
+    #[test]
+    fn a_turning_spinner_never_redraws_the_field_or_the_pill_it_sits_on() {
+        let painter = Painter::new(14.0, None);
+        let area = Rectangle::from_size((1280, 800).into());
+        let mut ui = GreeterUi::new(users(), Vec::new(), Accent::Blue);
+        ui.auth = AuthState::Authenticating;
+        ui.power_started(PowerAction::Restart);
+        let layout = ui.compute_layout(&painter, area);
+        let keys = |ui: &GreeterUi| {
+            [Part::Field, Part::Toast].map(|part| ui.part_key(part, GreeterUi::frame_of(part, &layout), 0))
+        };
+        let before = keys(&ui);
+        ui.spinner_epoch = clock::now().checked_sub(SPINNER_PERIOD / 3).expect("a past instant");
+        assert_eq!(keys(&ui), before, "the step is not part of either raster");
+
+        let submit = ui.spinner_spot(Part::Field, &layout).expect("the go button spins");
+        assert_eq!((submit.w, submit.h), (SUBMIT_SPINNER, SUBMIT_SPINNER));
+        assert_eq!(ui.spinner_spot(Part::Toast, &layout).map(|spot| spot.w), Some(TOAST_SPINNER));
+        assert_eq!(ui.spinner_spot(Part::Clock, &layout), None);
+
+        ui.auth = AuthState::Success;
+        let layout = ui.compute_layout(&painter, area);
+        assert_eq!(ui.spinner_spot(Part::Field, &layout), Some(layout.busy_spinner));
+        assert_eq!(layout.busy_spinner.w, BUSY_SPINNER);
+        assert_ne!(ui.part_key(Part::Field, GreeterUi::frame_of(Part::Field, &layout), 0), before[0]);
+
+        ui.auth = AuthState::Idle;
+        assert_eq!(ui.spinner_spot(Part::Field, &layout), None, "an idle field has an arrow, not a spinner");
     }
 
     #[test]
