@@ -13,7 +13,7 @@ use zbus::{
 
 use crate::{
     model::{
-        Address, HOST_PREFIX, ITEM_INTERFACE, ItemProps, MAX_ALL_REPLY, MAX_PROPERTY_REPLY, Registry,
+        Address, HOST_PREFIX, ITEM_INTERFACE, ItemProps, MAX_ALL_REPLY, MAX_ITEMS, MAX_PROPERTY_REPLY, Registry,
         WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH, WirePixmaps,
     },
     watcher::{Watcher, lock},
@@ -796,6 +796,12 @@ impl Worker {
     fn register(&mut self, address: Address, sender: Option<&str>) {
         if let Some(index) = self.items.iter().position(|t| t.address == address) {
             self.refresh(index);
+            return;
+        }
+        if self.items.len() >= MAX_ITEMS {
+            tracing::debug!(key = %address.key(), "the tray is full; ignoring another item");
+            self.pending.retain(|p| p.address != address);
+            self.unlist(&address);
             return;
         }
         let now = Instant::now();

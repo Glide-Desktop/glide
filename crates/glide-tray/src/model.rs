@@ -13,6 +13,8 @@ pub const MAX_PIXMAP_SIDE: i32 = 512;
 pub const MAX_PIXMAP_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_PROPERTY_REPLY: usize = MAX_PIXMAP_BYTES + 64 * 1024;
 pub const MAX_ALL_REPLY: usize = 3 * MAX_PIXMAP_BYTES + 256 * 1024;
+pub const MAX_ITEMS: usize = 128;
+pub const MAX_HOSTS: usize = 32;
 
 pub type WirePixmaps = Vec<(i32, i32, Vec<u8>)>;
 
@@ -367,7 +369,7 @@ pub struct Registry {
 
 impl Registry {
     pub(crate) fn add_item(&mut self, address: Address) -> bool {
-        if self.items.contains(&address) {
+        if self.items.len() >= MAX_ITEMS || self.items.contains(&address) {
             return false;
         }
         self.items.push(address);
@@ -381,7 +383,7 @@ impl Registry {
     }
 
     pub(crate) fn add_host(&mut self, name: &str) -> bool {
-        if name.is_empty() || self.hosts.iter().any(|host| host == name) {
+        if name.is_empty() || self.hosts.len() >= MAX_HOSTS || self.hosts.iter().any(|host| host == name) {
             return false;
         }
         self.hosts.push(name.to_string());
@@ -720,5 +722,20 @@ mod tests {
         assert!(registry.vanish(":1.99").is_empty());
         assert!(registry.remove_item(&address("org.example.Tray", "/c")));
         assert!(registry.items().is_empty());
+    }
+
+    #[test]
+    fn a_client_that_keeps_registering_cannot_grow_the_registry_without_bound() {
+        let mut registry = Registry::default();
+        for n in 0..MAX_ITEMS * 2 {
+            registry.add_item(address(":1.5", &format!("/item{n}")));
+        }
+        for n in 0..MAX_HOSTS * 2 {
+            registry.add_host(&format!("org.example.Host{n}"));
+        }
+        assert_eq!(registry.items().len(), MAX_ITEMS);
+        assert_eq!(registry.hosts.len(), MAX_HOSTS);
+        assert_eq!(registry.vanish(":1.5").len(), MAX_ITEMS);
+        assert!(registry.add_item(address(":1.6", "/item")), "room comes back when the owner leaves");
     }
 }
