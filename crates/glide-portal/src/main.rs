@@ -20,6 +20,7 @@ const CANCELLED: u32 = 1;
 const FAILED: u32 = 2;
 const IDLE_EXIT: Duration = Duration::from_mins(5);
 const IDLE_CHECK: Duration = Duration::from_secs(20);
+const DRAIN: Duration = Duration::from_secs(1);
 
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static LAST_CALL: Mutex<Option<Instant>> = Mutex::new(None);
@@ -455,10 +456,12 @@ fn main() -> zbus::Result<()> {
         std::thread::sleep(IDLE_CHECK);
     }
     let _ = connection.release_name(BUS_NAME);
-    while IN_FLIGHT.load(Ordering::SeqCst) > 0 {
-        std::thread::sleep(Duration::from_secs(1));
+    loop {
+        std::thread::sleep(DRAIN);
+        if IN_FLIGHT.load(Ordering::SeqCst) == 0 {
+            return Ok(());
+        }
     }
-    Ok(())
 }
 
 #[cfg(test)]
