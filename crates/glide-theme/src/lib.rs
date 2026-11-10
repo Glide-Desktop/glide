@@ -559,7 +559,7 @@ impl Revision {
 
     #[must_use]
     pub fn str(self, value: &str) -> Self {
-        value.bytes().fold(self, |this, byte| this.u64(u64::from(byte)))
+        value.bytes().fold(self.u64(value.len() as u64), |this, byte| this.u64(u64::from(byte)))
     }
 
     #[must_use]
@@ -712,5 +712,13 @@ mod tests {
         for variant in variants {
             assert_ne!(variant.revision(), base.revision());
         }
+    }
+
+    #[test]
+    fn two_strings_in_a_row_are_not_one_string_split_elsewhere() {
+        let key = |first: &str, second: &str| Revision::new().str(first).str(second).finish();
+        assert_ne!(key("Song", "Artist"), key("SongA", "rtist"), "a raster keyed on both must not be reused");
+        assert_ne!(key("", "x"), key("x", ""));
+        assert_eq!(key("Song", "Artist"), key("Song", "Artist"));
     }
 }

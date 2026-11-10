@@ -711,6 +711,7 @@ pub enum Qt {
 
 #[must_use]
 pub fn qt_font(family: &str, points: u32, qt: Qt) -> String {
+    let family = family.replace(['"', ',', '\n', '\r'], "");
     match qt {
         Qt::Five => format!("\"{family},{points},-1,5,50,0,0,0,0,0\""),
         Qt::Six => format!("\"{family},{points},-1,5,400,0,0,0,0,0,0,0,0,0,0,1\""),
@@ -963,6 +964,8 @@ mod tests {
         assert_eq!(fields(Qt::Five), 10, "Qt 5 rejects more than 11 fields");
         assert_eq!(fields(Qt::Six), 16);
         assert!(qt_font("Inter", 11, Qt::Five).contains(",50,"), "Qt 5 weights run 0-99");
+        let odd = qt_font("My \"Font\", Bold", 11, Qt::Five);
+        assert_eq!(odd, "\"My Font Bold,11,-1,5,50,0,0,0,0,0\"", "a family cannot add fields or end the string");
     }
 
     #[test]
