@@ -51,6 +51,10 @@ fn status(state: &State) -> &'static str {
     }
 }
 
+fn shown_rate(rate: f64) -> f64 {
+    if rate.is_finite() && rate != 0.0 { rate } else { 1.0 }
+}
+
 fn owned(value: Value<'_>) -> Option<OwnedValue> {
     OwnedValue::try_from(value).ok()
 }
@@ -109,8 +113,8 @@ pub fn changes(before: &State, after: &State) -> Vec<(&'static str, Value<'stati
             metadata(after).into_iter().map(|(key, value)| (key, Value::from(value))).collect();
         changed.push(("Metadata", Value::from(map)));
     }
-    if (before.rate - after.rate).abs() > f64::EPSILON {
-        changed.push(("Rate", Value::F64(after.rate)));
+    if (shown_rate(before.rate) - shown_rate(after.rate)).abs() > f64::EPSILON {
+        changed.push(("Rate", Value::F64(shown_rate(after.rate))));
     }
     if (before.volume - after.volume).abs() > f64::EPSILON {
         changed.push(("Volume", Value::F64(after.volume)));
@@ -118,6 +122,15 @@ pub fn changes(before: &State, after: &State) -> Vec<(&'static str, Value<'stati
     if before.chapters != after.chapters {
         changed.push(("CanGoNext", Value::Bool(after.chapters)));
         changed.push(("CanGoPrevious", Value::Bool(after.chapters)));
+    }
+    let loaded = after.status.is_some();
+    if before.status.is_some() != loaded {
+        changed.push(("CanPlay", Value::Bool(loaded)));
+        changed.push(("CanPause", Value::Bool(loaded)));
+    }
+    let seekable = after.length.is_some();
+    if before.length.is_some() != seekable {
+        changed.push(("CanSeek", Value::Bool(seekable)));
     }
     changed
 }
@@ -235,7 +248,7 @@ impl Player {
 
     #[zbus(property)]
     fn rate(&self) -> f64 {
-        self.read().rate
+        shown_rate(self.read().rate)
     }
 
     #[zbus(property)]
@@ -458,6 +471,17 @@ mod tests {
         let after = State { status: Some(Playback::Paused), ..playing() };
         let names: Vec<_> = changes(&playing(), &after).into_iter().map(|(name, _)| name).collect();
         assert_eq!(names, vec!["PlaybackStatus"]);
+    }
+
+    #[test]
+    fn opening_a_file_tells_clients_that_cache_properties_what_they_may_now_do() {
+        let names: Vec<_> = changes(&State::default(), &playing()).into_iter().map(|(name, _)| name).collect();
+        for expected in ["PlaybackStatus", "Metadata", "CanPlay", "CanPause", "CanSeek", "CanGoNext"] {
+            assert!(names.contains(&expected), "{expected} in {names:?}");
+        }
+        let live = State { length: None, ..playing() };
+        let names: Vec<_> = changes(&playing(), &live).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, vec!["Metadata", "CanSeek"]);
     }
 
     #[test]

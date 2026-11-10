@@ -1,5 +1,6 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -98,6 +99,7 @@ wayland_client::delegate_noop!(State: ignore wl_data_offer::WlDataOffer);
 
 pub struct Clipboard {
     sender: mpsc::Sender<Vec<u8>>,
+    wake: Option<UnixStream>,
 }
 
 impl Clipboard {
@@ -105,23 +107,43 @@ impl Clipboard {
     pub fn new(handles: Handles) -> Self {
         let (sender, receiver) = mpsc::channel();
         let display = handles.display();
+        let (wake, woken) = match UnixStream::pair().and_then(|(wake, woken)| {
+            woken.set_nonblocking(true)?;
+            wake.set_nonblocking(true)?;
+            Ok((wake, woken))
+        }) {
+            Ok(pair) => pair,
+            Err(err) => {
+                tracing::warn!("could not start the clipboard helper: {err}");
+                return Self { sender, wake: None };
+            }
+        };
         let spawned = std::thread::Builder::new().name("glide-video-clipboard".into()).spawn(move || {
-            if let Err(err) = run(display, &receiver) {
+            if let Err(err) = run(display, &receiver, &woken) {
                 tracing::debug!("the clipboard helper stopped: {err}");
             }
         });
         if let Err(err) = spawned {
             tracing::warn!("could not start the clipboard helper: {err}");
         }
-        Self { sender }
+        Self { sender, wake: Some(wake) }
     }
 
     pub fn offer_png(&self, png: Vec<u8>) {
-        let _ = self.sender.send(png);
+        if self.sender.send(png).is_ok()
+            && let Some(mut wake) = self.wake.as_ref()
+        {
+            let _ = wake.write(&[1]);
+        }
     }
 }
 
-fn run(display: usize, commands: &Receiver<Vec<u8>>) -> Result<(), String> {
+fn drain(mut woken: &UnixStream) {
+    let mut scratch = [0_u8; 64];
+    while woken.read(&mut scratch).is_ok_and(|read| read > 0) {}
+}
+
+fn run(display: usize, commands: &Receiver<Vec<u8>>, woken: &UnixStream) -> Result<(), String> {
     if display == 0 {
         return Err("no display".into());
     }
@@ -144,12 +166,15 @@ fn run(display: usize, commands: &Receiver<Vec<u8>>) -> Result<(), String> {
         queue.dispatch_pending(&mut state).map_err(|err| err.to_string())?;
         queue.flush().map_err(|err| err.to_string())?;
         if let Some(guard) = queue.prepare_read() {
-            let mut poll = libc::pollfd { fd: guard.connection_fd().as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            // SAFETY: `poll` points at one valid pollfd for the duration of the call.
-            if unsafe { libc::poll(&raw mut poll, 1, 100) } > 0 {
+            let waiting = |fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+            let mut fds = [waiting(guard.connection_fd().as_raw_fd()), waiting(woken.as_raw_fd())];
+            // SAFETY: `fds` is two valid pollfds for the duration of the call.
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+            if ready > 0 && fds[0].revents != 0 {
                 guard.read().map_err(|err| err.to_string())?;
             }
         }
+        drain(woken);
         loop {
             match commands.try_recv() {
                 Ok(png) => {
@@ -166,5 +191,24 @@ fn run(display: usize, commands: &Receiver<Vec<u8>>) -> Result<(), String> {
                 Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wake_bytes_are_drained_without_blocking_and_a_closed_end_reads_as_done() {
+        let (mut wake, woken) = UnixStream::pair().expect("a socket pair");
+        woken.set_nonblocking(true).expect("non-blocking");
+        drain(&woken);
+        wake.write_all(&[1, 1, 1]).expect("wake");
+        drain(&woken);
+        let mut one = [0_u8; 1];
+        assert!((&woken).read(&mut one).is_err(), "nothing is left to wake for");
+        drop(wake);
+        drain(&woken);
+        assert_eq!((&woken).read(&mut one).ok(), Some(0), "the owner is gone");
     }
 }
