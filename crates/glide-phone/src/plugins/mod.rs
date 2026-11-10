@@ -14,3 +14,11 @@ pub use notifications::{
 };
 pub use presenter::{PresenterEvent, handle_presenter_packet};
 pub use share::{SharePayload, create_share_text_packet, create_share_url_packet, handle_share_packet};
+
+pub(crate) fn announce(notification: glide_sdk::system::Notification) {
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn(async move {
+            let _ = glide_sdk::system::notify(notification).await;
+        });
+    }
+}

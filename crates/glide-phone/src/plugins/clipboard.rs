@@ -31,6 +31,18 @@ pub fn handle_clipboard_packet(packet: &NetworkPacket) -> Result<ClipboardPayloa
     })
 }
 
+pub fn apply(content: &str) {
+    if content.is_empty() || tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let text = content.to_string();
+    tokio::spawn(async move {
+        if !crate::plugins::share::copy_text(&text).await {
+            tracing::warn!("the phone's clipboard was not applied: wl-copy is missing or was refused");
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

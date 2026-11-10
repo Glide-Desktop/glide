@@ -591,21 +591,64 @@ fn a_flood_of_made_up_devices_cannot_grow_the_device_list_without_bound() {
     assert!(manager.register_discovered("paired_phone".to_string(), "Pixel".to_string(), DeviceType::Phone));
 }
 
-#[test]
-fn phone_manager_pairing_and_state() {
-    let cert = IdentityCert::generate("local_1234567890123456789012345678").expect("cert");
-    let config = PhoneConfig {
+fn local_config(cert: &IdentityCert, paired: Vec<glide_phone::config::PairedDevice>) -> PhoneConfig {
+    PhoneConfig {
         device_id: "local_1234567890123456789012345678".to_string(),
         device_name: "Laptop".to_string(),
         cert_pem: cert.cert_pem.clone(),
         key_pem: cert.key_pem.clone(),
         cert_der: cert.cert_der.clone(),
         key_der: cert.key_der.clone(),
-        paired_devices: HashMap::new(),
+        paired_devices: paired.into_iter().map(|device| (device.id.clone(), device)).collect(),
         config_path: None,
-    };
+    }
+}
 
-    let mut manager = PhoneManager::new(config, cert);
+#[test]
+fn a_phone_saved_as_paired_without_its_certificate_is_not_trusted() {
+    use glide_phone::config::PairedDevice;
+    let cert = IdentityCert::generate("local_1234567890123456789012345678").expect("cert");
+    let paired = |id: &str, fingerprint: &str| PairedDevice {
+        id: id.to_string(),
+        name: "Pixel".to_string(),
+        fingerprint: fingerprint.to_string(),
+    };
+    let mut manager = PhoneManager::new(local_config(&cert, vec![paired("pinned", "AA"), paired("blank", "")]), cert);
+    assert_eq!(manager.devices["pinned"].pair_state, PairState::Paired);
+    assert!(!manager.devices.contains_key("blank") && !manager.config.paired_devices.contains_key("blank"));
+
+    manager.register_discovered("blank".to_string(), "Pixel".to_string(), DeviceType::Phone);
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    manager.register_connection("blank".to_string(), sender, Some("EE".to_string()));
+    assert_eq!(manager.devices["blank"].pair_state, PairState::Unpaired, "any certificate used to pass as paired");
+    let notification = NetworkPacket::new(PACKET_TYPE_NOTIFICATION, json!({"id": "n", "appName": "A", "title": "T"}));
+    manager.handle_packet("blank", &notification).expect("handled");
+    assert!(manager.devices["blank"].notifications.is_empty());
+}
+
+#[test]
+fn a_certificate_that_changes_while_pairing_starts_the_pairing_over() {
+    let cert = IdentityCert::generate("local_1234567890123456789012345678").expect("cert");
+    let mut manager = PhoneManager::new(local_config(&cert, Vec::new()), cert);
+    manager.register_discovered("phone_1".to_string(), "Pixel".to_string(), DeviceType::Phone);
+    let (shown, _shown_receiver) = tokio::sync::mpsc::unbounded_channel();
+    manager.register_connection("phone_1".to_string(), shown, Some("AA".to_string()));
+    manager.accept_pair("phone_1", String::new()).expect("requested");
+    assert_eq!(manager.devices["phone_1"].pair_state, PairState::RequestedByLocal);
+    assert!(manager.presents("phone_1", Some("AA")) && !manager.presents("phone_1", Some("EE")));
+    assert!(!manager.presents("phone_1", None) && !manager.presents("unknown", Some("AA")));
+
+    let (impostor, _impostor_receiver) = tokio::sync::mpsc::unbounded_channel();
+    manager.register_connection("phone_1".to_string(), impostor, Some("EE".to_string()));
+    assert_eq!(manager.devices["phone_1"].pair_state, PairState::Unpaired);
+    manager.handle_packet("phone_1", &PairBody::accept().to_packet().unwrap()).expect("handled");
+    assert!(manager.config.paired_devices.is_empty(), "the swapped certificate is never pinned by the old request");
+}
+
+#[test]
+fn phone_manager_pairing_and_state() {
+    let cert = IdentityCert::generate("local_1234567890123456789012345678").expect("cert");
+    let mut manager = PhoneManager::new(local_config(&cert, Vec::new()), cert);
     manager.register_discovered("phone_1".to_string(), "Pixel".to_string(), DeviceType::Phone);
 
     let dev = manager.devices.get("phone_1").expect("device exists");
@@ -621,23 +664,32 @@ fn phone_manager_pairing_and_state() {
     let _req_pkt = manager.accept_pair("phone_1", String::new()).expect("request pair from local");
     assert_eq!(manager.devices["phone_1"].pair_state, PairState::RequestedByLocal);
 
+    let pair_req = NetworkPacket::new(PACKET_TYPE_PAIR, json!({ "pair": true }));
+    manager.handle_packet("phone_1", &pair_req).expect("handled");
+    assert_eq!(
+        manager.devices["phone_1"].pair_state,
+        PairState::RequestedByLocal,
+        "an acceptance before any certificate was seen pairs with nobody"
+    );
+    assert!(manager.config.paired_devices.is_empty());
+
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let old_sender = sender.downgrade();
-    manager.register_connection("phone_1".to_string(), sender, None);
+    manager.register_connection("phone_1".to_string(), sender, Some("AA:BB:CC".to_string()));
     manager.send_pending_pair_request("phone_1");
     let pending = receiver.try_recv().expect("queued request sent on connection");
     assert!(PairBody::from_packet(&pending).unwrap().pair);
 
     let (replacement, _replacement_receiver) = tokio::sync::mpsc::unbounded_channel();
     let replacement_sender = replacement.downgrade();
-    manager.register_connection("phone_1".to_string(), replacement, None);
+    manager.register_connection("phone_1".to_string(), replacement, Some("AA:BB:CC".to_string()));
     manager.unregister_connection("phone_1", &old_sender);
     assert!(manager.is_connected("phone_1"));
     manager.unregister_connection("phone_1", &replacement_sender);
     assert!(!manager.is_connected("phone_1"));
 
-    let pair_req = NetworkPacket::new(PACKET_TYPE_PAIR, json!({ "pair": true }));
     let _ = manager.handle_packet("phone_1", &pair_req).expect("handle pair");
+    assert_eq!(manager.config.paired_devices["phone_1"].fingerprint, "AA:BB:CC");
     assert_eq!(manager.devices["phone_1"].pair_state, PairState::Paired);
     assert!(manager.config.paired_devices.contains_key("phone_1"));
 

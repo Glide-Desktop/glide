@@ -50,14 +50,12 @@ fn openable(url: &str) -> Option<&str> {
     (web && plain && url.len() <= MAX_SHARED_URL_BYTES).then_some(url)
 }
 
-fn announce(summary: String, body: String, icon: &'static str) {
-    let notification = glide_sdk::system::Notification::new("glide-phone", summary).body(body).icon(icon);
-    tokio::spawn(async move {
-        let _ = glide_sdk::system::notify(notification).await;
-    });
+fn announce(key: crate::i18n::Key, device: &str, body: String, icon: &'static str) {
+    let summary = crate::i18n::naming(key, device);
+    crate::plugins::announce(glide_sdk::system::Notification::new("glide-phone", summary).body(body).icon(icon));
 }
 
-async fn copy_text(text: &str) -> bool {
+pub(crate) async fn copy_text(text: &str) -> bool {
     use tokio::io::AsyncWriteExt as _;
     let spawned = tokio::process::Command::new("wl-copy")
         .stdin(std::process::Stdio::piped())
@@ -89,7 +87,7 @@ pub fn deliver(device: &str, share: SharePayload) {
             tokio::spawn(async move {
                 let opened = tokio::process::Command::new("xdg-open").arg(&url).status().await;
                 if !opened.is_ok_and(|status| status.success()) {
-                    announce(format!("Link from {device}"), url, "emblem-shared-symbolic");
+                    announce(crate::i18n::Key::LinkFrom, &device, url, "emblem-shared-symbolic");
                 }
             });
         }
@@ -99,9 +97,9 @@ pub fn deliver(device: &str, share: SharePayload) {
             }
             tokio::spawn(async move {
                 if copy_text(&text).await {
-                    announce(format!("Text from {device} copied"), text, "edit-paste-symbolic");
+                    announce(crate::i18n::Key::TextCopied, &device, text, "edit-paste-symbolic");
                 } else {
-                    announce(format!("Text from {device}"), text, "emblem-shared-symbolic");
+                    announce(crate::i18n::Key::TextFrom, &device, text, "emblem-shared-symbolic");
                 }
             });
         }

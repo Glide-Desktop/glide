@@ -1,6 +1,7 @@
 use futures_util::StreamExt as _;
 use serde_json::json;
 
+use crate::i18n::{Key, naming, t};
 use crate::protocol::packet::{NetworkPacket, PACKET_TYPE_FINDMYPHONE_REQUEST};
 use crate::sound::{AlarmHandle, start_alarm_loop};
 
@@ -13,12 +14,11 @@ pub fn create_ring_packet() -> NetworkPacket {
 pub fn handle_find_this_device(device_name: &str) -> AlarmHandle {
     let handle = start_alarm_loop();
 
-    let title = format!("{device_name} is finding this device!");
-    let notification = glide_sdk::system::Notification::new("glide-phone", title)
-        .body("Device alarm is ringing. Click to stop.")
+    let notification = glide_sdk::system::Notification::new("glide-phone", naming(Key::Finding, device_name))
+        .body(t(Key::FindingHint))
         .icon("audio-volume-high-symbolic")
         .urgency(glide_sdk::system::Urgency::Critical)
-        .action("stop", "Stop Alarm");
+        .action("stop", t(Key::StopAlarm));
 
     if let Ok(handle_rt) = tokio::runtime::Handle::try_current() {
         let alarm = handle.clone();

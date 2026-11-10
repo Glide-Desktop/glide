@@ -50,17 +50,14 @@ pub fn handle_battery_packet(device_name: &str, packet: &NetworkPacket) -> Resul
     let is_low = payload.threshold_event == THRESHOLD_BATTERY_LOW && !payload.is_charging;
 
     if is_low {
-        let title = format!("{device_name}: Low Battery");
-        let body = format!("Battery at {}%", payload.current_charge);
-        let notification = glide_sdk::system::Notification::new("glide-phone", title)
-            .body(body)
-            .icon("battery-caution-symbolic")
-            .urgency(glide_sdk::system::Urgency::Critical);
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let _ = glide_sdk::system::notify(notification).await;
-            });
-        }
+        use crate::i18n::{Key, naming, t};
+        let body = t(Key::BatteryAt).replace("{percent}", &payload.current_charge.to_string());
+        crate::plugins::announce(
+            glide_sdk::system::Notification::new("glide-phone", naming(Key::LowBattery, device_name))
+                .body(body)
+                .icon("battery-caution-symbolic")
+                .urgency(glide_sdk::system::Urgency::Critical),
+        );
     }
 
     Ok(BatteryState { charge: payload.current_charge, is_charging: payload.is_charging, is_low })

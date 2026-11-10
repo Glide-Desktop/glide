@@ -607,7 +607,8 @@ fn dispatch_desktop_notification(device_name: &str, active: &ActiveNotification,
     }
 
     if active.request_reply_id.is_some() {
-        notification = notification.reply("Reply", "Type a reply...");
+        notification =
+            notification.reply(crate::i18n::t(crate::i18n::Key::Reply), crate::i18n::t(crate::i18n::Key::ReplyHint));
     }
 
     for action in &active.actions {

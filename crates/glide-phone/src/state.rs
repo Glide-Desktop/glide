@@ -57,7 +57,14 @@ pub struct PhoneManager {
 
 impl PhoneManager {
     #[must_use]
-    pub fn new(config: PhoneConfig, cert: IdentityCert) -> Self {
+    pub fn new(mut config: PhoneConfig, cert: IdentityCert) -> Self {
+        config.paired_devices.retain(|id, paired| {
+            let pinned = !paired.fingerprint.is_empty();
+            if !pinned {
+                tracing::warn!(%id, "a paired phone was saved without its certificate; it has to be paired again");
+            }
+            pinned
+        });
         let mut devices = HashMap::new();
         for (id, paired) in &config.paired_devices {
             devices.insert(
@@ -70,11 +77,7 @@ impl PhoneManager {
                     battery: None,
                     notifications: HashMap::new(),
                     seen_notifications: HashMap::new(),
-                    peer_fingerprint: if paired.fingerprint.is_empty() {
-                        None
-                    } else {
-                        Some(paired.fingerprint.clone())
-                    },
+                    peer_fingerprint: Some(paired.fingerprint.clone()),
                     connected: false,
                 },
             );
@@ -153,11 +156,22 @@ impl PhoneManager {
         if let Some(dev) = self.devices.get_mut(&device_id) {
             dev.connected = true;
             if let Some(fp) = peer_fingerprint.filter(|s| !s.is_empty()) {
+                let swapped = dev.peer_fingerprint.as_deref().is_some_and(|known| known != fp);
+                if swapped && matches!(dev.pair_state, PairState::RequestedByLocal | PairState::RequestedByPeer) {
+                    tracing::warn!(%device_id, "the phone's certificate changed while pairing; pairing starts over");
+                    dev.pair_state = PairState::Unpaired;
+                }
                 dev.peer_fingerprint = Some(fp);
             }
         }
         self.senders.insert(device_id, sender);
         self.notify.notify_waiters();
+    }
+
+    #[must_use]
+    pub fn presents(&self, device_id: &str, fingerprint: Option<&str>) -> bool {
+        let known = self.devices.get(device_id).and_then(|device| device.peer_fingerprint.as_deref());
+        known.is_some() && known == fingerprint
     }
 
     pub fn unregister_connection(&mut self, device_id: &str, sender: &WeakUnboundedSender<NetworkPacket>) {
@@ -248,57 +262,55 @@ impl PhoneManager {
                 self.notify.notify_waiters();
             }
             PACKET_TYPE_PING => {
-                let msg = packet.body.get("message").and_then(serde_json::Value::as_str).unwrap_or("Ping!");
-                let notif = glide_sdk::system::Notification::new("glide-phone", format!("{device_name}: Ping"))
-                    .body(msg)
-                    .icon("phone-symbolic");
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    handle.spawn(async move {
-                        let _ = glide_sdk::system::notify(notif).await;
-                    });
-                }
+                let message = packet.body.get("message").and_then(serde_json::Value::as_str);
+                let summary = crate::i18n::naming(crate::i18n::Key::Ping, &device_name);
+                crate::plugins::announce(
+                    glide_sdk::system::Notification::new("glide-phone", summary)
+                        .body(message.unwrap_or_else(|| crate::i18n::t(crate::i18n::Key::PingBody)))
+                        .icon("phone-symbolic"),
+                );
             }
-            PACKET_TYPE_PAIR => {
-                if let Ok(pair_body) = PairBody::from_packet(packet) {
-                    if pair_body.pair {
-                        if device.pair_state == PairState::RequestedByLocal {
-                            device.pair_state = PairState::Paired;
-                            let fp = device.peer_fingerprint.clone().unwrap_or_default();
-                            self.config.paired_devices.insert(
-                                device_id.to_string(),
-                                PairedDevice { id: device_id.to_string(), name: device_name, fingerprint: fp },
-                            );
-                            self.config.save_if_configured();
-                            self.send_to_device(device_id, create_request_packet());
-                        } else if pair_body.timestamp.is_some()
-                            && !matches!(device.pair_state, PairState::Paired | PairState::RequestedByPeer)
-                        {
-                            device.pair_state = PairState::RequestedByPeer;
-                            let notif = glide_sdk::system::Notification::new(
-                                "glide-phone",
-                                format!("Запит на з'єднання від {device_name}"),
-                            )
-                            .body("Відкрийте Phone Link, щоб підтвердити підключення.")
-                            .icon("phone-symbolic");
-                            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                                handle.spawn(async move {
-                                    let _ = glide_sdk::system::notify(notif).await;
-                                });
-                            }
-                        }
-                    } else {
-                        device.pair_state = PairState::Unpaired;
-                        self.presenter_events.retain(|(id, _)| id != device_id);
-                        self.config.paired_devices.remove(device_id);
-                        self.config.save_if_configured();
-                    }
-                    self.notify.notify_waiters();
-                }
-            }
+            PACKET_TYPE_PAIR => self.handle_pair_packet(device_id, device_name, packet),
             _ => {}
         }
 
         Ok(None)
+    }
+
+    fn handle_pair_packet(&mut self, device_id: &str, device_name: String, packet: &NetworkPacket) {
+        let (Ok(pair), Some(device)) = (PairBody::from_packet(packet), self.devices.get_mut(device_id)) else {
+            return;
+        };
+        if !pair.pair {
+            device.pair_state = PairState::Unpaired;
+            device.notifications.clear();
+            device.seen_notifications.clear();
+            self.presenter_events.retain(|(id, _)| id != device_id);
+            self.config.paired_devices.remove(device_id);
+            self.config.save_if_configured();
+        } else if device.pair_state == PairState::RequestedByLocal {
+            let Some(fingerprint) = device.peer_fingerprint.clone().filter(|fingerprint| !fingerprint.is_empty())
+            else {
+                tracing::warn!(%device_id, "a phone accepted pairing before showing a certificate");
+                return;
+            };
+            device.pair_state = PairState::Paired;
+            let paired = PairedDevice { id: device_id.to_string(), name: device_name, fingerprint };
+            self.config.paired_devices.insert(device_id.to_string(), paired);
+            self.config.save_if_configured();
+            self.send_to_device(device_id, create_request_packet());
+        } else if pair.timestamp.is_some()
+            && !matches!(device.pair_state, PairState::Paired | PairState::RequestedByPeer)
+        {
+            device.pair_state = PairState::RequestedByPeer;
+            let summary = crate::i18n::naming(crate::i18n::Key::PairRequest, &device_name);
+            crate::plugins::announce(
+                glide_sdk::system::Notification::new("glide-phone", summary)
+                    .body(crate::i18n::t(crate::i18n::Key::PairRequestHint))
+                    .icon("phone-symbolic"),
+            );
+        }
+        self.notify.notify_waiters();
     }
 
     fn handle_aux_packet(&mut self, device_id: &str, packet: &NetworkPacket, device_name: &str) -> bool {
@@ -307,6 +319,9 @@ impl PhoneManager {
                 if let Ok(clipboard) = handle_clipboard_packet(packet) {
                     let timestamp = clipboard.timestamp.unwrap_or(packet.id);
                     if self.clipboard.as_ref().is_none_or(|(_, current)| timestamp >= *current) {
+                        if self.clipboard.as_ref().is_none_or(|(current, _)| *current != clipboard.content) {
+                            crate::plugins::clipboard::apply(&clipboard.content);
+                        }
                         self.clipboard = Some((clipboard.content, timestamp));
                         self.notify.notify_waiters();
                     }
@@ -374,6 +389,9 @@ impl PhoneManager {
         };
 
         let should_finalize = device.pair_state == PairState::RequestedByPeer || has_explicit_fp;
+        if should_finalize && resolved_fp.is_empty() {
+            return Err("the phone has not shown a certificate to pair with".into());
+        }
         let pair_body = if should_finalize {
             device.pair_state = PairState::Paired;
             let dev_name = device.name.clone();

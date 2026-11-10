@@ -16,7 +16,7 @@ use crate::plugins::notifications::create_request_packet;
 use crate::plugins::share::{SharePayload, handle_share_packet};
 use crate::protocol::identity::{IdentityBody, MAX_TCP_PORT, MIN_TCP_PORT, PROTOCOL_VERSION};
 use crate::protocol::packet::{
-    NetworkPacket, PACKET_TYPE_IDENTITY, PACKET_TYPE_NOTIFICATION, PACKET_TYPE_SHARE_REQUEST,
+    NetworkPacket, PACKET_TYPE_IDENTITY, PACKET_TYPE_NOTIFICATION, PACKET_TYPE_PAIR, PACKET_TYPE_SHARE_REQUEST,
 };
 use crate::protocol::pair::PairState;
 use crate::state::PhoneManager;
@@ -27,6 +27,9 @@ const MAX_SHARE_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 const HANDSHAKE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
 const PAYLOAD_CONNECT_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(3);
 const PAYLOAD_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+const MAX_CONCURRENT_TRANSFERS: usize = 4;
+
+static TRANSFERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_CONCURRENT_TRANSFERS);
 
 fn announces_usable_port(port: Option<u16>) -> bool {
     port.is_none_or(|port| (MIN_TCP_PORT..=MAX_TCP_PORT).contains(&port))
@@ -321,7 +324,7 @@ impl PhoneService {
             if !mgr.register_discovered(peer_id.clone(), peer_name.clone(), peer_identity.device_type) {
                 return Err("too many unpaired devices are known already".into());
             }
-            mgr.register_connection(peer_id.clone(), tx, peer_fp);
+            mgr.register_connection(peer_id.clone(), tx, peer_fp.clone());
             mgr.send_pending_pair_request(&peer_id);
             mgr.devices.get(&peer_id).is_some_and(|d| d.pair_state == PairState::Paired)
         };
@@ -357,6 +360,10 @@ impl PhoneService {
                             };
                             let response = {
                                 let mut mgr = self.manager.lock().await;
+                                if packet.packet_type == PACKET_TYPE_PAIR && !mgr.presents(&peer_id, peer_fp.as_deref()) {
+                                    tracing::warn!(%peer_addr, %peer_id, "ignoring a pairing packet from a replaced session");
+                                    continue;
+                                }
                                 mgr.handle_packet_with_payload(&peer_id, &packet, payload.as_deref())
                             };
                             let response = match response {
@@ -412,16 +419,33 @@ impl PhoneService {
                 let Ok(SharePayload::File { filename }) = handle_share_packet(packet) else {
                     return None;
                 };
-                let (mut stream, size) = self.open_payload(peer_addr, peer_id, packet, MAX_SHARE_PAYLOAD_BYTES).await?;
-                let exact = packet.payload_size.is_some_and(|raw| raw > 0);
-                if let Some(target) = save_shared_file(&mut stream, size, exact, &filename).await {
-                    announce_shared_file(&target, device);
-                } else {
-                    tracing::warn!(%peer_addr, "a shared file did not arrive whole and was not kept");
-                }
+                let service = self.clone_service();
+                let (peer_id, device, packet) = (peer_id.to_string(), device.to_string(), packet.clone());
+                tokio::spawn(async move {
+                    let Ok(_slot) = TRANSFERS.acquire().await else {
+                        return;
+                    };
+                    service.receive_shared_file(peer_addr, &peer_id, &device, &packet, &filename).await;
+                });
                 None
             }
             _ => None,
+        }
+    }
+
+    async fn receive_shared_file(
+        &self, peer_addr: SocketAddr, peer_id: &str, device: &str, packet: &NetworkPacket, filename: &str,
+    ) {
+        let Some((mut stream, size)) = self.open_payload(peer_addr, peer_id, packet, MAX_SHARE_PAYLOAD_BYTES).await
+        else {
+            tracing::warn!(%peer_addr, "a shared file could not be fetched");
+            return;
+        };
+        let exact = packet.payload_size.is_some_and(|raw| raw > 0);
+        if let Some(target) = save_shared_file(&mut stream, size, exact, filename).await {
+            announce_shared_file(&target, device);
+        } else {
+            tracing::warn!(%peer_addr, "a shared file did not arrive whole and was not kept");
         }
     }
 
@@ -531,14 +555,12 @@ async fn save_stream_into(
 }
 
 fn announce_shared_file(target: &Path, device: &str) {
-    let notification = glide_sdk::system::Notification::new("glide-phone", format!("File received from {device}"))
-        .body(target.display().to_string())
-        .icon("folder-download");
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(async move {
-            let _ = glide_sdk::system::notify(notification).await;
-        });
-    }
+    let summary = crate::i18n::naming(crate::i18n::Key::FileReceived, device);
+    crate::plugins::announce(
+        glide_sdk::system::Notification::new("glide-phone", summary)
+            .body(target.display().to_string())
+            .icon("folder-download"),
+    );
 }
 
 #[cfg(test)]
