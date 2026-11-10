@@ -936,7 +936,8 @@ pub fn edit_bar(bounds: Size<f64, Logical>, target: Area) -> Bar {
     } else if target.loc.y - EDIT_GAP - height >= EDGE {
         target.loc.y - EDIT_GAP - height
     } else {
-        (bottom - EDIT_GAP - height).clamp(EDGE.min(bounds.h - height), (bounds.h - EDGE - height).max(0.0))
+        let lowest = (bounds.h - EDGE - height).max(0.0);
+        (bottom - EDIT_GAP - height).clamp(EDGE.min(lowest), lowest)
     };
     let centre = target.loc.x + target.size.w / 2.0;
     let max_x = (bounds.w - EDGE - width).max(0.0);
@@ -1416,6 +1417,15 @@ mod tests {
         assert_eq!(bar.items.len(), edit_bar(Size::from((1920.0, 1080.0)), bar.rect).items.len());
         let wide = edit_bar(Size::from((1920.0, 1080.0)), Rectangle::new(p(100.0, 100.0), Size::from((300.0, 300.0))));
         assert!((wide.rect.size.h - EDIT_H).abs() < 1e-9, "one row wherever it fits");
+    }
+
+    #[test]
+    fn an_output_barely_taller_than_the_edit_bar_still_places_it() {
+        for height in [40.0, EDIT_H + 5.0, EDIT_H + 18.0, EDIT_H * 2.0 + 10.0] {
+            let bounds = Size::from((1920.0, height));
+            let bar = edit_bar(bounds, Rectangle::from_size(bounds));
+            assert!(bar.rect.loc.y >= 0.0, "{height}: {:?}", bar.rect);
+        }
     }
 
     #[test]

@@ -181,6 +181,11 @@ impl Default for Cache {
     }
 }
 
+fn tip_rises(hovered: std::time::Duration, rise: std::time::Duration) -> bool {
+    let delay = glide_theme::component::TOOLTIP_DELAY;
+    hovered >= delay && hovered < delay + rise
+}
+
 fn presence(tween: &mut glide_ui::Tween, shown: bool) -> f64 {
     let duration = glide_theme::motion::t2();
     tween.retarget(if shown { 1.0 } else { 0.0 }, duration, glide_theme::motion::ease_out);
@@ -222,16 +227,24 @@ impl Cache {
     pub fn is_animating(&self) -> bool {
         let layers = glide_theme::motion::t1();
         let scene = glide_theme::motion::t2();
-        let tip_pending = self.hover_since.is_some_and(|since| {
-            glide_ui::clock::since(since) < glide_theme::component::TOOLTIP_DELAY + layers
-                && tip_text(self.hover.target()).is_some()
-        });
+        let tip_rising =
+            self.hover_since.is_some_and(|since| tip_rises(glide_ui::clock::since(since), layers) && self.tip_wanted());
         let shown = [&self.bar_shown, &self.badge_shown, &self.handles_shown];
         self.hover.is_animating(layers)
             || self.reveal.is_animating(scene)
-            || tip_pending
+            || tip_rising
             || shown.iter().any(|tween| tween.is_animating(scene))
             || self.pending_blurs.values().any(|job| !job.failed)
+    }
+
+    fn tip_wanted(&self) -> bool {
+        tip_text(self.hover.target()).is_some()
+    }
+
+    #[must_use]
+    pub fn next_wake(&self) -> Option<Instant> {
+        let due = self.hover_since? + glide_theme::component::TOOLTIP_DELAY;
+        (due > glide_ui::clock::now() && self.tip_wanted()).then_some(due)
     }
 
     fn openness(&self) -> f64 {
@@ -1681,6 +1694,25 @@ mod tests {
             assert!(tip_text(Some(Control::Mode(mode))).is_some());
         }
         assert!(tip_text(Some(Control::Swatch(0))).is_none());
+    }
+
+    #[test]
+    fn the_wait_for_a_tooltip_ends_on_a_timer_and_only_its_rise_asks_for_frames() {
+        let delay = glide_theme::component::TOOLTIP_DELAY;
+        let mut cache = Cache::default();
+        assert_eq!(cache.next_wake(), None);
+        cache.set_hover(Some(Control::Swatch(0)));
+        assert_eq!(cache.next_wake(), None, "a control without a tooltip waits for nothing");
+        cache.set_hover(Some(Control::Save));
+        assert!(cache.next_wake().is_some(), "woken when the delay ends");
+
+        cache.hover_since = glide_ui::clock::now().checked_sub(delay);
+        assert_eq!(cache.next_wake(), None, "the delay has passed");
+
+        let rise = glide_theme::motion::T1;
+        assert!(!tip_rises(delay / 2, rise), "waiting draws nothing");
+        assert!(tip_rises(delay, rise) && tip_rises(delay + rise / 2, rise));
+        assert!(!tip_rises(delay + rise, rise), "a tooltip that has risen is still");
     }
 
     #[test]

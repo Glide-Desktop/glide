@@ -1814,7 +1814,8 @@ impl GlideState {
 
     pub fn sync_wake_timer(&mut self) {
         use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
-        let wanted = [self.topbar.next_wake(), self.dock.next_wake()].into_iter().flatten().min();
+        let shot = self.session.shot.as_ref().and_then(|shot| shot.cache.next_wake());
+        let wanted = [self.topbar.next_wake(), self.dock.next_wake(), shot].into_iter().flatten().min();
         if self.session.wake_timer.as_ref().map(|(at, _)| *at) == wanted {
             return;
         }
