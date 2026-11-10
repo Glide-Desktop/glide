@@ -1,3 +1,5 @@
+#![allow(clippy::unreadable_literal)] // Colours are 0xRRGGBB, the same six digits as #rrggbb in the design files
+
 use serde::Deserialize;
 
 use crate::Color;
@@ -41,17 +43,17 @@ impl Accent {
 
     #[must_use]
     pub fn ramp(self) -> [Color; 6] {
-        let hex: [&str; 6] = match self {
-            Self::Blue => ["#d9e6fb", "#a7c8f6", "#5b9bec", "#2f6fd0", "#1f56a8", "#163e79"],
-            Self::Teal => ["#d3ebe7", "#9ad4cd", "#46b3a6", "#128b7e", "#0d6a61", "#084b45"],
-            Self::Green => ["#dcefd9", "#b0dbaa", "#6cbb62", "#3f9639", "#2d7229", "#1e4f1c"],
-            Self::Amber => ["#faecd2", "#f2d296", "#e0a83f", "#b57e10", "#8d600b", "#63430a"],
-            Self::Orange => ["#fce4d6", "#f6bf9c", "#ec8b4f", "#cf6524", "#a44b17", "#74340f"],
-            Self::Red => ["#fbe3e0", "#f3b8b1", "#e3736a", "#c8483c", "#9f3529", "#71241b"],
-            Self::Purple => ["#eae0f8", "#cdb4ee", "#a077d8", "#7a4dbb", "#5d3893", "#402566"],
-            Self::Graphite => ["#e5e2db", "#c6c0b5", "#918a7d", "#6a6459", "#4c4740", "#35312c"],
+        let hex: [u32; 6] = match self {
+            Self::Blue => [0xd9e6fb, 0xa7c8f6, 0x5b9bec, 0x2f6fd0, 0x1f56a8, 0x163e79],
+            Self::Teal => [0xd3ebe7, 0x9ad4cd, 0x46b3a6, 0x128b7e, 0x0d6a61, 0x084b45],
+            Self::Green => [0xdcefd9, 0xb0dbaa, 0x6cbb62, 0x3f9639, 0x2d7229, 0x1e4f1c],
+            Self::Amber => [0xfaecd2, 0xf2d296, 0xe0a83f, 0xb57e10, 0x8d600b, 0x63430a],
+            Self::Orange => [0xfce4d6, 0xf6bf9c, 0xec8b4f, 0xcf6524, 0xa44b17, 0x74340f],
+            Self::Red => [0xfbe3e0, 0xf3b8b1, 0xe3736a, 0xc8483c, 0x9f3529, 0x71241b],
+            Self::Purple => [0xeae0f8, 0xcdb4ee, 0xa077d8, 0x7a4dbb, 0x5d3893, 0x402566],
+            Self::Graphite => [0xe5e2db, 0xc6c0b5, 0x918a7d, 0x6a6459, 0x4c4740, 0x35312c],
         };
-        hex.map(|h| Color::from_hex(h).expect("palette hex literals are well-formed"))
+        hex.map(Color::rgb)
     }
 }
 

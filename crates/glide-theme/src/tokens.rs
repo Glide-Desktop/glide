@@ -1,3 +1,5 @@
+#![allow(clippy::unreadable_literal)] // Colours are 0xRRGGBB, the same six digits as #rrggbb in the design files
+
 use serde::Deserialize;
 
 use crate::{Accent, Color};
@@ -101,10 +103,10 @@ impl Tokens {
     }
 
     #[must_use]
-    pub fn switch_thumb(&self) -> Color {
+    pub const fn switch_thumb(&self) -> Color {
         match self.appearance {
             Appearance::Light => Color([1.0, 1.0, 1.0, 1.0]),
-            Appearance::Dark => Color::from_hex("#cfccc7").expect("valid hex"),
+            Appearance::Dark => Color::rgb(0xcfccc7),
         }
     }
 
@@ -113,16 +115,16 @@ impl Tokens {
         let dark = self.appearance == Appearance::Dark;
         let mut colors = if dark {
             [
-                "#131218", "#f0796f", "#8fe08a", "#e6c07b", "#8fb8ff", "#d797e8", "#76d6d5", "#cfe4ca", "#535158",
-                "#f4948c", "#a6e7a2", "#ebd097", "#a9cbff", "#e1aef0", "#95dedd", "#ffffff",
+                0x131218, 0xf0796f, 0x8fe08a, 0xe6c07b, 0x8fb8ff, 0xd797e8, 0x76d6d5, 0xcfe4ca, 0x535158, 0xf4948c,
+                0xa6e7a2, 0xebd097, 0xa9cbff, 0xe1aef0, 0x95dedd, 0xffffff,
             ]
         } else {
             [
-                "#1e241b", "#bf372c", "#1c7a4c", "#8d600b", "#1e5bb8", "#8a3fb8", "#167a82", "#d8d6cf", "#6b6960",
-                "#d14f43", "#289460", "#a87615", "#2d72db", "#a356d4", "#21949d", "#f5f4f0",
+                0x1e241b, 0xbf372c, 0x1c7a4c, 0x8d600b, 0x1e5bb8, 0x8a3fb8, 0x167a82, 0xd8d6cf, 0x6b6960, 0xd14f43,
+                0x289460, 0xa87615, 0x2d72db, 0xa356d4, 0x21949d, 0xf5f4f0,
             ]
         }
-        .map(|hex| Color::from_hex(hex).expect("terminal ANSI colors are valid"));
+        .map(Color::rgb);
         colors[0] = if dark { self.term_bg } else { self.term_fg };
         colors[1] = self.danger;
         colors[2] = self.term_ok;
@@ -147,18 +149,18 @@ impl Tokens {
                 accent,
                 ramp,
 
-                win_bg: Color::from_hex("#f3f2ef").unwrap(),
-                view_bg: Color::from_hex("#ffffff").unwrap(),
-                sidebar_bg: Color::from_hex("#eceae6").unwrap(),
-                bar_bg: Color::from_hex("#fbfaf8").unwrap(),
-                bar_bg_idle: Color::from_hex("#f2f0ed").unwrap(),
-                card_bg: Color::from_hex("#ffffff").unwrap(),
-                popover_bg: Color::from_hex("#ffffff").unwrap(),
-                sunken_bg: Color::from_hex("#e8e6e2").unwrap(),
-                inverse_bg: Color::from_hex("#26251f").unwrap(),
-                inverse_fg: Color::from_hex("#f7f6f3").unwrap(),
+                win_bg: Color::rgb(0xf3f2ef),
+                view_bg: Color::rgb(0xffffff),
+                sidebar_bg: Color::rgb(0xeceae6),
+                bar_bg: Color::rgb(0xfbfaf8),
+                bar_bg_idle: Color::rgb(0xf2f0ed),
+                card_bg: Color::rgb(0xffffff),
+                popover_bg: Color::rgb(0xffffff),
+                sunken_bg: Color::rgb(0xe8e6e2),
+                inverse_bg: Color::rgb(0x26251f),
+                inverse_fg: Color::rgb(0xf7f6f3),
 
-                fg_1: Color::from_hex("#1b1a17").unwrap(),
+                fg_1: Color::rgb(0x1b1a17),
                 fg_2: Color::from_rgb8(27, 26, 23, 0.66),
                 fg_3: Color::from_rgb8(27, 26, 23, 0.44),
                 fg_4: Color::from_rgb8(27, 26, 23, 0.20),
@@ -178,43 +180,43 @@ impl Tokens {
                 acc_soft_fg: ramp[5],
                 acc_ring: ramp[3].with_alpha(0.32),
 
-                ok: Color::from_hex("#1c7a4c").unwrap(),
-                ok_soft: Color::from_hex("#dcf0e5").unwrap(),
-                warn: Color::from_hex("#a1690a").unwrap(),
-                warn_soft: Color::from_hex("#f8ecd6").unwrap(),
-                danger: Color::from_hex("#bf372c").unwrap(),
-                danger_soft: Color::from_hex("#fae3e0").unwrap(),
+                ok: Color::rgb(0x1c7a4c),
+                ok_soft: Color::rgb(0xdcf0e5),
+                warn: Color::rgb(0xa1690a),
+                warn_soft: Color::rgb(0xf8ecd6),
+                danger: Color::rgb(0xbf372c),
+                danger_soft: Color::rgb(0xfae3e0),
 
                 shell_bg: Color::from_rgb8(251, 250, 248, 0.74),
-                shell_fg: Color::from_hex("#1b1a17").unwrap(),
+                shell_fg: Color::rgb(0x1b1a17),
                 shell_line: Color::from_rgb8(27, 26, 23, 0.12),
 
-                island_bg: Color::from_hex("#ffffff").unwrap(),
+                island_bg: Color::rgb(0xffffff),
                 island_line: Color::from_rgb8(27, 26, 23, 0.07),
 
-                term_bg: Color::from_hex("#f5f4f0").unwrap(),
-                term_fg: Color::from_hex("#1e241b").unwrap(),
-                term_accent: Color::from_hex("#1e5bb8").unwrap(),
-                term_warn: Color::from_hex("#8d600b").unwrap(),
-                term_ok: Color::from_hex("#1c7a4c").unwrap(),
+                term_bg: Color::rgb(0xf5f4f0),
+                term_fg: Color::rgb(0x1e241b),
+                term_accent: Color::rgb(0x1e5bb8),
+                term_warn: Color::rgb(0x8d600b),
+                term_ok: Color::rgb(0x1c7a4c),
             },
             Appearance::Dark => Self {
                 appearance,
                 accent,
                 ramp,
 
-                win_bg: Color::from_hex("#1c1b1e").unwrap(),
-                view_bg: Color::from_hex("#161518").unwrap(),
-                sidebar_bg: Color::from_hex("#232227").unwrap(),
-                bar_bg: Color::from_hex("#29282d").unwrap(),
-                bar_bg_idle: Color::from_hex("#222126").unwrap(),
-                card_bg: Color::from_hex("#29282d").unwrap(),
-                popover_bg: Color::from_hex("#2f2e34").unwrap(),
-                sunken_bg: Color::from_hex("#121114").unwrap(),
-                inverse_bg: Color::from_hex("#edece8").unwrap(),
-                inverse_fg: Color::from_hex("#1b1a17").unwrap(),
+                win_bg: Color::rgb(0x1c1b1e),
+                view_bg: Color::rgb(0x161518),
+                sidebar_bg: Color::rgb(0x232227),
+                bar_bg: Color::rgb(0x29282d),
+                bar_bg_idle: Color::rgb(0x222126),
+                card_bg: Color::rgb(0x29282d),
+                popover_bg: Color::rgb(0x2f2e34),
+                sunken_bg: Color::rgb(0x121114),
+                inverse_bg: Color::rgb(0xedece8),
+                inverse_fg: Color::rgb(0x1b1a17),
 
-                fg_1: Color::from_hex("#f2f0ed").unwrap(),
+                fg_1: Color::rgb(0xf2f0ed),
                 fg_2: Color::from_rgb8(242, 240, 237, 0.68),
                 fg_3: Color::from_rgb8(242, 240, 237, 0.46),
                 fg_4: Color::from_rgb8(242, 240, 237, 0.22),
@@ -234,25 +236,25 @@ impl Tokens {
                 acc_soft_fg: ramp[1],
                 acc_ring: ramp[2].with_alpha(0.40),
 
-                ok: Color::from_hex("#62d69b").unwrap(),
+                ok: Color::rgb(0x62d69b),
                 ok_soft: Color::from_rgb8(98, 214, 155, 0.16),
-                warn: Color::from_hex("#e5b355").unwrap(),
+                warn: Color::rgb(0xe5b355),
                 warn_soft: Color::from_rgb8(229, 179, 85, 0.16),
-                danger: Color::from_hex("#f0796f").unwrap(),
+                danger: Color::rgb(0xf0796f),
                 danger_soft: Color::from_rgb8(240, 121, 111, 0.16),
 
                 shell_bg: Color::from_rgb8(38, 37, 42, 0.76),
-                shell_fg: Color::from_hex("#f2f0ed").unwrap(),
+                shell_fg: Color::rgb(0xf2f0ed),
                 shell_line: Color::from_rgb8(255, 255, 255, 0.12),
 
-                island_bg: Color::from_hex("#26252b").unwrap(),
+                island_bg: Color::rgb(0x26252b),
                 island_line: Color::from_rgb8(255, 255, 255, 0.07),
 
-                term_bg: Color::from_hex("#131218").unwrap(),
-                term_fg: Color::from_hex("#cfe4ca").unwrap(),
-                term_accent: Color::from_hex("#8fb8ff").unwrap(),
-                term_warn: Color::from_hex("#e6c07b").unwrap(),
-                term_ok: Color::from_hex("#8fe08a").unwrap(),
+                term_bg: Color::rgb(0x131218),
+                term_fg: Color::rgb(0xcfe4ca),
+                term_accent: Color::rgb(0x8fb8ff),
+                term_warn: Color::rgb(0xe6c07b),
+                term_ok: Color::rgb(0x8fe08a),
             },
         }
     }

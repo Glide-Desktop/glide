@@ -27,6 +27,12 @@ pub struct Color(pub [f32; 4]);
 
 impl Color {
     #[must_use]
+    pub const fn rgb(hex: u32) -> Self {
+        let channel = [(hex >> 16) & 0xff, (hex >> 8) & 0xff, hex & 0xff];
+        Self([channel[0] as f32 / 255.0, channel[1] as f32 / 255.0, channel[2] as f32 / 255.0, 1.0])
+    }
+
+    #[must_use]
     #[allow(clippy::many_single_char_names)]
     pub fn from_hex(s: &str) -> Option<Self> {
         let s = s.strip_prefix('#')?;
@@ -618,6 +624,10 @@ mod tests {
         for bad in ["ff0000", "#ff00", "#gggggg"] {
             assert!(Color::from_hex(bad).is_none(), "{bad}");
         }
+        for (number, text) in [(0x002f_6fd0, "#2f6fd0"), (0, "#000000"), (0x00ff_ffff, "#ffffff")] {
+            assert_eq!(Some(Color::rgb(number)), Color::from_hex(text), "{text}");
+        }
+        assert_eq!(Color::rgb(0xff12_3456), Color::rgb(0x0012_3456), "bits above the three channels are ignored");
         let (from, to) = (Color([0.0; 4]), Color([1.0, 0.4, 0.8, 1.0]));
         assert_eq!(from.lerp(to, -1.0), from);
         assert_eq!(from.lerp(to, 2.0), to);

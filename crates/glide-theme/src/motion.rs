@@ -202,7 +202,7 @@ impl Release {
         if !towards {
             return Self { duration: paced, slope: 0.0 };
         }
-        let matched = Duration::from_secs_f64(RELEASE_MAX_SLOPE * span / speed);
+        let matched = Duration::try_from_secs_f64(RELEASE_MAX_SLOPE * span / speed).unwrap_or(paced);
         let duration = matched.clamp(t1().min(paced), paced);
         Self { duration, slope: (speed * duration.as_secs_f64() / span).min(RELEASE_MAX_SLOPE) }
     }
@@ -306,6 +306,15 @@ mod tests {
                 assert_eq!(absurd.duration, T1);
                 assert!(slow.duration <= T3);
                 assert_eq!(slow.slope, 0.0);
+            });
+        }
+
+        #[test]
+        fn a_distance_no_duration_can_hold_releases_at_the_longest_pace_instead_of_panicking() {
+            with_scale(1.0, || {
+                let endless = Release::new(1e300, 5.0, T3);
+                assert_eq!(endless.duration, T3);
+                assert!(endless.slope.is_finite());
             });
         }
 
