@@ -160,7 +160,8 @@ fn ass_time(raw: &str) -> Option<Duration> {
     let whole: u64 = whole.parse().ok()?;
     let digits: String = fraction.chars().take(3).collect();
     let millis: u64 = format!("{digits:0<3}").parse().ok()?;
-    Some(Duration::from_millis(((hours * 60 + minutes) * 60 + whole) * 1000 + millis))
+    let seconds = hours.checked_mul(60)?.checked_add(minutes)?.checked_mul(60)?.checked_add(whole)?;
+    Some(Duration::from_millis(seconds.checked_mul(1000)?.checked_add(millis)?))
 }
 
 fn cue_time(raw: &str) -> Option<Duration> {
@@ -317,6 +318,7 @@ mod tests {
         assert_eq!(ass_time("1:02:03.45"), Some(Duration::from_millis(3_723_450)));
         assert_eq!(ass_time("0:00:00.5"), Some(Duration::from_millis(500)));
         assert_eq!(ass_time("nonsense"), None);
+        assert_eq!(ass_time("18446744073709551615:59:59.99"), None, "a stamp no clock can hold is not a cue");
     }
 
     #[test]

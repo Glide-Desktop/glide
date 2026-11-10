@@ -380,7 +380,8 @@ fn translate(playbin: &gst::Element, message: &gst::Message) -> Option<Event> {
         )),
         MessageView::Tag(tag) => {
             let tags = tag.tags();
-            tags.get::<gst::tags::Title>().map(|title| Event::Title(title.get().to_string()))
+            let whole_file = tags.scope() == gst::TagScope::Global;
+            tags.get::<gst::tags::Title>().filter(|_| whole_file).map(|title| Event::Title(title.get().to_string()))
         }
         MessageView::Latency(_) => {
             let _ = playbin.dynamic_cast_ref::<gst::Bin>().map(gst::prelude::GstBinExt::recalculate_latency);
