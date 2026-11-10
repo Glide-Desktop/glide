@@ -8,7 +8,7 @@ use glide_theme::{
     motion::{self, ease_out},
     shape,
 };
-use glide_ui::Reveal;
+use glide_ui::{Reveal, clock};
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -75,6 +75,9 @@ const MAX_CACHED_ICONS: usize = 256;
 const SCRIM_ROWS: i32 = 64;
 const FAILLOCK_CONF: &str = "/etc/security/faillock.conf";
 const MAX_CONVERSATION_NOTICES: usize = 8;
+const CARET_LEAD: i32 = 3;
+const SCENE_TRAVEL: f64 = 24.0;
+const MENU_TRAVEL: f64 = 6.0;
 
 const fn style(size_px: f32, line_height_px: f32, weight: u16, tracking_em: f32) -> TextStyle {
     TextStyle { size_px, line_height_px, weight, tracking_em, uppercase: false, tabular: false }
@@ -531,6 +534,7 @@ pub struct GreeterUi {
     hover_from: GreeterHit,
     hover_at: Instant,
     toast: Option<(PowerAction, Instant)>,
+    toast_reveal: Reveal,
     kbd_label: String,
     caps_lock: bool,
     status: GreeterStatus,
@@ -652,8 +656,9 @@ impl GreeterUi {
             locked_until: None,
             hover: GreeterHit::None,
             hover_from: GreeterHit::None,
-            hover_at: Instant::now(),
+            hover_at: clock::now(),
             toast: None,
+            toast_reveal: Reveal::closed().with_ease(ease_out),
             kbd_label: String::new(),
             caps_lock: false,
             status: GreeterStatus::default(),
@@ -663,7 +668,7 @@ impl GreeterUi {
             date: String::new(),
             leaving: None,
             arriving: None,
-            spinner_epoch: Instant::now(),
+            spinner_epoch: clock::now(),
             palette: Palette::new(accent),
             layout: None,
             layers: HashMap::new(),
@@ -715,7 +720,7 @@ impl GreeterUi {
 
     pub fn arrive(&mut self) {
         if self.is_lock() && !motion::t3().is_zero() {
-            self.arriving = Some(Instant::now());
+            self.arriving = Some(clock::now());
             self.dirty = true;
         }
     }
@@ -732,7 +737,7 @@ impl GreeterUi {
         if duration.is_zero() {
             return 1.0;
         }
-        ease_out((since.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0))
+        ease_out((clock::since(since).as_secs_f64() / duration.as_secs_f64()).min(1.0))
     }
 
     fn fade(&self) -> f64 {
@@ -766,7 +771,7 @@ impl GreeterUi {
 
     fn locked_out(&self) -> Option<Duration> {
         let until = self.locked_until?;
-        let left = until.saturating_duration_since(Instant::now());
+        let left = until.saturating_duration_since(clock::now());
         (!left.is_zero()).then_some(left)
     }
 
@@ -787,6 +792,12 @@ impl GreeterUi {
         }
         self.error_at = None;
         self.error_held = false;
+    }
+
+    fn forget_queued(&mut self) {
+        if let Some(mut password) = self.queued.take() {
+            wipe(&mut password);
+        }
     }
 
     pub fn type_char(&mut self, ch: char) -> bool {
@@ -830,7 +841,7 @@ impl GreeterUi {
     fn reset_for_user(&mut self) {
         wipe(&mut self.password);
         self.prompt = None;
-        self.queued = None;
+        self.forget_queued();
         self.needs_session = false;
         self.clear_error();
         self.message = None;
@@ -925,7 +936,7 @@ impl GreeterUi {
             self.menu_reveal.open(motion::t2());
         }
         self.arm = Some(action);
-        self.armed_at = Some(Instant::now());
+        self.armed_at = Some(clock::now());
         self.dirty = true;
     }
 
@@ -987,7 +998,7 @@ impl GreeterUi {
         self.pending_dots = self.password.chars().count();
         let password = std::mem::replace(&mut self.password, String::with_capacity(PASSWORD_CAPACITY));
         self.auth = AuthState::Authenticating;
-        self.spinner_epoch = Instant::now();
+        self.spinner_epoch = clock::now();
         self.dirty = true;
         if self.prompt.take().is_some() {
             self.answered = true;
@@ -1048,10 +1059,10 @@ impl GreeterUi {
 
     pub fn set_auth_error(&mut self, message: String, recreate_later: bool) {
         self.auth = AuthState::Error;
-        self.error_at = Some(Instant::now());
+        self.error_at = Some(clock::now());
         wipe(&mut self.password);
         self.pending_dots = 0;
-        self.queued = None;
+        self.forget_queued();
         self.prompt = None;
         self.needs_session = recreate_later;
         self.conversation_notices.clear();
@@ -1069,7 +1080,7 @@ impl GreeterUi {
             .find_map(|text| lockout_left(text).map(|left| (text.to_string(), left)));
         if let Some((text, left)) = lockout {
             self.set_auth_error(text, false);
-            self.locked_until = Some(Instant::now() + left);
+            self.locked_until = Some(clock::now() + left);
             self.error_held = true;
             return;
         }
@@ -1100,7 +1111,7 @@ impl GreeterUi {
         self.conversation_notices.clear();
         self.failures = 0;
         self.close_menus();
-        self.spinner_epoch = Instant::now();
+        self.spinner_epoch = clock::now();
         self.dirty = true;
     }
 
@@ -1111,7 +1122,7 @@ impl GreeterUi {
 
     pub fn leave(&mut self) {
         if self.leaving.is_none() {
-            self.leaving = Some(Instant::now());
+            self.leaving = Some(clock::now());
             self.close_menus();
             self.dirty = true;
         }
@@ -1124,7 +1135,7 @@ impl GreeterUi {
 
     #[must_use]
     pub fn finished_leaving(&self) -> bool {
-        self.leaving.is_some_and(|since| since.elapsed() >= motion::t4())
+        self.leaving.is_some_and(|since| clock::since(since) >= motion::t4())
     }
 
     fn leave_progress(&self) -> f64 {
@@ -1135,7 +1146,7 @@ impl GreeterUi {
         if duration.is_zero() {
             return 1.0;
         }
-        ease_out((since.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0))
+        ease_out((clock::since(since).as_secs_f64() / duration.as_secs_f64()).min(1.0))
     }
 
     fn shake_offset(&self) -> f64 {
@@ -1143,7 +1154,7 @@ impl GreeterUi {
             return 0.0;
         };
         let duration = motion::t3();
-        let elapsed = since.elapsed();
+        let elapsed = clock::since(since);
         if duration.is_zero() || elapsed >= duration {
             return 0.0;
         }
@@ -1153,7 +1164,7 @@ impl GreeterUi {
 
     fn spinner_step(&self) -> u32 {
         let period = SPINNER_PERIOD.as_secs_f64();
-        let turns = self.spinner_epoch.elapsed().as_secs_f64() / period;
+        let turns = clock::since(self.spinner_epoch).as_secs_f64() / period;
         let step = (turns.fract() * f64::from(SPINNER_STEPS)) as u32;
         step % SPINNER_STEPS
     }
@@ -1181,7 +1192,7 @@ impl GreeterUi {
         }
         self.hover_from = self.hover;
         self.hover = hit;
-        self.hover_at = Instant::now();
+        self.hover_at = clock::now();
         self.dirty = true;
         true
     }
@@ -1191,7 +1202,7 @@ impl GreeterUi {
         if duration.is_zero() {
             return 1.0;
         }
-        ease_out((self.hover_at.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0))
+        ease_out((clock::since(self.hover_at).as_secs_f64() / duration.as_secs_f64()).min(1.0))
     }
 
     fn hover_amount(&self, hit: GreeterHit) -> f32 {
@@ -1216,13 +1227,15 @@ impl GreeterUi {
     }
 
     pub fn power_started(&mut self, action: PowerAction) {
-        self.toast = Some((action, Instant::now()));
+        self.toast = Some((action, clock::now()));
+        self.toast_reveal.open(motion::t3());
         self.dirty = true;
     }
 
     pub fn keep_toast(&mut self) {
         if let Some((_, at)) = &mut self.toast {
-            *at = Instant::now();
+            *at = clock::now();
+            self.toast_reveal.open(motion::t3());
         }
     }
 
@@ -1241,7 +1254,7 @@ impl GreeterUi {
 
     fn is_animating(&self) -> bool {
         let (t2, t3) = (motion::t2(), motion::t3());
-        self.error_at.is_some_and(|since| since.elapsed() < t3)
+        self.error_at.is_some_and(|since| clock::since(since) < t3)
             || self.menu_reveal.is_animating(t2)
             || self.hover_level() < 1.0
             || self.toast.is_some()
@@ -1252,19 +1265,23 @@ impl GreeterUi {
 
     pub fn tick(&mut self) -> bool {
         self.refresh_clock();
-        if self.error_at.is_some_and(|since| since.elapsed() >= ERROR_HOLD) && !self.unavailable && !self.error_held {
+        if self.error_at.is_some_and(|since| clock::since(since) >= ERROR_HOLD) && !self.unavailable && !self.error_held
+        {
             self.clear_error();
             self.dirty = true;
         }
-        if self.armed_at.is_some_and(|at| at.elapsed() >= ARM_HOLD) {
+        if self.armed_at.is_some_and(|at| clock::since(at) >= ARM_HOLD) {
             self.cancel_power_arm();
         }
-        if self.toast.is_some_and(|(_, at)| at.elapsed() >= TOAST_HOLD) {
+        if self.toast.is_some_and(|(_, at)| clock::since(at) >= TOAST_HOLD) && self.toast_reveal.close(motion::t2()) {
+            self.dirty = true;
+        }
+        if self.toast.is_some() && !self.toast_reveal.is_open() && !self.toast_reveal.is_visible(motion::t2()) {
             self.toast = None;
             self.dirty = true;
         }
         if let Some(until) = self.locked_until {
-            if Instant::now() >= until {
+            if clock::now() >= until {
                 self.locked_until = None;
                 self.failures = 0;
                 self.clear_error();
@@ -1825,7 +1842,7 @@ impl GreeterUi {
         let busy = self.busy();
         canvas.text(text_rect, &text, if busy { colour.with_alpha(0.8) } else { colour }, style, TextAlign::Left);
         if self.editable() {
-            let typed_w = if placeholder { 0 } else { text_w(canvas.painter, &text, style) + 1 };
+            let typed_w = if placeholder { -CARET_LEAD } else { text_w(canvas.painter, &text, style) + 1 };
             let caret_x = (text_x + typed_w).min(text_rect.right());
             canvas.fill(Rect::new(caret_x, field.y + (field.h - 18) / 2, 1, 18), 0.0, p.white.with_alpha(0.9));
         }
@@ -1926,27 +1943,30 @@ impl GreeterUi {
 
     fn parts(&self, leave: f64) -> Vec<(Part, (f64, f64), f64)> {
         let menu_t = self.menu_reveal.value(motion::t2());
-        let ui = 1.0 - leave;
+        let ui = motion::assist(1.0 - leave);
+        let (up, down) = (-SCENE_TRAVEL * leave, SCENE_TRAVEL * leave);
         let mut parts = Vec::with_capacity(11);
         if self.toast_label().is_some() {
-            parts.push((Part::Toast, (0.0, 0.0), 1.0));
+            let duration = if self.toast_reveal.is_open() { motion::t3() } else { motion::t2() };
+            let shown = self.toast_reveal.value(duration);
+            parts.push((Part::Toast, (0.0, SCENE_TRAVEL * (1.0 - shown)), motion::assist(shown)));
         }
         if menu_t > 0.0 {
-            parts.push((Part::Menu, (0.0, -6.0 * (1.0 - menu_t)), menu_t * ui));
+            parts.push((Part::Menu, (0.0, up - MENU_TRAVEL * (1.0 - menu_t)), motion::assist(menu_t) * ui));
         }
-        parts.push((Part::Nav, (0.0, 0.0), ui));
-        parts.push((Part::Users, (0.0, 0.0), if self.busy() { 0.0 } else { ui }));
-        parts.push((Part::Hint, (0.0, 0.0), ui));
-        parts.push((Part::Field, (self.shake_offset(), 0.0), ui));
-        parts.push((Part::Name, (0.0, 0.0), ui));
-        parts.push((Part::Avatar, (0.0, 0.0), ui));
+        parts.push((Part::Nav, (0.0, up), ui));
+        parts.push((Part::Users, (0.0, down), if self.busy() { 0.0 } else { ui }));
+        parts.push((Part::Hint, (0.0, down), ui));
+        parts.push((Part::Field, (self.shake_offset(), down), ui));
+        parts.push((Part::Name, (0.0, down), ui));
+        parts.push((Part::Avatar, (0.0, down), ui));
         if self.notices.count > 0 {
-            parts.push((Part::Notices, (0.0, 0.0), ui));
+            parts.push((Part::Notices, (0.0, up), ui));
         }
         if self.media.is_some() {
-            parts.push((Part::Media, (0.0, 0.0), ui));
+            parts.push((Part::Media, (0.0, up), ui));
         }
-        parts.push((Part::Clock, (0.0, -20.0 * leave), ui));
+        parts.push((Part::Clock, (0.0, up), ui));
         parts
     }
 
@@ -2114,7 +2134,7 @@ impl<'a> Canvas<'a> {
     }
 }
 
-fn wipe(secret: &mut String) {
+pub(crate) fn wipe(secret: &mut String) {
     let len = secret.len();
     secret.clear();
     secret.extend(std::iter::repeat_n('\0', len));
@@ -2252,7 +2272,7 @@ mod tests {
 
     #[test]
     fn a_reason_from_pam_stays_until_the_next_key_but_a_wrong_password_fades() {
-        let aged = Instant::now().checked_sub(ERROR_HOLD * 2).expect("the clock is past the hold");
+        let aged = clock::now().checked_sub(ERROR_HOLD * 2).expect("the clock is past the hold");
         let mut ui = GreeterUi::lock(users().remove(0), Accent::Blue);
         ui.deny = None;
         ui.set_auth_denied(Some("Authentication token is no longer valid.".into()), "Wrong password");
@@ -2313,7 +2333,7 @@ mod tests {
         assert!(left > Duration::from_mins(9) && left <= Duration::from_mins(10));
         assert!(!ui.type_char('a'), "nothing can be typed while locked out");
         assert_eq!(ui.hint().0, t(Key::GreeterLockedHint));
-        ui.locked_until = Instant::now().checked_sub(Duration::from_secs(1));
+        ui.locked_until = clock::now().checked_sub(Duration::from_secs(1));
         ui.tick();
         assert!(ui.locked_out().is_none());
         assert!(ui.type_char('a'));
@@ -2419,7 +2439,7 @@ mod tests {
         assert_eq!(ui.confirmable(), Some(PowerAction::ShutDown));
         ui.type_char('a');
         assert_eq!(ui.confirmable(), None, "a typed password is submitted instead");
-        ui.armed_at = Instant::now().checked_sub(ARM_HOLD * 2);
+        ui.armed_at = clock::now().checked_sub(ARM_HOLD * 2);
         ui.tick();
         assert_eq!(ui.armed(), None, "the second press has to come soon");
         assert_eq!(ui.menu, Some(MenuKind::Power), "the menu stays open");
@@ -2448,7 +2468,7 @@ mod tests {
         assert_eq!(layout.toast.bottom(), 1080 - 32);
         assert_eq!(ui.parts(0.0)[0].0, Part::Toast, "the toast is drawn above everything");
         let stale = |ui: &mut GreeterUi| {
-            ui.toast = ui.toast.map(|(action, _)| (action, Instant::now().checked_sub(TOAST_HOLD * 2).unwrap()));
+            ui.toast = ui.toast.map(|(action, _)| (action, clock::now().checked_sub(TOAST_HOLD * 2).unwrap()));
         };
         stale(&mut ui);
         ui.keep_toast();
@@ -2456,7 +2476,32 @@ mod tests {
         assert!(ui.toast_label().is_some(), "a session end still waiting for windows keeps the toast");
         stale(&mut ui);
         ui.tick();
+        assert!(!ui.toast_reveal.is_open(), "the toast sinks away before it is dropped");
+        ui.toast_reveal = Reveal::closed();
+        ui.tick();
         assert_eq!(ui.toast_label(), None);
+    }
+
+    #[test]
+    fn the_scene_leaves_by_travelling_and_its_opacity_is_the_shorter_track() {
+        let mut ui = ui();
+        ui.power_started(PowerAction::ShutDown);
+        ui.toast_reveal = Reveal::open_now();
+        let offset = |parts: &[(Part, (f64, f64), f64)], wanted: Part| {
+            parts.iter().find(|(part, ..)| *part == wanted).map(|(_, (_, dy), alpha)| (*dy, *alpha)).unwrap()
+        };
+        let near = |(dy, alpha): (f64, f64), wanted: (f64, f64)| {
+            (dy - wanted.0).abs() < 1e-9 && (alpha - wanted.1).abs() < 1e-9
+        };
+        let rest = ui.parts(0.0);
+        for part in [Part::Clock, Part::Nav, Part::Avatar, Part::Field, Part::Toast] {
+            assert!(near(offset(&rest, part), (0.0, 1.0)), "{part:?} rests in place");
+        }
+        let halfway = ui.parts(0.5);
+        assert!(near(offset(&halfway, Part::Clock), (-SCENE_TRAVEL / 2.0, 1.0)), "opaque at half of the travel");
+        assert!(near(offset(&halfway, Part::Field), (SCENE_TRAVEL / 2.0, 1.0)));
+        let late = ui.parts(0.8);
+        assert!(offset(&late, Part::Avatar).1 < 1.0, "opacity only drops in the last 40 % of the exit");
     }
 
     #[test]
@@ -2464,13 +2509,13 @@ mod tests {
         let mut ui = ui();
         ui.update_hover(GreeterHit::Session);
         ui.update_hover(GreeterHit::PowerButton);
-        ui.hover_at = Instant::now() + Duration::from_mins(1);
+        ui.hover_at = clock::now() + Duration::from_mins(1);
         if !motion::t1().is_zero() {
             assert!(ui.hover_amount(GreeterHit::PowerButton) < 1.0, "the new target fades in");
             assert!(ui.hover_amount(GreeterHit::Session) > 0.0, "the old one fades out");
             assert!(ui.is_animating());
         }
-        ui.hover_at = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
+        ui.hover_at = clock::now().checked_sub(Duration::from_secs(5)).unwrap();
         assert!((ui.hover_amount(GreeterHit::PowerButton) - 1.0).abs() < f32::EPSILON);
         assert!(ui.hover_amount(GreeterHit::Session).abs() < f32::EPSILON);
         assert_eq!(ui.hover_signature(Part::Field), "", "parts without the hovered control keep their raster");

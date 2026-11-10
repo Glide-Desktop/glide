@@ -8,6 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 const MAX_MESSAGE_LEN: usize = 64 * 1024;
+const REQUEST_CAPACITY: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "type")]
@@ -78,11 +79,11 @@ impl GreetdHandle {
 }
 
 pub fn encode_request(req: &Request) -> anyhow::Result<Vec<u8>> {
-    let json = serde_json::to_vec(req)?;
-    let len = u32::try_from(json.len())?.to_ne_bytes();
-    let mut out = Vec::with_capacity(4 + json.len());
-    out.extend_from_slice(&len);
-    out.extend_from_slice(&json);
+    let mut out = Vec::with_capacity(REQUEST_CAPACITY);
+    out.extend_from_slice(&[0; 4]);
+    serde_json::to_writer(&mut out, req)?;
+    let len = u32::try_from(out.len() - 4)?.to_ne_bytes();
+    out[..4].copy_from_slice(&len);
     Ok(out)
 }
 
@@ -97,8 +98,17 @@ pub fn decode_response(mut reader: impl Read) -> anyhow::Result<Response> {
 }
 
 fn round_trip(stream: &mut UnixStream, request: &Request) -> anyhow::Result<Response> {
-    stream.write_all(&encode_request(request)?)?;
+    let mut bytes = encode_request(request)?;
+    let sent = stream.write_all(&bytes);
+    bytes.fill(0);
+    sent?;
     decode_response(&mut *stream)
+}
+
+fn forget_answer(request: &mut Request) {
+    if let Request::PostAuthMessageResponse { response: Some(answer) } = request {
+        crate::ui::wipe(answer);
+    }
 }
 
 #[must_use]
@@ -152,14 +162,16 @@ where
                 return;
             }
 
-            let request = match cmd {
+            let mut request = match cmd {
                 GreetdCommand::CreateSession(username) => Request::CreateSession { username },
                 GreetdCommand::Respond(response) => Request::PostAuthMessageResponse { response },
                 GreetdCommand::StartSession { cmd, env } => Request::StartSession { cmd, env: Some(env) },
                 GreetdCommand::CancelSession => Request::CancelSession,
             };
 
-            let response = match round_trip(&mut stream, &request) {
+            let answered = round_trip(&mut stream, &request);
+            forget_answer(&mut request);
+            let response = match answered {
                 Ok(response) => response,
                 Err(err) => {
                     tracing::warn!(?err, "greetd connection failed");
@@ -212,6 +224,15 @@ mod tests {
         let s = std::str::from_utf8(&encoded[4..]).unwrap();
         assert!(s.contains("\"type\":\"create_session\""));
         assert!(s.contains("\"username\":\"artem\""));
+    }
+
+    #[test]
+    fn an_answer_is_wiped_once_it_was_sent_and_a_long_one_fits_the_buffer_it_was_encoded_into() {
+        let mut request = Request::PostAuthMessageResponse { response: Some("\u{1}".repeat(2048)) };
+        let encoded = encode_request(&request).unwrap();
+        assert_eq!(encoded.capacity(), REQUEST_CAPACITY, "no reallocation left a copy of the answer behind");
+        forget_answer(&mut request);
+        assert_eq!(request, Request::PostAuthMessageResponse { response: Some(String::new()) });
     }
 
     #[test]

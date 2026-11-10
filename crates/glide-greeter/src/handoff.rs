@@ -18,6 +18,7 @@ use smithay::{
 use crate::ui::{Canvas, IconCache, Rect, solid_pixel, svg};
 use glide_paint::{Painter, TextAlign};
 use glide_shell::i18n::{Key, t};
+use glide_ui::clock;
 
 pub const ENV: &str = "GLIDE_HANDOFF";
 pub const MAX_WAIT: Duration = Duration::from_secs(4);
@@ -27,6 +28,7 @@ const LABEL_H: i32 = 22;
 const CONTENT_W: i32 = 360;
 const SPINNER_PERIOD: Duration = Duration::from_millis(800);
 const SPINNER_STEPS: u32 = 48;
+const MAX_SPINNER_BUFFERS: usize = SPINNER_STEPS as usize * 3;
 const RING: &str = r#"<circle cx="12" cy="12" r="10"/>"#;
 const LABEL_STYLE: TextStyle =
     TextStyle { size_px: 15.0, line_height_px: 22.0, weight: 550, tracking_em: 0.0, uppercase: false, tabular: false };
@@ -85,7 +87,8 @@ fn content_rect(size: Size<i32, Logical>) -> Rect {
 
 pub struct Cover {
     backdrop: MemoryRenderBuffer,
-    content: HashMap<i32, (u64, MemoryRenderBuffer)>,
+    labels: HashMap<i32, (u64, MemoryRenderBuffer)>,
+    spinners: HashMap<(i32, u32), MemoryRenderBuffer>,
     icons: IconCache,
     epoch: Instant,
 }
@@ -99,33 +102,47 @@ impl Default for Cover {
 impl Cover {
     #[must_use]
     pub fn new() -> Self {
-        Self { backdrop: solid_pixel(BACKDROP), content: HashMap::new(), icons: HashMap::new(), epoch: Instant::now() }
+        Self {
+            backdrop: solid_pixel(BACKDROP),
+            labels: HashMap::new(),
+            spinners: HashMap::new(),
+            icons: HashMap::new(),
+            epoch: clock::now(),
+        }
     }
 
     fn spinner_step(&self) -> u32 {
-        let turns = self.epoch.elapsed().as_secs_f64() / SPINNER_PERIOD.as_secs_f64();
+        let turns = clock::since(self.epoch).as_secs_f64() / SPINNER_PERIOD.as_secs_f64();
         let step = (turns.fract() * f64::from(SPINNER_STEPS)) as u32;
         step % SPINNER_STEPS
     }
 
-    fn content_buffer(&mut self, painter: &Painter, buffer_scale: i32) -> &MemoryRenderBuffer {
-        let step = self.spinner_step();
+    fn label_buffer(&mut self, painter: &Painter, buffer_scale: i32) -> &MemoryRenderBuffer {
         let label = t(Key::GreeterLoggingIn);
-        let key = Revision::new().u64(u64::from(step)).u64(glide_paint::painter_generation()).str(label).finish();
-        let stale = self.content.get(&buffer_scale).is_none_or(|(cached, _)| *cached != key);
+        let key = Revision::new().u64(glide_paint::painter_generation()).str(label).finish();
+        let stale = self.labels.get(&buffer_scale).is_none_or(|(cached, _)| *cached != key);
         if stale {
-            let frame_h = SPINNER + LABEL_GAP + LABEL_H;
-            let mut canvas = Canvas::new(CONTENT_W, frame_h, buffer_scale, painter, &mut self.icons);
-            let x = (CONTENT_W - SPINNER) / 2;
-            let white = Color([1.0, 1.0, 1.0, 1.0]);
-            canvas.icon(&svg(2.0, RING), x, 0, SPINNER, white.with_alpha(0.22));
-            canvas.icon(&svg(2.0, &arc(step)), x, 0, SPINNER, white);
-            let label_rect = Rect::new(0, SPINNER + LABEL_GAP, CONTENT_W, LABEL_H);
+            let mut canvas = Canvas::new(CONTENT_W, LABEL_H, buffer_scale, painter, &mut self.icons);
             let fg = Color::from_rgb8(242, 240, 237, 0.72);
-            canvas.text(label_rect, label, fg, &LABEL_STYLE, TextAlign::Center);
-            self.content.insert(buffer_scale, (key, canvas.finish()));
+            canvas.text(Rect::new(0, 0, CONTENT_W, LABEL_H), label, fg, &LABEL_STYLE, TextAlign::Center);
+            self.labels.insert(buffer_scale, (key, canvas.finish()));
         }
-        &self.content[&buffer_scale].1
+        &self.labels[&buffer_scale].1
+    }
+
+    fn spinner_buffer(&mut self, painter: &Painter, buffer_scale: i32, step: u32) -> &MemoryRenderBuffer {
+        let slot = (buffer_scale, step);
+        if !self.spinners.contains_key(&slot) {
+            if self.spinners.len() >= MAX_SPINNER_BUFFERS {
+                self.spinners.clear();
+            }
+            let mut canvas = Canvas::new(SPINNER, SPINNER, buffer_scale, painter, &mut self.icons);
+            let white = Color([1.0, 1.0, 1.0, 1.0]);
+            canvas.icon(&svg(2.0, RING), 0, 0, SPINNER, white.with_alpha(0.22));
+            canvas.icon(&svg(2.0, &arc(step)), 0, 0, SPINNER, white);
+            self.spinners.insert(slot, canvas.finish());
+        }
+        &self.spinners[&slot]
     }
 
     pub fn render<R>(
@@ -141,13 +158,30 @@ impl Cover {
         }
         let alpha = alpha.clamp(0.0, 1.0) as f32;
         let content = content_rect(size);
-        let location = Point::<f64, Logical>::from((f64::from(content.x), f64::from(content.y))).to_physical(scale);
-        let location = Point::from((location.x.round(), location.y.round()));
-        let buffer = self.content_buffer(painter, buffer_scale);
+        let physical = |x: i32, y: i32| {
+            let location = Point::<f64, Logical>::from((f64::from(x), f64::from(y))).to_physical(scale);
+            Point::from((location.x.round(), location.y.round()))
+        };
+        let step = self.spinner_step();
+        let spinner_at = physical(content.x + (CONTENT_W - SPINNER) / 2, content.y);
+        let spinner = self.spinner_buffer(painter, buffer_scale, step);
         if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            location,
-            buffer,
+            spinner_at,
+            spinner,
+            Some(alpha),
+            None,
+            None,
+            Kind::Unspecified,
+        ) {
+            out.push(element);
+        }
+        let label_at = physical(content.x, content.y + SPINNER + LABEL_GAP);
+        let label = self.label_buffer(painter, buffer_scale);
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            label_at,
+            label,
             Some(alpha),
             None,
             None,
@@ -212,7 +246,7 @@ impl Handoff {
     }
 
     fn with_phase(phase: Phase) -> Self {
-        let now = Instant::now();
+        let now = clock::now();
         Self { phase, since: now, created: now, readiness: Readiness::default(), opaque_frames: 0, cover: Cover::new() }
     }
 
@@ -233,7 +267,7 @@ impl Handoff {
         if duration.is_zero() {
             return 1.0;
         }
-        ease_out((self.since.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0))
+        ease_out((clock::since(self.since).as_secs_f64() / duration.as_secs_f64()).min(1.0))
     }
 
     #[must_use]
@@ -283,9 +317,9 @@ impl Handoff {
                 "session ready; revealing the desktop"
             );
             self.phase = Phase::Revealing;
-            self.since = Instant::now();
+            self.since = clock::now();
         }
-        !(self.phase == Phase::Revealing && self.since.elapsed() >= motion::t4())
+        !(self.phase == Phase::Revealing && clock::since(self.since) >= motion::t4())
     }
 }
 

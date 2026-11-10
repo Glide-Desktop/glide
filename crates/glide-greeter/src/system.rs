@@ -190,8 +190,9 @@ pub fn list_sessions() -> Vec<SessionEntry> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "desktop")
-                && let Some(session) = fs::read_to_string(&path).ok().and_then(|text| parse_session(&path, &text))
-                && session_is_installed(&path)
+                && let Ok(text) = fs::read_to_string(&path)
+                && let Some(session) = parse_session(&path, &text)
+                && session_is_installed(&text)
                 && !sessions.iter().any(|s| s.id == session.id)
             {
                 sessions.push(session);
@@ -210,11 +211,8 @@ pub fn sort_sessions(sessions: &mut [SessionEntry]) {
     sessions.sort_by_cached_key(|s| (!s.id.starts_with("glide"), s.name.to_lowercase()));
 }
 
-fn session_is_installed(path: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    desktop_value(&text, "TryExec").is_none_or(glide_config::on_path)
+fn session_is_installed(text: &str) -> bool {
+    desktop_value(text, "TryExec").is_none_or(glide_config::on_path)
 }
 
 fn default_sessions() -> Vec<SessionEntry> {
