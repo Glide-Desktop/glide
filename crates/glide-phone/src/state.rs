@@ -15,7 +15,7 @@ use crate::plugins::notifications::{
     create_request_packet, handle_notification_packet_with_payload,
 };
 use crate::plugins::presenter::{PresenterEvent, handle_presenter_packet};
-use crate::plugins::share::{SharePayload, create_share_text_packet, create_share_url_packet, handle_share_packet};
+use crate::plugins::share::{create_share_text_packet, create_share_url_packet, handle_share_packet};
 use crate::protocol::identity::DeviceType;
 use crate::protocol::packet::{
     NetworkPacket, PACKET_TYPE_BATTERY, PACKET_TYPE_CLIPBOARD, PACKET_TYPE_FINDMYPHONE_REQUEST,
@@ -52,7 +52,6 @@ pub struct PhoneManager {
     connecting: HashMap<String, Instant>,
     clipboard: Option<(String, i64)>,
     presenter_events: VecDeque<(String, PresenterEvent)>,
-    shares: VecDeque<(String, SharePayload)>,
     pub notify: Arc<Notify>,
 }
 
@@ -89,7 +88,6 @@ impl PhoneManager {
             connecting: HashMap::new(),
             clipboard: None,
             presenter_events: VecDeque::new(),
-            shares: VecDeque::new(),
             notify: Arc::new(Notify::new()),
         }
     }
@@ -205,7 +203,7 @@ impl PhoneManager {
             return Ok(None);
         }
 
-        if self.handle_aux_packet(device_id, packet, device_name.clone()) {
+        if self.handle_aux_packet(device_id, packet, &device_name) {
             return Ok(None);
         }
 
@@ -303,7 +301,7 @@ impl PhoneManager {
         Ok(None)
     }
 
-    fn handle_aux_packet(&mut self, device_id: &str, packet: &NetworkPacket, device_name: String) -> bool {
+    fn handle_aux_packet(&mut self, device_id: &str, packet: &NetworkPacket, device_name: &str) -> bool {
         match packet.packet_type.as_str() {
             PACKET_TYPE_CLIPBOARD => {
                 if let Ok(clipboard) = handle_clipboard_packet(packet) {
@@ -348,8 +346,7 @@ impl PhoneManager {
             }
             PACKET_TYPE_SHARE_REQUEST => {
                 if let Ok(share) = handle_share_packet(packet) {
-                    self.shares.push_back((device_name, share));
-                    self.notify.notify_waiters();
+                    crate::plugins::share::deliver(device_name, share);
                 }
                 true
             }
@@ -542,11 +539,6 @@ impl PhoneManager {
     #[must_use]
     pub fn take_presenter_event(&mut self) -> Option<PresenterEvent> {
         self.presenter_events.pop_front().map(|(_, event)| event)
-    }
-
-    #[must_use]
-    pub fn take_share(&mut self) -> Option<(String, SharePayload)> {
-        self.shares.pop_front()
     }
 
     pub fn share_text(
