@@ -2045,16 +2045,18 @@ where
     let shell = dock.rect(area);
     let slide = (f64::from(shell.size.h + dock.theme.bottom_margin) * hidden).round() as i32;
     let opacity = (1.0 - hidden) as f32;
-    let (display_items, order) =
-        dock.display_order(area).unwrap_or_else(|| (dock.items.clone(), (0..dock.items.len()).collect()));
+    let reordered = dock.display_order(area);
+    let shown: &[DockItem] = reordered.as_ref().map_or(&dock.items, |(items, _)| items);
+    let separators: Vec<bool> = shown.iter().map(|item| item.separator_before).collect();
     let item_rects: Vec<Rectangle<i32, Logical>> = dock
-        .rects_for(&display_items, area)
+        .rects_for(shown, area)
         .into_iter()
         .map(|mut rect| {
             rect.loc.y += slide;
             rect
         })
         .collect();
+    let order: Vec<usize> = reordered.map_or_else(|| (0..dock.items.len()).collect(), |(_, order)| order);
     let dragged = dock.dragged_position(area);
     let drawn_rects = dock.slid_rects(&order, &item_rects, dragged);
     let theme = dock.theme.clone();
@@ -2065,7 +2067,7 @@ where
     }
     push_tiles(dock, &mut frame, &order, &drawn_rects, dragged, opacity);
     push_departures(dock, &mut frame, drawn_rects.first().copied(), opacity);
-    push_shell(dock, &mut frame, &display_items, &item_rects, (shell, slide), opacity, backdrop);
+    push_shell(dock, &mut frame, &separators, &item_rects, (shell, slide), opacity, backdrop);
     frame.elements
 }
 
@@ -2288,23 +2290,23 @@ fn draw_tooltip(
 }
 
 fn push_shell<R: ShellRenderer>(
-    dock: &mut Dock, frame: &mut Frame<'_, R>, items: &[DockItem], item_rects: &[Rectangle<i32, Logical>],
+    dock: &mut Dock, frame: &mut Frame<'_, R>, separators: &[bool], item_rects: &[Rectangle<i32, Logical>],
     (shell, slide): (Rectangle<i32, Logical>, i32), opacity: f32, backdrop: Option<&Backdrop<'_>>,
 ) {
     let (theme, output_scale) = (frame.theme, frame.output_scale);
-    let separators: u64 = items
+    let mask: u64 = separators
         .iter()
         .enumerate()
-        .filter(|(index, item)| *index > 0 && item.separator_before)
+        .filter(|(index, separated)| *index > 0 && **separated)
         .fold(0, |acc, (index, _)| acc | (1u64 << (index % 64)));
     let shell_key = (shell.size.w, shell.size.h, output_scale);
-    let shell_state = (backdrop_key(backdrop, shell), separators);
+    let shell_state = (backdrop_key(backdrop, shell), mask);
     if dock.shell_backdrop_key != shell_state {
         dock.shell_backdrop_key = shell_state;
         dock.rasters.shell.clear();
     }
     let buffer = cached(&mut dock.rasters.shell, shell_key, || {
-        draw_shell(theme, items, item_rects, shell, output_scale, backdrop)
+        draw_shell(theme, separators, item_rects, shell, output_scale, backdrop)
     });
     let drawn = Point::from((shell.loc.x, shell.loc.y + slide));
     frame.push(buffer, drawn.to_f64(), opacity, None);
@@ -2638,7 +2640,7 @@ fn push_run_indicator<R: ShellRenderer>(
 }
 
 fn draw_shell(
-    theme: &DockTheme, items: &[DockItem], item_rects: &[Rectangle<i32, Logical>], shell: Rectangle<i32, Logical>,
+    theme: &DockTheme, separators: &[bool], item_rects: &[Rectangle<i32, Logical>], shell: Rectangle<i32, Logical>,
     scale: i32, backdrop: Option<&Backdrop<'_>>,
 ) -> Option<MemoryRenderBuffer> {
     let (w, h) = (shell.size.w, shell.size.h);
@@ -2652,8 +2654,8 @@ fn draw_shell(
     glide_paint::draw_inset_border(&mut canvas.buf, w * scale, h * scale, factor, theme.radius * factor, theme.border);
     draw_edge_highlight(&mut canvas.buf, w, h, scale, theme.radius, theme.edge_highlight);
 
-    for (index, item) in items.iter().enumerate() {
-        if index == 0 || !item.separator_before {
+    for (index, separated) in separators.iter().enumerate() {
+        if index == 0 || !separated {
             continue;
         }
         let Some(item) = item_rects.get(index) else {
