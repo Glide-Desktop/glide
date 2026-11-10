@@ -197,7 +197,7 @@ pub fn extension(job: &Job) -> &'static str {
     if job.quality == Quality::AudioOnly {
         "m4a"
     } else if job.lossless {
-        container_of(&job.segments[0].uri)
+        job.segments.first().map_or("mp4", |first| container_of(&first.uri))
     } else {
         "mp4"
     }
