@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::process::Command;
@@ -94,13 +94,4 @@ pub fn start_alarm_loop() -> AlarmHandle {
     });
 
     handle
-}
-
-pub fn play_sound_once(path: &Path) {
-    let Some((player, args)) = find_player() else {
-        return;
-    };
-    let mut cmd = std::process::Command::new(player);
-    cmd.args(args).arg(path);
-    let _ = cmd.spawn();
 }

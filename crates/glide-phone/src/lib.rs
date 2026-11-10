@@ -33,7 +33,7 @@ pub use protocol::packet::{
 };
 pub use protocol::pair::{PairBody, PairState};
 pub use service::PhoneService;
-pub use sound::{AlarmHandle, play_sound_once, start_alarm_loop};
+pub use sound::{AlarmHandle, start_alarm_loop};
 pub use state::{PhoneDeviceState, PhoneManager};
 pub use ui::PhoneApp;
 

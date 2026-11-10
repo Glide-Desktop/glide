@@ -28,6 +28,7 @@ use crate::ui::PhoneCardData;
 pub type PacketSender = UnboundedSender<NetworkPacket>;
 
 const CONNECTING_COOLDOWN: Duration = Duration::from_secs(5);
+pub const MAX_KNOWN_DEVICES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhoneDeviceState {
@@ -116,9 +117,12 @@ impl PhoneManager {
         self.connecting.remove(device_id);
     }
 
-    pub fn register_discovered(&mut self, id: String, name: String, device_type: DeviceType) {
+    pub fn register_discovered(&mut self, id: String, name: String, device_type: DeviceType) -> bool {
         let paired_fp = self.config.paired_devices.get(&id).map(|p| p.fingerprint.clone());
         let is_paired = paired_fp.is_some();
+        if !is_paired && !self.devices.contains_key(&id) && self.devices.len() >= MAX_KNOWN_DEVICES {
+            return false;
+        }
         let pair_state = if is_paired { PairState::Paired } else { PairState::Unpaired };
 
         let entry = self.devices.entry(id.clone()).or_insert_with(|| PhoneDeviceState {
@@ -143,6 +147,7 @@ impl PhoneManager {
         if changed {
             self.notify.notify_waiters();
         }
+        true
     }
 
     pub fn register_connection(&mut self, device_id: String, sender: PacketSender, peer_fingerprint: Option<String>) {
@@ -237,8 +242,11 @@ impl PhoneManager {
                 }
             }
             PACKET_TYPE_FINDMYPHONE_REQUEST => {
-                let handle = handle_find_this_device(&device_name);
-                self.alarms.insert(device_id.to_string(), handle);
+                if let Some(ringing) = self.alarms.remove(device_id).filter(AlarmHandle::is_active) {
+                    ringing.stop();
+                } else {
+                    self.alarms.insert(device_id.to_string(), handle_find_this_device(&device_name));
+                }
                 self.notify.notify_waiters();
             }
             PACKET_TYPE_PING => {
@@ -264,7 +272,9 @@ impl PhoneManager {
                             );
                             self.config.save_if_configured();
                             self.send_to_device(device_id, create_request_packet());
-                        } else if pair_body.timestamp.is_some() && device.pair_state != PairState::Paired {
+                        } else if pair_body.timestamp.is_some()
+                            && !matches!(device.pair_state, PairState::Paired | PairState::RequestedByPeer)
+                        {
                             device.pair_state = PairState::RequestedByPeer;
                             let notif = glide_sdk::system::Notification::new(
                                 "glide-phone",

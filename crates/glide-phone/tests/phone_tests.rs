@@ -565,6 +565,33 @@ fn find_my_phone_packet() {
 }
 
 #[test]
+fn a_flood_of_made_up_devices_cannot_grow_the_device_list_without_bound() {
+    use glide_phone::config::PairedDevice;
+    use glide_phone::state::MAX_KNOWN_DEVICES;
+    let cert = IdentityCert::generate("local_1234567890123456789012345678").expect("cert");
+    let paired =
+        PairedDevice { id: "paired_phone".to_string(), name: "Pixel".to_string(), fingerprint: "ab".to_string() };
+    let config = PhoneConfig {
+        device_id: "local_1234567890123456789012345678".to_string(),
+        device_name: "Laptop".to_string(),
+        cert_pem: cert.cert_pem.clone(),
+        key_pem: cert.key_pem.clone(),
+        cert_der: cert.cert_der.clone(),
+        key_der: cert.key_der.clone(),
+        paired_devices: HashMap::from([(paired.id.clone(), paired)]),
+        config_path: None,
+    };
+    let mut manager = PhoneManager::new(config, cert);
+    let admitted = (0..MAX_KNOWN_DEVICES * 4)
+        .filter(|index| manager.register_discovered(format!("fake_{index}"), "Fake".to_string(), DeviceType::Phone))
+        .count();
+    assert_eq!(manager.devices.len(), MAX_KNOWN_DEVICES);
+    assert_eq!(admitted, MAX_KNOWN_DEVICES - 1, "the paired phone holds one place");
+    assert!(manager.register_discovered("fake_0".to_string(), "Renamed".to_string(), DeviceType::Phone));
+    assert!(manager.register_discovered("paired_phone".to_string(), "Pixel".to_string(), DeviceType::Phone));
+}
+
+#[test]
 fn phone_manager_pairing_and_state() {
     let cert = IdentityCert::generate("local_1234567890123456789012345678").expect("cert");
     let config = PhoneConfig {

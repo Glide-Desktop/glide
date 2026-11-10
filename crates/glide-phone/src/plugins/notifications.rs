@@ -249,7 +249,30 @@ fn preferred_icon_themes() -> &'static [String] {
     })
 }
 
+const MAX_REMEMBERED_APP_ICONS: usize = 128;
+
+fn remembered<K: Eq + Hash + Clone, V: Clone, S: BuildHasher>(
+    cache: &Mutex<HashMap<K, V, S>>, key: &K, limit: usize, find: impl FnOnce() -> V,
+) -> V {
+    if let Some(known) = cache.lock().unwrap_or_else(PoisonError::into_inner).get(key) {
+        return known.clone();
+    }
+    let found = find();
+    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    if cache.len() >= limit {
+        cache.clear();
+    }
+    cache.insert(key.clone(), found.clone());
+    found
+}
+
 fn load_themed_app_icon(app_name: &str) -> Option<Vec<u8>> {
+    static ICONS: OnceLock<Mutex<HashMap<String, Option<Vec<u8>>>>> = OnceLock::new();
+    let key = app_name.trim().to_lowercase();
+    remembered(ICONS.get_or_init(Mutex::default), &key, MAX_REMEMBERED_APP_ICONS, || find_themed_app_icon(app_name))
+}
+
+fn find_themed_app_icon(app_name: &str) -> Option<Vec<u8>> {
     let mut candidates = app_icon_candidates(app_name);
     let lower = app_name.trim().to_lowercase();
     for app in glide_shell::icon::list_applications() {
@@ -922,4 +945,26 @@ pub fn handle_notification_packet_with_payload<S: BuildHasher, H: BuildHasher>(
 
     active_notifications.insert(clean_id, active.clone());
     Ok(Some(NotificationEvent::Added(active)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_app_icon_is_looked_up_once_per_app_and_a_miss_is_remembered_too() {
+        let cache: Mutex<HashMap<String, Option<u8>>> = Mutex::default();
+        let lookups = std::cell::Cell::new(0);
+        let find = |answer: Option<u8>| {
+            lookups.set(lookups.get() + 1);
+            answer
+        };
+        assert_eq!(remembered(&cache, &"telegram".to_string(), 2, || find(Some(1))), Some(1));
+        assert_eq!(remembered(&cache, &"telegram".to_string(), 2, || find(Some(9))), Some(1));
+        assert_eq!(remembered(&cache, &"unknown".to_string(), 2, || find(None)), None);
+        assert_eq!(remembered(&cache, &"unknown".to_string(), 2, || find(Some(9))), None);
+        assert_eq!(lookups.get(), 2, "the disk is scanned once per app name");
+        assert_eq!(remembered(&cache, &"third".to_string(), 2, || find(Some(3))), Some(3));
+        assert_eq!(cache.lock().unwrap().len(), 1, "a full cache starts over instead of growing");
+    }
 }

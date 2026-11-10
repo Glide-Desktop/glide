@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
@@ -21,10 +22,15 @@ use crate::protocol::pair::PairState;
 use crate::state::PhoneManager;
 
 const MAX_PRE_TLS_IDENTITY_BYTES: usize = 8192;
-const MAX_NOTIFICATION_PAYLOAD_BYTES: usize = 512 * 1024;
-const MAX_SHARE_PAYLOAD_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_NOTIFICATION_PAYLOAD_BYTES: u64 = 512 * 1024;
+const MAX_SHARE_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 const HANDSHAKE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
-const PAYLOAD_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(3);
+const PAYLOAD_CONNECT_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(3);
+const PAYLOAD_IDLE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+
+fn announces_usable_port(port: Option<u16>) -> bool {
+    port.is_none_or(|port| (MIN_TCP_PORT..=MAX_TCP_PORT).contains(&port))
+}
 
 async fn read_plaintext_line(stream: &mut TcpStream) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let mut buf = Vec::with_capacity(512);
@@ -146,10 +152,18 @@ impl PhoneService {
             if let Some(DiscoveredPeer { identity: peer_id, addr }) =
                 receive_discovery_packet(&udp_socket, &device_id).await?
             {
+                if !announces_usable_port(peer_id.tcp_port) {
+                    tracing::debug!(%addr, port = ?peer_id.tcp_port, "ignoring a discovery packet with a foreign port");
+                    continue;
+                }
                 let mut mgr = self.manager.lock().await;
-                mgr.register_discovered(peer_id.device_id.clone(), peer_id.device_name.clone(), peer_id.device_type);
+                let known = mgr.register_discovered(
+                    peer_id.device_id.clone(),
+                    peer_id.device_name.clone(),
+                    peer_id.device_type,
+                );
 
-                if mgr.is_connected(&peer_id.device_id) || mgr.is_connecting(&peer_id.device_id) {
+                if !known || mgr.is_connected(&peer_id.device_id) || mgr.is_connecting(&peer_id.device_id) {
                     continue;
                 }
 
@@ -304,7 +318,9 @@ impl PhoneService {
 
         let is_paired = {
             let mut mgr = self.manager.lock().await;
-            mgr.register_discovered(peer_id.clone(), peer_name.clone(), peer_identity.device_type);
+            if !mgr.register_discovered(peer_id.clone(), peer_name.clone(), peer_identity.device_type) {
+                return Err("too many unpaired devices are known already".into());
+            }
             mgr.register_connection(peer_id.clone(), tx, peer_fp);
             mgr.send_pending_pair_request(&peer_id);
             mgr.devices.get(&peer_id).is_some_and(|d| d.pair_state == PairState::Paired)
@@ -334,14 +350,11 @@ impl PhoneService {
                 pkt = packet_stream.next_packet() => {
                     match pkt {
                         Ok(Some(packet)) => {
-                            let payload = self.download_payload(peer_addr, &peer_id, &packet).await;
-                            if packet.packet_type == PACKET_TYPE_SHARE_REQUEST
-                                && let (Some(payload), Ok(SharePayload::File { filename })) = (payload.as_ref(), handle_share_packet(&packet))
-                            {
-                                let device = peer_name.clone();
-                                let bytes = payload.clone();
-                                tokio::task::spawn_blocking(move || save_shared_file(&filename, &bytes, &device)).await.ok();
-                            }
+                            let payload = if self.is_paired(&peer_id).await {
+                                self.receive_payload(peer_addr, &peer_id, &peer_name, &packet).await
+                            } else {
+                                None
+                            };
                             let response = {
                                 let mut mgr = self.manager.lock().await;
                                 mgr.handle_packet_with_payload(&peer_id, &packet, payload.as_deref())
@@ -379,20 +392,43 @@ impl PhoneService {
         Ok(())
     }
 
-    async fn download_payload(&self, peer_addr: SocketAddr, peer_id: &str, packet: &NetworkPacket) -> Option<Vec<u8>> {
-        if packet.packet_type != PACKET_TYPE_NOTIFICATION && packet.packet_type != PACKET_TYPE_SHARE_REQUEST {
-            return None;
-        }
+    async fn is_paired(&self, peer_id: &str) -> bool {
+        self.manager.lock().await.devices.get(peer_id).is_some_and(|device| device.pair_state == PairState::Paired)
+    }
+
+    async fn receive_payload(
+        &self, peer_addr: SocketAddr, peer_id: &str, device: &str, packet: &NetworkPacket,
+    ) -> Option<Vec<u8>> {
         if packet.body.get("isCancel").and_then(serde_json::Value::as_bool).unwrap_or(false) {
             return None;
         }
-        let limit = if packet.packet_type == PACKET_TYPE_SHARE_REQUEST {
-            MAX_SHARE_PAYLOAD_BYTES
-        } else {
-            MAX_NOTIFICATION_PAYLOAD_BYTES
-        };
-        let size =
-            packet.payload_size.and_then(|raw| usize::try_from(raw).ok()).filter(|&raw| raw > 0).unwrap_or(limit);
+        match packet.packet_type.as_str() {
+            PACKET_TYPE_NOTIFICATION => {
+                let (mut stream, size) =
+                    self.open_payload(peer_addr, peer_id, packet, MAX_NOTIFICATION_PAYLOAD_BYTES).await?;
+                read_payload(&mut stream, size).await
+            }
+            PACKET_TYPE_SHARE_REQUEST => {
+                let Ok(SharePayload::File { filename }) = handle_share_packet(packet) else {
+                    return None;
+                };
+                let (mut stream, size) = self.open_payload(peer_addr, peer_id, packet, MAX_SHARE_PAYLOAD_BYTES).await?;
+                let exact = packet.payload_size.is_some_and(|raw| raw > 0);
+                if let Some(target) = save_shared_file(&mut stream, size, exact, &filename).await {
+                    announce_shared_file(&target, device);
+                } else {
+                    tracing::warn!(%peer_addr, "a shared file did not arrive whole and was not kept");
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    async fn open_payload(
+        &self, peer_addr: SocketAddr, peer_id: &str, packet: &NetworkPacket, limit: u64,
+    ) -> Option<(tokio_rustls::client::TlsStream<TcpStream>, u64)> {
+        let size = packet.payload_size.and_then(|raw| u64::try_from(raw).ok()).filter(|&raw| raw > 0).unwrap_or(limit);
         if size > limit {
             return None;
         }
@@ -406,55 +442,156 @@ impl PhoneService {
         let connector = TlsConnector::from(Arc::new(client_config));
         let server_name = rustls::pki_types::ServerName::try_from("kdeconnect").ok()?;
         let target = SocketAddr::new(peer_addr.ip(), port);
-        tokio::time::timeout(PAYLOAD_TIMEOUT, async move {
+        let stream = tokio::time::timeout(PAYLOAD_CONNECT_TIMEOUT, async move {
             let stream = TcpStream::connect(target).await.ok()?;
-            let mut tls = connector.connect(server_name, stream).await.ok()?;
-            let mut buf = Vec::with_capacity(size.min(64 * 1024));
-            let mut chunk = [0u8; 8192];
-            while buf.len() < size {
-                let limit = (size - buf.len()).min(chunk.len());
-                match tls.read(&mut chunk[..limit]).await {
-                    Ok(0) => break,
-                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                    Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof && !buf.is_empty() => break,
-                    Err(_) => return None,
-                }
-            }
-            (!buf.is_empty()).then_some(buf)
+            connector.connect(server_name, stream).await.ok()
         })
         .await
         .ok()
-        .flatten()
+        .flatten()?;
+        Some((stream, size))
     }
 }
 
-fn save_shared_file(filename: &str, bytes: &[u8], device: &str) {
-    let Some(home) = glide_config::home() else {
-        return;
-    };
-    let dir = home.join("Downloads");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
+async fn read_chunk(stream: &mut (impl tokio::io::AsyncRead + Unpin), chunk: &mut [u8]) -> Option<usize> {
+    match tokio::time::timeout(PAYLOAD_IDLE_TIMEOUT, stream.read(chunk)).await {
+        Ok(Ok(count)) => Some(count),
+        Ok(Err(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => Some(0),
+        _ => None,
     }
-    let mut target = dir.join(filename);
-    let stem = std::path::Path::new(&filename).file_stem().and_then(|value| value.to_str()).unwrap_or("file");
-    let extension = std::path::Path::new(&filename).extension().and_then(|value| value.to_str()).unwrap_or("");
-    for index in 1..1000 {
-        if !target.exists() {
-            break;
+}
+
+async fn read_payload(stream: &mut (impl tokio::io::AsyncRead + Unpin), size: u64) -> Option<Vec<u8>> {
+    let size = usize::try_from(size).ok()?;
+    let mut buf = Vec::with_capacity(size.min(64 * 1024));
+    let mut chunk = [0u8; 8192];
+    while buf.len() < size {
+        let want = (size - buf.len()).min(chunk.len());
+        match read_chunk(stream, &mut chunk[..want]).await? {
+            0 => break,
+            count => buf.extend_from_slice(&chunk[..count]),
         }
-        let name =
-            if extension.is_empty() { format!("{stem} ({index})") } else { format!("{stem} ({index}).{extension}") };
-        target = dir.join(name);
     }
-    if std::fs::write(&target, bytes).is_ok() {
-        let notification = glide_sdk::system::Notification::new("glide-phone", format!("File received from {device}"))
-            .body(target.display().to_string())
-            .icon("folder-download");
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let _ = glide_sdk::system::notify(notification).await;
-            });
+    (!buf.is_empty()).then_some(buf)
+}
+
+fn create_unique(dir: &Path, filename: &str) -> Option<(std::fs::File, PathBuf)> {
+    std::fs::create_dir_all(dir).ok()?;
+    let name = Path::new(filename);
+    let stem = name.file_stem().and_then(|value| value.to_str()).unwrap_or("file");
+    let extension = name.extension().and_then(|value| value.to_str()).unwrap_or("");
+    for index in 0..1000 {
+        let candidate = match (index, extension.is_empty()) {
+            (0, _) => filename.to_string(),
+            (_, true) => format!("{stem} ({index})"),
+            (_, false) => format!("{stem} ({index}).{extension}"),
+        };
+        let target = dir.join(candidate);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&target) {
+            Ok(file) => return Some((file, target)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+async fn save_shared_file(
+    stream: &mut (impl tokio::io::AsyncRead + Unpin), size: u64, exact: bool, filename: &str,
+) -> Option<PathBuf> {
+    let dir = glide_config::home()?.join("Downloads");
+    save_stream_into(stream, size, exact, &dir, filename).await
+}
+
+async fn save_stream_into(
+    stream: &mut (impl tokio::io::AsyncRead + Unpin), size: u64, exact: bool, dir: &Path, filename: &str,
+) -> Option<PathBuf> {
+    use std::io::Write as _;
+    let (mut file, target) = create_unique(dir, filename)?;
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut received = 0_u64;
+    let whole = loop {
+        if received >= size {
+            break true;
+        }
+        let want = usize::try_from(size - received).unwrap_or(usize::MAX).min(chunk.len());
+        match read_chunk(stream, &mut chunk[..want]).await {
+            Some(0) => break !exact && received > 0,
+            Some(count) if file.write_all(&chunk[..count]).is_ok() => received += count as u64,
+            _ => break false,
+        }
+    };
+    drop(file);
+    if whole {
+        Some(target)
+    } else {
+        let _ = std::fs::remove_file(&target);
+        None
+    }
+}
+
+fn announce_shared_file(target: &Path, device: &str) {
+    let notification = glide_sdk::system::Notification::new("glide-phone", format!("File received from {device}"))
+        .body(target.display().to_string())
+        .icon("folder-download");
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            let _ = glide_sdk::system::notify(notification).await;
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("glide-phone-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn a_shared_file_never_replaces_one_that_is_already_there() {
+        let dir = scratch("unique");
+        let (_, first) = create_unique(&dir, "photo.jpg").expect("first");
+        let (_, second) = create_unique(&dir, "photo.jpg").expect("second");
+        let (_, bare) = create_unique(&dir, "notes").expect("no extension");
+        let (_, bare_again) = create_unique(&dir, "notes").expect("no extension, taken");
+        assert_eq!(first, dir.join("photo.jpg"));
+        assert_eq!(second, dir.join("photo (1).jpg"));
+        assert_eq!((bare, bare_again), (dir.join("notes"), dir.join("notes (1)")));
+        std::os::unix::fs::symlink(dir.join("elsewhere"), dir.join("link.txt")).expect("symlink");
+        let (_, beside) = create_unique(&dir, "link.txt").expect("a dangling link is not written through");
+        assert_eq!(beside, dir.join("link (1).txt"));
+        assert!(!dir.join("elsewhere").exists());
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn a_transfer_that_stops_short_of_its_announced_size_leaves_no_file() {
+        let dir = scratch("short");
+        let mut whole: &[u8] = b"0123456789";
+        let kept = save_stream_into(&mut whole, 10, true, &dir, "a.bin").await.expect("complete");
+        assert_eq!(std::fs::read(&kept).expect("kept"), b"0123456789");
+        let mut short: &[u8] = b"01234";
+        assert_eq!(save_stream_into(&mut short, 10, true, &dir, "b.bin").await, None);
+        assert!(!dir.join("b.bin").exists(), "the partial file is removed");
+        let mut unsized_stream: &[u8] = b"01234";
+        let open_ended = save_stream_into(&mut unsized_stream, 1024, false, &dir, "c.bin").await.expect("until EOF");
+        assert_eq!(std::fs::read(open_ended).expect("kept"), b"01234");
+        let mut long: &[u8] = b"0123456789";
+        let capped = save_stream_into(&mut long, 4, true, &dir, "d.bin").await.expect("capped");
+        assert_eq!(std::fs::read(capped).expect("kept"), b"0123", "never more than the announced size");
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn a_peer_is_only_dialled_on_a_port_of_the_protocol_range() {
+        assert!(announces_usable_port(None), "a peer without a port is answered over UDP");
+        assert!(announces_usable_port(Some(MIN_TCP_PORT)) && announces_usable_port(Some(MAX_TCP_PORT)));
+        for foreign in [22, 80, 1715, 1765, 6379] {
+            assert!(!announces_usable_port(Some(foreign)), "{foreign}");
         }
     }
 }
