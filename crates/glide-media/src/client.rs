@@ -23,11 +23,19 @@ enum Request {
     Seek(f32),
     SeekBy(i64),
     PauseAll,
+    Refresh,
+    Stop,
 }
 
 #[derive(Debug)]
 pub struct MediaHandle {
     requests: mpsc::Sender<Request>,
+}
+
+impl Drop for MediaHandle {
+    fn drop(&mut self) {
+        let _ = self.requests.send(Request::Stop);
+    }
 }
 
 impl MediaHandle {
@@ -148,7 +156,7 @@ fn perform(
         return;
     };
     match request {
-        Request::PauseAll => {}
+        Request::PauseAll | Request::Refresh | Request::Stop => {}
         Request::Command(command) => {
             let method = format!("{command:?}");
             deliver(connection, &method, player_call(bus, &method).and_then(|builder| builder.build(&())));
@@ -304,16 +312,54 @@ fn remembered_bus<'a>(remembered: Option<&'a str>, listed: &[String]) -> Option<
 }
 
 const SCAN_INTERVAL: Duration = Duration::from_millis(500);
+const IDLE_SCAN: Duration = Duration::from_secs(5);
+const REFRESH_SPACING: Duration = Duration::from_millis(150);
 const SETTLE_DELAY: Duration = Duration::from_millis(100);
 const METHOD_TIMEOUT: Duration = Duration::from_millis(300);
+
+const SIGNAL_RULES: [&str; 3] = [
+    "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',\
+     arg0namespace='org.mpris.MediaPlayer2'",
+    "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',\
+     path='/org/mpris/MediaPlayer2'",
+    "type='signal',interface='org.mpris.MediaPlayer2.Player',member='Seeked',path='/org/mpris/MediaPlayer2'",
+];
+
+fn scan_wait(playing: bool, hooked: bool) -> Duration {
+    if playing || !hooked { SCAN_INTERVAL } else { IDLE_SCAN }
+}
+
+fn refresh_delay(since_published: Duration) -> Option<Duration> {
+    REFRESH_SPACING.checked_sub(since_published).filter(|left| !left.is_zero())
+}
+
+fn watch_signals(connection: &zbus::blocking::Connection, requests: mpsc::Sender<Request>) -> anyhow::Result<()> {
+    let bus = zbus::blocking::fdo::DBusProxy::new(connection)?;
+    for rule in SIGNAL_RULES {
+        bus.add_match_rule(zbus::MatchRule::try_from(rule)?)?;
+    }
+    let messages = zbus::blocking::MessageIterator::from(connection);
+    std::thread::Builder::new().name("glide-mpris-signals".to_string()).spawn(move || {
+        for message in messages.map_while(Result::ok) {
+            let signal = message.header().message_type() == zbus::message::Type::Signal;
+            if signal && requests.send(Request::Refresh).is_err() {
+                return;
+            }
+        }
+    })?;
+    Ok(())
+}
 
 pub fn start(sink: Sink) -> anyhow::Result<MediaHandle> {
     let connection = zbus::blocking::connection::Builder::session()?.method_timeout(METHOD_TIMEOUT).build()?;
     let (requests, inbox) = mpsc::channel();
+    let hooked = watch_signals(&connection, requests.clone())
+        .inspect_err(|err| tracing::info!("player signals are unavailable ({err}); players stay polled"))
+        .is_ok();
 
     std::thread::Builder::new()
         .name("glide-mpris".to_string())
-        .spawn(move || Worker::new(&connection, &sink).run(&inbox))?;
+        .spawn(move || Worker::new(&connection, &sink, hooked).run(&inbox))?;
 
     Ok(MediaHandle { requests })
 }
@@ -326,10 +372,12 @@ struct Worker<'a> {
     remembered: Option<String>,
     listed: Vec<String>,
     described: Option<String>,
+    hooked: bool,
+    published: std::time::Instant,
 }
 
 impl<'a> Worker<'a> {
-    fn new(connection: &'a zbus::blocking::Connection, sink: &'a Sink) -> Self {
+    fn new(connection: &'a zbus::blocking::Connection, sink: &'a Sink, hooked: bool) -> Self {
         Self {
             connection,
             sink,
@@ -338,12 +386,18 @@ impl<'a> Worker<'a> {
             remembered: None,
             listed: Vec::new(),
             described: None,
+            hooked,
+            published: std::time::Instant::now(),
         }
     }
 
+    fn idle_wait(&self) -> Duration {
+        scan_wait(self.last.as_ref().is_some_and(|track| track.status == Playback::Playing), self.hooked)
+    }
+
     fn run(mut self, inbox: &mpsc::Receiver<Request>) {
-        let mut wait = SCAN_INTERVAL;
         self.publish();
+        let mut wait = self.idle_wait();
         loop {
             let first = match inbox.recv_timeout(wait) {
                 Ok(request) => Some(request),
@@ -351,16 +405,29 @@ impl<'a> Worker<'a> {
                 Err(RecvTimeoutError::Disconnected) => return,
             };
             let pending = coalesce(first.into_iter().chain(inbox.try_iter()).collect());
-            for request in &pending {
+            if pending.contains(&Request::Stop) {
+                return;
+            }
+            let commands: Vec<Request> =
+                pending.iter().copied().filter(|request| *request != Request::Refresh).collect();
+            if commands.is_empty()
+                && !pending.is_empty()
+                && let Some(left) = refresh_delay(self.published.elapsed())
+            {
+                wait = left;
+                continue;
+            }
+            for request in &commands {
                 let remembered = remembered_bus(self.remembered.as_deref(), &self.listed);
                 perform(self.connection, self.last.as_ref(), remembered, *request);
             }
             self.publish();
-            wait = if pending.is_empty() { SCAN_INTERVAL } else { SETTLE_DELAY };
+            wait = if commands.is_empty() { self.idle_wait() } else { SETTLE_DELAY };
         }
     }
 
     fn publish(&mut self) {
+        self.published = std::time::Instant::now();
         let (track, listed) = choose(self.connection, self.last.as_ref());
         let track = track.map(|mut track| {
             describe(self.connection, &mut track, self.last.as_ref(), &mut self.described);
@@ -420,6 +487,33 @@ mod tests {
         handle.seek(0.5);
         let received: Vec<Request> = inbox.try_iter().collect();
         assert_eq!(received, vec![Request::Command(Command::PlayPause), Request::Seek(0.5)]);
+    }
+
+    #[test]
+    fn players_are_polled_only_while_one_plays_or_their_signals_cannot_be_heard() {
+        assert_eq!(scan_wait(true, true), SCAN_INTERVAL, "a playing track moves without any signal");
+        assert_eq!(scan_wait(false, true), IDLE_SCAN, "signals say when a paused or absent player changes");
+        assert_eq!(scan_wait(false, false), SCAN_INTERVAL, "without signals the old polling stays");
+        for rule in SIGNAL_RULES {
+            assert!(zbus::MatchRule::try_from(rule).is_ok(), "{rule}");
+        }
+    }
+
+    #[test]
+    fn a_burst_of_player_signals_is_read_once_per_spacing() {
+        assert_eq!(refresh_delay(Duration::ZERO), Some(REFRESH_SPACING));
+        assert_eq!(refresh_delay(REFRESH_SPACING / 3), Some(REFRESH_SPACING / 3 * 2));
+        assert_eq!(refresh_delay(REFRESH_SPACING), None);
+        assert_eq!(refresh_delay(IDLE_SCAN), None);
+    }
+
+    #[test]
+    fn dropping_the_handle_stops_the_worker_even_while_the_signal_thread_holds_a_sender() {
+        let (requests, inbox) = mpsc::channel();
+        let listener = requests.clone();
+        drop(MediaHandle { requests });
+        assert_eq!(inbox.try_iter().collect::<Vec<_>>(), vec![Request::Stop]);
+        assert!(listener.send(Request::Refresh).is_ok(), "the channel itself stays open");
     }
 
     #[test]
