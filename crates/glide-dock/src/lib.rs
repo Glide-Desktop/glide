@@ -123,6 +123,7 @@ const TOOLTIP_HEIGHT: i32 = 26;
 const TOOLTIP_PAD_X: i32 = glide_theme::spacing::SP3;
 const TOOLTIP_GAP: i32 = glide_theme::spacing::SP2;
 const TOOLTIP_RADIUS: f32 = glide_theme::shape::R2;
+const TOOLTIP_RISE: f64 = 6.0;
 const DRAG_THRESHOLD: f64 = 6.0;
 const DRAG_LIFT: i32 = 8;
 const DROP_FRAME_GRACE: Duration = Duration::from_millis(50);
@@ -378,7 +379,8 @@ fn push_departures<R: ShellRenderer>(
         let rect = Rectangle::new(Point::from((gone.x, first.loc.y)), first.size);
         let mut at = HoverGeometry::for_tile(theme, rect, false, false, 0.0, 0.0);
         at.position.y += ARRIVAL_DROP * progress;
-        frame.push_tile(gone.tile.get(&frame.output_scale), &at, opacity * (1.0 - progress) as f32);
+        let present = glide_theme::motion::assist(1.0 - progress) as f32;
+        frame.push_tile(gone.tile.get(&frame.output_scale), &at, opacity * present);
     }
 }
 
@@ -2096,7 +2098,7 @@ fn push_tiles<R: ShellRenderer>(
     for (&index, rect) in order.iter().zip(drawn_rects) {
         let app_id = &dock.items[index].app_id;
         let arrive = arrival(&dock.arrivals, app_id, now);
-        let opacity = opacity * arrive as f32;
+        let opacity = opacity * glide_theme::motion::assist(arrive) as f32;
         let press = layer_alpha(&dock.press_layers, app_id, t1()).clamp(0.0, 1.0);
         let hover_alpha = layer_alpha(&dock.hover_layers, app_id, t1()) * (1.0 - press);
         let run = dock.run_alpha(app_id);
@@ -2205,7 +2207,8 @@ fn push_tooltip<R: ShellRenderer>(
     if progress <= 0.0 {
         return;
     }
-    let alpha = unit_alpha(progress);
+    let alpha = unit_alpha(glide_theme::motion::assist(progress));
+    let travel = TOOLTIP_RISE * (1.0 - progress);
     let Some(anchor) =
         order.iter().position(|index| *index == tooltip.index).and_then(|slot| item_rects.get(slot).copied())
     else {
@@ -2225,7 +2228,8 @@ fn push_tooltip<R: ShellRenderer>(
     let width = tooltip_width(painter, &label);
     let position =
         Point::from((tooltip_x(anchor, width, area), anchor.loc.y - theme.hover_lift - TOOLTIP_GAP - TOOLTIP_HEIGHT));
-    frame.push(buffer, position.to_f64(), alpha, None);
+    let risen = |at: Point<i32, Logical>| at.to_f64() + Point::from((0.0, travel));
+    frame.push(buffer, risen(position), alpha, None);
 
     let shadow = cached(&mut dock.rasters.tooltip_shadow, (width, scale), || {
         glide_shell::popup_menu::draw_elevation(
@@ -2238,7 +2242,7 @@ fn push_tooltip<R: ShellRenderer>(
     });
     let margin = glide_shell::popup_menu::shadow_margin();
     let pos = Point::from((position.x - margin, position.y - margin));
-    frame.push(shadow, pos.to_f64(), alpha, None);
+    frame.push(shadow, risen(pos), alpha, None);
 }
 
 fn tooltip_width(painter: &glide_paint::Painter, title: &str) -> i32 {
@@ -2374,7 +2378,7 @@ impl MenuPlacement {
             )),
             rise: f64::from(MENU_RISE) * (1.0 - progress),
             scale: MENU_SCALE_FROM + (1.0 - MENU_SCALE_FROM) * progress,
-            alpha: progress as f32,
+            alpha: glide_theme::motion::assist(progress) as f32,
         }
     }
 
@@ -2735,6 +2739,16 @@ fn draw_run_indicator(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_menu_is_opaque_long_before_it_stops_moving_and_fades_only_at_the_end_of_its_exit() {
+        let rect = Rectangle::new(Point::from((100, 100)), Size::from((200, 120)));
+        let halfway = MenuPlacement::new(rect, 0.5);
+        assert!((halfway.alpha - 1.0).abs() < f32::EPSILON, "opacity is the shorter track");
+        assert!(halfway.rise > 0.0 && halfway.scale < 1.0, "the motion is still running");
+        assert!(MenuPlacement::new(rect, 0.2).alpha < 1.0);
+        assert!(MenuPlacement::new(rect, 0.0).alpha.abs() < f32::EPSILON);
+    }
 
     fn item_config(name: &str, app_id: Option<&str>) -> DockItemConfig {
         DockItemConfig {

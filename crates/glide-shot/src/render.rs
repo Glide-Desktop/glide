@@ -207,7 +207,7 @@ impl Cache {
     pub fn set_hover(&mut self, control: Option<Control>) -> bool {
         let changed = self.hover.set_with(control, glide_theme::motion::t1());
         if changed {
-            self.hover_since = control.map(|_| Instant::now());
+            self.hover_since = control.map(|_| glide_ui::clock::now());
         }
         changed
     }
@@ -223,7 +223,8 @@ impl Cache {
         let layers = glide_theme::motion::t1();
         let scene = glide_theme::motion::t2();
         let tip_pending = self.hover_since.is_some_and(|since| {
-            since.elapsed() < glide_theme::component::TOOLTIP_DELAY + layers && tip_text(self.hover.target()).is_some()
+            glide_ui::clock::since(since) < glide_theme::component::TOOLTIP_DELAY + layers
+                && tip_text(self.hover.target()).is_some()
         });
         let shown = [&self.bar_shown, &self.badge_shown, &self.handles_shown];
         self.hover.is_animating(layers)
@@ -547,14 +548,15 @@ fn render_bar<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &Shot, c
         if visible
             && let Some(control) = cache.hover.target()
             && let Some(text) = tip_text(Some(control))
-            && cache.hover_since.is_some_and(|since| since.elapsed() >= glide_theme::component::TOOLTIP_DELAY)
+            && let Some(hovered) = cache.hover_since.map(glide_ui::clock::since)
+            && hovered >= glide_theme::component::TOOLTIP_DELAY
             && let Some(item) = bar.item(control)
         {
-            let since = cache.hover_since.map_or(0.0, |since| {
-                let fraction = since.elapsed().saturating_sub(glide_theme::component::TOOLTIP_DELAY).as_secs_f64()
+            let since = {
+                let fraction = hovered.saturating_sub(glide_theme::component::TOOLTIP_DELAY).as_secs_f64()
                     / glide_theme::motion::t1().as_secs_f64().max(1e-6);
                 glide_theme::motion::ease_out(fraction.min(1.0))
-            });
+            };
             let key = glide_theme::Revision::new().u64(base_key).str(&text).finish();
             let tip = cache.tip.entry(output_scale).or_insert_with(|| Keyed {
                 key: 0,

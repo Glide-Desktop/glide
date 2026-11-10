@@ -336,7 +336,7 @@ pub fn render<R: ShellRenderer>(
     if progress <= 0.0 {
         return drawn;
     }
-    let alpha = progress as f32;
+    let alpha = glide_theme::motion::assist(progress) as f32;
     let rise = (RISE * (1.0 - progress)).round() as i32;
     let shift = |at: Point<i32, Logical>| Point::from((at.x, at.y + rise));
 
