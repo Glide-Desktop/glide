@@ -539,7 +539,7 @@ mod tests {
             place(&panel_canvas(&painter, &theme, &preview, &layout, scale).expect("panel"), origin);
             for (index, thumb) in layout.thumbs.iter().enumerate() {
                 let mut window = Canvas::new(thumb.content.size.w, thumb.content.size.h, scale).expect("window");
-                window.panel(theme.background, 0.0);
+                window.panel(theme.background, THUMB_RADIUS);
                 place(&window, thumb.content.loc);
                 if index == 0 {
                     place(&ring_canvas(thumb.frame.size, &theme, scale).expect("ring"), thumb.frame.loc);
