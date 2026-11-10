@@ -1970,6 +1970,22 @@ impl DockMenuItem {
     pub const fn is_danger(self) -> bool {
         matches!(self, Self::Quit)
     }
+
+    #[must_use]
+    pub const fn glyph(self) -> glide_shell::popup_menu::MenuGlyph {
+        use glide_shell::popup_menu::MenuGlyph;
+        match self {
+            Self::Window(_) => MenuGlyph::Window,
+            Self::ShowAllWindows => MenuGlyph::Windows,
+            Self::Open => MenuGlyph::Open,
+            Self::NewWindow => MenuGlyph::NewWindow,
+            Self::Action(_) | Self::Quick(_) => MenuGlyph::Action,
+            Self::Pin => MenuGlyph::Pin,
+            Self::Unpin => MenuGlyph::Unpin,
+            Self::Hide => MenuGlyph::Hide,
+            Self::Quit => MenuGlyph::Quit,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1993,6 +2009,7 @@ impl DockMenu {
                 label: entry.label.clone().into(),
                 danger: entry.danger,
                 muted: entry.muted,
+                glyph: Some(entry.item.glyph()),
             })
             .collect()
     }

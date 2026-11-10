@@ -44,11 +44,57 @@ impl MenuColors {
     }
 }
 
+pub const GLYPH: i32 = 16;
+pub const GLYPH_GAP: i32 = glide_theme::spacing::SP2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MenuGlyph {
+    Window,
+    Windows,
+    Open,
+    NewWindow,
+    Action,
+    Pin,
+    Unpin,
+    Hide,
+    Quit,
+}
+
+impl MenuGlyph {
+    const fn body(self) -> &'static str {
+        match self {
+            Self::Window => "<rect x='3.5' y='5' width='17' height='14' rx='2.5'/><path d='M3.5 9.5h17'/>",
+            Self::Windows => {
+                "<rect x='3' y='8' width='13' height='11' rx='2'/><path d='M8 8V7a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3'/>"
+            }
+            Self::Open => {
+                "<path d='M14 4.5h5.5V10'/><path d='M19.5 4.5 11 13'/><path d='M18 14v3.5a2 2 0 0 1-2 2H6.5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2H10'/>"
+            }
+            Self::NewWindow => "<rect x='3.5' y='5' width='17' height='14' rx='2.5'/><path d='M12 9v6M9 12h6'/>",
+            Self::Action => "<path d='M13 3.5 5.5 13.5H12l-1 7 7.5-10H12z'/>",
+            Self::Pin => "<path d='M9 4.5h6l-.8 5.2 3 3.3H6.8l3-3.3z'/><path d='M12 13v6.5'/>",
+            Self::Unpin => {
+                "<path d='M9 4.5h6l-.8 5.2 3 3.3H6.8l3-3.3z'/><path d='M12 13v6.5'/><path d='M4.5 4.5l15 15'/>"
+            }
+            Self::Hide => "<path d='M5 12h14'/>",
+            Self::Quit => "<path d='M6.5 6.5l11 11M17.5 6.5l-11 11'/>",
+        }
+    }
+
+    fn svg(self) -> String {
+        format!(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'>{}</svg>",
+            self.body()
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MenuRow {
     pub label: std::borrow::Cow<'static, str>,
     pub danger: bool,
     pub muted: bool,
+    pub glyph: Option<MenuGlyph>,
 }
 
 #[must_use]
@@ -98,9 +144,17 @@ pub fn draw(
     painter: &glide_paint::Painter, colors: &MenuColors, title: &str, rows: &[MenuRow], hovered: Option<usize>,
     scale: i32,
 ) -> Option<MemoryRenderBuffer> {
+    Some(paint(painter, colors, title, rows, hovered, scale)?.finish())
+}
+
+fn paint(
+    painter: &glide_paint::Painter, colors: &MenuColors, title: &str, rows: &[MenuRow], hovered: Option<usize>,
+    scale: i32,
+) -> Option<Canvas<'static>> {
     let (w, h) = (WIDTH, height(rows.len()));
     let mut c = Canvas::popover((w, h), scale.max(1), RADIUS, colors.background, colors.border)?;
     let (left, right) = (PADDING + ROW_PAD_X, w - PADDING - ROW_PAD_X);
+    let text_left = if rows.iter().any(|row| row.glyph.is_some()) { left + GLYPH + GLYPH_GAP } else { left };
     let head = (left, right, PADDING, PADDING + HEADER_HEIGHT);
     c.text(painter, head, TextAlign::Left, title, colors.text_muted, &glide_theme::TextStyle::CAP);
     let sp1 = glide_theme::spacing::SP1;
@@ -118,10 +172,15 @@ pub fn draw(
         } else {
             colors.text
         };
-        let band = (left, right, top, top + ROW_HEIGHT);
+        if let Some(glyph) = item.glyph
+            && let Some(pixels) = glide_paint::render_svg_tinted(glyph.svg().as_bytes(), GLYPH * c.scale, color)
+        {
+            c.blit_square(&pixels, GLYPH, (left, top + (ROW_HEIGHT - GLYPH) / 2));
+        }
+        let band = (text_left, right, top, top + ROW_HEIGHT);
         c.text(painter, band, TextAlign::Left, &item.label, color, &glide_theme::TextStyle::MENU_ITEM);
     }
-    Some(c.finish())
+    Some(c)
 }
 
 #[must_use]
@@ -185,6 +244,73 @@ mod tests {
 
         let squeezed = Rectangle::new(Point::from((600, 40)), Size::from((56, 56)));
         assert_eq!(rows_fitting_above(squeezed, area), 0);
+    }
+
+    fn row(label: &'static str, glyph: Option<MenuGlyph>) -> MenuRow {
+        MenuRow { label: label.into(), danger: glyph == Some(MenuGlyph::Quit), muted: false, glyph }
+    }
+
+    #[test]
+    fn every_glyph_renders_and_a_row_with_one_paints_ink_in_its_leading_slot() {
+        let painter = glide_paint::Painter::new(14.0, None);
+        let theme = glide_theme::DockTheme::default();
+        let colors = MenuColors::from_dock(&theme);
+        for glyph in [
+            MenuGlyph::Window,
+            MenuGlyph::Windows,
+            MenuGlyph::Open,
+            MenuGlyph::NewWindow,
+            MenuGlyph::Action,
+            MenuGlyph::Pin,
+            MenuGlyph::Unpin,
+            MenuGlyph::Hide,
+            MenuGlyph::Quit,
+        ] {
+            let plain = paint(&painter, &colors, "App", &[row("", None)], None, 1).expect("canvas");
+            let drawn = paint(&painter, &colors, "App", &[row("", Some(glyph))], None, 1).expect("canvas");
+            assert_ne!(plain.buf, drawn.buf, "{glyph:?} leaves a mark");
+        }
+    }
+
+    #[test]
+    #[ignore = "writes preview PNGs to $GLIDE_MENU_PREVIEW"]
+    fn preview() {
+        let Some(dir) = std::env::var_os("GLIDE_MENU_PREVIEW") else {
+            return;
+        };
+        let painter = glide_paint::Painter::new(14.0, None);
+        let entries = [
+            ("Inbox — Mail", MenuGlyph::Window),
+            ("Чернетка листа до команди", MenuGlyph::Window),
+            ("Показати всі вікна", MenuGlyph::Windows),
+            ("Нове вікно", MenuGlyph::NewWindow),
+            ("Нове приватне вікно", MenuGlyph::Action),
+            ("Відкріпити від дока", MenuGlyph::Unpin),
+            ("Сховати", MenuGlyph::Hide),
+            ("Завершити", MenuGlyph::Quit),
+        ];
+        for appearance in [glide_theme::Appearance::Dark, glide_theme::Appearance::Light] {
+            let tokens = glide_theme::Tokens::new(appearance, glide_theme::Accent::Blue);
+            let colors = MenuColors::from_dock(&glide_theme::DockTheme::from_tokens(&tokens));
+            let scale = 2;
+            let (gap, pad) = (24, 24);
+            let menu_h = height(entries.len());
+            let (w, h) = (pad * 2 + WIDTH * 2 + gap, pad * 2 + menu_h);
+            let mut sheet = Canvas::new(w, h, scale).expect("canvas");
+            let full = sheet.full();
+            sheet.fill(full, tokens.win_bg, 0.0);
+            for (column, with_glyphs) in [false, true].into_iter().enumerate() {
+                let rows: Vec<MenuRow> =
+                    entries.iter().map(|(label, glyph)| row(label, with_glyphs.then_some(*glyph))).collect();
+                let menu = paint(&painter, &colors, "Firefox", &rows, Some(3), scale).expect("menu");
+                let x = pad + i32::try_from(column).unwrap_or(0) * (WIDTH + gap);
+                sheet.blit(&menu.buf, rect(x, pad, WIDTH, menu_h));
+            }
+            let (pw, ph) = (u32::try_from(w * scale).unwrap_or(0), u32::try_from(h * scale).unwrap_or(0));
+            let png = crate::image::Image::from_bgra(pw, ph, sheet.buf).expect("image").png().expect("png");
+            let name = if appearance == glide_theme::Appearance::Dark { "menu-dark.png" } else { "menu-light.png" };
+            std::fs::write(std::path::Path::new(&dir).join(name), png).expect("write");
+        }
     }
 
     #[test]

@@ -640,6 +640,15 @@ impl LauncherMenuItem {
             Self::Unpin => t(Key::UnpinFromDock),
         }
     }
+
+    const fn glyph(self) -> crate::popup_menu::MenuGlyph {
+        use crate::popup_menu::MenuGlyph;
+        match self {
+            Self::Open => MenuGlyph::Open,
+            Self::Pin => MenuGlyph::Pin,
+            Self::Unpin => MenuGlyph::Unpin,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1962,7 +1971,12 @@ fn push_menu<R: ShellRenderer>(launcher: &mut Launcher, frame: &mut Frame<'_, R>
         let rows: Vec<_> = menu
             .items
             .iter()
-            .map(|item| crate::popup_menu::MenuRow { label: item.label().into(), danger: false, muted: false })
+            .map(|item| crate::popup_menu::MenuRow {
+                label: item.label().into(),
+                danger: false,
+                muted: false,
+                glyph: Some(item.glyph()),
+            })
             .collect();
         if let Some(buffer) =
             crate::popup_menu::draw(frame.painter, &frame.theme.menu, &key.0, &rows, None, output_scale)
