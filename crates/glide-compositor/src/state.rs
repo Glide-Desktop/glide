@@ -369,9 +369,25 @@ pub struct GlideState {
 }
 
 #[derive(Default)]
+pub struct WakeTimer {
+    deadline: Option<std::time::Instant>,
+    token: Option<smithay::reexports::calloop::RegistrationToken>,
+}
+
+impl WakeTimer {
+    fn waits_for(&self, deadline: Option<std::time::Instant>) -> bool {
+        self.deadline == deadline
+    }
+
+    const fn fired(&mut self) {
+        self.token = None;
+    }
+}
+
+#[derive(Default)]
 pub struct SessionServices {
     pub presenter: Option<((f64, f64), std::time::Instant, smithay::output::Output)>,
-    pub wake_timer: Option<(std::time::Instant, smithay::reexports::calloop::RegistrationToken)>,
+    pub wake_timer: WakeTimer,
     pub logind: Option<crate::logind::Handle>,
     pub screensaver: Option<crate::screensaver::Handle>,
     pub shell_bus: Option<crate::shell_bus::Handle>,
@@ -1816,22 +1832,22 @@ impl GlideState {
         use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
         let shot = self.session.shot.as_ref().and_then(|shot| shot.cache.next_wake());
         let wanted = [self.topbar.next_wake(), self.dock.next_wake(), shot].into_iter().flatten().min();
-        if self.session.wake_timer.as_ref().map(|(at, _)| *at) == wanted {
+        if self.session.wake_timer.waits_for(wanted) {
             return;
         }
-        if let Some((_, token)) = self.session.wake_timer.take() {
+        if let Some(token) = std::mem::take(&mut self.session.wake_timer).token {
             self.loop_handle.remove(token);
         }
         let Some(at) = wanted else {
             return;
         };
         let armed = self.loop_handle.insert_source(Timer::from_deadline(at), |_, (), state| {
-            state.session.wake_timer = None;
+            state.session.wake_timer.fired();
             state.queue_redraw();
             TimeoutAction::Drop
         });
         match armed {
-            Ok(token) => self.session.wake_timer = Some((at, token)),
+            Ok(token) => self.session.wake_timer = WakeTimer { deadline: Some(at), token: Some(token) },
             Err(err) => tracing::warn!(?err, "failed to arm the shell wake timer"),
         }
     }
@@ -4708,6 +4724,22 @@ pub fn auto_output_scale(physical_mm: (i32, i32), mode_px: (i32, i32)) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wake_deadline_that_fired_is_not_armed_again_while_nothing_redraws_its_owner() {
+        let due = std::time::Instant::now();
+        let mut timer = WakeTimer::default();
+        assert!(timer.waits_for(None), "nothing to arm at rest");
+        assert!(!timer.waits_for(Some(due)), "a new deadline is armed");
+        timer.deadline = Some(due);
+        timer.fired();
+        assert!(
+            timer.waits_for(Some(due)),
+            "a bar that is not drawn keeps its old deadline and must not spin the loop"
+        );
+        assert!(!timer.waits_for(Some(due + std::time::Duration::from_secs(1))), "the next deadline is armed");
+        assert!(!timer.waits_for(None), "and a withdrawn one is forgotten");
+    }
 
     #[test]
     fn show_desktop_returns_focus_to_the_most_recent_of_the_hidden_windows() {
