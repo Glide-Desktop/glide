@@ -658,8 +658,8 @@ pub fn relative_label(lang: Lang, minutes: u64, now: Option<LocalDay>, then: Opt
         text(Key::Yesterday).to_string()
     } else {
         match lang {
-            Lang::Uk => format!("{} {}", then.day, MONTHS_UK[then.month0]),
-            Lang::En => format!("{} {}", MONTHS_EN[then.month0], then.day),
+            Lang::Uk => format!("{} {}", then.day, MONTHS_UK[then.month0 % 12]),
+            Lang::En => format!("{} {}", MONTHS_EN[then.month0 % 12], then.day),
         }
     }
 }
@@ -807,6 +807,13 @@ mod tests {
         let minutes = 9 * 60 + 24 * 60 + 4 * 60;
         assert_eq!(relative_label(Lang::Uk, minutes, now, then), "12 бер");
         assert_eq!(relative_label(Lang::En, minutes, now, then), "Mar 12");
+    }
+
+    #[test]
+    fn a_month_past_december_wraps_instead_of_panicking() {
+        let now = Some(day(9 * 60, 2, 14));
+        let then = Some(day(20 * 60, 12, 3));
+        assert_eq!(relative_label(Lang::En, 5 * 24 * 60, now, then), "Jan 3");
     }
 
     #[test]
