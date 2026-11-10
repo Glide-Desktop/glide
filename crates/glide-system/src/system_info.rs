@@ -59,13 +59,17 @@ fn refresh(status: &mut SystemStatus, topics: Topics, privacy: &mut PrivacySourc
     {
         battery.profile = status.power_profile;
     }
+    let radios = if topics.intersects(Topics::RADIOS | Topics::NETWORK | Topics::BLUETOOTH) {
+        read_radios(Path::new(RFKILL))
+    } else {
+        Vec::new()
+    };
     if topics.contains(Topics::RADIOS) {
-        status.airplane = airplane_from(&read_radios(Path::new("/sys/class/rfkill")));
+        status.airplane = airplane_from(&radios);
     }
     if topics.intersects(Topics::NETWORK | Topics::RADIOS) {
-        let rfkill = read_radios(Path::new(RFKILL));
         let devices = read_network_devices(Path::new(NET));
-        status.wifi_available = devices.wifi || has_radio(&rfkill, "wlan");
+        status.wifi_available = devices.wifi || has_radio(&radios, "wlan");
         status.ethernet_available = devices.ethernet;
         status.ethernet_connected = devices.ethernet_connected;
         if topics.contains(Topics::NETWORK) {
@@ -74,8 +78,7 @@ fn refresh(status: &mut SystemStatus, topics: Topics, privacy: &mut PrivacySourc
         }
     }
     if topics.intersects(Topics::BLUETOOTH | Topics::RADIOS) {
-        status.bluetooth_available =
-            bluetooth_available(Path::new("/sys/class/bluetooth"), &read_radios(Path::new(RFKILL)));
+        status.bluetooth_available = bluetooth_available(Path::new("/sys/class/bluetooth"), &radios);
         let bluez = read_bluez();
         status.bluetooth_on = status.bluetooth_available && read_bluetooth(bluez);
         status.bluetooth_connected = status.bluetooth_on && bluez.is_some_and(|bluez| bluez.connected);
@@ -1391,13 +1394,12 @@ fn gsettings_set(key: &str, value: &str) {
     gsettings_set_in(INTERFACE, key, value);
 }
 
+pub(crate) const APPEARANCE_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn gsettings_set_in(schema: &str, key: &str, value: &str) {
-    let _ = Command::new("gsettings")
-        .args(["set", schema, key, value])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    if crate::spawn::run_with_timeout("gsettings", &["set", schema, key, value], APPEARANCE_TIMEOUT).is_none() {
+        tracing::debug!(schema, key, "gsettings did not answer in time");
+    }
 }
 
 pub fn sync_desktop_appearance(wanted: DesktopAppearance) {
@@ -1441,9 +1443,7 @@ fn latest<T>(first: T, queue: &std::sync::mpsc::Receiver<T>) -> T {
 fn apply_desktop_appearance(wanted: &DesktopAppearance) {
     gsettings_set("color-scheme", gnome_color_scheme(wanted.appearance));
     gsettings_set("accent-color", gnome_accent(wanted.accent));
-    let current = Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
-        .output()
+    let current = crate::spawn::run_with_timeout("gsettings", &["get", INTERFACE, "gtk-theme"], APPEARANCE_TIMEOUT)
         .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
         .unwrap_or_default();
     let theme = crate::theme_export::gtk3_theme(&current, wanted.appearance, wanted.toolkits)
@@ -1468,13 +1468,10 @@ fn apply_desktop_appearance(wanted: &DesktopAppearance) {
         environment.push(format!("QT_STYLE_OVERRIDE={style}"));
     }
     if !environment.is_empty() {
-        let _ = Command::new("dbus-update-activation-environment")
-            .arg("--systemd")
-            .args(&environment)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        let args: Vec<&str> = std::iter::once("--systemd").chain(environment.iter().map(String::as_str)).collect();
+        if crate::spawn::run_with_timeout("dbus-update-activation-environment", &args, APPEARANCE_TIMEOUT).is_none() {
+            tracing::debug!("the activation environment was not updated in time");
+        }
     }
     tracing::info!(
         appearance = ?wanted.appearance,

@@ -106,23 +106,14 @@ pub fn replaces_scheme(current: &str) -> bool {
 }
 
 fn adopt_scheme(schema: &str, key: &str) {
-    let Ok(output) = std::process::Command::new("gsettings")
-        .args(["get", schema, key])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-    else {
+    let run = |args: &[&str]| crate::spawn::run_with_timeout("gsettings", args, crate::system_info::APPEARANCE_TIMEOUT);
+    let Some(output) = run(&["get", schema, key]) else {
         return;
     };
     if !output.status.success() || !replaces_scheme(&String::from_utf8_lossy(&output.stdout)) {
         return;
     }
-    let _ = std::process::Command::new("gsettings")
-        .args(["set", schema, key, "'glide'"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    let _ = run(&["set", schema, key, "'glide'"]);
 }
 
 fn write(path: &Path, contents: &str) {
@@ -315,15 +306,12 @@ fn share_with_flatpak(data: &Path) {
     if overrides.contains("xdg-config/gtk-4.0") && overrides.contains("xdg-config/gtk-3.0") {
         return;
     }
-    let status = std::process::Command::new("flatpak")
-        .args(["override", "--user", "--filesystem=xdg-config/gtk-4.0:ro", "--filesystem=xdg-config/gtk-3.0:ro"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    if let Ok(status) = status
-        && status.success()
-    {
+    let shared = crate::spawn::run_with_timeout(
+        "flatpak",
+        &["override", "--user", "--filesystem=xdg-config/gtk-4.0:ro", "--filesystem=xdg-config/gtk-3.0:ro"],
+        crate::system_info::APPEARANCE_TIMEOUT,
+    );
+    if shared.is_some_and(|output| output.status.success()) {
         tracing::info!("shared the exported GTK theme with Flatpak apps");
     }
 }
