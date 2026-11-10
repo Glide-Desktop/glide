@@ -85,6 +85,7 @@ struct State {
     drag: Option<WlDataOffer>,
     hover: (f32, f32),
     name: &'static str,
+    window: wl_surface::WlSurface,
 }
 
 #[must_use]
@@ -110,14 +111,14 @@ fn run(handles: Handles, events: UnboundedSender<Dropped>, name: &'static str) -
     // SAFETY: `surface` is the live `wl_surface` of that same window, owned by the toolkit.
     let surface_id = unsafe { ObjectId::from_ptr(wl_surface::WlSurface::interface(), handles.surface() as *mut _) }
         .map_err(|error| error.to_string())?;
-    wl_surface::WlSurface::from_id(&connection, surface_id).map_err(|error| error.to_string())?;
+    let window = wl_surface::WlSurface::from_id(&connection, surface_id).map_err(|error| error.to_string())?;
     let (globals, mut queue): (_, EventQueue<State>) =
         registry_queue_init(&connection).map_err(|error| error.to_string())?;
     let qh = queue.handle();
     let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=7, ()).map_err(|error| error.to_string())?;
     let manager: WlDataDeviceManager = globals.bind(&qh, 3..=3, ()).map_err(|error| error.to_string())?;
     manager.get_data_device(&seat, &qh, ());
-    let mut state = State { events, connection, drag: None, hover: (0.0, 0.0), name };
+    let mut state = State { events, connection, drag: None, hover: (0.0, 0.0), name, window };
     loop {
         queue.blocking_dispatch(&mut state).map_err(|error| error.to_string())?;
         if state.events.is_closed() {
@@ -202,7 +203,15 @@ impl Dispatch<WlDataDevice, ()> for State {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_data_device::Event::Enter { serial, x, y, id, .. } => {
+            wl_data_device::Event::Enter { serial, surface, x, y, id } => {
+                if surface != state.window {
+                    if let Some(offer) = id {
+                        offer.accept(serial, None);
+                        offer.destroy();
+                    }
+                    state.drag = None;
+                    return;
+                }
                 state.hover = (x as f32, y as f32);
                 if let Some(offer) = &id {
                     let mime = wanted(&mimes(offer));
