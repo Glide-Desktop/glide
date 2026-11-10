@@ -51,6 +51,17 @@ struct XClicker {
     root: Window,
 }
 
+fn held_mask(button: u8) -> KeyButMask {
+    match button {
+        1 => KeyButMask::BUTTON1,
+        2 => KeyButMask::BUTTON2,
+        3 => KeyButMask::BUTTON3,
+        4 => KeyButMask::BUTTON4,
+        5 => KeyButMask::BUTTON5,
+        _ => KeyButMask::default(),
+    }
+}
+
 impl XClicker {
     fn send(&self, window: Window, click: Click) -> anyhow::Result<()> {
         let half = i16::try_from(ICON_SIZE / 2).unwrap_or(0);
@@ -71,15 +82,11 @@ impl XClicker {
             state: KeyButMask::default(),
             same_screen: true,
         };
-        let held = match button {
-            1 => KeyButMask::BUTTON1,
-            2 => KeyButMask::BUTTON2,
-            3 => KeyButMask::BUTTON3,
-            4 => KeyButMask::BUTTON4,
-            _ => KeyButMask::BUTTON5,
+        let release = ButtonReleaseEvent {
+            response_type: x11rb::protocol::xproto::BUTTON_RELEASE_EVENT,
+            state: held_mask(button),
+            ..press
         };
-        let release =
-            ButtonReleaseEvent { response_type: x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, state: held, ..press };
         self.conn.send_event(false, window, EventMask::BUTTON_PRESS, press)?;
         self.conn.send_event(false, window, EventMask::BUTTON_RELEASE, release)?;
         self.conn.flush()?;
@@ -484,5 +491,12 @@ mod tests {
         assert!(xembed_mapped(Some(&[0, 1])));
         assert!(!xembed_mapped(Some(&[0, 0])));
         assert!(xembed_mapped(Some(&[0])), "a truncated property is not a request to hide");
+    }
+
+    #[test]
+    fn a_horizontal_wheel_release_holds_no_button_because_x_has_no_mask_for_buttons_six_and_seven() {
+        assert_eq!(held_mask(Click::ScrollDown.button()), KeyButMask::BUTTON5);
+        assert_eq!(held_mask(Click::ScrollLeft.button()), KeyButMask::default());
+        assert_eq!(held_mask(Click::ScrollRight.button()), KeyButMask::default());
     }
 }
