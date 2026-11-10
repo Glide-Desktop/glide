@@ -336,23 +336,34 @@ fn publish_hints(notes: mpsc::Receiver<Note>) {
                 .inspect_err(|err| tracing::warn!(?err, "cannot reach the system bus to publish session hints"))
                 .ok();
         }
-        let Some(connection) = connection.as_ref() else {
+        let Some(bus) = connection.as_ref() else {
             continue;
         };
-        let proxy = match Proxy::new(connection, LOGIN1, path.as_str(), SESSION) {
+        let proxy = match Proxy::new(bus, LOGIN1, path.as_str(), SESSION) {
             Ok(proxy) => proxy,
             Err(err) => {
                 tracing::warn!(?err, "cannot reach the logind session; a restart while locked will come back unlocked");
                 continue;
             }
         };
+        let mut lost = false;
         for hint in pending.drain() {
             let (method, on) = hint.call();
             if let Err(err) = proxy.call_method(method, &(on,)) {
+                lost |= connection_lost(&err);
                 tracing::warn!(?err, ?hint, "logind did not take a session hint");
             }
         }
+        drop(proxy);
+        if lost {
+            connection = None;
+            pending = known;
+        }
     }
+}
+
+fn connection_lost(err: &zbus::Error) -> bool {
+    matches!(err, zbus::Error::InputOutput(_))
 }
 
 fn going_to_sleep(sink: &dyn Fn(LoginEvent), sleep: &Gate) {
@@ -559,6 +570,14 @@ mod tests {
         assert!(pending.drain().is_empty(), "a drained hint is not sent twice");
         let mut again = known;
         assert_eq!(again.drain().len(), 2, "a new session is told the known state again");
+    }
+
+    #[test]
+    fn only_a_broken_bus_connection_is_opened_again() {
+        let closed =
+            zbus::Error::InputOutput(std::sync::Arc::new(std::io::Error::from(std::io::ErrorKind::BrokenPipe)));
+        assert!(connection_lost(&closed));
+        assert!(!connection_lost(&zbus::Error::Failure("logind refused".into())), "a refusal keeps the connection");
     }
 
     #[test]
