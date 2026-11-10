@@ -250,8 +250,14 @@ fn track_from(bus: &str, player: &Properties) -> Option<Track> {
     })
 }
 
-fn describe(connection: &zbus::blocking::Connection, track: &mut Track, last: Option<&Track>) {
-    if let Some(last) = last.filter(|last| last.bus == track.bus && !last.desktop_entry.is_empty()) {
+fn already_described<'a>(last: Option<&'a Track>, bus: &str, described: Option<&str>) -> Option<&'a Track> {
+    last.filter(|last| last.bus == bus && described == Some(bus))
+}
+
+fn describe(
+    connection: &zbus::blocking::Connection, track: &mut Track, last: Option<&Track>, described: &mut Option<String>,
+) {
+    if let Some(last) = already_described(last, &track.bus, described.as_deref()) {
         track.identity.clone_from(&last.identity);
         track.desktop_entry.clone_from(&last.desktop_entry);
         return;
@@ -259,6 +265,7 @@ fn describe(connection: &zbus::blocking::Connection, track: &mut Track, last: Op
     if let Some(root) = properties(connection, &track.bus, ROOT_INTERFACE) {
         track.identity = identity_or_bus(&string_of(&root, "Identity"), &track.bus);
         track.desktop_entry = string_of(&root, "DesktopEntry");
+        *described = Some(track.bus.clone());
     }
 }
 
@@ -318,11 +325,20 @@ struct Worker<'a> {
     last: Option<Track>,
     remembered: Option<String>,
     listed: Vec<String>,
+    described: Option<String>,
 }
 
 impl<'a> Worker<'a> {
     fn new(connection: &'a zbus::blocking::Connection, sink: &'a Sink) -> Self {
-        Self { connection, sink, art: ArtFetcher::start(), last: None, remembered: None, listed: Vec::new() }
+        Self {
+            connection,
+            sink,
+            art: ArtFetcher::start(),
+            last: None,
+            remembered: None,
+            listed: Vec::new(),
+            described: None,
+        }
     }
 
     fn run(mut self, inbox: &mpsc::Receiver<Request>) {
@@ -347,7 +363,7 @@ impl<'a> Worker<'a> {
     fn publish(&mut self) {
         let (track, listed) = choose(self.connection, self.last.as_ref());
         let track = track.map(|mut track| {
-            describe(self.connection, &mut track, self.last.as_ref());
+            describe(self.connection, &mut track, self.last.as_ref(), &mut self.described);
             self.art.localise(&mut track.art_url);
             track
         });
@@ -376,6 +392,16 @@ fn update_for(previous: Option<&Track>, track: Option<&Track>) -> Option<MediaEv
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_player_without_a_desktop_entry_is_described_once_not_on_every_scan() {
+        let last = seekable_track();
+        assert!(last.desktop_entry.is_empty());
+        assert!(already_described(Some(&last), &last.bus, Some(&last.bus)).is_some());
+        assert!(already_described(Some(&last), &last.bus, None).is_none(), "the root was never read");
+        assert!(already_described(Some(&last), "org.mpris.MediaPlayer2.other", Some(&last.bus)).is_none());
+        assert!(already_described(None, &last.bus, Some(&last.bus)).is_none());
+    }
 
     fn seekable_track() -> Track {
         Track {
