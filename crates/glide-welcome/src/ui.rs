@@ -7,6 +7,7 @@ use crate::{Accent, DemoApp, Island, Network, Phone, Snap, Step, Theme, Welcome,
 
 const PHOTOS: [&str; 4] = ["Карпати на світанку", "Морський захід сонця", "Осінній ліс", "Затишна кав'ярня"];
 const CONTENT_SCROLL: &str = "glide-welcome-content";
+const QUICK_LOOK_STAGE: f32 = 288.0;
 
 fn photo_title(selected: Option<usize>) -> &'static str {
     selected.and_then(|index| PHOTOS.get(index)).copied().unwrap_or("Оберіть світлину ліворуч")
@@ -544,7 +545,6 @@ impl App for WelcomeApp {
         let header = row![
             glide_mark(paint, 28.0, glide_sdk::theme::R2),
             text("Glide", TextStyle::HEAD),
-            text("v0.8.2", TextStyle::MICRO),
             Space::new().width(Fill),
             stepper,
             Space::new().width(Fill),
@@ -1391,7 +1391,7 @@ impl WelcomeApp {
             let popup = anim::animate(1.0, anim::Speed::EXPAND, |_| container(popup).width(420))
                 .from(0.0)
                 .scale(|value| 0.9 + 0.1 * value);
-            stack![panels, container(popup).center(Fill)].into()
+            stack![container(panels).height(QUICK_LOOK_STAGE), container(popup).center(Fill)].into()
         } else {
             panels.into()
         };

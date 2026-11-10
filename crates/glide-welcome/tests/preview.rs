@@ -7,8 +7,12 @@ use glide_welcome::ui::{Message, WelcomeApp};
 use glide_welcome::{Island, Network, Snap, Step};
 
 #[test]
-#[ignore = "writes preview images to /tmp for visual inspection"]
+#[ignore = "writes preview PNGs to $GLIDE_WELCOME_PREVIEW"]
 fn preview_all_steps() {
+    let Some(dir) = std::env::var_os("GLIDE_WELCOME_PREVIEW") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
     glide_sdk::theme::motion::set_scale(0.0);
     glide_sdk::theme::use_ui_family(None);
     let cases = [(1120_u32, 760_u32), (850, 580), (720, 480)]
@@ -64,7 +68,7 @@ fn preview_all_steps() {
         let Renderer::Secondary(renderer) = &mut renderer else { unreachable!() };
         let rgba = renderer.screenshot(Size::new(width, height), 1.0, Color::BLACK);
         image::save_buffer(
-            format!("/tmp/glide-welcome-preview-{width}x{height}-{}.png", step.index()),
+            dir.join(format!("glide-welcome-{width}x{height}-{}.png", step.index())),
             &rgba,
             width,
             height,
