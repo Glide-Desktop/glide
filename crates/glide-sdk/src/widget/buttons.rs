@@ -79,7 +79,11 @@ pub fn button_style(paint: &Paint, tone: Tone, status: control::Status) -> contr
     let active = matches!(status, control::Status::Hovered | control::Status::Pressed);
     if status == control::Status::Disabled {
         return match tone {
-            Tone::Ghost | Tone::Outline => style::flat(Color::TRANSPARENT, paint.fg_4(), R2),
+            Tone::Ghost => style::flat(Color::TRANSPARENT, paint.fg_4(), R2),
+            Tone::Outline => control::Style {
+                border: Border { color: paint.line(), width: 1.0, radius: R2.into() },
+                ..style::flat(Color::TRANSPARENT, paint.fg_4(), R2)
+            },
             _ => style::flat(paint.fill_1(), paint.fg_4(), R2),
         };
     }
@@ -342,6 +346,16 @@ mod tests {
         for tone in [Tone::Accent, Tone::Tonal, Tone::Neutral, Tone::Outline, Tone::Ghost, Tone::Danger] {
             assert_eq!(button_style(&paint, tone, control::Status::Disabled).text_color, paint.fg_4());
         }
+    }
+
+    #[test]
+    fn a_disabled_outline_button_keeps_its_outline() {
+        let paint = Paint::new(Appearance::Dark, Accent::Blue);
+        let outline = button_style(&paint, Tone::Outline, control::Status::Disabled);
+        assert!((outline.border.width - 1.0).abs() < f32::EPSILON);
+        assert_eq!(outline.border.color, paint.line(), "fainter than the live hairline, still a shape");
+        let ghost = button_style(&paint, Tone::Ghost, control::Status::Disabled);
+        assert!(ghost.border.width.abs() < f32::EPSILON, "a ghost button has no shape to keep");
     }
 
     #[test]

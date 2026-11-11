@@ -643,6 +643,30 @@ fn bar<'a, M: 'a>(paint: &Paint, fraction: Option<f32>, paused: bool) -> Element
     onscreen(surface(Progress { paint: *paint, fraction, height: 6.0, paused }).width(iced::Fill).height(6))
 }
 
+struct EdgeStrip {
+    colour: Color,
+    radius: f32,
+}
+
+impl<M> canvas::Program<M> for EdgeStrip {
+    type State = Sketch;
+
+    fn draw(
+        &self, sketch: &Sketch, renderer: &Renderer, _: &Theme, bounds: Rectangle, _: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let [r, g, b, a] = colour_bits(self.colour);
+        sketch.draw(renderer, bounds.size(), &[r, g, b, a, self.radius], |frame| {
+            let radius = self.radius.min(bounds.height / 2.0);
+            let card = Size::new(bounds.width + 2.0 * radius, bounds.height);
+            frame.fill(&Path::rounded_rectangle(Point::ORIGIN, card, radius.into()), self.colour);
+        })
+    }
+}
+
+pub(crate) fn edge_strip<'a, M: 'a>(colour: Color, width: f32, radius: f32) -> Element<'a, M> {
+    surface(EdgeStrip { colour, radius }).width(width).height(iced::Fill).into()
+}
+
 struct Chevron {
     paint: Paint,
     open: bool,

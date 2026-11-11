@@ -123,14 +123,7 @@ pub fn noted_banner<'a, M: 'a>(
             .spacing(SP3)
             .align_y(Alignment::Center);
     let strip_colour = if severity == Severity::Neutral { paint.fg_4() } else { color };
-    let radius = iced::border::Radius::new(0).top_left(R2).bottom_left(R2);
-    let strip: Element<'a, M> = container(Space::new().width(3).height(Fill))
-        .height(Fill)
-        .style(move |_| container::Style {
-            border: Border { radius, ..Border::default() },
-            ..style::rounded(strip_colour, 0.0)
-        })
-        .into();
+    let strip: Element<'a, M> = super::controls::edge_strip(strip_colour, 3.0, R2);
     let body = container(content).padding(Padding::from([SP3, SP4]).left(SP4 + 3.0)).width(Fill);
     let banner = container(iced::widget::stack![body, container(strip).height(Fill)]).width(Fill).style(move |_| {
         container::Style { border: Border { color, width: 0.0, radius: R2.into() }, ..style::rounded(background, R2) }
