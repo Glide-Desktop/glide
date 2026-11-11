@@ -148,6 +148,13 @@ fn wm_class(conn: &RustConnection, window: Window) -> Option<String> {
     Some(String::from_utf8_lossy(class).into_owned())
 }
 
+pub const MAX_ICONS: usize = 64;
+
+#[must_use]
+pub const fn has_room(docked: usize) -> bool {
+    docked < MAX_ICONS
+}
+
 #[must_use]
 pub fn xembed_mapped(info: Option<&[u32]>) -> bool {
     info.and_then(|info| info.get(1)).is_none_or(|flags| flags & XEMBED_MAPPED != 0)
@@ -290,7 +297,7 @@ impl Host {
             }
             Event::DamageNotify(notice) => {
                 self.conn.damage_subtract(notice.damage, NONE, NONE)?;
-                self.refresh(notice.drawable);
+                self.repainted(notice.drawable);
             }
             Event::Error(err) => tracing::debug!(?err, "X11 request failed"),
             _ => {}
@@ -315,6 +322,10 @@ impl Host {
 
     fn dock(&mut self, window: Window) {
         if window == NONE || self.position(window).is_some() {
+            return;
+        }
+        if !has_room(self.icons.len()) {
+            tracing::warn!(window, "the X11 tray is full; a tray icon was not embedded");
             return;
         }
         if let Err(err) = self.embed(window) {
@@ -410,6 +421,24 @@ impl Host {
         pixmap::from_zpixmap(&reply.data, ICON_SIZE, ICON_SIZE, reply.depth)
     }
 
+    fn repainted(&mut self, window: Window) {
+        let Some(at) = self.position(window).filter(|&at| self.icons[at].exported.is_some()) else {
+            self.refresh(window);
+            return;
+        };
+        let known = &self.icons[at].look;
+        let Some(icon) = self.capture(window).filter(|icon| !icon.is_blank() && *icon != known.icon) else {
+            return;
+        };
+        let look = Look { icon, ..known.clone() };
+        self.icons[at].look = look.clone();
+        if let Some(exported) = self.icons[at].exported.as_ref()
+            && let Err(err) = exported.update(look)
+        {
+            tracing::debug!(window, "could not announce a tray icon change: {err}");
+        }
+    }
+
     fn refresh(&mut self, window: Window) {
         let Some(at) = self.position(window) else {
             return;
@@ -491,6 +520,12 @@ mod tests {
         assert!(xembed_mapped(Some(&[0, 1])));
         assert!(!xembed_mapped(Some(&[0, 0])));
         assert!(xembed_mapped(Some(&[0])), "a truncated property is not a request to hide");
+    }
+
+    #[test]
+    fn the_tray_takes_a_bounded_number_of_icons() {
+        assert!(has_room(0) && has_room(MAX_ICONS - 1));
+        assert!(!has_room(MAX_ICONS), "each icon is a bus connection and a slot in the top bar");
     }
 
     #[test]
