@@ -76,6 +76,7 @@ const BUSY_SPINNER: i32 = 18;
 const BUSY_GAP: i32 = 10;
 const TOAST_SPINNER: i32 = 14;
 const MAX_SPINNER_BUFFERS: usize = SPINNER_STEPS as usize * 6;
+const MAX_HIGHLIGHT_BUFFERS: usize = 8;
 const MAX_CACHED_ICONS: usize = 256;
 const SCRIM_ROWS: i32 = 64;
 const FAILLOCK_CONF: &str = "/etc/security/faillock.conf";
@@ -555,6 +556,7 @@ pub struct GreeterUi {
     layout: Option<Layout>,
     layers: HashMap<(Part, i32), Layer>,
     spinners: HashMap<(i32, i32, u32), MemoryRenderBuffer>,
+    highlights: HashMap<(i32, i32, i32), MemoryRenderBuffer>,
     icons: IconCache,
     scrim: MemoryRenderBuffer,
     dirty: bool,
@@ -680,6 +682,7 @@ impl GreeterUi {
             layout: None,
             layers: HashMap::new(),
             spinners: HashMap::new(),
+            highlights: HashMap::new(),
             icons: HashMap::new(),
             scrim: scrim_buffer(),
             dirty: true,
@@ -1225,6 +1228,57 @@ impl GreeterUi {
         amount as f32
     }
 
+    fn hover_strength(&self, hit: GreeterHit) -> f32 {
+        let level = self.hover_level();
+        let amount = if self.hover == hit {
+            level
+        } else if self.hover_from == hit {
+            1.0 - level
+        } else {
+            0.0
+        };
+        amount as f32
+    }
+
+    fn menu_highlights(&self, layout: &Layout) -> Vec<(Rect, f32)> {
+        let hit_of = |index: usize| match self.menu_shown {
+            MenuKind::Session => (index < self.sessions.len()).then_some(GreeterHit::SessionItem(index)),
+            MenuKind::Power => self
+                .power_actions()
+                .get(index)
+                .copied()
+                .filter(|action| self.arm != Some(*action))
+                .map(GreeterHit::Power),
+        };
+        layout
+            .menu_items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                let amount = self.hover_strength(hit_of(index)?);
+                (amount > 0.0).then_some((*row, amount))
+            })
+            .collect()
+    }
+
+    fn highlight_buffer(
+        &mut self, (w, h): (i32, i32), buffer_scale: i32, painter: &Painter,
+    ) -> Option<&MemoryRenderBuffer> {
+        let key = (w, h, buffer_scale);
+        if !self.highlights.contains_key(&key) {
+            if self.highlights.len() >= MAX_HIGHLIGHT_BUFFERS {
+                self.highlights.clear();
+            }
+            let mut icons = std::mem::take(&mut self.icons);
+            let mut canvas = Canvas::new(w, h, buffer_scale, painter, &mut icons);
+            canvas.fill(Rect::new(0, 0, w, h), shape::R2, self.palette.highlight);
+            let buffer = canvas.finish();
+            self.icons = icons;
+            self.highlights.insert(key, buffer);
+        }
+        self.highlights.get(&key)
+    }
+
     fn hover_signature(&self, part: Part) -> String {
         let mine = |hit: GreeterHit| if Part::owning(hit) == Some(part) { hit } else { GreeterHit::None };
         let (now, before) = (mine(self.hover), mine(self.hover_from));
@@ -1594,7 +1648,7 @@ impl GreeterUi {
                 key
             }
             Part::Menu => {
-                let mut key = hovered
+                let mut key = base
                     .u64(self.menu_shown as u64)
                     .u64(self.active_session as u64)
                     .u64(self.arm.map_or(9, PowerAction::index));
@@ -1777,7 +1831,6 @@ impl GreeterUi {
             MenuKind::Session => {
                 for (index, (session, row)) in self.sessions.iter().zip(&layout.menu_items).enumerate() {
                     let row = local(*row);
-                    self.layered(canvas, row, shape::R2, p.highlight, GreeterHit::SessionItem(index));
                     let text = Rect::new(row.x + 10, row.y, row.w - 10 - 34, row.h);
                     canvas.text(text, &session.name, p.text, &MENU_STYLE, TextAlign::Left);
                     if index == self.active_session {
@@ -1792,8 +1845,6 @@ impl GreeterUi {
                     let armed = self.arm == Some(*action);
                     if armed {
                         canvas.fill(row, shape::R2, if action.danger() { p.danger_fill } else { p.acc_bg });
-                    } else {
-                        self.layered(canvas, row, shape::R2, p.highlight, GreeterHit::Power(*action));
                     }
                     let ink = if armed { p.white } else { p.text };
                     let (_, y) = row.centre_square(16);
@@ -2066,6 +2117,22 @@ impl GreeterUi {
                     )
                 {
                     out.push(element);
+                }
+                let highlights = if part == Part::Menu { self.menu_highlights(&layout) } else { Vec::new() };
+                for (row, amount) in highlights {
+                    if let Some(buffer) = self.highlight_buffer((row.w, row.h), buffer_scale, painter)
+                        && let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                            renderer,
+                            placed(row),
+                            buffer,
+                            alpha.map(|alpha| alpha * amount),
+                            None,
+                            None,
+                            Kind::Unspecified,
+                        )
+                    {
+                        out.push(element);
+                    }
                 }
                 let Some(frame) = self.layer(part, &layout, painter, buffer_scale) else {
                     continue;
@@ -2810,8 +2877,38 @@ mod tests {
                 canvas.icon(&spinner_svg(ui.spinner_step()), 0, 0, spot.w, ui.palette.white);
                 image.blit(&canvas.buf, glide_shell::raster::rect(spot.x, spot.y, spot.w, spot.h));
             }
+            if part == Part::Menu {
+                for (row, amount) in ui.menu_highlights(&layout) {
+                    let mut canvas = Canvas::new(row.w, row.h, scale, painter, &mut icons);
+                    let tint = ui.palette.highlight;
+                    canvas.fill(Rect::new(0, 0, row.w, row.h), shape::R2, tint.with_alpha(tint.0[3] * amount));
+                    image.blit(&canvas.buf, glide_shell::raster::rect(row.x, row.y, row.w, row.h));
+                }
+            }
         }
         image.buf
+    }
+
+    #[test]
+    fn hovering_a_menu_row_never_redraws_the_menu() {
+        let mut ui = ui();
+        ui.toggle_power_menu();
+        let layout = laid_out(&mut ui);
+        let frame = GreeterUi::frame_of(Part::Menu, &layout);
+        let rest = ui.part_key(Part::Menu, frame, 0);
+        assert!(ui.menu_highlights(&layout).is_empty());
+
+        let action = ui.power_actions()[0];
+        ui.update_hover(GreeterHit::Power(action));
+        ui.hover_at = clock::now().checked_sub(motion::t1() / 2).unwrap_or_else(clock::now);
+        assert_eq!(ui.part_key(Part::Menu, frame, 0), rest, "the highlight is a layer of its own");
+        let lit = ui.menu_highlights(&layout);
+        assert_eq!(lit.len(), 1);
+        assert_eq!(lit[0].0, layout.menu_items[0]);
+
+        ui.arm = Some(action);
+        assert!(ui.menu_highlights(&layout).is_empty(), "an armed row is filled, not highlighted");
+        assert_ne!(ui.part_key(Part::Menu, frame, 0), rest);
     }
 
     #[test]
