@@ -123,8 +123,41 @@ impl Image {
                 pixels.extend_from_slice(&[pixel[0], pixel[1], pixel[2], alpha]);
             }
         }
+        let (width, height, pixels) = shrunk(width, height, pixels, KEPT_IMAGE_SIDE);
         Some(Self::Rgba { width, height, pixels })
     }
+}
+
+pub const KEPT_IMAGE_SIDE: u32 = 256;
+
+fn shrunk(width: u32, height: u32, pixels: Vec<u8>, limit: u32) -> (u32, u32, Vec<u8>) {
+    let step = width.max(height).div_ceil(limit.max(1));
+    if step <= 1 {
+        return (width, height, pixels);
+    }
+    let (out_w, out_h) = (width.div_ceil(step), height.div_ceil(step));
+    let mut out = Vec::with_capacity(out_w as usize * out_h as usize * 4);
+    for oy in 0..out_h {
+        for ox in 0..out_w {
+            let (mut colour, mut alpha, mut count) = ([0_u64; 3], 0_u64, 0_u64);
+            for y in oy * step..((oy + 1) * step).min(height) {
+                let row = (y * width) as usize * 4;
+                for x in ox * step..((ox + 1) * step).min(width) {
+                    let pixel = &pixels[row + x as usize * 4..row + x as usize * 4 + 4];
+                    let weight = u64::from(pixel[3]);
+                    for (sum, channel) in colour.iter_mut().zip(pixel) {
+                        *sum += u64::from(*channel) * weight;
+                    }
+                    alpha += weight;
+                    count += 1;
+                }
+            }
+            let straight = |sum: u64| u8::try_from((sum + alpha / 2) / alpha.max(1)).unwrap_or(u8::MAX);
+            let coverage = u8::try_from((alpha + count / 2) / count.max(1)).unwrap_or(u8::MAX);
+            out.extend_from_slice(&[straight(colour[0]), straight(colour[1]), straight(colour[2]), coverage]);
+        }
+    }
+    (out_w, out_h, out)
 }
 
 // Independent flags of the freedesktop notification wire format.
@@ -369,6 +402,35 @@ pub fn capabilities() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_large_picture_is_kept_at_the_size_it_can_be_shown_at() {
+        let side = 1024_i32;
+        let data = vec![200_u8; (side * side * 4) as usize];
+        let Some(Image::Rgba { width, height, pixels }) = Image::from_raw(side, side, side * 4, true, 8, 4, &data)
+        else {
+            panic!("a valid picture is taken");
+        };
+        assert_eq!((width, height), (KEPT_IMAGE_SIDE, KEPT_IMAGE_SIDE));
+        assert_eq!(pixels.len(), (KEPT_IMAGE_SIDE * KEPT_IMAGE_SIDE * 4) as usize, "262 KiB instead of 4 MiB");
+        assert!(pixels.iter().all(|byte| *byte == 200), "a flat picture stays flat");
+
+        let wide = vec![255_u8; 600 * 100 * 3];
+        let Some(Image::Rgba { width, height, .. }) = Image::from_raw(600, 100, 1800, false, 8, 3, &wide) else {
+            panic!("a valid picture is taken");
+        };
+        assert_eq!((width, height), (200, 34), "the shape is kept");
+    }
+
+    #[test]
+    fn shrinking_weighs_colour_by_coverage() {
+        let pixels = vec![255, 0, 0, 255, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0];
+        let (width, height, out) = shrunk(2, 2, pixels, 1);
+        assert_eq!((width, height), (1, 1));
+        assert_eq!(out, [255, 0, 0, 64], "transparent green does not tint the one opaque red pixel");
+        let small = vec![1, 2, 3, 4];
+        assert_eq!(shrunk(1, 1, small.clone(), 256), (1, 1, small), "a small picture is left as it came");
+    }
 
     #[test]
     fn markup_is_reduced_to_plain_text() {
