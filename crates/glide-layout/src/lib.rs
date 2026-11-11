@@ -1449,13 +1449,59 @@ mod tests {
             let away = layout.add_window(second, SIZE);
             layout.admit_window(late, SIZE, None);
             assert!(layout.move_window_to_workspace(late, WorkspaceTarget::Id(home)));
-            assert!(
-                !layout.move_window_to_workspace(late, WorkspaceTarget::New),
-                "nothing is made for a window not shown yet"
-            );
             assert!(layout.map_window(late, false));
             assert_eq!(state(&layout, late).workspace_id, home);
             assert_eq!(layout.workspace_ids(), [home, away]);
+        }
+
+        #[test]
+        fn a_window_sent_to_a_new_workspace_before_mapping_gets_one_when_it_maps() {
+            let mut layout = Layout::new();
+            layout.set_policy(NewWindowPolicy::ActiveWorkspace);
+            let (first, late) = (WindowId::next(), WindowId::next());
+            let home = layout.add_window(first, SIZE);
+            layout.admit_window(late, SIZE, None);
+            assert!(layout.move_window_to_workspace(late, WorkspaceTarget::New));
+            assert_eq!(layout.workspace_ids(), [home], "nothing is made for a window not shown yet");
+            assert!(layout.map_window(late, false));
+            let made = state(&layout, late).workspace_id;
+            assert_eq!(layout.workspace_ids(), [home, made], "the policy alone would have kept it at home");
+
+            layout.set_fixed_workspaces(Some(2));
+            let refused = WindowId::next();
+            layout.admit_window(refused, SIZE, None);
+            assert!(!layout.move_window_to_workspace(refused, WorkspaceTarget::New), "fixed workspaces make none");
+        }
+
+        #[test]
+        fn a_dialog_that_maps_before_its_parent_ends_up_beside_it() {
+            let mut layout = Layout::new();
+            let (other, parent, dialog) = (WindowId::next(), WindowId::next(), WindowId::next());
+            let home = layout.add_window(other, SIZE);
+            layout.admit_window(parent, SIZE, None);
+            layout.admit_window(dialog, SMALL, None);
+            layout.set_parent(dialog, Some(parent));
+            assert!(layout.map_window(dialog, false));
+            assert_eq!(state(&layout, dialog).workspace_id, home, "its parent has no place yet");
+            assert!(layout.map_window(parent, true));
+            let made = state(&layout, parent).workspace_id;
+            assert_ne!(made, home);
+            assert_eq!(state(&layout, dialog).workspace_id, made, "the dialog follows its parent");
+            assert_eq!(layout.workspace_ids(), [home, made]);
+        }
+
+        #[test]
+        fn a_window_whose_only_company_is_its_own_dialog_needs_no_new_workspace() {
+            let mut layout = Layout::new();
+            let (parent, splash) = (WindowId::next(), WindowId::next());
+            let home = layout.active_workspace();
+            layout.admit_window(parent, SIZE, None);
+            layout.admit_window(splash, SMALL, None);
+            layout.set_parent(splash, Some(parent));
+            assert!(layout.map_window(splash, true));
+            assert!(layout.map_window(parent, true));
+            assert_eq!(layout.workspace_ids(), [home], "a splash screen does not push its app to a second workspace");
+            assert_eq!(state(&layout, parent).workspace_id, home);
         }
 
         #[test]

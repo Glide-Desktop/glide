@@ -213,6 +213,14 @@ pub struct Layout {
 enum Assigned {
     ByPolicy,
     ByHand,
+    Fresh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Home {
+    Existing(WorkspaceId),
+    AfterActive,
+    AtEnd,
 }
 
 impl Default for Layout {
@@ -730,18 +738,34 @@ impl Layout {
         ws_id
     }
 
-    fn joins(&self, state: &WindowState, assigned: Assigned) -> Option<WorkspaceId> {
+    fn joins(&self, state: &WindowState, assigned: Assigned) -> Home {
         if state.sticky {
-            return Some(self.active);
+            return Home::Existing(self.active);
         }
         let known = |id: WorkspaceId| self.workspace(id).map(|ws| ws.id);
         let beside_parent =
             state.parent.and_then(|parent| self.windows.get(&parent)).and_then(|parent| known(parent.workspace_id));
-        let chosen = (assigned == Assigned::ByHand).then(|| known(state.workspace_id)).flatten();
-        let fresh = self.policy == NewWindowPolicy::NewWorkspace
-            && self.fixed.is_none()
-            && !self.workspace_is_empty(self.active);
-        beside_parent.or(chosen).or_else(|| (!fresh).then_some(self.active))
+        if let Some(ws) = beside_parent {
+            return Home::Existing(ws);
+        }
+        match assigned {
+            Assigned::ByHand => {
+                if let Some(ws) = known(state.workspace_id) {
+                    return Home::Existing(ws);
+                }
+            }
+            Assigned::Fresh if self.fixed.is_none() => {
+                return self.resolve_target(WorkspaceTarget::New).map_or(Home::AtEnd, Home::Existing);
+            }
+            Assigned::Fresh | Assigned::ByPolicy => {}
+        }
+        let not_its_own = |id: &WindowId| self.windows.get(id).is_none_or(|other| other.parent != Some(state.id));
+        let crowded = self.workspace(self.active).is_some_and(|ws| ws.windows.iter().any(not_its_own));
+        if self.policy == NewWindowPolicy::NewWorkspace && self.fixed.is_none() && crowded {
+            Home::AfterActive
+        } else {
+            Home::Existing(self.active)
+        }
     }
 
     fn cascade_index(&self, w: WindowId) -> usize {
@@ -750,32 +774,52 @@ impl Layout {
         };
         let joined = match self.unsettled.get(&w) {
             Some(&assigned) => self.joins(state, assigned),
-            None => Some(state.workspace_id),
+            None => Home::Existing(state.workspace_id),
         };
-        joined
-            .and_then(|id| self.workspace(id))
-            .map_or(0, |ws| ws.windows.iter().position(|&id| id == w).unwrap_or(ws.windows.len()))
+        let Home::Existing(id) = joined else {
+            return 0;
+        };
+        self.workspace(id).map_or(0, |ws| ws.windows.iter().position(|&id| id == w).unwrap_or(ws.windows.len()))
     }
 
     fn settle(&mut self, w: WindowId, assigned: Assigned) {
-        let Some(joined) = self.windows.get(&w).map(|state| self.joins(state, assigned)) else {
+        let Some(home) = self.windows.get(&w).map(|state| self.joins(state, assigned)) else {
             return;
         };
-        let ws_id = joined.unwrap_or_else(|| {
-            let fresh = WorkspaceId::next();
-            let at = self.active_index().unwrap_or(0) + 1;
-            self.workspaces.insert(at, Workspace::new(fresh));
-            fresh
-        });
+        let ws_id = match home {
+            Home::Existing(id) => id,
+            Home::AfterActive | Home::AtEnd => {
+                let fresh = WorkspaceId::next();
+                let after_active = self.active_index().map_or(self.workspaces.len(), |index| index + 1);
+                let at = if home == Home::AtEnd { self.workspaces.len() } else { after_active };
+                self.workspaces.insert(at, Workspace::new(fresh));
+                fresh
+            }
+        };
         if let Some(state) = self.windows.get_mut(&w) {
             state.workspace_id = ws_id;
         }
         if let Some(ws) = self.workspace_mut(ws_id) {
             ws.windows.push(w);
         }
+        let mut followers: Vec<WindowId> = self
+            .windows
+            .values()
+            .filter(|child| child.parent == Some(w) && child.workspace_id != ws_id)
+            .filter(|child| !self.unsettled.contains_key(&child.id))
+            .map(|child| child.id)
+            .collect();
+        followers.sort_unstable();
+        for child in followers {
+            self.move_window_to_workspace(child, WorkspaceTarget::Id(ws_id));
+        }
     }
 
     fn assign_unsettled(&mut self, w: WindowId, target: WorkspaceTarget) -> bool {
+        if target == WorkspaceTarget::New && self.fixed.is_none() {
+            self.unsettled.insert(w, Assigned::Fresh);
+            return true;
+        }
         let Some(target_id) = self.resolve_target(target) else {
             return false;
         };
