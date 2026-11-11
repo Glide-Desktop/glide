@@ -26,6 +26,9 @@ pub enum Event {
     Activity,
 }
 
+const MAX_COOKIES_PER_CLIENT: usize = 64;
+const MAX_APP_NAME_CHARS: usize = 128;
+
 #[derive(Debug, Default)]
 struct Cookies {
     last: u32,
@@ -39,13 +42,17 @@ impl Cookies {
     }
 
     fn take_for(&mut self, owner: &str, app: &str) -> u32 {
+        if self.held.values().filter(|(held, _)| held == owner).count() >= MAX_COOKIES_PER_CLIENT {
+            return 0;
+        }
         loop {
             self.last = self.last.checked_add(1).unwrap_or(1);
             if !self.held.contains_key(&self.last) {
                 break;
             }
         }
-        self.held.insert(self.last, (owner.to_string(), app.trim().to_string()));
+        let app: String = app.trim().chars().take(MAX_APP_NAME_CHARS).collect();
+        self.held.insert(self.last, (owner.to_string(), app));
         self.last
     }
 
@@ -387,6 +394,20 @@ mod tests {
         assert_eq!(cookies.take("a"), 1);
         cookies.last = u32::MAX - 1;
         assert_eq!(cookies.take("a"), 2, "u32::MAX and 1 are still held");
+    }
+
+    #[test]
+    fn one_client_cannot_hoard_cookies_or_store_an_endless_name() {
+        let mut cookies = Cookies::default();
+        for _ in 0..MAX_COOKIES_PER_CLIENT {
+            assert_ne!(cookies.take(":1.10"), 0);
+        }
+        assert_eq!(cookies.take(":1.10"), 0, "past the limit nothing more is held for it");
+        assert_eq!(cookies.held.len(), MAX_COOKIES_PER_CLIENT);
+        assert!(!cookies.release(0, ":1.10"));
+        assert_ne!(cookies.take(":1.11"), 0, "other clients are not affected");
+        let cookie = cookies.take_for(":1.12", &"x".repeat(10_000));
+        assert_eq!(cookies.held[&cookie].1.chars().count(), MAX_APP_NAME_CHARS);
     }
 
     #[test]
