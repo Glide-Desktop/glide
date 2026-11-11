@@ -1,7 +1,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(transparent)]
@@ -591,21 +591,22 @@ const COMMON: [&str; 24] = [
 
 #[must_use]
 pub fn entropy_bits(password: &str) -> f64 {
-    let chars: Vec<char> = password.chars().collect();
+    let chars: Zeroizing<Vec<char>> = Zeroizing::new(password.chars().collect());
     if chars.is_empty() {
         return 0.0;
     }
-    let lower = password.to_lowercase();
+    let lower = Zeroizing::new(password.to_lowercase());
     if COMMON.iter().any(|common| lower.contains(common)) && chars.len() < 14 {
         return 10.0;
     }
     let words: Vec<&str> = password.split(['-', ' ', '_', '.']).filter(|word| !word.is_empty()).collect();
     let spelled = words.iter().filter(|word| word.chars().filter(|ch| ch.is_alphabetic()).count() >= 3).count();
     if words.len() >= 3 && spelled + 1 >= words.len() {
-        let mut distinct: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
+        let mut distinct: Zeroizing<Vec<String>> =
+            Zeroizing::new(words.iter().map(|word| word.to_lowercase()).collect());
         distinct.sort_unstable();
-        distinct.dedup();
-        return distinct.len() as f64 * 12.9 + 10.0;
+        let unique = 1 + distinct.windows(2).filter(|pair| pair[0] != pair[1]).count();
+        return unique as f64 * 12.9 + 10.0;
     }
     let mut pool: f64 = 0.0;
     if chars.iter().any(char::is_ascii_lowercase) {
