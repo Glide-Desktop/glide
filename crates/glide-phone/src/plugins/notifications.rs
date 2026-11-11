@@ -108,6 +108,29 @@ pub fn is_silhouette_bgra(bgra: &[u8]) -> bool {
     uniform_tight * 100 >= opaque * 95 && distinct_tone * 100 < opaque
 }
 
+const MAX_CACHED_ICON_FILES: usize = 256;
+
+fn prune_icon_cache(dir: &std::path::Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok().filter(std::fs::Metadata::is_file)?;
+            Some((meta.modified().ok()?, entry.path()))
+        })
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort();
+    let excess = files.len() - keep;
+    for (_, path) in files.into_iter().take(excess) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn sanitize_hash(hash: &str) -> String {
     hash.chars().filter(char::is_ascii_alphanumeric).take(64).collect()
 }
@@ -121,6 +144,7 @@ fn resolve_payload_bytes(payload_png: Option<&[u8]>, payload_hash: Option<&str>)
             let raw_path = dir.join(format!("raw-{hash}.bin"));
             if !raw_path.is_file() {
                 let _ = std::fs::write(raw_path, bytes);
+                prune_icon_cache(&dir, MAX_CACHED_ICON_FILES);
             }
         }
         return Some(bytes.to_vec());
@@ -179,12 +203,16 @@ fn app_icon_candidates(app_name: &str) -> Vec<String> {
     for &item in mapped {
         out.push(item.to_string());
     }
-    if !app_name.trim().is_empty() {
+    if !app_name.trim().is_empty() && names_an_icon(&lower) {
         out.push(app_name.trim().to_string());
         out.push(lower.replace(' ', "-"));
         out.push(lower);
     }
     out
+}
+
+fn names_an_icon(name: &str) -> bool {
+    !name.contains('/') && !name.starts_with('.')
 }
 
 fn preferred_icon_themes() -> &'static [String] {
@@ -476,6 +504,7 @@ fn build_badged_notification_icon_with_kind(
         let side_u32 = u32::try_from(ICON_SIDE).ok()?;
         let png_bytes = glide_shell::image::Image::from_bgra(side_u32, side_u32, buf)?.png().ok()?;
         glide_config::write_atomic(&file_path, &png_bytes, 0o644).ok()?;
+        prune_icon_cache(&dir, MAX_CACHED_ICON_FILES);
     }
     Some((file_path.to_string_lossy().into_owned(), has_avatar))
 }
@@ -951,6 +980,36 @@ pub fn handle_notification_packet_with_payload<S: BuildHasher, H: BuildHasher>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_name_from_the_phone_is_never_taken_as_a_path() {
+        for name in ["/etc/hostname", "../../secret.svg", "file:///home/me/photo.png", ".hidden"] {
+            assert!(app_icon_candidates(name).is_empty(), "{name} must not reach the icon loader");
+        }
+        assert_eq!(app_icon_candidates("My App"), ["My App", "my-app", "my app"]);
+        assert!(app_icon_candidates("Telegram").contains(&"org.telegram.desktop".to_string()));
+    }
+
+    #[test]
+    fn the_icon_cache_keeps_only_the_newest_files() {
+        let dir = std::env::temp_dir().join(format!("glide-phone-icon-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        for index in 0..6_u64 {
+            let path = dir.join(format!("raw-{index}.bin"));
+            std::fs::write(&path, b"icon").expect("write");
+            let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + index);
+            std::fs::File::options().write(true).open(&path).and_then(|file| file.set_modified(stamp)).expect("stamp");
+        }
+        prune_icon_cache(&dir, 4);
+        let mut left: Vec<String> =
+            std::fs::read_dir(&dir).expect("list").flatten().map(|e| e.file_name().to_string_lossy().into()).collect();
+        left.sort();
+        assert_eq!(left, ["raw-2.bin", "raw-3.bin", "raw-4.bin", "raw-5.bin"]);
+        prune_icon_cache(&dir, 4);
+        assert_eq!(std::fs::read_dir(&dir).expect("list").count(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn an_app_icon_is_looked_up_once_per_app_and_a_miss_is_remembered_too() {
