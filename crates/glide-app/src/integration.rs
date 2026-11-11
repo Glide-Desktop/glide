@@ -17,8 +17,14 @@ pub fn is_glide_terminal(command: &str) -> bool {
         .is_some_and(|name| name == "glide-terminal")
 }
 
+pub const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn session() -> zbus::Result<zbus::blocking::Connection> {
+    zbus::blocking::connection::Builder::session()?.method_timeout(CALL_TIMEOUT).build()
+}
+
 pub fn open_terminal_tab(directory: &Path, argv: &[String], token: &str) -> zbus::Result<()> {
-    let connection = zbus::blocking::Connection::session()?;
+    let connection = session()?;
     let directory =
         if directory.is_absolute() { file_uri(directory) } else { directory.to_string_lossy().into_owned() };
     connection.call_method(
@@ -35,7 +41,7 @@ pub use glide_config::uri::file_uri;
 
 pub fn show_in_files(path: &Path, token: &str) -> zbus::Result<()> {
     let method = if path.is_dir() { "ShowFolders" } else { "ShowItems" };
-    let connection = zbus::blocking::Connection::session()?;
+    let connection = session()?;
     let body = (vec![file_uri(path)], token);
     connection.call_method(Some(FILES_BUS), FILE_MANAGER_PATH, Some(FILE_MANAGER_BUS), method, &body).or_else(
         |_| connection.call_method(Some(FILE_MANAGER_BUS), FILE_MANAGER_PATH, Some(FILE_MANAGER_BUS), method, &body),
