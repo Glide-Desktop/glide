@@ -536,6 +536,6 @@ impl App for PhoneApp {
 
         let clamp =
             container(list_col.max_width(720.0)).padding(Padding::from([24.0, 32.0]).bottom(48.0)).center_x(Fill);
-        widget::pane(paint.win_bg(), 0.0, widget::scrollable(paint, clamp).height(Fill)).into()
+        widget::pane(paint.win_bg(), 0.0, widget::overlay_scrollable(paint, clamp).height(Fill)).into()
     }
 }

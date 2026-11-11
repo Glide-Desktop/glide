@@ -574,7 +574,7 @@ impl App {
         glide_sdk::widget::pane(
             t.win_bg(),
             0.0,
-            glide_sdk::widget::scrollable(&paint, clamp).id(CONTENT_SCROLL_ID).height(Fill),
+            glide_sdk::widget::overlay_scrollable(&paint, clamp).id(CONTENT_SCROLL_ID).height(Fill),
         )
         .into()
     }
