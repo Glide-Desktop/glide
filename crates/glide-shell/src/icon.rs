@@ -98,26 +98,25 @@ impl IconLoader {
 
     pub fn load_named(&mut self, icon: &str, side: i32) -> Option<&[u8]> {
         let theme = self.theme_name();
-        let name = format!("icon:{}", cache_name(icon));
-        if let Some(stale) = stamp_prefix(&format!("icon:{icon}"), &name) {
-            self.rendered.retain(|(key, _), _| !key.starts_with(&stale) || *key == name);
+        let key = (format!("icon:{}", cache_name(icon)), side);
+        if !self.rendered.contains_key(&key) {
+            if let Some(stale) = stamp_prefix(&format!("icon:{icon}"), &key.0) {
+                self.rendered.retain(|(name, _), _| !name.starts_with(&stale) || *name == key.0);
+            }
+            let rendered = self.index.resolve_named(icon, &theme, side).and_then(|path| render(&path, side, None));
+            self.rendered.insert(key.clone(), rendered);
         }
-        let index = &mut self.index;
-        self.rendered
-            .entry((name, side))
-            .or_insert_with(|| index.resolve_named(icon, &theme, side).and_then(|path| render(&path, side, None)))
-            .as_deref()
+        self.rendered.get(&key)?.as_deref()
     }
 
     pub fn load_symbolic(&mut self, icon: &str, side: i32, tint: Color) -> Option<&[u8]> {
         let theme = self.theme_name();
-        let name = cache_name(icon);
-        if let Some(stale) = stamp_prefix(icon, &name) {
-            self.symbolic_shapes.retain(|(key, _), _| !key.starts_with(&stale) || *key == name);
-            self.symbolic_rendered.retain(|(key, _, _), _| !key.starts_with(&stale) || *key == name);
-        }
-        let key = (name, side, tint.to_buffer_bytes());
+        let key = (cache_name(icon), side, tint.to_buffer_bytes());
         if !self.symbolic_rendered.contains_key(&key) {
+            if let Some(stale) = stamp_prefix(icon, &key.0) {
+                self.symbolic_shapes.retain(|(name, _), _| !name.starts_with(&stale) || *name == key.0);
+                self.symbolic_rendered.retain(|(name, _, _), _| !name.starts_with(&stale) || *name == key.0);
+            }
             if self.symbolic_rendered.len() >= MAX_TINTED {
                 self.symbolic_rendered.clear();
             }
