@@ -354,6 +354,10 @@ impl<Message> Widget<Message, Theme, Renderer> for Decorated<'_, Message> {
                 1.0
             }
         };
+        if (scale - 1.0).abs() < f32::EPSILON {
+            self.child.as_widget().draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
+            return;
+        }
         let center = layout.bounds().center();
         let transform = Transformation::translate(center.x, center.y)
             * Transformation::scale(scale)
