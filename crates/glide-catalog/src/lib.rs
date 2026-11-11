@@ -74,12 +74,15 @@ impl Page {
     pub fn icon(self) -> Icon {
         match self {
             Self::Overview => Icon::Sidebar,
-            Self::Buttons | Self::Selection => Icon::Check,
+            Self::Buttons => Icon::Plus,
+            Self::Selection => Icon::Check,
             Self::Inputs => Icon::Search,
-            Self::Secrets => Icon::Eye,
-            Self::Feedback | Self::Insight => Icon::Refresh,
+            Self::Secrets => Icon::Shield,
+            Self::Feedback => Icon::Refresh,
+            Self::Insight => Icon::Warning,
             Self::Gallery => Icon::Inspector,
-            Self::Layout | Self::Cards => Icon::Folder,
+            Self::Layout => Icon::Folder,
+            Self::Cards => Icon::Copy,
             Self::Overlays => Icon::More,
             Self::Type => Icon::File,
             Self::Motion => Icon::Right,
@@ -1157,6 +1160,15 @@ mod tests {
         harness.send(Event::Look(shell_look(other, Accent::Blue)));
         assert_eq!(harness.shell().previewing(), None);
         assert_eq!(harness.shell().paint().tokens.appearance, other);
+    }
+
+    #[test]
+    fn every_page_has_a_glyph_of_its_own_in_the_sidebar() {
+        for (index, page) in Page::ALL.iter().enumerate() {
+            for other in &Page::ALL[index + 1..] {
+                assert_ne!(page.icon(), other.icon(), "{page:?} and {other:?} look alike");
+            }
+        }
     }
 
     #[test]

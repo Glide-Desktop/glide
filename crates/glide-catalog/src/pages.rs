@@ -14,6 +14,19 @@ use crate::{
 
 const WIDTH: f32 = 760.0;
 
+fn accent_name(shell: &Shell<Message>, accent: Accent) -> &'static str {
+    match accent {
+        Accent::Blue => shell.t("Азурит", "Azurit"),
+        Accent::Teal => shell.t("Малахіт", "Malachite"),
+        Accent::Green => shell.t("Хвоя", "Conifer"),
+        Accent::Amber => shell.t("Бурштин", "Amber"),
+        Accent::Orange => shell.t("Теракота", "Terracotta"),
+        Accent::Red => shell.t("Цинобра", "Cinnabar"),
+        Accent::Purple => shell.t("Аметист", "Amethyst"),
+        Accent::Graphite => shell.t("Графіт", "Graphite"),
+    }
+}
+
 fn page<'a>(
     shell: &'a Shell<Message>, page: Page, intro: &'a str, blocks: Vec<Element<'a, Message>>,
 ) -> Element<'a, Message> {
@@ -80,7 +93,7 @@ fn overview<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
         vec![ui::chip(paint, shell.t("Системний", "System"), catalog.accent.is_none(), Some(Message::Accent(None)))];
     for accent in Accent::ALL {
         let on = catalog.accent == Some(*accent);
-        accents.push(ui::chip(paint, accent.key(), on, Some(Message::Accent(Some(*accent)))));
+        accents.push(ui::chip(paint, accent_name(shell, *accent), on, Some(Message::Accent(Some(*accent)))));
     }
     let facts = ui::list(
         paint,
@@ -862,7 +875,7 @@ fn insight<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
             .meter(0.55, paint.acc_bg())
             .detail(shell.t("з 476 ГБ", "of 476 GB"))
             .on_press(Message::Said(shell.t("Сховище", "Storage"))),
-        ui::Glance::new(paint, ui::icon_tile(Icon::Bell, ramp(4), 22.0), "Wi-Fi")
+        ui::Glance::new(paint, ui::icon_tile(Icon::Link, ramp(4), 22.0), "Wi-Fi")
             .headline("Home")
             .aside(ui::signal_bars(paint, 3, 4))
             .detail(shell.t("Підключено", "Connected")),
