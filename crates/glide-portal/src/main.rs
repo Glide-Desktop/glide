@@ -175,7 +175,17 @@ fn pidfd(pid: u32) -> Option<std::os::fd::OwnedFd> {
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
 impl PortalRequest {
-    fn close(&self) {
+    async fn close(
+        &self, #[zbus(header)] header: zbus::message::Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
+    ) {
+        if from_frontend(&header, connection).await {
+            self.stop();
+        }
+    }
+}
+
+impl PortalRequest {
+    fn stop(&self) {
         use std::os::fd::AsRawFd;
         if let Some(process) = &self.process {
             // SAFETY: pidfd_send_signal(2) on a pidfd this request owns; it names the chooser it started even after
@@ -648,6 +658,25 @@ mod tests {
         };
         assert!(call_from(&frontend), "the owner of {FRONTEND} passes");
         assert!(!call_from(&intruder), "anyone else is refused");
+
+        let mut chooser = Command::new("sleep").arg("60").spawn().expect("stand-in chooser");
+        let open = PortalRequest {
+            process: pidfd(chooser.id()),
+            pid: libc::pid_t::try_from(chooser.id()).expect("pid"),
+            reaped: Arc::default(),
+        };
+        let handle =
+            zbus::zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1_2/open").expect("path");
+        assert!(portal.object_server().at(handle.clone(), open).expect("request object"));
+        let close = |connection: &zbus::blocking::Connection| {
+            connection
+                .call_method(Some(BUS_NAME), handle.clone(), Some("org.freedesktop.impl.portal.Request"), "Close", &())
+                .expect("close reply");
+        };
+        close(&intruder);
+        assert!(chooser.try_wait().expect("wait").is_none(), "a stranger cannot close someone's file dialog");
+        close(&frontend);
+        assert_eq!(chooser.wait().expect("wait").signal(), Some(libc::SIGTERM));
     }
 
     #[test]
