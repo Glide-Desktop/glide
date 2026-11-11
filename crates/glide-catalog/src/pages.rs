@@ -21,7 +21,7 @@ fn page<'a>(
     let head = column![text(page.title(shell.lang()), TextStyle::T1), text(intro, TextStyle::BODY).color(paint.fg_2())]
         .spacing(SP1);
     let content = Column::with_children(std::iter::once(head.into()).chain(blocks)).spacing(SP5).max_width(WIDTH);
-    ui::scrollable(paint, container(content).padding(Padding::from([SP5, SP6])).center_x(Fill)).into()
+    ui::overlay_scrollable(paint, container(content).padding(Padding::from([SP5, SP6])).center_x(Fill)).into()
 }
 
 fn demo<'a>(
