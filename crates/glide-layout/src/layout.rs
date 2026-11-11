@@ -206,6 +206,13 @@ pub struct Layout {
     placement_anchor: Option<Point>,
     anchors: HashMap<WindowId, Point>,
     fixed: Option<usize>,
+    unsettled: HashMap<WindowId, Assigned>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Assigned {
+    ByPolicy,
+    ByHand,
 }
 
 impl Default for Layout {
@@ -231,6 +238,7 @@ impl Layout {
             placement_anchor: None,
             anchors: HashMap::new(),
             fixed: None,
+            unsettled: HashMap::new(),
         }
     }
 
@@ -344,6 +352,7 @@ impl Layout {
             return;
         };
         self.recent.retain(|&seen| seen != last.id);
+        self.rehome_unsettled(last.id, into);
         for id in &last.windows {
             if let Some(state) = self.windows.get_mut(id) {
                 state.workspace_id = into;
@@ -454,7 +463,7 @@ impl Layout {
         let moving: Vec<WindowId> = self
             .windows
             .values()
-            .filter(|state| state.sticky && state.workspace_id != to)
+            .filter(|state| state.sticky && state.workspace_id != to && !self.unsettled.contains_key(&state.id))
             .map(|state| state.id)
             .collect();
         for id in moving {
@@ -648,6 +657,9 @@ impl Layout {
         if !self.windows.contains_key(&w) {
             return false;
         }
+        if self.unsettled.contains_key(&w) {
+            return self.assign_unsettled(w, target);
+        }
         let Some(target_id) = self.resolve_or_create(target) else {
             return false;
         };
@@ -687,9 +699,9 @@ impl Layout {
     }
 
     pub fn add_window(&mut self, w: WindowId, initial_size: Size) -> WorkspaceId {
-        let ws_id = self.admit_window(w, initial_size, None);
+        self.admit_window(w, initial_size, None);
         self.map_window(w, true);
-        ws_id
+        self.windows.get(&w).map_or(self.active, |state| state.workspace_id)
     }
 
     pub fn add_window_with_parent(&mut self, w: WindowId, initial_size: Size, parent: WindowId) -> WorkspaceId {
@@ -699,30 +711,97 @@ impl Layout {
     }
 
     pub fn admit_window(&mut self, w: WindowId, initial_size: Size, parent: Option<WindowId>) -> WorkspaceId {
-        let parent_ws = parent.and_then(|parent| self.windows.get(&parent)).map(|state| state.workspace_id);
-        let ws_id = match (parent_ws, self.policy) {
-            (Some(ws), _) => ws,
-            (None, NewWindowPolicy::NewWorkspace) if self.fixed.is_none() && !self.workspace_is_empty(self.active) => {
-                let new_ws = WorkspaceId::next();
-                let at = self.active_index().unwrap_or(0) + 1;
-                self.workspaces.insert(at, Workspace::new(new_ws));
-                new_ws
-            }
-            (None, _) => self.active,
+        let parent = parent.filter(|parent| self.windows.contains_key(parent));
+        let ws_id = parent.and_then(|parent| self.windows.get(&parent)).map_or(self.active, |state| state.workspace_id);
+        self.insert_window(w, ws_id, initial_size, parent);
+        self.unsettled.insert(w, Assigned::ByPolicy);
+        let centred = if initial_size.is_empty() {
+            None
+        } else {
+            Some(
+                parent.and_then(|parent| self.centered_over_parent(parent, initial_size, Insets::NONE)).unwrap_or_else(
+                    || centered_geometry(self.placement_work_area(), initial_size, Insets::NONE, self.cascade_index(w)),
+                ),
+            )
         };
-        self.insert_window(w, ws_id, initial_size);
-        let over = parent.and_then(|parent| self.centered_over_parent(parent, initial_size, Insets::NONE));
-        if let Some(state) = self.windows.get_mut(&w) {
-            state.parent = parent;
-            if let Some(geometry) = over.filter(|_| state.is_placed) {
-                state.geometry = geometry;
-            }
+        if let (Some(geometry), Some(state)) = (centred, self.windows.get_mut(&w)) {
+            state.geometry = geometry;
         }
         ws_id
     }
 
+    fn joins(&self, state: &WindowState, assigned: Assigned) -> Option<WorkspaceId> {
+        if state.sticky {
+            return Some(self.active);
+        }
+        let known = |id: WorkspaceId| self.workspace(id).map(|ws| ws.id);
+        let beside_parent =
+            state.parent.and_then(|parent| self.windows.get(&parent)).and_then(|parent| known(parent.workspace_id));
+        let chosen = (assigned == Assigned::ByHand).then(|| known(state.workspace_id)).flatten();
+        let fresh = self.policy == NewWindowPolicy::NewWorkspace
+            && self.fixed.is_none()
+            && !self.workspace_is_empty(self.active);
+        beside_parent.or(chosen).or_else(|| (!fresh).then_some(self.active))
+    }
+
+    fn cascade_index(&self, w: WindowId) -> usize {
+        let Some(state) = self.windows.get(&w) else {
+            return 0;
+        };
+        let joined = match self.unsettled.get(&w) {
+            Some(&assigned) => self.joins(state, assigned),
+            None => Some(state.workspace_id),
+        };
+        joined
+            .and_then(|id| self.workspace(id))
+            .map_or(0, |ws| ws.windows.iter().position(|&id| id == w).unwrap_or(ws.windows.len()))
+    }
+
+    fn settle(&mut self, w: WindowId, assigned: Assigned) {
+        let Some(joined) = self.windows.get(&w).map(|state| self.joins(state, assigned)) else {
+            return;
+        };
+        let ws_id = joined.unwrap_or_else(|| {
+            let fresh = WorkspaceId::next();
+            let at = self.active_index().unwrap_or(0) + 1;
+            self.workspaces.insert(at, Workspace::new(fresh));
+            fresh
+        });
+        if let Some(state) = self.windows.get_mut(&w) {
+            state.workspace_id = ws_id;
+        }
+        if let Some(ws) = self.workspace_mut(ws_id) {
+            ws.windows.push(w);
+        }
+    }
+
+    fn assign_unsettled(&mut self, w: WindowId, target: WorkspaceTarget) -> bool {
+        let Some(target_id) = self.resolve_target(target) else {
+            return false;
+        };
+        if let Some(state) = self.windows.get_mut(&w) {
+            state.workspace_id = target_id;
+        }
+        self.unsettled.insert(w, Assigned::ByHand);
+        true
+    }
+
+    fn rehome_unsettled(&mut self, from: WorkspaceId, to: WorkspaceId) {
+        for id in self.unsettled.keys() {
+            if let Some(state) = self.windows.get_mut(id).filter(|state| state.workspace_id == from) {
+                state.workspace_id = to;
+            }
+        }
+    }
+
     pub fn map_window(&mut self, w: WindowId, focus: bool) -> bool {
-        let Some(state) = self.windows.get_mut(&w).filter(|state| !state.mapped) else {
+        if self.windows.get(&w).is_none_or(|state| state.mapped) {
+            return false;
+        }
+        if let Some(assigned) = self.unsettled.remove(&w) {
+            self.settle(w, assigned);
+        }
+        let Some(state) = self.windows.get_mut(&w) else {
             return false;
         };
         state.mapped = true;
@@ -779,14 +858,9 @@ impl Layout {
         Some(keep_reachable(Rectangle::new(Point::new(x, y), frame_size), self.work_area_for_window(parent)))
     }
 
-    fn insert_window(&mut self, w: WindowId, ws_id: WorkspaceId, size: Size) {
+    fn insert_window(&mut self, w: WindowId, ws_id: WorkspaceId, size: Size, parent: Option<WindowId>) {
         let is_placed = !size.is_empty();
-        let index_on_ws = self.workspace(ws_id).map_or(0, |ws| ws.windows.len());
-        let geometry = if is_placed {
-            centered_geometry(self.placement_work_area(), size, Insets::NONE, index_on_ws)
-        } else {
-            Rectangle::new(Point::ZERO, size)
-        };
+        let geometry = Rectangle::new(Point::ZERO, size);
         if let Some(anchor) = self.placement_anchor {
             self.anchors.insert(w, anchor);
         }
@@ -802,7 +876,7 @@ impl Layout {
                 fullscreen: false,
                 minimized: false,
                 insets: Insets::NONE,
-                parent: None,
+                parent,
                 mapped: false,
                 modal: false,
                 app: None,
@@ -810,9 +884,6 @@ impl Layout {
                 sticky: false,
             },
         );
-        if let Some(ws) = self.workspace_mut(ws_id) {
-            ws.windows.push(w);
-        }
     }
 
     fn restored_frame(&self, w: WindowId) -> Option<Rectangle> {
@@ -956,8 +1027,7 @@ impl Layout {
             return false;
         }
 
-        let index_on_ws =
-            self.workspace(state.workspace_id).and_then(|ws| ws.windows.iter().position(|&id| id == w)).unwrap_or(0);
+        let index_on_ws = self.cascade_index(w);
 
         let area = self.work_area_near(self.anchors.get(&w).copied());
         let geometry = state
@@ -1006,6 +1076,9 @@ impl Layout {
             if other.parent == Some(w) {
                 other.parent = state.parent;
             }
+        }
+        if self.unsettled.remove(&w).is_some() {
+            return true;
         }
 
         self.detach(w, state.workspace_id);
@@ -1210,6 +1283,7 @@ impl Layout {
             } else {
                 self.active
             };
+            self.rehome_unsettled(ws_id, home);
             for id in carried {
                 if let Some(state) = self.windows.get_mut(&id) {
                     state.workspace_id = home;

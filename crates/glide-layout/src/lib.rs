@@ -1378,13 +1378,84 @@ mod tests {
             let first = WindowId::next();
             let home = layout.add_window(first, SIZE);
             let late = WindowId::next();
-            let made = layout.admit_window(late, SIZE, None);
-            assert_ne!(made, home);
+            layout.admit_window(late, SIZE, None);
             layout.map_window(late, false);
+            let made = state(&layout, late).workspace_id;
+            assert_ne!(made, home);
             assert_eq!(layout.active_workspace(), home);
             assert_eq!(layout.focused_window(), Some(first));
             assert!(layout.focus_window(late));
             assert_eq!(layout.active_workspace(), made);
+        }
+
+        #[test]
+        fn a_window_that_never_maps_takes_no_workspace() {
+            let mut layout = Layout::new();
+            let first = WindowId::next();
+            let home = layout.add_window(first, SIZE);
+            let hidden = WindowId::next();
+            layout.admit_window(hidden, SIZE, None);
+            assert_eq!(layout.workspace_ids(), [home], "a workspace is made on the first buffer, not before");
+            let second = WindowId::next();
+            let next = layout.add_window(second, SIZE);
+            assert_eq!(layout.workspace_ids(), [home, next]);
+            assert!(layout.remove_window(second));
+            assert_eq!(layout.workspace_ids(), [home], "the hidden window holds nothing open");
+            assert_eq!(layout.active_workspace(), home);
+            assert!(layout.remove_window(hidden));
+            assert_eq!(layout.workspace_ids(), [home]);
+            assert_eq!(layout.focused_window(), Some(first));
+        }
+
+        #[test]
+        fn an_unmapped_window_leaves_the_last_workspace_free_to_close() {
+            let mut layout = Layout::new();
+            let (first, second, hidden) = (WindowId::next(), WindowId::next(), WindowId::next());
+            let home = layout.add_window(first, SIZE);
+            let other = layout.add_window(second, SIZE);
+            layout.admit_window(hidden, SIZE, None);
+            assert!(layout.remove_window(second));
+            assert_eq!(layout.workspace_ids(), [home], "closing the last mapped window closes its workspace");
+            assert_ne!(home, other);
+            assert!(layout.map_window(hidden, true));
+            assert!(layout.workspace_ids().contains(&state(&layout, hidden).workspace_id));
+            assert_eq!(layout.focused_window(), Some(hidden));
+        }
+
+        #[test]
+        fn a_dialog_given_its_parent_before_mapping_opens_beside_it() {
+            let mut layout = Layout::new();
+            let (parent, other, dialog) = (WindowId::next(), WindowId::next(), WindowId::next());
+            let home = layout.add_window(parent, SIZE);
+            let away = layout.add_window(other, SIZE);
+            assert_eq!(layout.active_workspace(), away);
+            layout.admit_window(dialog, SMALL, None);
+            layout.set_parent(dialog, Some(parent));
+            assert!(layout.move_window_to_workspace(dialog, WorkspaceTarget::Id(home)));
+            assert_eq!(layout.workspace_ids(), [home, away], "no workspace is made and thrown away for it");
+            assert!(layout.map_window(dialog, false));
+            assert_eq!(state(&layout, dialog).workspace_id, home);
+            assert_eq!(
+                layout.workspace_windows_at(0).iter().map(|state| state.id).collect::<Vec<_>>(),
+                [parent, dialog]
+            );
+        }
+
+        #[test]
+        fn a_window_sent_to_a_workspace_before_mapping_opens_there() {
+            let mut layout = Layout::new();
+            let (first, second, late) = (WindowId::next(), WindowId::next(), WindowId::next());
+            let home = layout.add_window(first, SIZE);
+            let away = layout.add_window(second, SIZE);
+            layout.admit_window(late, SIZE, None);
+            assert!(layout.move_window_to_workspace(late, WorkspaceTarget::Id(home)));
+            assert!(
+                !layout.move_window_to_workspace(late, WorkspaceTarget::New),
+                "nothing is made for a window not shown yet"
+            );
+            assert!(layout.map_window(late, false));
+            assert_eq!(state(&layout, late).workspace_id, home);
+            assert_eq!(layout.workspace_ids(), [home, away]);
         }
 
         #[test]
