@@ -167,7 +167,9 @@ impl<'a, M: 'a> From<Group<'a, M>> for Element<'a, M> {
         let mut outer = Column::new().spacing(SP2);
         if title.is_some() || description.is_some() || suffix.is_some() {
             let heading = text(title.unwrap_or_default(), TextStyle::HEAD).width(Fill);
-            let mut header = row![heading].spacing(SP3).align_y(Alignment::End);
+            let beside_control = suffix.is_some() && !stacked_header;
+            let mut header =
+                row![heading].spacing(SP3).align_y(if beside_control { Alignment::Center } else { Alignment::End });
             if stacked_header {
                 if let Some(suffix) = suffix {
                     header = header.push(suffix);
