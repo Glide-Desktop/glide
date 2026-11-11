@@ -31,15 +31,35 @@ pub fn exchange(request: &Request, timeout: Duration) -> std::io::Result<Respons
     let stream = bounded(timeout, move || UnixStream::connect(path))?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
-    let mut json = Zeroizing::new(Vec::with_capacity(REQUEST_CAPACITY));
-    serde_json::to_writer(&mut *json, request).map_err(std::io::Error::other)?;
-    json.push(b'\n');
+    let json = encoded(request)?;
     let mut reader = BufReader::new(stream);
     reader.get_mut().write_all(&json)?;
     reader.get_mut().flush()?;
     let mut line = Zeroizing::new(String::new());
     read_line(&mut reader, &mut line)?;
     serde_json::from_str(&line).map_err(std::io::Error::other)
+}
+
+struct Measure(usize);
+
+impl Write for Measure {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn encoded(request: &Request) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    let mut length = Measure(0);
+    serde_json::to_writer(&mut length, request).map_err(std::io::Error::other)?;
+    let mut json = Zeroizing::new(Vec::with_capacity(REQUEST_CAPACITY.max(length.0 + 1)));
+    serde_json::to_writer(&mut *json, request).map_err(std::io::Error::other)?;
+    json.push(b'\n');
+    Ok(json)
 }
 
 fn bounded<T: Send + 'static>(
@@ -121,12 +141,17 @@ mod tests {
     }
 
     #[test]
-    fn a_request_is_one_json_line_from_the_zeroizing_writer() {
-        let mut json = Zeroizing::new(Vec::with_capacity(REQUEST_CAPACITY));
+    fn a_request_is_one_json_line_in_a_buffer_that_never_grows() {
         let request = Request::LoginPasswordChanged { password: crate::keychain::Hidden::new("hunter2".into()) };
-        serde_json::to_writer(&mut *json, &request).unwrap();
-        assert_eq!(json.capacity(), REQUEST_CAPACITY, "a short request never reallocates its buffer");
+        let json = encoded(&request).unwrap();
+        assert_eq!(json.capacity(), REQUEST_CAPACITY, "a short request fits the usual buffer");
+        assert_eq!(json.last(), Some(&b'\n'));
         assert_eq!(serde_json::from_slice::<Request>(&json).unwrap(), request);
+
+        let long = Request::LoginPasswordChanged { password: crate::keychain::Hidden::new("p".repeat(9000)) };
+        let json = encoded(&long).unwrap();
+        assert_eq!(json.capacity(), json.len(), "a long one is measured first, so no copy is left in a freed buffer");
+        assert_eq!(serde_json::from_slice::<Request>(&json).unwrap(), long);
     }
 
     #[test]
