@@ -1363,6 +1363,7 @@ impl GlideState {
         if let Some(output) = surface_output {
             self.tick_smooth_wheel_on(&output);
         }
+        self.place_settling_workspace_swipe();
 
         self.reset_dead_cursor_surface();
         self.sync_topbar_home();

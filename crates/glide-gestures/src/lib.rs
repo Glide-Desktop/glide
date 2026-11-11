@@ -610,7 +610,7 @@ impl WorkspaceSwipeState {
         let settlement =
             decide_workspace_settlement(self.active_workspace, self.total_workspaces, progress, velocity, cancelled);
         self.phase = WorkspaceSwipePhase::Settling {
-            started: Instant::now(),
+            started: glide_ui::clock::now(),
             release: settlement.release,
             from_progress: progress,
             target_progress: settlement.target_progress,
@@ -630,6 +630,16 @@ impl WorkspaceSwipeState {
     }
 
     #[must_use]
+    pub fn is_settled(&self) -> bool {
+        match self.phase {
+            WorkspaceSwipePhase::Tracking { .. } => false,
+            WorkspaceSwipePhase::Settling { started, release, .. } => {
+                glide_ui::clock::since(started) >= release.duration
+            }
+        }
+    }
+
+    #[must_use]
     pub fn effective_x(&self) -> f64 {
         match self.phase {
             WorkspaceSwipePhase::Tracking { effective_x, .. } => effective_x,
@@ -645,7 +655,7 @@ impl WorkspaceSwipeState {
                 if release.duration.is_zero() {
                     target_progress
                 } else {
-                    let elapsed = started.elapsed().as_secs_f64();
+                    let elapsed = glide_ui::clock::since(started).as_secs_f64();
                     let frac = elapsed / release.duration.as_secs_f64();
                     glide_theme::motion::lerp(from_progress, target_progress, release.at(frac))
                 }
@@ -933,6 +943,31 @@ mod tests {
         assert!((swipe.current_progress() - 1.0).abs() < 1e-9);
         swipe.update(0.5 * SWIPE_DISTANCE);
         assert!((swipe.current_progress() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_settling_swipe_is_drawn_at_the_frame_time_not_at_the_time_it_is_asked() {
+        let mut swipe = WorkspaceSwipeState::new(1, 3, 1920.0);
+        swipe.update(-0.5 * SWIPE_DISTANCE);
+        let released = Instant::now();
+        {
+            let _pass = glide_ui::clock::FramePass::enter(released);
+            swipe.settle(0.0, false);
+        }
+        let WorkspaceSwipePhase::Settling { release, .. } = swipe.phase else {
+            panic!("a released swipe settles");
+        };
+        {
+            let _pass = glide_ui::clock::FramePass::enter(released + release.duration / 2);
+            let drawn = swipe.current_progress();
+            std::thread::sleep(Duration::from_millis(3));
+            assert!((swipe.current_progress() - drawn).abs() < f64::EPSILON, "one frame, one position");
+            assert!(drawn > 0.5 && drawn < 1.0);
+            assert!(!swipe.is_settled());
+        }
+        let _pass = glide_ui::clock::FramePass::enter(released + release.duration);
+        assert!(swipe.is_settled());
+        assert!((swipe.current_progress() - 1.0).abs() < 1e-9);
     }
 
     #[test]

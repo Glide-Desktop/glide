@@ -1351,9 +1351,8 @@ impl GlideState {
                 self.apply_swipe_offset(active, effective_x, width);
                 true
             }
-            crate::input::WorkspaceSwipePhase::Settling { started, release, target_workspace, .. } => {
-                let finished = release.duration.is_zero() || started.elapsed() >= release.duration;
-                if finished {
+            crate::input::WorkspaceSwipePhase::Settling { target_workspace, .. } => {
+                if swipe.is_settled() {
                     let target = target_workspace;
                     self.workspace_swipe = None;
                     if let Some(target) = target {
@@ -1362,13 +1361,23 @@ impl GlideState {
                     self.reconcile_space();
                     false
                 } else {
-                    let (active, width) = (swipe.active_workspace, swipe.screen_width);
-                    let eff_x = -swipe.current_progress() * width;
-                    self.apply_swipe_offset(active, eff_x, width);
+                    self.place_settling_workspace_swipe();
                     true
                 }
             }
         }
+    }
+
+    pub(crate) fn place_settling_workspace_swipe(&mut self) {
+        let Some(swipe) = self
+            .workspace_swipe
+            .as_ref()
+            .filter(|swipe| matches!(swipe.phase, crate::input::WorkspaceSwipePhase::Settling { .. }))
+        else {
+            return;
+        };
+        let (active, width, eff_x) = (swipe.active_workspace, swipe.screen_width, swipe.effective_x());
+        self.apply_swipe_offset(active, eff_x, width);
     }
 
     pub fn sync_overview_handoff(&mut self) {

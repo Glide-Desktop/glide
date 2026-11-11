@@ -2245,6 +2245,7 @@ dependencies = [
  "glide-ipc",
  "glide-layout",
  "glide-theme",
+ "glide-ui",
  "serde",
  "smithay",
 ]

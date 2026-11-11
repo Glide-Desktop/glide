@@ -10,6 +10,7 @@ repository.workspace = true
 glide-ipc = { path = "../glide-ipc" }
 glide-layout = { path = "../glide-layout" }
 glide-theme = { path = "../glide-theme" }
+glide-ui = { path = "../glide-ui" }
 serde.workspace = true
 smithay.workspace = true
 
