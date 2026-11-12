@@ -397,6 +397,7 @@ fn watch(
         let _ = announce.send(locked);
     }
     let _ = notes.send(Note::Session(session.clone()));
+    let messages = MessageIterator::from(&connection);
     let bus = DBusProxy::new(&connection)?;
     for rule in [
         format!("type='signal',sender='{LOGIN1}',interface='{SESSION}',path='{}'", session.as_str()),
@@ -412,7 +413,7 @@ fn watch(
     }
     let delay = inhibit(&connection, SLEEP_DELAY);
     gate(sleep).hold(delay);
-    for message in MessageIterator::from(&connection) {
+    for message in messages {
         let Ok(message) = message else {
             continue;
         };
