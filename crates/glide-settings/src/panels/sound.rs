@@ -30,6 +30,7 @@ mod tr {
         Play => "Play", "Відтворити";
         Playing => "Playing…", "Відтворення…";
         Applications => "Applications", "Програми";
+        ChooseOutput => "Select where sound plays", "Оберіть, звідки відтворювати звук";
         ApplicationsHint => "Volume of each app that is playing sound right now", "Гучність кожної програми, що зараз відтворює звук";
         NoStreams => "No apps are playing sound", "Жодна програма зараз не відтворює звук";
         InputLevel => "Input level", "Рівень сигналу";
@@ -623,12 +624,17 @@ impl Page {
                     }
                 })
                 .collect();
-            return column![
-                sdk::text(c.t(K::Output), TextStyle::HEAD),
-                sdk::grid(cards, if t.compact { 1 } else { 3 }, 12.0),
-            ]
-            .spacing(8)
-            .into();
+            let title = sdk::text(c.t(K::Output), TextStyle::HEAD);
+            let header: Element<'_, Msg> = if devices.len() <= 1 {
+                title.into()
+            } else if t.compact {
+                column![title, sdk::text(c.t(tr::Key::ChooseOutput), TextStyle::CAP).color(t.fg_3())].spacing(4).into()
+            } else {
+                row![title, space().width(Fill), sdk::text(c.t(tr::Key::ChooseOutput), TextStyle::CAP).color(t.fg_3())]
+                    .align_y(Alignment::Center)
+                    .into()
+            };
+            return column![header, sdk::grid(cards, if t.compact { 1 } else { 3 }, 12.0)].spacing(8).into();
         }
         for device in devices {
             let active = device.is_default;
