@@ -366,12 +366,7 @@ impl Pane for Page {
         ));
         let input_extras =
             (self.state.meter && self.state.input.is_some()).then(|| self.meter_row(&c)).into_iter().collect();
-        page = page.push(self.device_group(&c, Channel::Input)).push(self.channel_group(
-            &c,
-            Channel::Input,
-            1.0,
-            input_extras,
-        ));
+        page = page.push(self.channel_group(&c, Channel::Input, 1.0, input_extras));
         if self.state.streams_supported {
             page = page.push(self.streams_group(&c));
         }
@@ -470,7 +465,25 @@ impl Page {
             None => Row::new(t, c.t(K::NoDevices)).dimmed(true).build(),
         };
         let group = Group::new(t);
-        let group = if channel == Channel::Input { group.title(c.t(title)) } else { group };
+        let group = if channel == Channel::Input {
+            let devices = &self.state.sources;
+            let device_row = if devices.is_empty() {
+                Row::new(t, c.t(K::NoDevices)).dimmed(true).build()
+            } else {
+                Row::new(t, c.t(K::InputDevice))
+                    .suffix(widgets::dropdown(
+                        t,
+                        devices.clone(),
+                        self.state.default_source().cloned(),
+                        |device| Msg::Device(Channel::Input, device),
+                        300.0,
+                    ))
+                    .build()
+            };
+            group.title(c.t(title)).push(device_row)
+        } else {
+            group
+        };
         group.push(row).extend(extras).build()
     }
 
