@@ -537,6 +537,7 @@ pub struct GreeterUi {
     failures: u32,
     deny: Option<u32>,
     locked_until: Option<Instant>,
+    countdown_shown: Option<u64>,
     hover: GreeterHit,
     hover_from: GreeterHit,
     hover_at: Instant,
@@ -611,7 +612,7 @@ pub fn lockout_left(text: &str) -> Option<Duration> {
         let count: u64 = pair[0].parse().ok()?;
         let unit = pair[1];
         if unit.starts_with("min") || unit.starts_with("хв") {
-            Some(Duration::from_secs(count * 60))
+            Some(Duration::from_secs(count.saturating_mul(60)))
         } else if unit.starts_with("sec") || unit.starts_with("сек") {
             Some(Duration::from_secs(count))
         } else {
@@ -621,7 +622,7 @@ pub fn lockout_left(text: &str) -> Option<Duration> {
 }
 
 fn countdown(left: Duration) -> String {
-    let secs = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+    let secs = left.as_secs().saturating_add(u64::from(left.subsec_nanos() > 0));
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
@@ -663,6 +664,7 @@ impl GreeterUi {
             failures: 0,
             deny,
             locked_until: None,
+            countdown_shown: None,
             hover: GreeterHit::None,
             hover_from: GreeterHit::None,
             hover_at: clock::now(),
@@ -1091,7 +1093,7 @@ impl GreeterUi {
             .find_map(|text| lockout_left(text).map(|left| (text.to_string(), left)));
         if let Some((text, left)) = lockout {
             self.set_auth_error(text, false);
-            self.locked_until = Some(clock::now() + left);
+            self.locked_until = clock::now().checked_add(left);
             self.error_held = true;
             return;
         }
@@ -1342,13 +1344,16 @@ impl GreeterUi {
             self.toast = None;
             self.dirty = true;
         }
-        if let Some(until) = self.locked_until {
-            if clock::now() >= until {
+        if self.locked_until.is_some() {
+            let shown = self.locked_out().map(|left| left.as_secs() + u64::from(left.subsec_nanos() > 0));
+            if shown.is_none() {
                 self.locked_until = None;
                 self.failures = 0;
                 self.clear_error();
             }
-            self.dirty = true;
+            if std::mem::replace(&mut self.countdown_shown, shown) != shown || shown.is_none() {
+                self.dirty = true;
+            }
         }
         self.menu_reveal.settle(motion::t2());
         self.dirty || self.is_animating()
@@ -2481,6 +2486,25 @@ mod tests {
     }
 
     #[test]
+    fn a_lockout_countdown_asks_for_a_frame_once_a_second_not_on_every_pass() {
+        let mut ui = ui();
+        ui.locked_until = clock::now().checked_add(Duration::from_millis(90_500));
+        ui.tick();
+        assert_eq!(ui.countdown_shown, Some(91));
+        assert!(ui.dirty, "the first second is drawn");
+        let clock_face = (ui.time.clone(), ui.date.clone());
+        ui.dirty = false;
+        ui.tick();
+        if clock_face == (ui.time.clone(), ui.date.clone()) {
+            assert!(!ui.dirty, "the same second is not drawn again");
+        }
+        ui.locked_until = clock::now().checked_add(Duration::from_millis(88_500));
+        ui.dirty = false;
+        ui.tick();
+        assert!(ui.dirty && ui.countdown_shown == Some(89), "a new second is");
+    }
+
+    #[test]
     fn a_lockout_notice_survives_the_password_prompt_that_follows_it() {
         let mut ui = ui();
         ui.on_notice("The account is locked due to 3 failed logins.".into(), false);
@@ -2529,6 +2553,11 @@ mod tests {
         );
         assert_eq!(lockout_left("Обліковий запис заблоковано (5 хв до розблокування)"), Some(Duration::from_mins(5)));
         assert_eq!(lockout_left("Last login: Mon 10 minutes ago"), None);
+        assert_eq!(
+            lockout_left("locked (18446744073709551615 minutes left)"),
+            Some(Duration::from_secs(u64::MAX)),
+            "a count no clock can hold is still only a long wait"
+        );
         assert_eq!(countdown(Duration::from_millis(581_200)), "9:42");
         assert_eq!(faillock_deny("# deny = 9\n deny= 5 # local\n"), 5);
         assert_eq!(faillock_deny("unlock_time = 600"), 3);

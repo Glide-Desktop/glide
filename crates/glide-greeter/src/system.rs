@@ -277,7 +277,10 @@ pub fn split_exec(exec: &str) -> Vec<String> {
     if in_arg {
         args.push(current);
     }
-    args.into_iter().filter(|arg| !(arg.len() == 2 && arg.starts_with('%'))).map(|arg| arg.replace("%%", "%")).collect()
+    args.into_iter()
+        .filter(|arg| arg == "%%" || !(arg.len() == 2 && arg.starts_with('%')))
+        .map(|arg| arg.replace("%%", "%"))
+        .collect()
 }
 
 #[must_use]
@@ -372,6 +375,7 @@ mod tests {
         assert_eq!(parsed.desktop_names, "Glide:GNOME");
         assert!(parsed.env().contains(&"XDG_CURRENT_DESKTOP=Glide:GNOME".to_string()));
         assert!(parsed.env().contains(&"XDG_SESSION_TYPE=wayland".to_string()));
+        assert_eq!(split_exec("run %% --keep=50%% %f"), ["run", "%", "--keep=50%"], "%% is a literal percent sign");
     }
 
     #[test]
