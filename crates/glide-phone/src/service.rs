@@ -160,11 +160,8 @@ impl PhoneService {
                     continue;
                 }
                 let mut mgr = self.manager.lock().await;
-                let known = mgr.register_discovered(
-                    peer_id.device_id.clone(),
-                    peer_id.device_name.clone(),
-                    peer_id.device_type,
-                );
+                let known =
+                    mgr.register_discovered(peer_id.device_id.clone(), &peer_id.device_name, peer_id.device_type);
 
                 if !known || mgr.is_connected(&peer_id.device_id) || mgr.is_connecting(&peer_id.device_id) {
                     continue;
@@ -284,6 +281,19 @@ impl PhoneService {
         .await
     }
 
+    async fn admit(
+        &self, identity: &IdentityBody, sender: crate::state::PacketSender, fingerprint: Option<String>,
+    ) -> Option<(bool, String)> {
+        let mut mgr = self.manager.lock().await;
+        if !mgr.register_discovered(identity.device_id.clone(), &identity.device_name, identity.device_type) {
+            return None;
+        }
+        mgr.register_connection(identity.device_id.clone(), sender, fingerprint);
+        mgr.send_pending_pair_request(&identity.device_id);
+        let device = mgr.devices.get(&identity.device_id)?;
+        Some((device.pair_state == PairState::Paired, device.name.clone()))
+    }
+
     async fn handle_connection_stream<S>(
         &self, stream: S, peer_addr: SocketAddr, peer_fp: Option<String>, expected_id: &str, expected_version: i32,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
@@ -314,19 +324,12 @@ impl PhoneService {
         }
 
         let peer_id = peer_identity.device_id.clone();
-        let peer_name = peer_identity.device_name.clone();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let own_sender = tx.downgrade();
 
-        let is_paired = {
-            let mut mgr = self.manager.lock().await;
-            if !mgr.register_discovered(peer_id.clone(), peer_name.clone(), peer_identity.device_type) {
-                return Err("too many unpaired devices are known already".into());
-            }
-            mgr.register_connection(peer_id.clone(), tx, peer_fp.clone());
-            mgr.send_pending_pair_request(&peer_id);
-            mgr.devices.get(&peer_id).is_some_and(|d| d.pair_state == PairState::Paired)
+        let Some((is_paired, peer_name)) = self.admit(&peer_identity, tx, peer_fp.clone()).await else {
+            return Err("the device is not admitted: too many unpaired devices, or an unusable id".into());
         };
         tracing::info!(%peer_addr, %peer_id, "phone session established");
 

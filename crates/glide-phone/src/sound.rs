@@ -54,44 +54,45 @@ pub fn start_alarm_loop() -> AlarmHandle {
     let handle = AlarmHandle { active: active.clone() };
 
     tokio::spawn(async move {
-        let Some((player, args)) = find_player() else {
-            tracing::warn!("no audio player found (pw-play, paplay, canberra-gtk-play)");
-            return;
-        };
-
-        let Some(sound_file) = find_alarm_sound() else {
-            tracing::warn!("no alarm sound file found in freedesktop stereo theme");
-            return;
-        };
-
-        while active.load(Ordering::SeqCst) {
-            let mut cmd = Command::new(player);
-            cmd.args(args);
-            cmd.arg(&sound_file);
-
-            match cmd.spawn() {
-                Ok(mut child) => {
-                    tokio::select! {
-                        _ = child.wait() => {}
-                        () = async {
-                            while active.load(Ordering::SeqCst) {
-                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                            }
-                        } => {
-                            let _ = child.kill().await;
-                            break;
-                        }
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(player, %err, "failed to spawn audio player");
-                    break;
-                }
-            }
-
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        }
+        ring(&active).await;
+        active.store(false, Ordering::SeqCst);
     });
 
     handle
+}
+
+async fn ring(active: &AtomicBool) {
+    let Some((player, args)) = find_player() else {
+        tracing::warn!("no audio player found (pw-play, paplay, canberra-gtk-play)");
+        return;
+    };
+    let Some(sound_file) = find_alarm_sound() else {
+        tracing::warn!("no alarm sound file found in freedesktop stereo theme");
+        return;
+    };
+    while active.load(Ordering::SeqCst) {
+        let mut cmd = Command::new(player);
+        cmd.args(args);
+        cmd.arg(&sound_file);
+        match cmd.spawn() {
+            Ok(mut child) => {
+                tokio::select! {
+                    _ = child.wait() => {}
+                    () = async {
+                        while active.load(Ordering::SeqCst) {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        }
+                    } => {
+                        let _ = child.kill().await;
+                        break;
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(player, %err, "failed to spawn audio player");
+                break;
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
 }

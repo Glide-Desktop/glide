@@ -21,7 +21,7 @@ pub use plugins::clipboard::{ClipboardPayload, create_clipboard_packet, handle_c
 pub use plugins::find_device::{create_ring_packet, handle_find_this_device};
 pub use plugins::notifications::{
     ActiveNotification, NotificationEvent, NotificationPayload, create_action_packet, create_reply_packet,
-    create_request_packet, extract_auth_code, handle_notification_packet,
+    create_request_packet, handle_notification_packet,
 };
 pub use plugins::presenter::{PresenterEvent, handle_presenter_packet};
 pub use plugins::share::{SharePayload, create_share_text_packet, create_share_url_packet, handle_share_packet};

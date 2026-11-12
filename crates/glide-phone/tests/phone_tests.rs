@@ -3,11 +3,12 @@ use glide_phone::crypto::cert::{IdentityCert, compute_fingerprint};
 use glide_phone::plugins::battery::{THRESHOLD_BATTERY_LOW, THRESHOLD_NONE, handle_battery_packet};
 use glide_phone::plugins::find_device::create_ring_packet;
 use glide_phone::plugins::notifications::{
-    create_action_packet, create_reply_packet, create_request_packet, extract_auth_code, handle_notification_packet,
+    create_action_packet, create_reply_packet, create_request_packet, handle_notification_packet,
 };
 use glide_phone::protocol::identity::{DeviceType, IdentityBody, PROTOCOL_VERSION};
 use glide_phone::protocol::packet::{
-    NetworkPacket, PACKET_TYPE_BATTERY, PACKET_TYPE_FINDMYPHONE_REQUEST, PACKET_TYPE_NOTIFICATION, PACKET_TYPE_PAIR,
+    NetworkPacket, PACKET_TYPE_BATTERY, PACKET_TYPE_CLIPBOARD, PACKET_TYPE_FINDMYPHONE_REQUEST,
+    PACKET_TYPE_NOTIFICATION, PACKET_TYPE_PAIR,
 };
 use glide_phone::protocol::pair::{PairBody, PairState};
 use glide_phone::state::PhoneManager;
@@ -122,7 +123,7 @@ fn battery_packet_parsing() {
         }),
     );
 
-    let state = handle_battery_packet("Phone", &packet).expect("handle battery");
+    let state = handle_battery_packet(&packet).expect("handle battery");
     assert_eq!(state.charge, 85);
     assert!(state.is_charging);
     assert!(!state.is_low);
@@ -135,17 +136,10 @@ fn battery_packet_parsing() {
             "thresholdEvent": THRESHOLD_BATTERY_LOW,
         }),
     );
-    let low_state = handle_battery_packet("Phone", &low_packet).expect("handle low battery");
+    let low_state = handle_battery_packet(&low_packet).expect("handle low battery");
     assert_eq!(low_state.charge, 12);
     assert!(!low_state.is_charging);
     assert!(low_state.is_low);
-}
-
-#[test]
-fn notification_auth_code_extraction() {
-    assert_eq!(extract_auth_code("Your verification code is 492810."), Some("492810".to_string()));
-    assert_eq!(extract_auth_code("Код підтвердження: 8391"), Some("8391".to_string()));
-    assert_eq!(extract_auth_code("No digits here"), None);
 }
 
 #[test]
@@ -583,12 +577,33 @@ fn a_flood_of_made_up_devices_cannot_grow_the_device_list_without_bound() {
     };
     let mut manager = PhoneManager::new(config, cert);
     let admitted = (0..MAX_KNOWN_DEVICES * 4)
-        .filter(|index| manager.register_discovered(format!("fake_{index}"), "Fake".to_string(), DeviceType::Phone))
+        .filter(|index| manager.register_discovered(format!("fake_{index}"), "Fake", DeviceType::Phone))
         .count();
     assert_eq!(manager.devices.len(), MAX_KNOWN_DEVICES);
     assert_eq!(admitted, MAX_KNOWN_DEVICES - 1, "the paired phone holds one place");
-    assert!(manager.register_discovered("fake_0".to_string(), "Renamed".to_string(), DeviceType::Phone));
-    assert!(manager.register_discovered("paired_phone".to_string(), "Pixel".to_string(), DeviceType::Phone));
+    assert!(manager.register_discovered("fake_0".to_string(), "Renamed", DeviceType::Phone));
+    assert!(manager.register_discovered("paired_phone".to_string(), "Pixel", DeviceType::Phone));
+}
+
+#[test]
+fn a_name_from_the_network_is_shown_as_one_short_line() {
+    use glide_phone::state::MAX_DEVICE_NAME_CHARS;
+    let cert = IdentityCert::generate("local_1234567890123456789012345678").expect("cert");
+    let mut manager = PhoneManager::new(local_config(&cert, Vec::new()), cert);
+
+    assert!(manager.register_discovered("phone_a".to_string(), " Pixel\n9\u{7}\tPro ", DeviceType::Phone));
+    assert_eq!(manager.devices["phone_a"].name, "Pixel 9 Pro");
+
+    assert!(manager.register_discovered("phone_b".to_string(), &"я".repeat(5000), DeviceType::Phone));
+    assert_eq!(manager.devices["phone_b"].name.chars().count(), MAX_DEVICE_NAME_CHARS);
+
+    assert!(manager.register_discovered("phone_c".to_string(), "\n\n", DeviceType::Phone));
+    assert_eq!(manager.devices["phone_c"].name, "Device");
+
+    for id in ["", "two words", "line\nbreak", &"x".repeat(4096)] {
+        assert!(!manager.register_discovered(id.to_string(), "Fake", DeviceType::Phone), "{id:?}");
+    }
+    assert_eq!(manager.devices.len(), 3);
 }
 
 fn local_config(cert: &IdentityCert, paired: Vec<glide_phone::config::PairedDevice>) -> PhoneConfig {
@@ -617,7 +632,7 @@ fn a_phone_saved_as_paired_without_its_certificate_is_not_trusted() {
     assert_eq!(manager.devices["pinned"].pair_state, PairState::Paired);
     assert!(!manager.devices.contains_key("blank") && !manager.config.paired_devices.contains_key("blank"));
 
-    manager.register_discovered("blank".to_string(), "Pixel".to_string(), DeviceType::Phone);
+    manager.register_discovered("blank".to_string(), "Pixel", DeviceType::Phone);
     let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
     manager.register_connection("blank".to_string(), sender, Some("EE".to_string()));
     assert_eq!(manager.devices["blank"].pair_state, PairState::Unpaired, "any certificate used to pass as paired");
@@ -627,10 +642,35 @@ fn a_phone_saved_as_paired_without_its_certificate_is_not_trusted() {
 }
 
 #[test]
+fn a_device_that_only_finished_the_handshake_is_sent_nothing_but_pairing() {
+    let cert = IdentityCert::generate("local_1234567890123456789012345678").expect("cert");
+    let mut manager = PhoneManager::new(local_config(&cert, Vec::new()), cert);
+    manager.register_discovered("stranger".to_string(), "Nearby", DeviceType::Phone);
+    let (sender, mut sent) = tokio::sync::mpsc::unbounded_channel();
+    manager.register_connection("stranger".to_string(), sender, Some("AA".to_string()));
+
+    assert!(manager.set_clipboard("stranger", "hunter2").is_err(), "the clipboard stays on this machine");
+    assert!(manager.share_text("stranger", "a note").is_err());
+    assert!(manager.share_url("stranger", "https://example.com/private").is_err());
+    assert!(manager.ring_phone("stranger").is_err());
+    let _ = manager.reply_notification("stranger", "reply-1", "on my way");
+    let _ = manager.trigger_notification_action("stranger", "key", "Open");
+    assert!(sent.try_recv().is_err(), "nothing went out to an unpaired device");
+    assert_eq!(manager.clipboard_text(), None);
+
+    manager.accept_pair("stranger", String::new()).expect("a pair request is still sent");
+    assert_eq!(sent.try_recv().expect("the request").packet_type, PACKET_TYPE_PAIR);
+    manager.handle_packet("stranger", &PairBody::accept().to_packet().unwrap()).expect("accepted");
+    while sent.try_recv().is_ok() {}
+    manager.set_clipboard("stranger", "now shared").expect("a paired phone gets the clipboard");
+    assert_eq!(sent.try_recv().expect("the clipboard").packet_type, PACKET_TYPE_CLIPBOARD);
+}
+
+#[test]
 fn a_certificate_that_changes_while_pairing_starts_the_pairing_over() {
     let cert = IdentityCert::generate("local_1234567890123456789012345678").expect("cert");
     let mut manager = PhoneManager::new(local_config(&cert, Vec::new()), cert);
-    manager.register_discovered("phone_1".to_string(), "Pixel".to_string(), DeviceType::Phone);
+    manager.register_discovered("phone_1".to_string(), "Pixel", DeviceType::Phone);
     let (shown, _shown_receiver) = tokio::sync::mpsc::unbounded_channel();
     manager.register_connection("phone_1".to_string(), shown, Some("AA".to_string()));
     manager.accept_pair("phone_1", String::new()).expect("requested");
@@ -649,7 +689,7 @@ fn a_certificate_that_changes_while_pairing_starts_the_pairing_over() {
 fn phone_manager_pairing_and_state() {
     let cert = IdentityCert::generate("local_1234567890123456789012345678").expect("cert");
     let mut manager = PhoneManager::new(local_config(&cert, Vec::new()), cert);
-    manager.register_discovered("phone_1".to_string(), "Pixel".to_string(), DeviceType::Phone);
+    manager.register_discovered("phone_1".to_string(), "Pixel", DeviceType::Phone);
 
     let dev = manager.devices.get("phone_1").expect("device exists");
     assert_eq!(dev.pair_state, PairState::Unpaired);
@@ -705,7 +745,7 @@ fn phone_manager_pairing_and_state() {
     assert_eq!(manager.devices["phone_1"].pair_state, PairState::Paired);
     assert_eq!(manager.config.paired_devices["phone_1"].fingerprint, "AA:BB:CC");
 
-    manager.register_discovered("phone_2".to_string(), "Second".to_string(), DeviceType::Phone);
+    manager.register_discovered("phone_2".to_string(), "Second", DeviceType::Phone);
     manager.accept_pair("phone_2", "CC:DD".to_string()).unwrap();
     let (first, _first_receiver) = tokio::sync::mpsc::unbounded_channel();
     let first_weak = first.downgrade();
@@ -802,7 +842,7 @@ async fn phone_daemon_dbus_api() {
     };
 
     let mut manager = PhoneManager::new(config, cert);
-    manager.register_discovered("phone_1".to_string(), "Pixel".to_string(), DeviceType::Phone);
+    manager.register_discovered("phone_1".to_string(), "Pixel", DeviceType::Phone);
 
     let shared = Arc::new(Mutex::new(manager));
     let daemon = PhoneDaemon::new(shared.clone());

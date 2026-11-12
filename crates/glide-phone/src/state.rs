@@ -29,6 +29,19 @@ pub type PacketSender = UnboundedSender<NetworkPacket>;
 
 const CONNECTING_COOLDOWN: Duration = Duration::from_secs(5);
 pub const MAX_KNOWN_DEVICES: usize = 64;
+pub const MAX_DEVICE_NAME_CHARS: usize = 64;
+const MAX_DEVICE_ID_BYTES: usize = 128;
+
+fn usable_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= MAX_DEVICE_ID_BYTES && !id.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+fn presentable(name: &str) -> String {
+    let visible: String = name.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let name: String =
+        visible.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(MAX_DEVICE_NAME_CHARS).collect();
+    if name.is_empty() { "Device".to_string() } else { name }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhoneDeviceState {
@@ -118,7 +131,11 @@ impl PhoneManager {
         self.connecting.remove(device_id);
     }
 
-    pub fn register_discovered(&mut self, id: String, name: String, device_type: DeviceType) -> bool {
+    pub fn register_discovered(&mut self, id: String, name: &str, device_type: DeviceType) -> bool {
+        if !usable_id(&id) {
+            return false;
+        }
+        let name = presentable(name);
         let paired_fp = self.config.paired_devices.get(&id).map(|p| p.fingerprint.clone());
         let is_paired = paired_fp.is_some();
         if !is_paired && !self.devices.contains_key(&id) && self.devices.len() >= MAX_KNOWN_DEVICES {
@@ -227,9 +244,12 @@ impl PhoneManager {
 
         match packet.packet_type.as_str() {
             PACKET_TYPE_BATTERY => {
-                if let Ok(battery_state) = handle_battery_packet(&device_name, packet)
+                if let Ok(battery_state) = handle_battery_packet(packet)
                     && device.battery != Some(battery_state)
                 {
+                    if crate::plugins::battery::turned_low(device.battery, battery_state) {
+                        crate::plugins::battery::announce_low(&device_name, battery_state.charge);
+                    }
                     device.battery = Some(battery_state);
                     self.notify.notify_waiters();
                 }
@@ -499,9 +519,26 @@ impl PhoneManager {
         cards
     }
 
+    fn is_paired(&self, device_id: &str) -> bool {
+        self.devices.get(device_id).is_some_and(|device| device.pair_state == PairState::Paired)
+    }
+
+    fn reachable(&self, device_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if !self.is_paired(device_id) {
+            return Err(format!("device is not paired: {device_id}").into());
+        }
+        if !self.is_connected(device_id) {
+            return Err(format!("device is not connected: {device_id}").into());
+        }
+        Ok(())
+    }
+
     pub fn ring_phone(&self, device_id: &str) -> Result<NetworkPacket, Box<dyn std::error::Error + Send + Sync>> {
         if !self.devices.contains_key(device_id) {
             return Err(format!("unknown device {device_id}").into());
+        }
+        if !self.is_paired(device_id) {
+            return Err(format!("device is not paired: {device_id}").into());
         }
         let packet = crate::plugins::find_device::create_ring_packet();
         self.send_to_device(device_id, packet.clone());
@@ -524,23 +561,25 @@ impl PhoneManager {
     #[must_use]
     pub fn reply_notification(&self, device_id: &str, reply_id: &str, message: &str) -> NetworkPacket {
         let packet = create_reply_packet(reply_id, message);
-        self.send_to_device(device_id, packet.clone());
+        if self.is_paired(device_id) {
+            self.send_to_device(device_id, packet.clone());
+        }
         packet
     }
 
     #[must_use]
     pub fn trigger_notification_action(&self, device_id: &str, key: &str, action: &str) -> NetworkPacket {
         let packet = create_action_packet(key, action);
-        self.send_to_device(device_id, packet.clone());
+        if self.is_paired(device_id) {
+            self.send_to_device(device_id, packet.clone());
+        }
         packet
     }
 
     pub fn set_clipboard(
         &mut self, device_id: &str, content: &str,
     ) -> Result<NetworkPacket, Box<dyn std::error::Error + Send + Sync>> {
-        if !self.is_connected(device_id) {
-            return Err(format!("device is not connected: {device_id}").into());
-        }
+        self.reachable(device_id)?;
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis().min(i64::MAX as u128) as i64;
         let packet = create_clipboard_packet(content, timestamp);
         self.clipboard = Some((content.to_string(), timestamp));
@@ -562,9 +601,7 @@ impl PhoneManager {
     pub fn share_text(
         &self, device_id: &str, text: &str,
     ) -> Result<NetworkPacket, Box<dyn std::error::Error + Send + Sync>> {
-        if !self.is_connected(device_id) {
-            return Err(format!("device is not connected: {device_id}").into());
-        }
+        self.reachable(device_id)?;
         let packet = create_share_text_packet(text);
         self.send_to_device(device_id, packet.clone());
         Ok(packet)
@@ -573,9 +610,7 @@ impl PhoneManager {
     pub fn share_url(
         &self, device_id: &str, url: &str,
     ) -> Result<NetworkPacket, Box<dyn std::error::Error + Send + Sync>> {
-        if !self.is_connected(device_id) {
-            return Err(format!("device is not connected: {device_id}").into());
-        }
+        self.reachable(device_id)?;
         let packet = create_share_url_packet(url);
         self.send_to_device(device_id, packet.clone());
         Ok(packet)

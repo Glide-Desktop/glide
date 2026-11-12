@@ -606,16 +606,17 @@ pub fn create_dismiss_packet(notif_id: &str) -> NetworkPacket {
     )
 }
 
-#[must_use]
-pub fn extract_auth_code(text: &str) -> Option<String> {
-    let sanitized: String = text.chars().filter(|c| !c.is_control() && *c != '\u{2063}').collect();
-    for word in sanitized.split_whitespace() {
-        let clean = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-        if clean.len() >= 4 && clean.len() <= 8 && clean.chars().all(|c| c.is_ascii_digit()) {
-            return Some(clean.to_string());
-        }
+pub const MAX_ACTIVE_NOTIFICATIONS: usize = 256;
+const MAX_SEEN_NOTIFICATIONS: usize = 1024;
+
+fn remember_seen<S: BuildHasher, H: BuildHasher>(
+    seen_history: &mut HashMap<String, (String, String), H>,
+    active_notifications: &HashMap<String, ActiveNotification, S>, id: &str, signature: (String, String),
+) {
+    if seen_history.len() >= MAX_SEEN_NOTIFICATIONS && !seen_history.contains_key(id) {
+        seen_history.retain(|known, _| active_notifications.contains_key(known));
     }
-    None
+    seen_history.insert(id.to_string(), signature);
 }
 
 fn dispatch_desktop_notification(device_name: &str, active: &ActiveNotification, is_upgrade: bool) {
@@ -780,23 +781,12 @@ fn handle_cancel_packet<S: BuildHasher, H: BuildHasher>(
     seen_history: &mut HashMap<String, (String, String), H>,
 ) -> NotificationEvent {
     let removed = active_notifications.remove(clean_id).or_else(|| {
-        let sibling_key = active_notifications
+        let (title, body) = seen_history.get(clean_id)?;
+        let twin = active_notifications
             .values()
-            .find(|existing| {
-                let incoming = IncomingNotification {
-                    id: clean_id,
-                    app_name: &existing.app_name,
-                    title: &existing.title,
-                    body: &existing.body,
-                    has_avatar: existing.has_avatar,
-                    reply_id: existing.request_reply_id.as_deref(),
-                    actions: &existing.actions,
-                    silent: true,
-                };
-                notifications_are_siblings(existing, &incoming)
-            })
-            .map(|e| e.id.clone());
-        sibling_key.and_then(|k| active_notifications.remove(&k))
+            .find(|existing| existing.title == *title && existing.body == *body)
+            .map(|existing| existing.id.clone())?;
+        active_notifications.remove(&twin)
     });
     if let Some(removed) = removed
         && let Some(dbus_id) = take_desktop_notify_id(removed.seq)
@@ -916,18 +906,21 @@ pub fn handle_notification_packet_with_payload<S: BuildHasher, H: BuildHasher>(
         .map(|existing| existing.id.clone());
 
     if let Some(other_id) = sibling_id {
-        seen_history.insert(clean_id.clone(), signature);
+        remember_seen(seen_history, active_notifications, &clean_id, signature);
         return Ok(upgrade_sibling_notification(device_name, &other_id, &incoming, built_icon, active_notifications));
     }
 
     let prev = active_notifications.get(&clean_id);
+    if prev.is_none() && active_notifications.len() >= MAX_ACTIVE_NOTIFICATIONS {
+        return Ok(None);
+    }
     let already_in_active = prev.is_some_and(|existing| existing.title == title && existing.body == body);
     let already_in_history = seen_history.get(&clean_id) == Some(&signature);
     let already_seen = already_in_active || already_in_history;
     let prev_had_avatar = prev.is_some_and(|existing| existing.has_avatar);
     let prev_notified = prev.is_some_and(|existing| existing.notified_desktop);
 
-    seen_history.insert(clean_id.clone(), signature);
+    remember_seen(seen_history, active_notifications, &clean_id, signature);
 
     let (icon_path, has_avatar) = if incoming_has_avatar {
         (built_icon, true)
@@ -965,9 +958,6 @@ pub fn handle_notification_packet_with_payload<S: BuildHasher, H: BuildHasher>(
 
     if !is_silent {
         active.notified_desktop = true;
-        if let Some(code) = extract_auth_code(&body) {
-            let _ = glide_sdk::system::copy_secret(&code, 60);
-        }
         dispatch_desktop_notification(device_name, &active, prev_notified);
     } else if prev_notified {
         dispatch_desktop_notification(device_name, &active, true);
@@ -988,6 +978,57 @@ mod tests {
         }
         assert_eq!(app_icon_candidates("My App"), ["My App", "my-app", "my app"]);
         assert!(app_icon_candidates("Telegram").contains(&"org.telegram.desktop".to_string()));
+    }
+
+    use crate::protocol::packet::PACKET_TYPE_NOTIFICATION;
+
+    fn posted(id: &str, title: &str, text: &str) -> NetworkPacket {
+        NetworkPacket::new(
+            PACKET_TYPE_NOTIFICATION,
+            serde_json::json!({ "id": id, "appName": "Signal", "title": title, "text": text, "silent": true }),
+        )
+    }
+
+    fn cancelled(id: &str) -> NetworkPacket {
+        NetworkPacket::new(PACKET_TYPE_NOTIFICATION, serde_json::json!({ "id": id, "isCancel": true }))
+    }
+
+    #[test]
+    fn cancelling_a_notification_that_was_never_kept_leaves_the_others_alone() {
+        let mut active = HashMap::new();
+        let mut seen = HashMap::new();
+        let mut take = |packet: NetworkPacket, active: &mut HashMap<String, ActiveNotification>| {
+            handle_notification_packet_with_history("Phone", &packet, active, &mut seen).expect("a well-formed packet")
+        };
+        take(posted("a", "Alice", "Hello"), &mut active);
+        take(posted("b", "Bob", "Lunch?"), &mut active);
+        take(cancelled("never-shown"), &mut active);
+        assert_eq!(active.len(), 2, "an unknown id dismisses nothing");
+
+        take(posted("a-twin", "Alice", "Hello"), &mut active);
+        assert_eq!(active.len(), 2, "a second copy of the same message joins the first");
+        take(cancelled("a-twin"), &mut active);
+        assert!(!active.contains_key("a"), "dismissing the copy dismisses the message it joined");
+        assert!(active.contains_key("b"));
+    }
+
+    #[test]
+    fn a_phone_cannot_make_the_daemon_keep_notifications_without_end() {
+        let mut active = HashMap::new();
+        let mut seen = HashMap::new();
+        for index in 0..MAX_ACTIVE_NOTIFICATIONS + 40 {
+            let packet = posted(&format!("id-{index}"), &format!("Title {index}"), &format!("Body {index}"));
+            handle_notification_packet_with_history("Phone", &packet, &mut active, &mut seen).expect("packet");
+        }
+        assert_eq!(active.len(), MAX_ACTIVE_NOTIFICATIONS);
+        assert!(active.contains_key("id-0") && !active.contains_key(&format!("id-{MAX_ACTIVE_NOTIFICATIONS}")));
+
+        for index in 0..MAX_SEEN_NOTIFICATIONS + 10 {
+            let copy = posted(&format!("copy-{index}"), "Title 0", "Body 0");
+            handle_notification_packet_with_history("Phone", &copy, &mut active, &mut seen).expect("packet");
+        }
+        assert!(seen.len() <= MAX_SEEN_NOTIFICATIONS, "copies of a kept message do not pile up: {}", seen.len());
+        assert!(seen.contains_key("id-0"), "what is still shown stays known");
     }
 
     #[test]
