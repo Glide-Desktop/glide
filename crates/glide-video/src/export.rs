@@ -231,6 +231,7 @@ pub fn spawn(job: Job) -> (Handle, UnboundedReceiver<Progress>) {
     let cancel = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = unbounded();
     let flag = cancel.clone();
+    let refused = sender.clone();
     let spawned = std::thread::Builder::new().name("glide-video-export".into()).spawn(move || {
         let output = job.output.clone();
         let outcome = if job.lossless { remux(&job, &flag, &sender) } else { transcode(&job, &flag, &sender) };
@@ -249,6 +250,7 @@ pub fn spawn(job: Job) -> (Handle, UnboundedReceiver<Progress>) {
     });
     if let Err(err) = spawned {
         tracing::warn!("could not start the export: {err}");
+        let _ = refused.unbounded_send(Progress::Failed(err.to_string()));
     }
     (Handle { cancel }, receiver)
 }
@@ -384,10 +386,24 @@ fn wait_eos(pipeline: &gst::Pipeline, cancel: &AtomicBool, mut tick: impl FnMut(
     }
 }
 
+struct Halt<'a>(&'a gst::Pipeline);
+
+impl Drop for Halt<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.set_state(gst::State::Null);
+    }
+}
+
 struct Encoder {
     pipeline: gst::Pipeline,
     video: Option<AppSrc>,
     audio: AppSrc,
+}
+
+impl Drop for Encoder {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
 }
 
 fn encoder(
@@ -439,8 +455,9 @@ fn encoder(
     pipeline.add_many([audio.upcast_ref(), &convert, &aac, &parse]).map_err(|err| err.to_string())?;
     gst::Element::link_many([audio.upcast_ref(), &convert, &aac, &parse]).map_err(|err| err.to_string())?;
     parse.link(&mux).map_err(|err| err.to_string())?;
-    pipeline.set_state(gst::State::Playing).map_err(|err| err.to_string())?;
-    Ok(Encoder { pipeline, video, audio })
+    let encoder = Encoder { pipeline, video, audio };
+    encoder.pipeline.set_state(gst::State::Playing).map_err(|err| err.to_string())?;
+    Ok(encoder)
 }
 
 fn probe(uri: &str) -> Option<(u32, u32, gst::Fraction, bool)> {
@@ -515,9 +532,7 @@ fn transcode(job: &Job, cancel: &AtomicBool, sender: &UnboundedSender<Progress>)
         let _ = video.end_of_stream();
     }
     let _ = encoder.audio.end_of_stream();
-    let outcome = wait_eos(&encoder.pipeline, cancel, || {});
-    let _ = encoder.pipeline.set_state(gst::State::Null);
-    outcome
+    wait_eos(&encoder.pipeline, cancel, || {})
 }
 
 fn video_chain((width, height): (u32, u32), fps: gst::Fraction, transform: Transform) -> Option<Vec<gst::Element>> {
@@ -629,11 +644,9 @@ fn decode_into(pass: &Pass<'_>, cancel: &AtomicBool, sender: &UnboundedSender<Pr
             counter.fetch_add(1, Ordering::SeqCst);
         }
     });
+    let _halt = Halt(&pipeline);
     pipeline.set_state(gst::State::Paused).map_err(|err| err.to_string())?;
-    if let Err(err) = preroll(&pipeline, &linked, expect) {
-        let _ = pipeline.set_state(gst::State::Null);
-        return Err(err);
-    }
+    preroll(&pipeline, &linked, expect)?;
     let start = gst::ClockTime::from_nseconds(segment.start.as_nanos() as u64);
     let end = gst::ClockTime::from_nseconds(segment.end.as_nanos() as u64);
     pipeline
@@ -677,6 +690,7 @@ fn remux(job: &Job, cancel: &AtomicBool, sender: &UnboundedSender<Progress>) -> 
         .map_err(|err| err.to_string())?;
     pipeline.add_many([&mux, &sink]).map_err(|err| err.to_string())?;
     mux.link(&sink).map_err(|err| err.to_string())?;
+    let _halt = Halt(&pipeline);
     let streams = streams_of(&first.uri)?;
     let mut sources = Vec::new();
     for caps in &streams {
@@ -708,9 +722,7 @@ fn remux(job: &Job, cancel: &AtomicBool, sender: &UnboundedSender<Progress>) -> 
     for source in &sources {
         let _ = source.end_of_stream();
     }
-    let outcome = wait_eos(&pipeline, cancel, || {});
-    let _ = pipeline.set_state(gst::State::Null);
-    outcome
+    wait_eos(&pipeline, cancel, || {})
 }
 
 fn expect_av(uri: &str) -> usize {
@@ -765,10 +777,11 @@ fn streams_of(uri: &str) -> Result<Vec<gst::Caps>, String> {
                 .build(),
         );
     });
-    pipeline.set_state(gst::State::Paused).map_err(|err| err.to_string())?;
-    let outcome = preroll(&pipeline, &linked, expect_av(uri));
-    let _ = pipeline.set_state(gst::State::Null);
-    outcome?;
+    {
+        let _halt = Halt(&pipeline);
+        pipeline.set_state(gst::State::Paused).map_err(|err| err.to_string())?;
+        preroll(&pipeline, &linked, expect_av(uri))?;
+    }
     let mut caps = found.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     caps.sort_by_key(|caps| caps.structure(0).map(|structure| !structure.name().starts_with("video/")));
     if caps.is_empty() { Err("no streams to copy".into()) } else { Ok(caps) }
@@ -850,11 +863,9 @@ fn copy_segment(
             counter.fetch_add(1, Ordering::SeqCst);
         }
     });
+    let _halt = Halt(&pipeline);
     pipeline.set_state(gst::State::Paused).map_err(|err| err.to_string())?;
-    if let Err(err) = preroll(&pipeline, &linked, expect) {
-        let _ = pipeline.set_state(gst::State::Null);
-        return Err(err);
-    }
+    preroll(&pipeline, &linked, expect)?;
     let start = gst::ClockTime::from_nseconds(segment.start.as_nanos() as u64);
     let end = gst::ClockTime::from_nseconds(segment.end.as_nanos() as u64);
     pipeline
@@ -954,6 +965,24 @@ mod tests {
         assert!((350_000_000..=380_000_000).contains(&h264), "{h264}");
         assert!(estimate(length, Quality::P1080, Codec::Av1) < estimate(length, Quality::P1080, Codec::Hevc));
         assert!(estimate(length, Quality::AudioOnly, Codec::H264) < 8_000_000);
+    }
+
+    #[test]
+    fn a_pipeline_left_early_is_stopped_before_it_is_dropped() {
+        crate::init().expect("gstreamer");
+        let pipeline = gst::Pipeline::new();
+        let source = make("fakesrc").expect("fakesrc");
+        let sink = make("fakesink").expect("fakesink");
+        pipeline.add_many([&source, &sink]).expect("added");
+        source.link(&sink).expect("linked");
+        let leave_early = || -> Result<(), String> {
+            let _halt = Halt(&pipeline);
+            pipeline.set_state(gst::State::Paused).map_err(|err| err.to_string())?;
+            Err("the seek was refused".into())
+        };
+        assert!(leave_early().is_err());
+        let (_, current, _) = pipeline.state(gst::ClockTime::from_seconds(5));
+        assert_eq!(current, gst::State::Null);
     }
 
     #[test]

@@ -100,8 +100,7 @@ fn grab(playbin: &gst::Element, sink: &AppSink, at: Duration, accurate: bool) ->
 
 fn run(uri: &str, width: u32, requests: &Receiver<Request>, results: &UnboundedSender<Frame>) -> Result<(), String> {
     let (playbin, sink) = build(uri, width)?;
-    playbin.set_state(gst::State::Paused).map_err(|err| err.to_string())?;
-    if !settle(&playbin) {
+    if playbin.set_state(gst::State::Paused).is_err() || !settle(&playbin) {
         let _ = playbin.set_state(gst::State::Null);
         return Err("the file did not preroll".into());
     }
@@ -145,8 +144,7 @@ pub fn sample_rgba(sample: &gst::Sample) -> Option<Frame> {
 #[must_use]
 pub fn still(uri: &str, at: Duration, width: u32) -> Option<Frame> {
     let (playbin, sink) = build(uri, width).ok()?;
-    playbin.set_state(gst::State::Paused).ok()?;
-    let frame = settle(&playbin)
+    let frame = (playbin.set_state(gst::State::Paused).is_ok() && settle(&playbin))
         .then(|| grab(&playbin, &sink, at, false))
         .flatten()
         .map(|(width, height, rgba)| Frame { tag: 0, at, width, height, rgba });

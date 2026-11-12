@@ -234,7 +234,7 @@ impl Player {
     }
 
     pub fn set_rate(&mut self, rate: f64) {
-        if (rate - self.rate).abs() < f64::EPSILON {
+        if !rate.is_finite() || rate == 0.0 || (rate - self.rate).abs() < f64::EPSILON {
             return;
         }
         self.rate = rate;

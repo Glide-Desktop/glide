@@ -128,17 +128,21 @@ fn unescape(text: &str) -> String {
 #[must_use]
 pub fn plain_text(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
-    let mut tag = false;
-    for character in raw.chars() {
-        match character {
-            '<' => tag = true,
-            '>' if tag => tag = false,
-            _ if tag => {}
-            '\r' => {}
-            _ => out.push(character),
+    let mut rest = raw;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let named = after.starts_with(|first: char| first.is_ascii_alphanumeric() || first == '/');
+        match after.find(['>', '<', '\n']) {
+            Some(close) if named && after[close..].starts_with('>') => rest = &after[close + 1..],
+            _ => {
+                out.push('<');
+                rest = after;
+            }
         }
     }
-    unescape(out.trim())
+    out.push_str(rest);
+    unescape(out.replace('\r', "").trim())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,6 +355,15 @@ mod tests {
     #[test]
     fn srt_markup_loses_tags_and_entities() {
         assert_eq!(plain_text("<i>Дивись, туман</i> &amp; сонце\r\n"), "Дивись, туман & сонце");
+    }
+
+    #[test]
+    fn an_angle_bracket_that_opens_no_tag_stays_in_the_line() {
+        assert_eq!(plain_text("I <3 you\nтак само"), "I <3 you\nтак само");
+        assert_eq!(plain_text("2 < 3, <b>так</b>"), "2 < 3, так");
+        assert_eq!(plain_text("<00:00:01.000>ка<00:00:01.500>ра"), "кара", "WebVTT karaoke stamps are tags");
+        assert_eq!(plain_text("<font color=\"#fff\">білий</font>"), "білий");
+        assert_eq!(plain_text("кінець <"), "кінець <");
     }
 
     #[test]
