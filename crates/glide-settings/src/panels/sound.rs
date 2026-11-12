@@ -649,7 +649,8 @@ impl Page {
                     .align_y(Alignment::Center)
                     .into()
             };
-            return column![header, sdk::grid(cards, if t.compact { 1 } else { 3 }, 12.0)].spacing(8).into();
+            let columns = if t.compact { 1 } else { devices.len().min(3) };
+            return column![header, sdk::grid(cards, columns, 12.0)].spacing(8).into();
         }
         for device in devices {
             let active = device.is_default;
