@@ -175,16 +175,22 @@ fn trusted(sender: Option<&str>, interface: Option<&str>, watcher: Option<&str>,
     }
 }
 
-fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>, unique: &str) {
-    forward_signals(connection, tx, unique);
+fn listen(
+    messages: zbus::blocking::MessageIterator, connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>,
+    unique: &str,
+) {
+    forward_signals(messages, connection, tx, unique);
     if tx.send(Request::Disconnected).is_err() {
         tracing::trace!("the tray worker ended before its signal listener");
     }
 }
 
-fn forward_signals(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>, unique: &str) {
+fn forward_signals(
+    messages: zbus::blocking::MessageIterator, connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>,
+    unique: &str,
+) {
     let mut watcher = watcher_owner(connection);
-    for message in zbus::blocking::MessageIterator::from(connection) {
+    for message in messages {
         let Ok(message) = message else {
             if connection.is_closed() {
                 return;
@@ -477,14 +483,6 @@ impl Worker {
             None => zbus::blocking::connection::Builder::session()?,
         };
         let connection = builder.method_timeout(METHOD_TIMEOUT).build()?;
-        let bus = zbus::blocking::fdo::DBusProxy::new(&connection)?;
-        for rule in SIGNAL_RULES {
-            if let Ok(rule) = zbus::MatchRule::try_from(rule)
-                && let Err(err) = bus.add_match_rule(rule)
-            {
-                tracing::debug!("tray signal match failed: {err}");
-            }
-        }
         let unique = connection.unique_name().map(ToString::to_string).unwrap_or_default();
         let registry = Arc::new(Mutex::new(Registry::default()));
         connection.object_server().at(WATCHER_PATH, Watcher { registry: registry.clone(), tx: tx.clone() })?;
@@ -493,12 +491,21 @@ impl Worker {
         if let Err(err) = connection.request_name(host.as_str()) {
             tracing::debug!("could not own {host}: {err}");
         }
+        let messages = zbus::blocking::MessageIterator::from(&connection);
+        let bus = zbus::blocking::fdo::DBusProxy::new(&connection)?;
+        for rule in SIGNAL_RULES {
+            if let Ok(rule) = zbus::MatchRule::try_from(rule)
+                && let Err(err) = bus.add_match_rule(rule)
+            {
+                tracing::debug!("tray signal match failed: {err}");
+            }
+        }
         let signals = {
             let connection = connection.clone();
             let unique = unique.clone();
             std::thread::Builder::new()
                 .name("glide-tray-signals".into())
-                .spawn(move || listen(&connection, &tx, &unique))?
+                .spawn(move || listen(messages, &connection, &tx, &unique))?
         };
         Ok(Self {
             connection,
