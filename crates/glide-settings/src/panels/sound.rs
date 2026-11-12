@@ -34,6 +34,8 @@ mod tr {
         ApplicationsHint => "Volume of each app that is playing sound right now", "Гучність кожної програми, що зараз відтворює звук";
         NoStreams => "No apps are playing sound", "Жодна програма зараз не відтворює звук";
         InputLevel => "Input level", "Рівень сигналу";
+        Microphone => "Microphone", "Мікрофон";
+        MicrophoneVolume => "Microphone volume", "Гучність мікрофона";
         InputLevelHint => "Press Test and speak: the microphone is monitored for 10 seconds", "Натисніть «Перевірити» й говоріть: мікрофон прослуховується 10 секунд";
         Listening => "Listening… speak into the microphone", "Слухаю… говоріть у мікрофон";
         TestMic => "Test", "Перевірити";
@@ -470,7 +472,7 @@ impl Page {
             let device_row = if devices.is_empty() {
                 Row::new(t, c.t(K::NoDevices)).dimmed(true).build()
             } else {
-                Row::new(t, c.t(K::InputDevice))
+                Row::new(t, c.t(tr::Key::Microphone))
                     .suffix(widgets::dropdown(
                         t,
                         devices.clone(),
@@ -752,7 +754,11 @@ fn volume_row<'a>(
         volume,
         muted,
     );
-    Row::new(t, c.t(K::Volume)).subtitle(subtitle).suffix(widgets::flexible(control, 360.0)).build()
+    let title = match channel {
+        Channel::Output => c.t(K::Volume),
+        Channel::Input => c.t(tr::Key::MicrophoneVolume),
+    };
+    Row::new(t, title).subtitle(subtitle).suffix(widgets::flexible(control, 360.0)).build()
 }
 
 #[cfg(test)]
