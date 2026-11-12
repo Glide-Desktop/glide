@@ -171,7 +171,14 @@ impl AppIndex {
         if let Some(app) = self.by_id(&wanted) {
             return Some(app);
         }
-        let short = wanted.rsplit('.').next().unwrap_or(&wanted);
+        let stem = wanted.strip_suffix(".desktop").unwrap_or(&wanted);
+        if stem.is_empty() {
+            return None;
+        }
+        if let Some(app) = self.by_id(stem) {
+            return Some(app);
+        }
+        let short = stem.rsplit('.').next().unwrap_or(stem);
         self.apps.iter().zip(&self.binaries).find_map(|(app, binary)| {
             let found = app.name.eq_ignore_ascii_case(key)
                 || app.icon.eq_ignore_ascii_case(key)
@@ -487,6 +494,21 @@ mod tests {
             app("org.gnome.Nautilus", "Files", "nautilus --new-window"),
             app("steam", "Steam", "env GDK_SCALE=1 /usr/bin/steam-runtime %U"),
         ])
+    }
+
+    #[test]
+    fn an_app_id_ending_in_desktop_names_its_own_app_not_the_first_one_called_desktop() {
+        let index = AppIndex::new(vec![
+            app("org.telegram.desktop", "Telegram", "telegram-desktop -- %u"),
+            app("org.kde.dolphin", "Dolphin", "dolphin %u"),
+        ]);
+        let id = |key: &str| index.get(key).map(|app| app.id.as_str());
+        assert_eq!(id("org.kde.dolphin.desktop"), Some("org.kde.dolphin"));
+        assert_eq!(id("dolphin.desktop"), Some("org.kde.dolphin"));
+        assert_eq!(id("org.example.unknown.desktop"), None);
+        assert_eq!(id("org.telegram.desktop"), Some("org.telegram.desktop"));
+        assert_eq!(id("org.telegram.desktop.desktop"), Some("org.telegram.desktop"));
+        assert_eq!(id(".desktop"), None);
     }
 
     #[test]
