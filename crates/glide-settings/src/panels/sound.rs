@@ -461,6 +461,10 @@ impl Page {
                 (slider.value.unwrap_or(level.volume), max),
                 level.muted,
                 if level.muted { muted_glyph } else { glyph },
+                volume_subtitle(
+                    (channel == Channel::Output).then(|| self.state.default_sink()).flatten().map(|d| d.name.as_str()),
+                    level.muted.then(|| c.t(K::Muted)),
+                ),
             ),
             None => Row::new(t, c.t(K::NoDevices)).dimmed(true).build(),
         };
@@ -705,7 +709,13 @@ fn mixer<'a>(
     sdk::level_control(&widgets::paint(t), glyph, mute, slider, volume, muted)
 }
 
-fn volume_row<'a>(c: &Ctx, channel: Channel, (volume, max): (f32, f32), muted: bool, glyph: Icon) -> Element<'a, Msg> {
+fn volume_subtitle(device: Option<&str>, muted: Option<&str>) -> String {
+    [device.filter(|name| !name.trim().is_empty()), muted].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+}
+
+fn volume_row<'a>(
+    c: &Ctx, channel: Channel, (volume, max): (f32, f32), muted: bool, glyph: Icon, subtitle: String,
+) -> Element<'a, Msg> {
     let t = c.theme;
     let volume = volume.min(max);
     let control = mixer(
@@ -723,8 +733,18 @@ fn volume_row<'a>(c: &Ctx, channel: Channel, (volume, max): (f32, f32), muted: b
         volume,
         muted,
     );
-    Row::new(t, c.t(K::Volume))
-        .subtitle(if muted { c.t(K::Muted) } else { "" })
-        .suffix(widgets::flexible(control, 360.0))
-        .build()
+    Row::new(t, c.t(K::Volume)).subtitle(subtitle).suffix(widgets::flexible(control, 360.0)).build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::volume_subtitle;
+
+    #[test]
+    fn volume_subtitle_preserves_device_and_mute_state_without_placeholders() {
+        assert_eq!(volume_subtitle(Some("Headphones"), None), "Headphones");
+        assert_eq!(volume_subtitle(Some("Headphones"), Some("Muted")), "Headphones · Muted");
+        assert_eq!(volume_subtitle(None, Some("Muted")), "Muted");
+        assert_eq!(volume_subtitle(Some("  "), None), "");
+    }
 }
