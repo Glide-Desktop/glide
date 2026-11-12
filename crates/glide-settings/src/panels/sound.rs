@@ -7,7 +7,7 @@ use iced::widget::{column, container, mouse_area, row, space};
 use iced::{Alignment, Element, Fill, Task, mouse};
 
 use super::common::{error_banner, switch_row};
-use super::{Ctx, Pane, Panel};
+use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::services::audio::{self, AudioState, Device, MeterEvent, SINK, SOURCE, Stream, TestSound};
@@ -38,7 +38,6 @@ mod tr {
         TestMic => "Test", "Перевірити";
         Stop => "Stop", "Зупинити";
         MeterFailed => "Could not read from the microphone", "Не вдалося отримати звук із мікрофона";
-        OutputVolume => "Output volume", "Гучність виводу";
     }
 }
 
@@ -338,7 +337,7 @@ impl Pane for Page {
                 widgets::empty_state(t, Icon::VolumeMute, c.t(K::SoundUnavailable), c.t(K::SoundUnavailableHint))
             };
         }
-        let mut page = column![self.hero(&c, max), error_banner(t, self.error.as_deref())].spacing(theme::SECTION_GAP);
+        let mut page = column![error_banner(t, self.error.as_deref())].spacing(theme::SECTION_GAP);
         let mut extras = Vec::new();
         if let Some(balance) = self.balance_value() {
             extras.push(Self::balance_row(&c, balance));
@@ -447,33 +446,6 @@ impl Page {
         Task::run(audio::meter(stop), move |event| Msg::Meter(generation, event))
     }
 
-    fn hero(&self, c: &Ctx, max: f32) -> Element<'_, Msg> {
-        let t = c.theme;
-        let sink = self.state.default_sink();
-        let name = sink.map_or_else(|| c.t(K::Output).to_string(), |d| d.name.clone());
-        let glyph = sink.map_or(Icon::Volume, |d| device_icon(&d.name, Icon::Volume));
-        let (percent, description) = match self.state.output {
-            Some(level) => {
-                let volume = self.output.value.unwrap_or(level.volume).min(max);
-                (
-                    format!("{:.0}%", volume * 100.0),
-                    if level.muted { c.t(K::Muted).to_string() } else { c.t(tr::Key::OutputVolume).to_string() },
-                )
-            }
-            None => (String::from("—"), c.t(K::NoDevices).to_string()),
-        };
-        let muted = self.state.output.is_some_and(|level| level.muted);
-        let big = sdk::text(percent, TextStyle::T1).color(if muted { t.fg_3() } else { t.fg_1() });
-        widgets::section_hero(
-            t,
-            if muted { Icon::VolumeMute } else { glyph },
-            Panel::Sound.color(),
-            name,
-            description,
-            Some(big.into()),
-        )
-    }
-
     fn channel_group<'a>(
         &'a self, c: &Ctx, channel: Channel, max: f32, extras: Vec<Element<'a, Msg>>,
     ) -> Element<'a, Msg> {
@@ -492,7 +464,9 @@ impl Page {
             ),
             None => Row::new(t, c.t(K::NoDevices)).dimmed(true).build(),
         };
-        Group::new(t).title(c.t(title)).push(row).extend(extras).build()
+        let group = Group::new(t);
+        let group = if channel == Channel::Input { group.title(c.t(title)) } else { group };
+        group.push(row).extend(extras).build()
     }
 
     fn balance_row<'a>(c: &Ctx, balance: f32) -> Element<'a, Msg> {
@@ -646,7 +620,7 @@ impl Page {
                 })
                 .collect();
             return column![
-                sdk::text(c.t(title), TextStyle::HEAD),
+                sdk::text(c.t(K::Output), TextStyle::HEAD),
                 sdk::grid(cards, if t.compact { 1 } else { 3 }, 12.0),
             ]
             .spacing(8)

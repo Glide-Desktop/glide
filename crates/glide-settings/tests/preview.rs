@@ -105,7 +105,7 @@ fn click_sound_output(
     bounds: &Rectangle, messages: &mut Vec<Message>,
 ) {
     messages.clear();
-    let cursor = mouse::Cursor::Available(glide_sdk::iced::Point::new(800.0, 285.0));
+    let cursor = mouse::Cursor::Available(glide_sdk::iced::Point::new(800.0, 175.0));
     for event in [mouse::Event::ButtonPressed(mouse::Button::Left), mouse::Event::ButtonReleased(mouse::Button::Left)] {
         let mut shell = Shell::new(messages);
         element.as_widget_mut().update(
