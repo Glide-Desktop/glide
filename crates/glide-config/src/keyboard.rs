@@ -111,6 +111,7 @@ impl SystemKeyboard {
             "et" => "ee",
             "sl" => "si",
             "sr" => "rs",
+            "he" | "iw" => "il",
             "en" if locale.starts_with("en_GB") => "gb",
             "ru" | "de" | "fr" | "es" | "it" | "pl" | "pt" | "fi" | "tr" | "hu" | "sk" | "lv" | "lt" | "ro" | "hr"
             | "is" | "bg" | "mk" => language,
@@ -253,6 +254,15 @@ EndSection
             assert_eq!(keyboard.options, "grp:win_space_toggle", "{locale}");
         }
         assert_eq!(SystemKeyboard::for_locale("fr_BE.UTF-8").layout, "be", "Belgian stays Belgian");
+    }
+
+    #[test]
+    fn every_non_latin_layout_is_reached_by_its_language() {
+        let locales = ["uk_UA", "ru_RU", "be_BY", "kk_KZ", "el_GR", "bg_BG", "sr_RS", "mk_MK", "he_IL"];
+        let reached: Vec<String> = locales.iter().map(|locale| SystemKeyboard::for_locale(locale).layout).collect();
+        for layout in NON_LATIN {
+            assert!(reached.contains(&format!("us,{layout}")), "no locale leads to {layout}: {reached:?}");
+        }
     }
 
     #[test]
