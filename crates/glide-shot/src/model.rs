@@ -648,7 +648,9 @@ impl Shot {
         let Some(Mark { shape: Shape::Text { text, .. }, sprite, .. }) = self.draft.as_mut() else {
             return false;
         };
-        let removed = text.pop().is_some();
+        let kept = crate::paint::previous_grapheme_boundary(text, text.len());
+        let removed = kept < text.len();
+        text.truncate(kept);
         *sprite = None;
         removed
     }
@@ -1351,6 +1353,21 @@ mod tests {
         shot.press(p(500.0, 500.0), None);
         assert!(shot.typing);
         assert!(!shot.commit_text() && shot.marks.len() == 1, "empty text is dropped");
+    }
+
+    #[test]
+    fn backspace_removes_a_whole_character_as_it_was_typed() {
+        let mut shot = shot();
+        shot.set_mode(Mode::Screen);
+        shot.capture();
+        shot.set_tool(Tool::Text);
+        shot.press(p(10.0, 10.0), None);
+        assert!(shot.type_text("ї\u{301}👩\u{200d}💻"));
+        assert!(shot.backspace());
+        assert!(matches!(&shot.draft, Some(Mark { shape: Shape::Text { text, .. }, .. }) if text == "ї\u{301}"));
+        assert!(shot.backspace());
+        assert!(matches!(&shot.draft, Some(Mark { shape: Shape::Text { text, .. }, .. }) if text.is_empty()));
+        assert!(!shot.backspace(), "nothing is left to remove");
     }
 
     #[test]
