@@ -485,20 +485,9 @@ pub fn find_application(app_id: &str) -> Option<DesktopApp> {
     if !is_plain_app_id(app_id) {
         return None;
     }
-    let wanted = app_id.to_lowercase();
-    for dir in data_dirs() {
-        let apps = dir.join("applications");
-        let direct = apps.join(format!("{app_id}.desktop"));
-        if let Some(app) = read_desktop_app(app_id, &direct) {
-            return Some(app);
-        }
-        for (id, path) in desktop_files(&apps) {
-            if id.to_lowercase() == wanted
-                && let Some(app) = read_desktop_app(&id, &path)
-            {
-                return Some(app);
-            }
-        }
+    let dirs = data_dirs();
+    if let Some(app) = entry_ids(app_id).find_map(|id| installed_entry(id, &dirs)) {
+        return Some(app);
     }
     list_applications().into_iter().find(|app| {
         app.name.eq_ignore_ascii_case(app_id)
@@ -509,6 +498,25 @@ pub fn find_application(app_id: &str) -> Option<DesktopApp> {
                 .next()
                 .and_then(|bin| bin.rsplit('/').next())
                 .is_some_and(|bin| bin.eq_ignore_ascii_case(app_id))
+    })
+}
+
+fn entry_ids(app_id: &str) -> impl Iterator<Item = &str> {
+    let stem = app_id.strip_suffix(".desktop").filter(|stem| !stem.is_empty());
+    std::iter::once(app_id).chain(stem)
+}
+
+fn installed_entry(app_id: &str, dirs: &[PathBuf]) -> Option<DesktopApp> {
+    let wanted = app_id.to_lowercase();
+    dirs.iter().find_map(|dir| {
+        let apps = dir.join("applications");
+        let direct = apps.join(format!("{app_id}.desktop"));
+        read_desktop_app(app_id, &direct).or_else(|| {
+            desktop_files(&apps)
+                .into_iter()
+                .filter(|(id, _)| id.to_lowercase() == wanted)
+                .find_map(|(id, path)| read_desktop_app(&id, &path))
+        })
     })
 }
 
@@ -976,7 +984,7 @@ fn parse_index_theme(contents: &str) -> (Vec<ThemeDir>, Vec<String>) {
                 Some("Scalable") => (number("MinSize").unwrap_or(size), number("MaxSize").unwrap_or(size)),
                 _ => {
                     let threshold = number("Threshold").unwrap_or(2);
-                    (size.saturating_sub(threshold), size + threshold)
+                    (size.saturating_sub(threshold), size.saturating_add(threshold))
                 }
             };
             Some(ThemeDir { subdir, min: min.saturating_mul(scale), max: max.saturating_mul(scale) })
@@ -1127,6 +1135,25 @@ pub fn fallback_initial(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_id_that_carries_the_desktop_suffix_finds_its_entry() {
+        let root = std::env::temp_dir().join(format!("glide-icon-suffix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let apps = root.join("applications");
+        std::fs::create_dir_all(&apps).expect("mkdir");
+        let entry = |name: &str| format!("[Desktop Entry]\nType=Application\nName={name}\nExec=true\n");
+        std::fs::write(apps.join("org.kde.dolphin.desktop"), entry("Dolphin")).expect("write");
+        std::fs::write(apps.join("org.telegram.desktop.desktop"), entry("Telegram")).expect("write");
+        let dirs = [root.clone()];
+        let named = |app_id: &str| entry_ids(app_id).find_map(|id| installed_entry(id, &dirs)).map(|app| app.name);
+        assert_eq!(named("org.kde.dolphin").as_deref(), Some("Dolphin"));
+        assert_eq!(named("org.kde.dolphin.desktop").as_deref(), Some("Dolphin"), "Qt apps may send the file name");
+        assert_eq!(named("org.telegram.desktop").as_deref(), Some("Telegram"), "an id may really end that way");
+        assert_eq!(named("ORG.TELEGRAM.DESKTOP").as_deref(), Some("Telegram"));
+        assert_eq!(named("org.example.missing.desktop"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn the_theme_chain_always_ends_at_hicolor() {
