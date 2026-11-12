@@ -475,13 +475,17 @@ impl Page {
                 Row::new(t, c.t(K::NoDevices)).dimmed(true).build()
             } else {
                 Row::new(t, c.t(tr::Key::Microphone))
-                    .suffix(widgets::dropdown(
-                        t,
-                        devices.clone(),
-                        self.state.default_source().cloned(),
-                        |device| Msg::Device(Channel::Input, device),
-                        300.0,
-                    ))
+                    .suffix(
+                        container(widgets::dropdown(
+                            t,
+                            devices.clone(),
+                            self.state.default_source().cloned(),
+                            |device| Msg::Device(Channel::Input, device),
+                            220.0,
+                        ))
+                        .width(220),
+                    )
+                    .stacked(t.compact)
                     .build()
             };
             group.title(c.t(title)).push(device_row)
