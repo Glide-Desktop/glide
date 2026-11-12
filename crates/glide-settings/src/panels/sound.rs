@@ -31,6 +31,7 @@ mod tr {
         Playing => "Playing…", "Відтворення…";
         Applications => "Applications", "Програми";
         ChooseOutput => "Select where sound plays", "Оберіть, звідки відтворювати звук";
+        Stereo => "Stereo", "Стерео";
         ApplicationsHint => "Volume of each app that is playing sound right now", "Гучність кожної програми, що зараз відтворює звук";
         NoStreams => "No apps are playing sound", "Жодна програма зараз не відтворює звук";
         InputLevel => "Input level", "Рівень сигналу";
@@ -623,19 +624,19 @@ impl Page {
                     let selected = device.is_default;
                     let paint = t.paint;
                     let ring = t.acc_ring();
-                    let face = container(sdk::text(device.name.clone(), TextStyle::HEAD))
-                        .padding(16)
-                        .width(Fill)
-                        .height(80)
-                        .style(move |_| container::Style {
-                            background: Some(paint.card_bg().into()),
-                            border: iced::Border {
-                                color: if selected { paint.acc_bg() } else { paint.line() },
-                                width: if selected { 2.0 } else { 1.0 },
-                                radius: glide_sdk::theme::R3.into(),
-                            },
-                            ..Default::default()
-                        });
+                    let mut content = column![sdk::text(device.name.clone(), TextStyle::HEAD)].spacing(4);
+                    if selected && self.state.stereo.is_some() {
+                        content = content.push(sdk::text(c.t(tr::Key::Stereo), TextStyle::CAP).color(t.fg_3()));
+                    }
+                    let face = container(content).padding(16).width(Fill).height(80).style(move |_| container::Style {
+                        background: Some(paint.card_bg().into()),
+                        border: iced::Border {
+                            color: if selected { paint.acc_bg() } else { paint.line() },
+                            width: if selected { 2.0 } else { 1.0 },
+                            radius: glide_sdk::theme::R3.into(),
+                        },
+                        ..Default::default()
+                    });
                     let face = container(face).padding(3).style(move |_| container::Style {
                         background: selected.then_some(ring.into()),
                         border: iced::Border { radius: glide_sdk::theme::R3.into(), ..Default::default() },

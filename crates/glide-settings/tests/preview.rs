@@ -93,7 +93,9 @@ fn fixture_sound(app: &mut App) {
         input: Some(Level { volume: 0.8, muted: false }),
         streams: vec![Stream { index: 1, app: "Browser".into(), title: "Video".into(), volume: 0.7, muted: false }],
         streams_supported: true,
-        stereo: Some(Stereo { left: 1.0, right: 1.0 }),
+        stereo: std::env::var_os("GLIDE_SETTINGS_SOUND_NO_STEREO")
+            .is_none()
+            .then_some(Stereo { left: 1.0, right: 1.0 }),
         meter: true,
         ..AudioState::default()
     };
