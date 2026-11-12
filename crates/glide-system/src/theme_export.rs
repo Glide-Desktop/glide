@@ -142,6 +142,10 @@ fn write_gtk(dir: &Path, css: &str) {
 
 #[must_use]
 pub fn set_ini(text: &str, section: &str, key: &str, value: &str) -> String {
+    fn append(out: &mut Vec<String>, entry: String) {
+        let end = out.iter().rposition(|line| !line.trim().is_empty()).map_or(0, |last| last + 1);
+        out.insert(end, entry);
+    }
     let header = format!("[{section}]");
     let mut out: Vec<String> = Vec::new();
     let mut in_section = false;
@@ -151,7 +155,7 @@ pub fn set_ini(text: &str, section: &str, key: &str, value: &str) -> String {
         let trimmed = line.trim();
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             if in_section && !written {
-                out.push(format!("{key}={value}"));
+                append(&mut out, format!("{key}={value}"));
                 written = true;
             }
             in_section = trimmed == header;
@@ -165,13 +169,13 @@ pub fn set_ini(text: &str, section: &str, key: &str, value: &str) -> String {
         }
         out.push(line.to_string());
     }
-    if !written {
-        if !seen_section {
-            if out.last().is_some_and(|line| !line.trim().is_empty()) {
-                out.push(String::new());
-            }
-            out.push(header);
+    if !written && seen_section {
+        append(&mut out, format!("{key}={value}"));
+    } else if !written {
+        if out.last().is_some_and(|line| !line.trim().is_empty()) {
+            out.push(String::new());
         }
+        out.push(header);
         out.push(format!("{key}={value}"));
     }
     let mut joined = out.join("\n");
@@ -396,6 +400,17 @@ mod tests {
         assert_eq!(ini_value(&text, "Fonts", "general"), Some("Sans"));
         assert_eq!(ini_value(&text, "Interface", "menus_have_icons"), Some("true"));
         assert_eq!(text.matches("custom_palette").count(), 1);
+    }
+
+    #[test]
+    fn a_new_key_joins_its_section_above_the_blank_line_that_ends_it() {
+        let text = "[Appearance]\nstyle=Breeze\n\n[Fonts]\nfixed=Mono\n\n";
+        let text = set_ini(text, "Appearance", "icon_theme", "Papirus");
+        assert_eq!(text, "[Appearance]\nstyle=Breeze\nicon_theme=Papirus\n\n[Fonts]\nfixed=Mono\n\n");
+        let text = set_ini(&text, "Fonts", "general", "Sans");
+        assert_eq!(text, "[Appearance]\nstyle=Breeze\nicon_theme=Papirus\n\n[Fonts]\nfixed=Mono\ngeneral=Sans\n\n");
+        assert_eq!(set_ini("", "Settings", "a", "1"), "[Settings]\na=1\n");
+        assert_eq!(set_ini("[Settings]\n", "Settings", "a", "1"), "[Settings]\na=1\n");
     }
 
     #[test]

@@ -23,6 +23,7 @@ const RETRY_FIRST: Duration = Duration::from_secs(2);
 const RETRY_LAST: Duration = Duration::from_mins(1);
 const HEALTHY_RUN: Duration = Duration::from_secs(30);
 
+const BUS: &str = "org.freedesktop.DBus";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const NETWORK_MANAGER: &str = "org.freedesktop.NetworkManager";
 const BLUEZ: &str = "org.bluez";
@@ -459,6 +460,12 @@ fn listen(connection: &Connection, rules: &[String]) -> zbus::Result<DBusProxy<'
     Ok(bus)
 }
 
+fn announced_by_the_bus(message: &zbus::Message) -> bool {
+    let header = message.header();
+    header.sender().is_some_and(|sender| sender.as_str() == BUS)
+        && header.interface().is_some_and(|interface| interface.as_str() == BUS)
+}
+
 fn system_signal(message: &zbus::Message) -> Topics {
     type Added = (OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>);
     let header = message.header();
@@ -466,7 +473,7 @@ fn system_signal(message: &zbus::Message) -> Topics {
     let member = header.member().map(|member| member.as_str().to_string()).unwrap_or_default();
     let body = message.body();
     match member.as_str() {
-        "NameOwnerChanged" => {
+        "NameOwnerChanged" if announced_by_the_bus(message) => {
             let Ok((name, _, owner)) = body.deserialize::<(String, String, String)>() else {
                 return Topics::empty();
             };
@@ -503,14 +510,15 @@ fn watch_system_bus() {
     keep_running("glide-hook-system-bus", || {
         let rules = system_rules();
         let connected = Connection::system().and_then(|connection| {
+            let messages = MessageIterator::from(&connection);
             let bus = listen(&connection, &rules)?;
             let network = zbus::names::BusName::try_from(NETWORK_MANAGER)
                 .ok()
                 .and_then(|name| bus.name_has_owner(name).ok())
                 .unwrap_or(false);
-            Ok((connection, network))
+            Ok((messages, network))
         });
-        let (connection, network) = match connected {
+        let (messages, network) = match connected {
             Ok(connected) => connected,
             Err(err) => {
                 tracing::info!("system bus signals are unavailable ({err}); network, Bluetooth and power stay polled");
@@ -521,7 +529,7 @@ fn watch_system_bus() {
         if network {
             system_info::hook(Topics::NETWORK);
         }
-        for message in MessageIterator::from(&connection).map_while(Result::ok) {
+        for message in messages.map_while(Result::ok) {
             let topics = system_signal(&message);
             if !topics.is_empty() {
                 system_info::poke(topics);
@@ -541,18 +549,19 @@ pub fn touches_animations(prefix: &str, keys: &[String]) -> bool {
 
 fn watch_session_bus() {
     keep_running("glide-hook-session-bus", || {
-        let connection = match Connection::session().and_then(|connection| {
+        let messages = match Connection::session().and_then(|connection| {
+            let messages = MessageIterator::from(&connection);
             listen(&connection, &[DCONF_RULE.to_string()])?;
-            Ok(connection)
+            Ok(messages)
         }) {
-            Ok(connection) => connection,
+            Ok(messages) => messages,
             Err(err) => {
                 tracing::info!("dconf signals are unavailable ({err}); reduced motion stays polled");
                 return End::Retry;
             }
         };
         system_info::hook(Topics::MOTION);
-        for message in MessageIterator::from(&connection).map_while(Result::ok) {
+        for message in messages.map_while(Result::ok) {
             let notify = message.body().deserialize::<(String, Vec<String>, String)>();
             if notify.is_ok_and(|(prefix, keys, _)| touches_animations(&prefix, &keys)) {
                 system_info::poke(Topics::MOTION);
@@ -700,6 +709,22 @@ mod tests {
             assert!(zbus::MatchRule::try_from(rule.as_str()).is_ok(), "{rule}");
         }
         assert!(zbus::MatchRule::try_from(DCONF_RULE).is_ok());
+    }
+
+    #[test]
+    fn only_the_bus_says_who_owns_a_name() {
+        let signal = |sender: &str| {
+            zbus::Message::signal("/org/freedesktop/DBus", BUS, "NameOwnerChanged")
+                .unwrap()
+                .sender(sender)
+                .unwrap()
+                .build(&(BLUEZ, "", ":1.7"))
+                .unwrap()
+        };
+        assert!(announced_by_the_bus(&signal(BUS)));
+        assert_eq!(system_signal(&signal(BUS)), Topics::BLUETOOTH);
+        assert!(!announced_by_the_bus(&signal(":1.99")));
+        assert_eq!(system_signal(&signal(":1.99")), Topics::empty(), "a peer cannot switch a topic's polling off");
     }
 
     #[test]
