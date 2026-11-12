@@ -564,8 +564,20 @@ fn tasks<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Mes
         paused,
         detail: format!("12/40 · {:.0}%", catalog.loading * 100.0),
         actions: vec![
-            ui::icon_button(paint, if paused { Icon::Refresh } else { Icon::More }, "", Some(Message::Flip), false),
-            ui::icon_button(paint, Icon::Close, "", Some(Message::Said(shell.t("Зупинити", "Stop"))), false),
+            ui::icon_button(
+                paint,
+                if paused { Icon::Refresh } else { Icon::More },
+                if paused { shell.t("Продовжити", "Resume") } else { shell.t("Пауза", "Pause") },
+                Some(Message::Flip),
+                false,
+            ),
+            ui::icon_button(
+                paint,
+                Icon::Close,
+                shell.t("Зупинити", "Stop"),
+                Some(Message::Said(shell.t("Зупинити", "Stop"))),
+                false,
+            ),
         ],
         footer: None,
     };
@@ -1049,7 +1061,7 @@ fn sidebar_items<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element
                 .accessory(ui::icon_button(
                     paint,
                     Icon::Up,
-                    "",
+                    shell.t("Витягти", "Eject"),
                     Some(Message::Said(shell.t("Витягти", "Eject"))),
                     false,
                 )),
@@ -1077,7 +1089,7 @@ fn sidebar_items<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element
             paint,
             text_input(shell.t("Пошук", "Search"), &catalog.search).on_input(Message::Search),
             (!catalog.search.is_empty()).then(|| Message::Search(String::new())),
-            "",
+            shell.t("Очистити", "Clear"),
             Some(ui::key_combo(paint, "Ctrl+F", str::to_string)),
         ),
     ]
@@ -1261,7 +1273,7 @@ fn gallery<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, M
             None,
             Some((Message::GalleryExposure(0), shell.t("Скинути", "Reset")))
         ),
-        ui::exif_strip(paint, vec!["ƒ/1.7".into(), "1/240".into(), "ISO 64".into(), "24 мм".into()]),
+        ui::exif_strip(paint, vec!["ƒ/1.7".into(), "1/240".into(), "ISO 64".into(), shell.t("24 мм", "24 mm").into()]),
     ]
     .spacing(SP3)
     .max_width(320);
