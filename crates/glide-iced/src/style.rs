@@ -146,7 +146,7 @@ impl Paint {
                 background: self.win_bg(),
                 text: self.fg_1(),
                 primary: self.acc_bg(),
-                success: to_iced(self.tokens.ok),
+                success: self.ok(),
                 warning: self.warn(),
                 danger: self.danger(),
             },

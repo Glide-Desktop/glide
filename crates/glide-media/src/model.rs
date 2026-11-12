@@ -86,7 +86,7 @@ pub enum Command {
 #[must_use]
 pub(crate) fn seek_target(length: Option<Duration>, fraction: f32) -> Option<Duration> {
     let length = length?;
-    if length.is_zero() {
+    if length.is_zero() || fraction.is_nan() {
         return None;
     }
     let clamped = f64::from(fraction.clamp(0.0, 1.0));
@@ -102,10 +102,16 @@ fn bus_tail(name: &str) -> &str {
     name.strip_prefix(BUS_PREFIX).unwrap_or(name)
 }
 
+fn numbers_an_instance(segment: &str) -> bool {
+    segment
+        .strip_prefix("instance")
+        .is_some_and(|number| number.chars().all(|c| c.is_ascii_digit() || matches!(c, '_' | '-')))
+}
+
 fn bus_head(name: &str) -> String {
     bus_tail(name)
         .split('.')
-        .map(|segment| segment.split_once("instance").map_or(segment, |(head, _)| head))
+        .filter(|segment| !numbers_an_instance(segment))
         .filter(|segment| !segment.trim_matches(['-', '_']).is_empty())
         .collect::<Vec<_>>()
         .join(".")
@@ -211,6 +217,23 @@ mod tests {
     #[test]
     fn an_instance_suffix_is_stripped_from_the_identity() {
         assert_eq!(identity_from_bus("org.mpris.MediaPlayer2.chromium.instance1234"), "Chromium");
+    }
+
+    #[test]
+    fn only_a_numbered_instance_part_is_dropped_from_a_bus_name() {
+        assert_eq!(identity_from_bus("org.mpris.MediaPlayer2.instancer"), "Instancer");
+        assert_eq!(identity_from_bus("org.mpris.MediaPlayer2.org.example.reinstance"), "Reinstance");
+        assert_eq!(identity_from_bus("org.mpris.MediaPlayer2.mpv.instance"), "Mpv");
+        assert_eq!(
+            player_icon_candidates("org.mpris.MediaPlayer2.org.example.Instances.instance-7", ""),
+            vec!["org.example.instances".to_string(), "org.example.Instances".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_seek_to_no_place_at_all_is_not_a_seek() {
+        assert_eq!(seek_target(Some(Duration::from_secs(200)), f32::NAN), None);
+        assert_eq!(seek_target(Some(Duration::from_secs(200)), f32::INFINITY), Some(Duration::from_secs(200)));
     }
 
     #[test]
