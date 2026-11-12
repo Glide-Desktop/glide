@@ -618,6 +618,7 @@ impl Page {
                 .map(|device| {
                     let selected = device.is_default;
                     let paint = t.paint;
+                    let ring = t.acc_ring();
                     let face = container(sdk::text(device.name.clone(), TextStyle::HEAD))
                         .padding(16)
                         .width(Fill)
@@ -631,6 +632,11 @@ impl Page {
                             },
                             ..Default::default()
                         });
+                    let face = container(face).padding(3).style(move |_| container::Style {
+                        background: selected.then_some(ring.into()),
+                        border: iced::Border { radius: glide_sdk::theme::R3.into(), ..Default::default() },
+                        ..Default::default()
+                    });
                     if selected {
                         face.into()
                     } else {

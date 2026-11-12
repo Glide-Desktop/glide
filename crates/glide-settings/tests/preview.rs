@@ -89,7 +89,7 @@ fn fixture_sound(app: &mut App) {
         available: true,
         sinks: vec![device(1, "Bluetooth Headphones", true), device(2, "Speakers", false)],
         sources: vec![device(3, "Built-in Microphone", true)],
-        output: Some(Level { volume: 0.62, muted: false }),
+        output: Some(Level { volume: 0.62, muted: std::env::var_os("GLIDE_SETTINGS_SOUND_MUTED").is_some() }),
         input: Some(Level { volume: 0.8, muted: false }),
         streams: vec![Stream { index: 1, app: "Browser".into(), title: "Video".into(), volume: 0.7, muted: false }],
         streams_supported: true,
@@ -143,7 +143,8 @@ fn click_sound_output(
     }
     assert!(messages.iter().any(|message| matches!(
         message,
-        Message::Sound(glide_settings::panels::sound::Msg::Mute(glide_settings::panels::sound::Channel::Output, true))
+        Message::Sound(glide_settings::panels::sound::Msg::Mute(glide_settings::panels::sound::Channel::Output, muted))
+            if *muted == std::env::var_os("GLIDE_SETTINGS_SOUND_MUTED").is_none()
     )));
 }
 
