@@ -402,6 +402,28 @@ pub enum PressOutcome {
 
 const DOCK_EDGE_MARGIN: i32 = glide_theme::spacing::SP2;
 const MIN_ITEM_SIZE: i32 = 20;
+const MAX_ITEM_SIZE: i32 = 256;
+const MAX_SPACING: i32 = 128;
+const MAX_HOVER_SCALE: f64 = 2.0;
+
+fn sane(mut theme: DockTheme) -> DockTheme {
+    theme.item_size = theme.item_size.clamp(MIN_ITEM_SIZE, MAX_ITEM_SIZE);
+    theme.icon_size = theme.icon_size.clamp(1, theme.item_size);
+    for spacing in [
+        &mut theme.item_gap,
+        &mut theme.padding_x,
+        &mut theme.padding_y,
+        &mut theme.bottom_margin,
+        &mut theme.hover_lift,
+    ] {
+        *spacing = (*spacing).clamp(0, MAX_SPACING);
+    }
+    theme.hover_scale = if theme.hover_scale.is_finite() { theme.hover_scale.clamp(1.0, MAX_HOVER_SCALE) } else { 1.0 };
+    for radius in [&mut theme.radius, &mut theme.item_radius] {
+        *radius = if radius.is_finite() { radius.max(0.0) } else { 0.0 };
+    }
+    theme
+}
 
 fn dock_width(theme: &DockTheme, count: i32, separators: i32) -> i32 {
     if count == 0 {
@@ -690,6 +712,13 @@ fn cached<K: Eq + Hash>(
     }
 }
 
+fn keep_one_size<K: Eq + Hash>(cache: &mut Buffers<K>, key: &K, scale_of: impl Fn(&K) -> i32) {
+    if !cache.contains_key(key) {
+        let scale = scale_of(key);
+        cache.retain(|kept, _| scale_of(kept) != scale);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TooltipState {
     index: usize,
@@ -703,9 +732,11 @@ impl Dock {
         let mut items = pinned.clone();
         items.push(DockItem::launcher());
         let count = items.len();
+        let theme = sane(config.theme.clone());
         Self {
-            theme: config.theme.clone(),
-            base_theme: config.theme.clone(),
+            raster_rev: raster_revision(&theme),
+            base_theme: theme.clone(),
+            theme,
             pinned,
             items,
             run: vec![RunState::default(); count],
@@ -730,7 +761,6 @@ impl Dock {
             run_alphas: HashMap::new(),
             tooltip: None,
             tooltip_reveal: popup_reveal(),
-            raster_rev: raster_revision(&config.theme),
             autohide: config.autohide,
             hide: AutohideFade::shown(),
             hide_pending: None,
@@ -2258,6 +2288,7 @@ fn push_tooltip<R: ShellRenderer>(
     let risen = |at: Point<i32, Logical>| at.to_f64() + Point::from((0.0, travel));
     frame.push(buffer, risen(position), alpha, None);
 
+    keep_one_size(&mut dock.rasters.tooltip_shadow, &(width, scale), |(_, kept)| *kept);
     let shadow = cached(&mut dock.rasters.tooltip_shadow, (width, scale), || {
         glide_shell::popup_menu::draw_elevation(
             Size::from((width, TOOLTIP_HEIGHT)),
@@ -2371,6 +2402,7 @@ fn push_menu<R: ShellRenderer>(dock: &mut Dock, frame: &mut Frame<'_, R>) {
     frame.push_placed(buffer, &placement, menu.rect, placement.alpha);
 
     let shadow_key = (menu.rect.size.w, menu.rect.size.h, output_scale);
+    keep_one_size(&mut dock.rasters.menu_shadow, &shadow_key, |(_, _, kept)| *kept);
     let shadow = cached(&mut dock.rasters.menu_shadow, shadow_key, || {
         glide_shell::popup_menu::draw_shadow(
             menu.rect.size,
@@ -2856,6 +2888,43 @@ mod tests {
 
         fn narrow() -> Rectangle<i32, Logical> {
             Rectangle::new(Point::from((0, 0)), Size::from((1366, 768)))
+        }
+
+        #[test]
+        fn sizes_no_dock_can_be_drawn_with_are_brought_into_range_instead_of_panicking() {
+            let mut wild = config(40);
+            wild.theme.item_gap = -4;
+            wild.theme.padding_x = -200;
+            wild.theme.padding_y = -3;
+            wild.theme.bottom_margin = -50;
+            wild.theme.item_size = 3;
+            wild.theme.icon_size = 900;
+            wild.theme.hover_scale = f64::NAN;
+            wild.theme.radius = f32::NEG_INFINITY;
+            let mut dock = Dock::new(&wild);
+            dock.fit_to(narrow());
+            assert_eq!(dock.base_theme.item_size, MIN_ITEM_SIZE);
+            assert_eq!(dock.base_theme.icon_size, MIN_ITEM_SIZE);
+            assert_eq!((dock.base_theme.item_gap, dock.base_theme.padding_x, dock.base_theme.bottom_margin), (0, 0, 0));
+            assert!((dock.base_theme.hover_scale - 1.0).abs() < f64::EPSILON && dock.base_theme.radius == 0.0);
+            let tile = dock.item_rects(narrow())[0];
+            dock.begin_press(0, centre_of(tile), narrow());
+            dock.drag_motion(Point::from((-5000.0, 400.0)));
+            assert!(dock.dragged_position(narrow()).is_some(), "a drag past the edge is clamped, not a crash");
+
+            let usual = Dock::new(&config(3));
+            assert_eq!(usual.base_theme, DockTheme::default(), "the defaults are already in range");
+        }
+
+        #[test]
+        fn a_shadow_cache_keeps_one_size_for_each_output_scale() {
+            let buffer = || MemoryRenderBuffer::default();
+            let mut cache: Buffers<(i32, i32)> = HashMap::from([((120, 1), buffer()), ((120, 2), buffer())]);
+            keep_one_size(&mut cache, &(120, 1), |(_, scale)| *scale);
+            assert_eq!(cache.len(), 2, "a size already cached drops nothing");
+            keep_one_size(&mut cache, &(180, 1), |(_, scale)| *scale);
+            assert!(!cache.contains_key(&(120, 1)), "the other width of this scale makes room");
+            assert!(cache.contains_key(&(120, 2)), "another output's scale keeps its raster");
         }
 
         #[test]
