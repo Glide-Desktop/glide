@@ -126,6 +126,25 @@ fn click_sound_output(
             device
         )) if device.id == 2
     )));
+    messages.clear();
+    let cursor = mouse::Cursor::Available(glide_sdk::iced::Point::new(950.0, 273.0));
+    for event in [mouse::Event::ButtonPressed(mouse::Button::Left), mouse::Event::ButtonReleased(mouse::Button::Left)] {
+        let mut shell = Shell::new(messages);
+        element.as_widget_mut().update(
+            tree,
+            &Event::Mouse(event),
+            Layout::new(node),
+            cursor,
+            renderer,
+            &mut clipboard::Null,
+            &mut shell,
+            bounds,
+        );
+    }
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        Message::Sound(glide_settings::panels::sound::Msg::Mute(glide_settings::panels::sound::Channel::Output, true))
+    )));
 }
 
 fn fixture_wallpaper(app: &mut App) {

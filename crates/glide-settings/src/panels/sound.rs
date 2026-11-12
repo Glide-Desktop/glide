@@ -36,6 +36,8 @@ mod tr {
         InputLevel => "Input level", "Рівень сигналу";
         Microphone => "Microphone", "Мікрофон";
         MicrophoneVolume => "Microphone volume", "Гучність мікрофона";
+        Mute => "Mute", "Вимкнути звук";
+        Unmute => "Unmute", "Увімкнути звук";
         InputLevelHint => "Press Test and speak: the microphone is monitored for 10 seconds", "Натисніть «Перевірити» й говоріть: мікрофон прослуховується 10 секунд";
         Listening => "Listening… speak into the microphone", "Слухаю… говоріть у мікрофон";
         TestMic => "Test", "Перевірити";
@@ -740,21 +742,21 @@ fn volume_row<'a>(
 ) -> Element<'a, Msg> {
     let t = c.theme;
     let volume = volume.min(max);
-    let control = mixer(
-        &t,
-        glyph,
-        Msg::Mute(channel, !muted),
-        widgets::value_slider(
-            t,
-            0.0..=f64::from(max),
-            f64::from(volume),
-            0.01,
-            move |value| Msg::Volume(channel, value),
-            Some(Msg::Release(channel)),
-        ),
-        volume,
-        muted,
+    let slider = widgets::value_slider(
+        t,
+        0.0..=f64::from(max),
+        f64::from(volume),
+        0.01,
+        move |value| Msg::Volume(channel, value),
+        Some(Msg::Release(channel)),
     );
+    let control = if channel == Channel::Output && !t.compact {
+        let label = if muted { c.t(tr::Key::Unmute) } else { c.t(tr::Key::Mute) };
+        let button = widgets::secondary(t, label, Some(Msg::Mute(channel, !muted)));
+        sdk::slider_readout(&widgets::paint(&t), Some(button), slider, format!("{:.0}%", volume * 100.0), muted)
+    } else {
+        mixer(&t, glyph, Msg::Mute(channel, !muted), slider, volume, muted)
+    };
     let title = match channel {
         Channel::Output => c.t(K::Volume),
         Channel::Input => c.t(tr::Key::MicrophoneVolume),
