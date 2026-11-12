@@ -30,6 +30,8 @@ struct Registration {
 
 type Windows = HashMap<u32, Registration>;
 
+pub const MAX_WINDOWS_PER_CLIENT: usize = 256;
+
 fn lock(windows: &Mutex<Windows>) -> std::sync::MutexGuard<'_, Windows> {
     windows.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -38,6 +40,10 @@ fn claim(
     windows: &mut Windows, generations: &AtomicU64, window_id: u32, sender: &str, path: &OwnedObjectPath,
 ) -> Option<u64> {
     if windows.get(&window_id).is_some_and(|known| known.owner != sender) {
+        return None;
+    }
+    let held = windows.values().filter(|known| known.owner == sender).count();
+    if !windows.contains_key(&window_id) && held >= MAX_WINDOWS_PER_CLIENT {
         return None;
     }
     let generation = generations.fetch_add(1, Ordering::Relaxed);
@@ -228,6 +234,18 @@ mod tests {
     }
 
     type Seen = Arc<Mutex<Vec<AppMenuEvent>>>;
+
+    #[test]
+    fn one_client_registers_a_bounded_number_of_windows() {
+        let (mut known, generations) = (Windows::new(), AtomicU64::new(0));
+        for id in 0..u32::try_from(MAX_WINDOWS_PER_CLIENT).expect("fits") {
+            assert!(claim(&mut known, &generations, id, ":1.5", &path("/menu")).is_some());
+        }
+        assert!(claim(&mut known, &generations, 9_000, ":1.5", &path("/menu")).is_none());
+        assert!(claim(&mut known, &generations, 7, ":1.5", &path("/other")).is_some(), "a known window is updated");
+        assert!(claim(&mut known, &generations, 9_000, ":1.6", &path("/menu")).is_some(), "others are unaffected");
+        assert_eq!(known.len(), MAX_WINDOWS_PER_CLIENT + 1);
+    }
 
     fn recorder() -> (Sink, Seen) {
         let seen = Seen::default();

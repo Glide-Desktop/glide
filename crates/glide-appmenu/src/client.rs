@@ -212,6 +212,17 @@ fn listen_forever(
     }
 }
 
+fn owner_change(message: &zbus::Message) -> Option<(String, String)> {
+    let header = message.header();
+    let from_bus = header.sender().is_some_and(|sender| sender.as_str() == DBUS_INTERFACE);
+    let named = header.member().is_some_and(|member| member.as_str() == "NameOwnerChanged");
+    if !from_bus || !named {
+        return None;
+    }
+    let (name, _old, new_owner) = message.body().deserialize::<(String, String, String)>().ok()?;
+    Some((name, new_owner))
+}
+
 fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>) -> bool {
     for message in zbus::blocking::MessageIterator::from(connection) {
         let Ok(message) = message else {
@@ -223,8 +234,7 @@ fn listen(connection: &zbus::blocking::Connection, tx: &mpsc::Sender<Request>) -
         }
         let interface = header.interface().map(|i| i.as_str().to_string());
         if interface.as_deref() == Some(DBUS_INTERFACE) {
-            if header.member().is_some_and(|member| member.as_str() == "NameOwnerChanged")
-                && let Ok((name, _old, new_owner)) = message.body().deserialize::<(String, String, String)>()
+            if let Some((name, new_owner)) = owner_change(&message)
                 && tx.send(Request::OwnerChanged { name, new_owner }).is_err()
             {
                 return false;
@@ -682,6 +692,18 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_bus_itself_may_say_that_a_name_changed_hands() {
+        let signal = |sender: &str| {
+            zbus::message::Message::signal("/org/freedesktop/DBus", DBUS_INTERFACE, "NameOwnerChanged")
+                .and_then(|builder| builder.sender(sender))
+                .and_then(|builder| builder.build(&("org.example.App", ":1.5", "")))
+                .expect("a signal")
+        };
+        assert_eq!(owner_change(&signal(DBUS_INTERFACE)), Some(("org.example.App".into(), String::new())));
+        assert_eq!(owner_change(&signal(":1.66")), None, "a client that addresses the signal to us is not the bus");
+    }
 
     #[test]
     fn a_constant_stream_of_changes_cannot_starve_the_worker() {
