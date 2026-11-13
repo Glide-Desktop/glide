@@ -61,6 +61,7 @@ pub enum KeyAction {
     Screenshot,
     ScreenshotScreen,
     ScreenshotWindow,
+    ScreenRecord,
     Shot(crate::shot::ShotKey),
     ToggleLauncher,
     LauncherPage(bool),
@@ -474,6 +475,7 @@ fn is_global_shortcut(action: &KeyAction) -> bool {
         KeyAction::Screenshot
             | KeyAction::ScreenshotScreen
             | KeyAction::ScreenshotWindow
+            | KeyAction::ScreenRecord
             | KeyAction::Lock
             | KeyAction::PowerDialog
     )
@@ -2076,6 +2078,13 @@ impl GlideState {
             KeyAction::Screenshot => self.open_shot(None),
             KeyAction::ScreenshotScreen => self.request_screenshot(),
             KeyAction::ScreenshotWindow => self.screenshot_window_now(),
+            KeyAction::ScreenRecord => {
+                if self.session.recording.is_some() {
+                    self.stop_recording();
+                } else {
+                    self.open_shot_with_kind(None, Some(glide_shot::model::CaptureKind::Record));
+                }
+            }
             KeyAction::Shot(key) => self.shot_key(key),
             KeyAction::TopbarClosePopup => {
                 if self.topbar.qs_escape() {
@@ -2348,6 +2357,10 @@ impl GlideState {
     ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
         self.shell_cursor = self.shell_text_field_at(pos).then_some(smithay::input::pointer::CursorIcon::Text);
         if self.shot_motion(pos) {
+            self.clear_shell_hover();
+            return None;
+        }
+        if self.shot_preview_motion(pos) {
             self.clear_shell_hover();
             return None;
         }
@@ -2652,6 +2665,9 @@ impl GlideState {
     }
 
     fn shell_release(&mut self, pos: Point<f64, Logical>, button: u32) {
+        if self.shot_preview_release(pos, button) {
+            return;
+        }
         self.active_slider_drag = None;
         self.topbar.set_slider_dragging(false);
         if self.topbar.set_pressed(None) {
@@ -2687,6 +2703,9 @@ impl GlideState {
         if self.shot_button(pos, button) {
             return true;
         }
+        if self.shot_preview_button(pos, button) {
+            return true;
+        }
         if self.picker_button(pos) || self.power_dialog_button(pos) {
             return true;
         }
@@ -2703,6 +2722,136 @@ impl GlideState {
             return true;
         }
         self.overview_button(pos, button)
+    }
+
+    fn shot_preview_motion(&mut self, pos: Point<f64, Logical>) -> bool {
+        let Some(preview) = self.session.shot_preview.as_mut() else {
+            return false;
+        };
+        let Some(geometry) = self.space.output_geometry(&preview.output) else {
+            return false;
+        };
+        let output_area = Rectangle::new(
+            Point::from((0.0, 0.0)),
+            smithay::utils::Size::from((geometry.size.w as f64, geometry.size.h as f64)),
+        );
+        let local_pos = Point::from((pos.x - geometry.loc.x as f64, pos.y - geometry.loc.y as f64));
+        let card = preview.model.card_rect(output_area);
+        let dismiss = preview.model.dismiss_button_rect(card);
+        let over = card.contains(local_pos) || dismiss.contains(local_pos) || preview.model.dragging;
+        if !over && !preview.model.hovered {
+            return false;
+        }
+        let outcome = preview.model.motion(local_pos, output_area);
+        let output = (outcome == glide_shot::preview::PreviewOutcome::Redraw).then(|| preview.output.clone());
+        if let Some(output) = output {
+            self.queue_redraw_output(&output);
+        }
+        over
+    }
+
+    fn shot_preview_button(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
+        if button != BTN_LEFT {
+            return false;
+        }
+        let Some(preview) = self.session.shot_preview.as_mut() else {
+            return false;
+        };
+        let Some(geometry) = self.space.output_geometry(&preview.output) else {
+            return false;
+        };
+        let output_area = Rectangle::new(
+            Point::from((0.0, 0.0)),
+            smithay::utils::Size::from((geometry.size.w as f64, geometry.size.h as f64)),
+        );
+        let local_pos = Point::from((pos.x - geometry.loc.x as f64, pos.y - geometry.loc.y as f64));
+        let card = preview.model.card_rect(output_area);
+        let dismiss = preview.model.dismiss_button_rect(card);
+        if !card.contains(local_pos) && !dismiss.contains(local_pos) {
+            return false;
+        }
+        let outcome = preview.model.press(local_pos, output_area);
+        let output = (outcome == glide_shot::preview::PreviewOutcome::Redraw).then(|| preview.output.clone());
+        if let Some(output) = output {
+            self.queue_redraw_output(&output);
+        }
+        true
+    }
+
+    fn shot_preview_release(&mut self, pos: Point<f64, Logical>, button: u32) -> bool {
+        if button != BTN_LEFT {
+            return false;
+        }
+        let Some(preview) = self.session.shot_preview.as_mut() else {
+            return false;
+        };
+        let Some(geometry) = self.space.output_geometry(&preview.output) else {
+            return false;
+        };
+        let output_area = Rectangle::new(
+            Point::from((0.0, 0.0)),
+            smithay::utils::Size::from((geometry.size.w as f64, geometry.size.h as f64)),
+        );
+        let local_pos = Point::from((pos.x - geometry.loc.x as f64, pos.y - geometry.loc.y as f64));
+        let card = preview.model.card_rect(output_area);
+        let dismiss = preview.model.dismiss_button_rect(card);
+        if !card.contains(local_pos) && !dismiss.contains(local_pos) && !preview.model.dragging {
+            return false;
+        }
+        let outcome = preview.model.release(local_pos, output_area);
+        self.handle_preview_outcome(outcome);
+        true
+    }
+
+    fn handle_preview_outcome(&mut self, outcome: glide_shot::preview::PreviewOutcome) {
+        use glide_shot::preview::{PreviewKind, PreviewOutcome};
+        let now = glide_ui::clock::now();
+        match outcome {
+            PreviewOutcome::Nothing => {}
+            PreviewOutcome::Redraw => {
+                if let Some(preview) = self.session.shot_preview.as_ref() {
+                    let output = preview.output.clone();
+                    self.queue_redraw_output(&output);
+                }
+            }
+            PreviewOutcome::Activate { path, kind } => {
+                let path_str = path.display().to_string();
+                match kind {
+                    PreviewKind::Recording { .. } => {
+                        let _ = crate::spawn::spawn_detached("glide-clips", ["--trim", &path_str]);
+                    }
+                    PreviewKind::Screenshot { .. } => {
+                        let _ = crate::spawn::spawn_detached("xdg-open", [&path_str]);
+                    }
+                }
+                let output = self.session.shot_preview.as_mut().map(|p| {
+                    p.dismiss(now);
+                    p.output.clone()
+                });
+                if let Some(output) = output {
+                    self.queue_redraw_output(&output);
+                }
+            }
+            PreviewOutcome::ShowInFolder(path) => {
+                self.show_screenshot_in_folder(&path);
+                let output = self.session.shot_preview.as_mut().map(|p| {
+                    p.dismiss(now);
+                    p.output.clone()
+                });
+                if let Some(output) = output {
+                    self.queue_redraw_output(&output);
+                }
+            }
+            PreviewOutcome::Dismiss => {
+                let output = self.session.shot_preview.as_mut().map(|p| {
+                    p.dismiss(now);
+                    p.output.clone()
+                });
+                if let Some(output) = output {
+                    self.queue_redraw_output(&output);
+                }
+            }
+        }
     }
 
     fn greeter_motion(&mut self, pos: Point<f64, Logical>) -> bool {

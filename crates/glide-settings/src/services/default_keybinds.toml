@@ -84,6 +84,11 @@ key = "Print"
 action = "screenshot-window"
 
 [[keybinds]]
+mods = ["super", "shift"]
+key = "r"
+action = "screen-recording"
+
+[[keybinds]]
 mods = ["super"]
 key = "a"
 action = "toggle-launcher"

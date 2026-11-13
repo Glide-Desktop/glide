@@ -1,4 +1,4 @@
-pub use glide_shot::{compose, crop_region, model, render};
+pub use glide_shot::{compose, crop_region, model, preview, render};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,6 +27,7 @@ pub struct Session {
     pub window_generation: usize,
     pub waiters: Vec<UnixStream>,
     pub cache: render::Cache,
+    pub focus: Option<GlideWindow>,
     opened: Instant,
     closing: bool,
     finishing: Option<bool>,
@@ -51,6 +52,47 @@ pub struct WindowCapture {
     pub clip: f32,
     pub radius: f32,
     pub direct: bool,
+}
+
+pub struct FloatingPreview {
+    pub output: Output,
+    pub model: glide_shot::preview::Preview,
+    pub cache: glide_shot::preview::PreviewCache,
+}
+
+impl FloatingPreview {
+    #[must_use]
+    pub fn new(output: Output, model: glide_shot::preview::Preview) -> Self {
+        let mut cache = glide_shot::preview::PreviewCache::default();
+        cache.reveal();
+        Self { output, model, cache }
+    }
+
+    pub fn dismiss(&mut self, _now: Instant) {
+        self.model.close();
+        self.cache.conceal();
+    }
+
+    #[must_use]
+    pub fn is_closed(&self, _now: Instant) -> bool {
+        self.model.closing && !self.cache.is_animating() && self.cache.openness() <= 0.0
+    }
+
+    pub fn check_timeout(&mut self, now: Instant) {
+        if !self.model.closing && !self.model.hovered && !self.model.dragging && now >= self.model.dismiss_at {
+            self.dismiss(now);
+        }
+    }
+
+    #[must_use]
+    pub fn next_wake(&self, _now: Instant) -> Option<Instant> {
+        self.cache.next_wake(&self.model)
+    }
+
+    #[must_use]
+    pub fn is_animating(&self, _now: Instant) -> bool {
+        self.cache.is_animating()
+    }
 }
 
 impl Session {
@@ -242,6 +284,19 @@ fn frame_of(window: &GlideWindow, location: Point<i32, Logical>) -> Rectangle<i3
     frame_from(location, window.geometry(), window.header_height())
 }
 
+pub(crate) fn window_capture_radius(is_size_locked: bool, window: &GlideWindow) -> (f32, f32) {
+    if is_size_locked {
+        return (0.0, 0.0);
+    }
+    match window.try_decoration_state() {
+        Some(state) if state.header.is_framed() && !state.header.maximized => {
+            (state.header.theme.corner_radius, state.header.theme.corner_radius)
+        }
+        Some(state) if state.header.maximized => (0.0, 0.0),
+        _ => (0.0, glide_theme::shape::R3),
+    }
+}
+
 impl GlideState {
     #[must_use]
     pub fn shot_active(&self) -> bool {
@@ -267,17 +322,8 @@ impl GlideState {
         self.session.shot.as_ref().is_some_and(Session::freezing)
     }
 
-    fn capture_radius(&self, window: &GlideWindow) -> (f32, f32) {
-        if self.is_size_locked(window) {
-            return (0.0, 0.0);
-        }
-        match window.try_decoration_state() {
-            Some(state) if state.header.is_framed() && !state.header.maximized => {
-                (state.header.theme.corner_radius, state.header.theme.corner_radius)
-            }
-            Some(state) if state.header.maximized => (0.0, 0.0),
-            _ => (0.0, glide_theme::shape::R3),
-        }
+    pub(crate) fn capture_radius(&self, window: &GlideWindow) -> (f32, f32) {
+        window_capture_radius(self.is_size_locked(window), window)
     }
 
     fn pointer_output(&self) -> Option<(Output, Rectangle<i32, Logical>)> {
@@ -291,11 +337,22 @@ impl GlideState {
         outputs.into_iter().find(|(candidate, _)| *candidate == output)
     }
 
-    pub fn open_shot(&mut self, waiter: Option<UnixStream>) {
-        self.open_shot_after(waiter, 0);
+    pub fn open_shot_with_kind(&mut self, focus: Option<GlideWindow>, kind: Option<glide_shot::model::CaptureKind>) {
+        if let Some(kind) = kind {
+            self.session.shot_memory.kind = kind;
+        }
+        self.open_shot_after(focus, None, 0);
     }
 
-    fn open_shot_after(&mut self, waiter: Option<UnixStream>, attempt: u32) {
+    pub fn open_shot(&mut self, focus: Option<GlideWindow>) {
+        self.open_shot_with_kind(focus, None);
+    }
+
+    pub fn open_shot_waiter(&mut self, waiter: Option<UnixStream>) {
+        self.open_shot_after(None, waiter, 0);
+    }
+
+    fn open_shot_after(&mut self, focus: Option<GlideWindow>, waiter: Option<UnixStream>, attempt: u32) {
         let blocked =
             self.screen_locked() || self.greeter.is_some() || self.picker_active() || self.handoff_blocks_input();
         if blocked {
@@ -309,7 +366,8 @@ impl GlideState {
             return;
         }
         if self.capture_busy() && crate::screenshot_ui::may_retry(attempt) {
-            self.retry_capture(attempt, move |state, next| state.open_shot_after(waiter, next));
+            let focus_retry = focus;
+            self.retry_capture(attempt, move |state, next| state.open_shot_after(focus_retry, waiter, next));
             return;
         }
         self.session.shot = None;
@@ -346,6 +404,7 @@ impl GlideState {
             window_generation: 0,
             waiters: waiter.into_iter().collect(),
             cache: render::Cache::default(),
+            focus,
             opened: Instant::now(),
             closing: false,
             finishing: None,
@@ -413,6 +472,12 @@ impl GlideState {
         session.frozen = Some(Arc::new(image));
         let bounds = session.bounds.to_f64();
         let mut shot = Shot::new(bounds, session.windows.iter().map(|candidate| candidate.frame).collect(), &memory);
+        if let Some(focused) = session.focus.as_ref()
+            && let Some(idx) = session.windows.iter().position(|c| &c.window == focused)
+        {
+            shot.window = Some(idx);
+            shot.hovered = Some(idx);
+        }
         let local = session.local(pointer);
         shot.motion(local, None);
         session.shot = Some(shot);
@@ -635,6 +700,25 @@ impl GlideState {
                 }
                 self.queue_redraw();
             }
+            Outcome::Record(req) => {
+                let Some(session) = self.session.shot.as_ref() else {
+                    return;
+                };
+                let output = session.output.clone();
+                let target = match req.mode {
+                    Mode::Screen => crate::recording::Target::Screen(output),
+                    Mode::Area => crate::recording::Target::Area { output, area: req.target },
+                    Mode::Window => {
+                        if let Some(candidate) = req.window.and_then(|idx| session.windows.get(idx)) {
+                            crate::recording::Target::Window { window: candidate.window.clone(), output }
+                        } else {
+                            crate::recording::Target::Area { output, area: req.target }
+                        }
+                    }
+                };
+                self.close_shot_session();
+                self.start_recording(target, crate::recording::Options { audio: req.audio, cursor: req.cursor });
+            }
         }
     }
 
@@ -719,6 +803,7 @@ impl GlideState {
         tracing::info!(mode = ?shot.mode, marks = shot.marks.len(), copy, "screenshot taken");
         let waiters = std::mem::take(&mut session.waiters);
         self.session.screenshot_waiters.extend(waiters);
+        self.session.last_shot_output = Some(session.output.clone());
         self.close_shot_session();
         crate::screenshot_ui::run_in_background(&self.loop_handle, move || job.run());
     }
@@ -752,6 +837,7 @@ impl GlideState {
             return;
         };
         let (clip, radius) = self.capture_radius(&window);
+        self.session.last_shot_output = Some(output.clone());
         self.session.window_capture = Some(WindowCapture { window, output, clip, radius, direct: true });
         self.queue_redraw();
     }
@@ -848,8 +934,11 @@ impl Job {
     fn run(self) -> Result<crate::backend::screenshot::Saved, String> {
         let image = self.compose().ok_or_else(|| "nothing to capture".to_string())?;
         let (width, height) = (image.width, image.height);
-        crate::backend::screenshot::save_rgba(&image.into_straight(), width, height, self.write)
-            .map_err(|err| format!("{err:#}"))
+        let image_arc = Arc::new(image.clone());
+        let mut saved = crate::backend::screenshot::save_rgba(&image.into_straight(), width, height, self.write)
+            .map_err(|err| format!("{err:#}"))?;
+        saved.image = Some(image_arc);
+        Ok(saved)
     }
 }
 

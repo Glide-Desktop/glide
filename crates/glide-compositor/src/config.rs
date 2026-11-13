@@ -1136,6 +1136,7 @@ impl Config {
             simple(&[], "Print", "screenshot"),
             simple(&[Shift], "Print", "screenshot-screen"),
             simple(&[Alt], "Print", "screenshot-window"),
+            simple(&[Super, Shift], "r", "screen-recording"),
             simple(&[Super], "a", "toggle-launcher"),
             exec(
                 &[],
@@ -1496,6 +1497,7 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "screenshot" => KeyAction::Screenshot,
             "screenshot-screen" => KeyAction::ScreenshotScreen,
             "screenshot-window" => KeyAction::ScreenshotWindow,
+            "screen-recording" => KeyAction::ScreenRecord,
             "toggle-launcher" => KeyAction::ToggleLauncher,
             "switch-windows" => KeyAction::SwitchWindows(false),
             "switch-windows-backward" => KeyAction::SwitchWindows(true),

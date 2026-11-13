@@ -195,6 +195,19 @@ impl crate::GlideState {
                 self.open_screenshot(key == crate::screenshot_ui::SHOW);
                 continue;
             }
+            if let LocalEvent::Action { id: crate::state::RECORDING_NOTICE_ID, key } = &event {
+                self.notifications.dismiss(crate::state::RECORDING_NOTICE_ID);
+                self.queue_redraw();
+                if let Some(path) = self.session.last_recording.clone() {
+                    let path_str = path.display().to_string();
+                    if key == crate::screenshot_ui::SHOW {
+                        self.show_screenshot_in_folder(&path);
+                    } else {
+                        let _ = crate::spawn::spawn_detached("glide-clips", [&path_str]);
+                    }
+                }
+                continue;
+            }
             if let LocalEvent::Action { id: crate::welcome::NOTICE_ID, key } = &event {
                 let page =
                     if key == crate::welcome::OPEN_SHORTCUTS { "glide-settings shortcuts" } else { "glide-settings" };

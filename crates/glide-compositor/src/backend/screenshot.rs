@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use smithay::{
@@ -17,23 +18,27 @@ pub struct Saved {
     pub path: Option<PathBuf>,
     pub png: Vec<u8>,
     pub preview: Option<Vec<u8>>,
+    pub image: Option<Arc<glide_shell::image::Image>>,
 }
 
 pub fn save(mut pixels: Vec<u8>, width: i32, height: i32) -> anyhow::Result<Saved> {
+    let img = glide_shell::image::Image::from_bgra(width.max(0) as u32, height.max(0) as u32, pixels.clone());
     bgra_to_rgba_in_place(&mut pixels);
     let (width, height) = (u32::try_from(width)?, u32::try_from(height)?);
-    save_rgba(&pixels, width, height, true)
+    let mut saved = save_rgba(&pixels, width, height, true)?;
+    saved.image = img.map(Arc::new);
+    Ok(saved)
 }
 
 pub fn save_rgba(rgba: &[u8], width: u32, height: u32, write: bool) -> anyhow::Result<Saved> {
     let png = glide_shell::image::encode_png(width, height, rgba).context("failed to encode the screenshot")?;
     let preview = glide_paint::render_rgba_rounded(rgba, width, height, 96, 8.0);
     if !write {
-        return Ok(Saved { path: None, png, preview });
+        return Ok(Saved { path: None, png, preview, image: None });
     }
     let path = screenshot_path().context("failed to determine where to save the screenshot")?;
     std::fs::write(&path, &png).with_context(|| format!("failed to write the screenshot to {}", path.display()))?;
-    Ok(Saved { path: Some(path), png, preview })
+    Ok(Saved { path: Some(path), png, preview, image: None })
 }
 
 pub(super) fn capture_frame(

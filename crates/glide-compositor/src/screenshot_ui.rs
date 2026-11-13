@@ -179,28 +179,33 @@ impl GlideState {
         let Some(path) = self.session.last_screenshot.clone() else {
             return;
         };
-        let token = self.mint_granted_token(None);
         if in_folder {
-            let spawned = std::thread::Builder::new().name("glide-show-screenshot".into()).spawn(move || {
-                if let Err(err) = glide_app::integration::show_in_files(&path, &token) {
-                    tracing::warn!(%err, "no file manager showed the screenshot");
-                    let folder = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
-                    let mut command = std::process::Command::new("xdg-open");
-                    command.arg(folder).env("XDG_ACTIVATION_TOKEN", &token).env("DESKTOP_STARTUP_ID", &token);
-                    if let Err(err) = crate::spawn_detached(command) {
-                        tracing::warn!(%err, "could not open the screenshot folder");
-                    }
-                }
-            });
-            if let Err(err) = spawned {
-                tracing::warn!(%err, "could not start the file manager call");
-            }
+            self.show_screenshot_in_folder(&path);
             return;
         }
         let mut command = std::process::Command::new("xdg-open");
         command.arg(path);
         if let Err(err) = self.spawn_user_process(command) {
             tracing::warn!(%err, "could not open the screenshot");
+        }
+    }
+
+    pub fn show_screenshot_in_folder(&mut self, path: &std::path::Path) {
+        let token = self.mint_granted_token(None);
+        let path = path.to_path_buf();
+        let spawned = std::thread::Builder::new().name("glide-show-screenshot".into()).spawn(move || {
+            if let Err(err) = glide_app::integration::show_in_files(&path, &token) {
+                tracing::warn!(%err, "no file manager showed the screenshot");
+                let folder = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+                let mut command = std::process::Command::new("xdg-open");
+                command.arg(folder).env("XDG_ACTIVATION_TOKEN", &token).env("DESKTOP_STARTUP_ID", &token);
+                if let Err(err) = crate::spawn_detached(command) {
+                    tracing::warn!(%err, "could not open the screenshot folder");
+                }
+            }
+        });
+        if let Err(err) = spawned {
+            tracing::warn!(%err, "could not start the file manager call");
         }
     }
 
@@ -223,7 +228,7 @@ impl GlideState {
         }
         let mut actions = Vec::new();
         let (summary, body, preview) = match result {
-            Ok(Saved { path, png, preview }) => {
+            Ok(Saved { path, png, preview, image }) => {
                 smithay::wayland::selection::data_device::set_data_device_selection(
                     &self.display_handle,
                     &self.seat,
@@ -237,6 +242,20 @@ impl GlideState {
                         glide_notify::Action { key: SHOW.into(), label: t(Key::ShotShowInFolder).into() },
                     ];
                     self.session.last_screenshot = Some(path.clone());
+                    if let Some(image) = image {
+                        let output =
+                            self.session.last_shot_output.clone().or_else(|| self.space.outputs().next().cloned());
+                        if let Some(output) = output {
+                            self.show_shot_preview(
+                                &output,
+                                path.clone(),
+                                glide_shot::preview::PreviewKind::Screenshot {
+                                    edit_snapshot: Some(Arc::clone(&image)),
+                                },
+                                image,
+                            );
+                        }
+                    }
                     (crate::i18n::screenshot_saved(), path.display().to_string(), preview)
                 } else {
                     tracing::info!("screenshot copied to the clipboard");

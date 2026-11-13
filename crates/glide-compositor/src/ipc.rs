@@ -315,7 +315,7 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
         }
         match stream.try_clone() {
             Ok(waiter) => match request {
-                Request::ScreenshotArea => state.open_shot(Some(waiter)),
+                Request::ScreenshotArea => state.open_shot_waiter(Some(waiter)),
                 Request::PickColor => state.start_picker(waiter),
                 Request::ScanQr => state.start_qr_scan(waiter),
                 _ => state.request_screenshot_for(waiter),
@@ -362,6 +362,7 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
 }
 
 #[must_use]
+#[allow(clippy::too_many_lines)] // Dispatches all IPC requests
 pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
     match request {
         Request::Ping => Response::Pong,
@@ -443,6 +444,47 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
         Request::LoginPasswordChanged { password } => {
             state.adopt_changed_login_password(&password);
             Response::Ok
+        }
+        Request::ScreenRecord => {
+            if state.session.recording.is_none() {
+                state.open_shot_with_kind(None, Some(glide_shot::model::CaptureKind::Record));
+            }
+            if let Some(recording) = state.session.recording.as_ref() {
+                let now = glide_ui::clock::now();
+                Response::Recording {
+                    active: true,
+                    elapsed_secs: Some(recording.elapsed(now).as_secs()),
+                    path: Some(recording.path.display().to_string()),
+                }
+            } else {
+                Response::Recording { active: false, elapsed_secs: None, path: None }
+            }
+        }
+        Request::StopRecording => {
+            let stopped = state.stop_recording();
+            Response::Recording {
+                active: false,
+                elapsed_secs: None,
+                path: stopped
+                    .map(|p| p.display().to_string())
+                    .or_else(|| state.session.last_recording.as_ref().map(|p| p.display().to_string())),
+            }
+        }
+        Request::RecordingStatus => {
+            if let Some(recording) = state.session.recording.as_ref() {
+                let now = glide_ui::clock::now();
+                Response::Recording {
+                    active: true,
+                    elapsed_secs: Some(recording.elapsed(now).as_secs()),
+                    path: Some(recording.path.display().to_string()),
+                }
+            } else {
+                Response::Recording {
+                    active: false,
+                    elapsed_secs: None,
+                    path: state.session.last_recording.as_ref().map(|p| p.display().to_string()),
+                }
+            }
         }
         Request::ActivationToken { .. }
         | Request::Screenshot

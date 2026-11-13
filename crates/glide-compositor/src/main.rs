@@ -54,6 +54,7 @@ mod power;
 mod privilege;
 mod qr_scan;
 mod qs_net;
+mod recording;
 mod removable;
 mod screen_picker;
 mod screencopy;
@@ -66,6 +67,7 @@ mod smooth_wheel;
 mod snap;
 mod snapshot;
 mod sound;
+pub mod spawn;
 mod state;
 mod super_keys;
 mod surface_fade;
@@ -229,6 +231,7 @@ fn run() -> anyhow::Result<()> {
         let find_cursor_animating = state.session.find_cursor.tick(std::time::Instant::now());
         let wheel_animating = state.smooth_wheel_pending();
         let shot_animating = state.tick_shot();
+        let shot_preview_animating = state.tick_shot_preview();
         let polkit_animating = state.tick_polkit();
         let keychain_animating = state.tick_keychain_prompt();
         let night_light_animating = state.tick_night_light_fade();
@@ -240,6 +243,7 @@ fn run() -> anyhow::Result<()> {
             || polkit_animating
             || keychain_animating
             || shot_animating
+            || shot_preview_animating
             || osd_animating
             || wheel_animating
             || snap_animating

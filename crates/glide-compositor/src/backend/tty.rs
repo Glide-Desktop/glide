@@ -950,6 +950,12 @@ impl GlideState {
 
         self.space.unmap_output(&surface.output);
         self.screencopy.fail_for(&surface.output);
+        if self.session.recording.as_ref().is_some_and(|r| r.output() == &surface.output) {
+            self.stop_recording();
+        }
+        if self.session.shot_preview.as_ref().is_some_and(|p| p.output == surface.output) {
+            self.session.shot_preview = None;
+        }
         {
             let mut map = smithay::desktop::layer_map_for_output(&surface.output);
             let layers: Vec<_> = map.layers().cloned().collect();
@@ -1822,6 +1828,33 @@ impl GlideState {
             prepend(&mut elements, overlay);
         }
 
+        if let Some(preview) = self.session.shot_preview.as_mut().filter(|p| p.output == output) {
+            let tokens = glide_theme::Tokens::new(self.shell_palette.0, self.shell_palette.1);
+            let palette = crate::shot::render::Palette::from_tokens(&tokens);
+            let work_area = output_rect.to_f64();
+            let mut cache = std::mem::take(&mut preview.cache);
+            let pieces = crate::shot::preview::render_preview(
+                &mut cache,
+                &preview.model,
+                gles_renderer,
+                &painter,
+                &palette,
+                work_area,
+                fractional,
+                self.launcher_theme.revision(),
+                integer_scale,
+            );
+            preview.cache = cache;
+            let overlay: Vec<GlideRenderElements> = pieces
+                .into_iter()
+                .map(|piece| match piece {
+                    crate::shot::render::Piece::Memory(element) => GlideRenderElements::Memory(element),
+                    crate::shot::render::Piece::Solid(element) => GlideRenderElements::LockBackdrop(element),
+                })
+                .collect();
+            prepend(&mut elements, overlay);
+        }
+
         let now = glide_ui::clock::now();
         let osd_alpha = self.session.osd.alpha(now);
         if osd_alpha > 0.0 && primary {
@@ -2090,6 +2123,96 @@ impl GlideState {
                     tracing::error!(?err, "failed to capture the window");
                     self.loop_handle.insert_idle(move |state| state.window_capture_failed(&capture));
                 }
+            }
+        }
+
+        let needs_recording_frame = self.session.recording.as_ref().is_some_and(|r| r.needs_frame(&output, now));
+        if needs_recording_frame {
+            let (target, options) = {
+                let rec = self.session.recording.as_ref().unwrap();
+                (rec.target.clone(), rec.options)
+            };
+            let captured_image = match target {
+                crate::recording::Target::Window { ref window, .. } => {
+                    let geometry = window.geometry();
+                    let header = window.header_height();
+                    let frame = smithay::utils::Size::<i32, Logical>::from((geometry.size.w, geometry.size.h + header));
+                    let physical = frame.to_f64().to_physical(fractional).to_i32_ceil::<i32>();
+                    let location = Point::<i32, Logical>::from((-geometry.loc.x, header - geometry.loc.y))
+                        .to_f64()
+                        .to_physical(fractional)
+                        .to_i32_round();
+                    let is_locked = self
+                        .window_to_id
+                        .get(window)
+                        .and_then(|id| self.layout.window_state(*id))
+                        .is_some_and(|state| state.maximized || state.fullscreen);
+                    let (clip, _radius) = crate::shot::window_capture_radius(is_locked, window);
+                    let shape = crate::window::PreviewShape { radius: clip, scale: 1.0, shadow_alpha: 0.0 };
+                    let alone = window.preview_render_elements(gles_renderer, location, scale, 1.0, shape);
+                    match super::screenshot::capture_elements(
+                        gles_renderer,
+                        &alone,
+                        (physical.w, physical.h),
+                        fractional,
+                        Transform::Normal,
+                        [0.0; 4],
+                    ) {
+                        Ok(pixels) => glide_shell::image::Image::from_bgra(
+                            physical.w.max(0) as u32,
+                            physical.h.max(0) as u32,
+                            pixels,
+                        ),
+                        Err(err) => {
+                            tracing::error!(?err, "failed to capture recording frame for window");
+                            None
+                        }
+                    }
+                }
+                crate::recording::Target::Area { area, .. } => {
+                    let upright = super::screenshot::upright_size(output_mode, transform);
+                    let elems = if options.cursor { &elements[..] } else { &elements[cursor_count..] };
+                    match super::screenshot::capture_frame(gles_renderer, elems, upright, fractional, Transform::Normal)
+                    {
+                        Ok(pixels) => {
+                            if let Some(full) = glide_shell::image::Image::from_bgra(
+                                upright.0.max(0) as u32,
+                                upright.1.max(0) as u32,
+                                pixels,
+                            ) {
+                                let region = crate::shot::crop_region(area, fractional, (full.width, full.height));
+                                region.and_then(|r| full.crop(r))
+                            } else {
+                                None
+                            }
+                        }
+                        Err(err) => {
+                            tracing::error!(?err, "failed to capture recording frame for area");
+                            None
+                        }
+                    }
+                }
+                crate::recording::Target::Screen(_) => {
+                    let upright = super::screenshot::upright_size(output_mode, transform);
+                    let elems = if options.cursor { &elements[..] } else { &elements[cursor_count..] };
+                    match super::screenshot::capture_frame(gles_renderer, elems, upright, fractional, Transform::Normal)
+                    {
+                        Ok(pixels) => glide_shell::image::Image::from_bgra(
+                            upright.0.max(0) as u32,
+                            upright.1.max(0) as u32,
+                            pixels,
+                        ),
+                        Err(err) => {
+                            tracing::error!(?err, "failed to capture recording frame for screen");
+                            None
+                        }
+                    }
+                }
+            };
+            if let Some(image) = captured_image
+                && let Some(recording) = self.session.recording.as_mut()
+            {
+                recording.accept_frame(std::sync::Arc::new(image), now);
             }
         }
 

@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -404,6 +405,10 @@ pub struct SessionServices {
     pub shot_memory: crate::shot::model::Memory,
     pub window_capture: Option<crate::shot::WindowCapture>,
     pub last_screenshot: Option<std::path::PathBuf>,
+    pub recording: Option<crate::recording::Session>,
+    pub last_recording: Option<std::path::PathBuf>,
+    pub shot_preview: Option<crate::shot::FloatingPreview>,
+    pub last_shot_output: Option<Output>,
     pub search_providers: Option<crate::launcher::providers::Handle>,
     pub search_providers_started: bool,
     pub launch_origin: Option<crate::launcher::LaunchOrigin>,
@@ -930,6 +935,12 @@ impl GlideState {
         if let Some(switcher) = self.switcher.as_mut() {
             switcher.remove(id);
         }
+        if let Some(ref recording) = self.session.recording
+            && let Some(window) = self.window_map.get(&id)
+            && recording.uses_window(window)
+        {
+            self.stop_recording();
+        }
         self.layout.remove_window(id);
         if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
             handle.send_closed();
@@ -1001,6 +1012,12 @@ impl GlideState {
     }
 
     pub fn on_window_unmapped(&mut self, id: glide_layout::WindowId) {
+        if let Some(ref recording) = self.session.recording
+            && let Some(window) = self.window_map.get(&id)
+            && recording.uses_window(window)
+        {
+            self.stop_recording();
+        }
         if self.layout.unmap_window(id) {
             tracing::info!(window = id.0, "window unmapped");
             if let Some(switcher) = self.switcher.as_mut() {
@@ -1653,6 +1670,9 @@ impl GlideState {
 
     pub fn sync_screen_capture(&mut self) -> bool {
         let mut recording = self.screencopy.recording_clients(std::time::Instant::now());
+        if self.session.recording.is_some() {
+            recording.push("Glide".to_string());
+        }
         if let Some(display) = self.session.cast.label() {
             recording.push(crate::i18n::t(crate::i18n::Key::CastIndicator).replace("{name}", &display));
         }
@@ -1839,8 +1859,10 @@ impl GlideState {
 
     pub fn sync_wake_timer(&mut self) {
         use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        let now = glide_ui::clock::now();
         let shot = self.session.shot.as_ref().and_then(|shot| shot.cache.next_wake());
-        let wanted = [self.topbar.next_wake(), self.dock.next_wake(), shot].into_iter().flatten().min();
+        let preview = self.session.shot_preview.as_ref().and_then(|preview| preview.next_wake(now));
+        let wanted = [self.topbar.next_wake(), self.dock.next_wake(), shot, preview].into_iter().flatten().min();
         if self.session.wake_timer.waits_for(wanted) {
             return;
         }
@@ -2180,6 +2202,7 @@ impl GlideState {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Dispatches all topbar actions
     pub fn run_topbar_action(&mut self, action: crate::topbar::TopbarAction) {
         use crate::topbar::{OpenPopup, TopbarAction};
         let opens_island = matches!(action, TopbarAction::ToggleNotificationCenter | TopbarAction::ToggleQuickSettings);
@@ -2251,6 +2274,9 @@ impl GlideState {
             | TopbarAction::DismissIslandAlert
             | TopbarAction::Notification(_)
             | TopbarAction::PeekNotice => self.run_notification_topbar_action(action),
+            TopbarAction::StopRecording => {
+                self.stop_recording();
+            }
             TopbarAction::OpenInputSettings => {
                 self.topbar.close_popup();
                 let _ = crate::spawn_shell_command(
@@ -3941,6 +3967,12 @@ impl GlideState {
         self.topbar.close_popup();
         self.dock.close_menu();
         self.snapshots.clear();
+        if self.session.recording.is_some() {
+            self.stop_recording();
+        }
+        if self.session.shot_preview.is_some() {
+            self.session.shot_preview = None;
+        }
 
         let mut ui = crate::greeter::GreeterUi::lock(user, self.shell_palette.1);
         ui.set_status(self.lock_status());
@@ -4528,6 +4560,108 @@ impl GlideState {
     pub fn handoff_blocks_input(&self) -> bool {
         self.greeter.is_none() && self.handoff.as_ref().is_some_and(crate::handoff::Handoff::blocks_input)
     }
+
+    pub fn start_recording(&mut self, target: crate::recording::Target, options: crate::recording::Options) {
+        if self.session.recording.is_some() {
+            self.stop_recording();
+        }
+        let now = glide_ui::clock::now();
+        let target_output = target.output().clone();
+        let session = crate::recording::Session::new(target, options, now);
+        let path = session.path.display().to_string();
+        self.session.recording = Some(session);
+        self.topbar.set_recording(Some(now));
+        self.sync_screen_capture();
+        self.ipc_subscribers.broadcast(&glide_ipc::Event::RecordingStateChanged { active: true, path: Some(path) });
+        self.queue_redraw_output(&target_output);
+        self.sync_wake_timer();
+    }
+
+    pub fn stop_recording(&mut self) -> Option<PathBuf> {
+        let recording = self.session.recording.take()?;
+        let now = glide_ui::clock::now();
+        let target_output = recording.output().clone();
+        let saved = recording.finish(now);
+        self.topbar.set_recording(None);
+        self.sync_screen_capture();
+        let path_str = saved.path.display().to_string();
+        self.ipc_subscribers
+            .broadcast(&glide_ipc::Event::RecordingStateChanged { active: false, path: Some(path_str) });
+        self.session.last_recording = Some(saved.path.clone());
+        if let Some(preview) = saved.preview {
+            self.show_shot_preview(
+                &target_output,
+                saved.path.clone(),
+                glide_shot::preview::PreviewKind::Recording { duration: saved.duration },
+                preview,
+            );
+        }
+        self.notice_recording_saved(&saved.path);
+        self.queue_redraw_output(&target_output);
+        self.sync_wake_timer();
+        Some(saved.path)
+    }
+
+    pub fn show_shot_preview(
+        &mut self, output: &Output, path: PathBuf, kind: glide_shot::preview::PreviewKind,
+        image: Arc<glide_shell::image::Image>,
+    ) {
+        let model = match kind {
+            glide_shot::preview::PreviewKind::Screenshot { edit_snapshot } => {
+                glide_shot::preview::Preview::screenshot(image, path, edit_snapshot)
+            }
+            glide_shot::preview::PreviewKind::Recording { duration } => {
+                glide_shot::preview::Preview::recording(image, path, duration)
+            }
+        };
+        let preview = crate::shot::FloatingPreview::new(output.clone(), model);
+        self.session.shot_preview = Some(preview);
+        self.queue_redraw_output(output);
+        self.sync_wake_timer();
+    }
+
+    fn notice_recording_saved(&mut self, path: &Path) {
+        use crate::i18n::{Key, t};
+        let actions = vec![
+            glide_notify::Action { key: crate::screenshot_ui::OPEN.into(), label: t(Key::ShotOpen).into() },
+            glide_notify::Action { key: crate::screenshot_ui::SHOW.into(), label: t(Key::ShotShowInFolder).into() },
+        ];
+        let notice = glide_notify::Notification {
+            id: RECORDING_NOTICE_ID,
+            app_name: "Glide".to_string(),
+            app_icon: path.display().to_string(),
+            summary: t(Key::NoticeRecordingSaved).to_string(),
+            body: path.display().to_string(),
+            actions,
+            transient: true,
+            timeout: Some(std::time::Duration::from_secs(5)),
+            ..glide_notify::Notification::default()
+        };
+        self.notifications.push(&mut self.dock.icons, notice, true);
+        self.refresh_topbar();
+        self.queue_redraw();
+    }
+
+    pub fn tick_shot_preview(&mut self) -> bool {
+        let now = glide_ui::clock::now();
+        let (closed, animating, output) = {
+            let Some(preview) = self.session.shot_preview.as_mut() else {
+                return false;
+            };
+            preview.check_timeout(now);
+            (preview.is_closed(now), preview.is_animating(now), preview.output.clone())
+        };
+        if closed {
+            self.session.shot_preview = None;
+            self.queue_redraw_output(&output);
+            self.sync_wake_timer();
+            return false;
+        }
+        if animating {
+            self.queue_redraw_output(&output);
+        }
+        animating
+    }
 }
 
 const ALERT_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
@@ -4692,6 +4826,7 @@ impl FractionalScaleHandler for GlideState {
 }
 
 pub const BATTERY_NOTICE_ID: u32 = u32::MAX - 3;
+pub const RECORDING_NOTICE_ID: u32 = u32::MAX - 13;
 const BATTERY_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const BOGUS_PHYSICAL_SIZES: [(i32, i32); 6] = [(1600, 900), (1600, 1000), (160, 90), (160, 100), (16, 9), (16, 10)];
 const LAPTOP_DIAGONAL_INCHES: f64 = 20.0;
