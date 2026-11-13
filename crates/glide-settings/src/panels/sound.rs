@@ -563,7 +563,9 @@ impl Page {
         let control = if meter.running && !t.compact {
             row![action].align_y(Alignment::Center)
         } else {
-            row![input_meter(&t, meter.level, meter.peak), action].spacing(12).align_y(Alignment::Center)
+            row![container(input_meter(&t, meter.level, meter.peak)).width(70), action]
+                .spacing(12)
+                .align_y(Alignment::Center)
         };
         Row::new(t, c.t(tr::Key::InputLevel)).subtitle(subtitle).suffix(widgets::flexible(control, 360.0)).build()
     }
@@ -731,7 +733,7 @@ fn stream_row<'a>(c: &Ctx, stream: &'a Stream, slider: StreamSlider) -> Element<
     );
     Row::new(t, stream.app.clone())
         .subtitle(if muted { c.t(K::Muted).to_string() } else { stream.title.clone() })
-        .prefix(super::apps::app_icon(&t, None, &stream.app, theme::SMALL_CONTROL_HEIGHT))
+        .prefix(super::apps::app_icon(&t, stream.icon.as_ref(), &stream.app, theme::SMALL_CONTROL_HEIGHT))
         .suffix(widgets::flexible(control, 320.0))
         .build()
 }

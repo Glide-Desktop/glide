@@ -43,6 +43,8 @@ pub struct Stream {
     pub index: u32,
     pub app: String,
     pub title: String,
+    pub icon_name: Option<String>,
+    pub icon: Option<PathBuf>,
     pub volume: f32,
     pub muted: bool,
 }
@@ -217,6 +219,10 @@ pub fn parse_sink_inputs(json: &str) -> Vec<Stream> {
                 index,
                 app: app.to_string(),
                 title: if title == app { String::new() } else { title.to_string() },
+                icon_name: property(entry, "application.icon_name")
+                    .filter(|name| !name.starts_with('.') && !name.contains('/'))
+                    .map(str::to_string),
+                icon: None,
                 volume,
                 muted: entry.get("mute").and_then(Value::as_bool).unwrap_or(false),
             })
@@ -291,14 +297,20 @@ pub fn read() -> AudioState {
         None
     };
     let player = ["pw-play", "paplay"].into_iter().find(|tool| run::available(tool));
+    let streams_supported = streams.is_some();
+    let mut streams = streams.as_deref().map(parse_sink_inputs).unwrap_or_default();
+    let icons = super::apps::icon_paths(streams.iter().filter_map(|stream| stream.icon_name.as_deref()), None);
+    for stream in &mut streams {
+        stream.icon = stream.icon_name.as_ref().and_then(|name| icons.get(name)).cloned();
+    }
     AudioState {
         available: true,
         output: level(SINK),
         input: level(SOURCE),
         sinks,
         sources,
-        streams_supported: streams.is_some(),
-        streams: streams.as_deref().map(parse_sink_inputs).unwrap_or_default(),
+        streams_supported,
+        streams,
         stereo,
         player,
         meter: run::available("parec"),

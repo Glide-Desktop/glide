@@ -91,7 +91,16 @@ fn fixture_sound(app: &mut App) {
         sources: vec![device(3, "Built-in Microphone", true)],
         output: Some(Level { volume: 0.62, muted: std::env::var_os("GLIDE_SETTINGS_SOUND_MUTED").is_some() }),
         input: Some(Level { volume: 0.8, muted: false }),
-        streams: vec![Stream { index: 1, app: "Browser".into(), title: "Video".into(), volume: 0.7, muted: false }],
+        streams: vec![Stream {
+            index: 1,
+            app: "Browser".into(),
+            title: "Video".into(),
+            icon_name: None,
+            icon: std::env::var_os("GLIDE_SETTINGS_SOUND_ICON_FIXTURE")
+                .map(|_| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/glide-folio.svg")),
+            volume: 0.7,
+            muted: false,
+        }],
         streams_supported: true,
         stereo: std::env::var_os("GLIDE_SETTINGS_SOUND_NO_STEREO")
             .is_none()

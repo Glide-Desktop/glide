@@ -7,10 +7,10 @@ use glide_settings::{App, Panel};
 const SINK_INPUTS: &str = r#"[
  {"index":71,"sink":52,"mute":false,"channel_map":"front-left,front-right",
   "volume":{"front-left":{"value":65536,"value_percent":"100%"},"front-right":{"value":32768,"value_percent":"50%"}},
-  "properties":{"application.name":"Firefox","media.name":"Lo-fi radio","application.process.binary":"firefox"}},
+  "properties":{"application.name":"Firefox","media.name":"Lo-fi radio","application.process.binary":"firefox","application.icon_name":"firefox"}},
  {"index":72,"mute":true,
   "volume":{"mono":{"value":32768}},
-  "properties":{"application.process.binary":"mpv","media.name":"mpv"}},
+  "properties":{"application.process.binary":"mpv","media.name":"mpv","application.icon_name":"/tmp/secret.png"}},
  {"index":73,"volume":{"mono":{"value":1}},"properties":{}}
 ]"#;
 
@@ -28,6 +28,8 @@ fn sink_inputs_become_named_streams_with_averaged_volume() {
     assert_eq!(streams[0].index, 71);
     assert_eq!(streams[0].app, "Firefox");
     assert_eq!(streams[0].title, "Lo-fi radio");
+    assert_eq!(streams[0].icon_name.as_deref(), Some("firefox"));
+    assert_eq!(streams[1].icon_name, None);
     assert!((streams[0].volume - 0.75).abs() < 1e-6);
     assert!(!streams[0].muted);
     assert_eq!(streams[1].app, "mpv");
@@ -35,6 +37,16 @@ fn sink_inputs_become_named_streams_with_averaged_volume() {
     assert!(streams[1].muted);
     assert!(audio::parse_sink_inputs("not json").is_empty());
     assert!(audio::parse_sink_inputs("[]").is_empty());
+}
+
+#[test]
+fn stream_icons_are_theme_names_not_paths() {
+    for name in ["/tmp/icon.png", "../icon", ".hidden", "sub/icon"] {
+        let json = format!(
+            r#"[{{"index":1,"volume":{{"mono":{{"value":65536}}}},"properties":{{"application.name":"app","application.icon_name":"{name}"}}}}]"#
+        );
+        assert_eq!(audio::parse_sink_inputs(&json)[0].icon_name, None, "{name}");
+    }
 }
 
 #[test]
