@@ -521,6 +521,13 @@ pub enum Message {
     OpenWithDialog,
     PickApp(String),
     ToggleAlwaysOpen,
+    NewTab(Option<PathBuf>),
+    SelectTab(usize),
+    CloseTab(usize),
+    CloseCurrent,
+    MoveTab(usize, usize),
+    NextTab(bool),
+    TabHover(Option<usize>),
     Extract,
     Compress,
     CompressFormat(Format),
@@ -600,6 +607,11 @@ impl Message {
                 | Self::CompressFormat(_)
                 | Self::RenameMode(_)
                 | Self::RenameWith(_)
+                | Self::NewTab(_)
+                | Self::SelectTab(_)
+                | Self::CloseTab(_)
+                | Self::MoveTab(..)
+                | Self::NextTab(_)
         )
     }
 
@@ -634,6 +646,11 @@ impl Message {
                 | Self::Compress
                 | Self::InvertSelection
                 | Self::SelectPattern
+                | Self::NewTab(_)
+                | Self::SelectTab(_)
+                | Self::CloseTab(_)
+                | Self::CloseCurrent
+                | Self::NextTab(_)
         )
     }
 
@@ -874,6 +891,10 @@ pub struct App {
     field: Option<Field>,
     pending_select: Option<PathBuf>,
     reveal_more: Vec<PathBuf>,
+    pub tabs: Vec<Tab>,
+    pub active_tab: usize,
+    next_tab: u64,
+    tab_hover: Option<usize>,
     sizing: Arc<AtomicBool>,
     pub grid_zoom: u8,
     pub list_zoom: u8,
@@ -892,6 +913,21 @@ pub struct App {
     pub templates: Vec<PathBuf>,
     pub phones: Vec<crate::fs::mtp::Phone>,
     look: Look,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tab {
+    pub id: u64,
+    pub path: PathBuf,
+    history: Vec<PathBuf>,
+    history_index: usize,
+    focus: Option<PathBuf>,
+}
+
+impl Tab {
+    fn at(id: u64, path: PathBuf) -> Self {
+        Self { id, history: vec![path.clone()], path, history_index: 0, focus: None }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1067,6 +1103,7 @@ impl App {
         let requested = requested_location();
         let pristine = requested.is_none().then(Instant::now);
         let (current, focus) = start_location(requested);
+        let start = current.clone();
         let mut app = Self {
             theme: look.paint(),
             icons: IconTheme::new(look.icon_theme.as_deref(), look.appearance_now(), look.accent),
@@ -1135,6 +1172,10 @@ impl App {
             field: None,
             pending_select: None,
             reveal_more: Vec::new(),
+            tabs: vec![Tab::at(0, start)],
+            active_tab: 0,
+            next_tab: 0,
+            tab_hover: None,
             sizing: Arc::default(),
             grid_zoom: prefs.grid_zoom,
             list_zoom: prefs.list_zoom,
@@ -1348,6 +1389,11 @@ impl App {
                 | Message::KeyMenu
                 | Message::ToggleOptions
                 | Message::NoticeChosen(_)
+                | Message::NewTab(_)
+                | Message::SelectTab(_)
+                | Message::CloseTab(_)
+                | Message::CloseCurrent
+                | Message::NextTab(_)
         ) || matches!(message, Message::Scrolled(offset) if offset != self.scroll_y);
         if self.renaming.is_some() && ends_rename {
             let committed = self.commit_rename();
@@ -1591,6 +1637,25 @@ impl App {
             Message::NewWindow(dir) => {
                 return new_window(dir.unwrap_or_else(|| self.current.clone()), None, self.lang);
             }
+            Message::NewTab(dir) => return self.new_tab(dir.unwrap_or_else(|| self.current.clone())),
+            Message::SelectTab(index) => return self.select_tab(index),
+            Message::CloseTab(index) => return self.close_tab(index),
+            Message::CloseCurrent if self.tabs.len() > 1 => return self.close_tab(self.active_tab),
+            Message::CloseCurrent => return self.handle(Message::Quit),
+            Message::NextTab(forward) => {
+                let count = self.tabs.len();
+                let step = if forward { 1 } else { count - 1 };
+                return self.select_tab((self.active_tab + step) % count);
+            }
+            Message::MoveTab(from, to) => {
+                if from < self.tabs.len() && to < self.tabs.len() && from != to {
+                    let active = self.tabs[self.active_tab].id;
+                    let moved = self.tabs.remove(from);
+                    self.tabs.insert(to, moved);
+                    self.active_tab = self.tabs.iter().position(|tab| tab.id == active).unwrap_or(0);
+                }
+            }
+            Message::TabHover(index) => self.tab_hover = index,
             Message::PropertiesOf(path) => return self.properties_of(path),
             Message::CopyText(text) => return iced::clipboard::write(text),
             Message::CopyPath => {
@@ -2670,7 +2735,85 @@ impl App {
     #[must_use]
     pub fn content_top(&self) -> f32 {
         let banner = if self.in_trash() { widgets::TRASH_BANNER + 1.0 } else { 0.0 };
-        CONTENT_TOP + banner
+        let tabs = if self.tabs_shown() { widgets::TAB_STRIP + 1.0 } else { 0.0 };
+        CONTENT_TOP + tabs + banner
+    }
+
+    #[must_use]
+    pub fn tabs_shown(&self) -> bool {
+        self.tabs.len() > 1 && self.chooser.is_none()
+    }
+
+    #[must_use]
+    pub const fn hovered_tab(&self) -> Option<usize> {
+        self.tab_hover
+    }
+
+    #[must_use]
+    pub fn tab_title(&self, index: usize) -> String {
+        match self.tabs.get(index) {
+            Some(_) if index == self.active_tab => self.place_title(),
+            Some(tab) => self.location_name(&tab.path),
+            None => String::new(),
+        }
+    }
+
+    fn park(&mut self) {
+        let focus = self.cursor.clone().or_else(|| self.selected().into_iter().next());
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.path.clone_from(&self.current);
+            tab.history.clone_from(&self.history);
+            tab.history_index = self.history_index;
+            tab.focus = focus;
+        }
+    }
+
+    fn unpark(&mut self, index: usize) -> Task<Message> {
+        let Some(tab) = self.tabs.get(index).cloned() else {
+            return Task::none();
+        };
+        self.active_tab = index;
+        self.history = tab.history;
+        self.history_index = tab.history_index.min(self.history.len().saturating_sub(1));
+        self.entries.clear();
+        self.free_bytes = None;
+        self.enter(tab.path.clone());
+        self.list(tab.path, Arrival::Initial, tab.focus)
+    }
+
+    fn new_tab(&mut self, dir: PathBuf) -> Task<Message> {
+        self.park();
+        self.next_tab += 1;
+        let index = (self.active_tab + 1).min(self.tabs.len());
+        self.tabs.insert(index, Tab::at(self.next_tab, dir));
+        self.unpark(index)
+    }
+
+    fn select_tab(&mut self, index: usize) -> Task<Message> {
+        if index == self.active_tab || index >= self.tabs.len() {
+            return Task::none();
+        }
+        self.park();
+        self.unpark(index)
+    }
+
+    fn close_tab(&mut self, index: usize) -> Task<Message> {
+        if index >= self.tabs.len() {
+            return Task::none();
+        }
+        if self.tabs.len() == 1 {
+            return self.handle(Message::Quit);
+        }
+        self.tab_hover = None;
+        self.tabs.remove(index);
+        if index < self.active_tab {
+            self.active_tab -= 1;
+            return Task::none();
+        }
+        if index > self.active_tab {
+            return Task::none();
+        }
+        self.unpark(index.min(self.tabs.len() - 1))
     }
 
     fn key_menu(&mut self) -> Task<Message> {
@@ -4755,6 +4898,9 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::F10) if shift => Message::KeyMenu,
         Key::Named(Named::Enter) if alt => Message::Properties,
         Key::Named(Named::Enter) => Message::OpenSelection,
+        Key::Named(Named::Tab) if command => Message::NextTab(!shift),
+        Key::Named(Named::PageDown) if command => Message::NextTab(true),
+        Key::Named(Named::PageUp) if command => Message::NextTab(false),
         Key::Named(Named::Tab) => Message::ModalFocus(!shift),
         Key::Named(Named::ArrowLeft) if alt => Message::Back,
         Key::Named(Named::ArrowRight) if alt => Message::Forward,
@@ -4773,6 +4919,10 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
         Key::Named(Named::F2) => Message::Rename,
         Key::Named(Named::F5) => Message::Reload,
         Key::Named(Named::F1) => Message::ShowShortcuts,
+        Key::Character(_) if alt && !command => match key.to_latin(physical)?.to_digit(10) {
+            Some(digit @ 1..=9) => Message::SelectTab(digit as usize - 1),
+            _ => return None,
+        },
         Key::Character(_) if command => match key.to_latin(physical)?.to_ascii_lowercase() {
             '/' | '?' => Message::ShowShortcuts,
             'r' => Message::Reload,
@@ -4797,7 +4947,9 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
             'n' => Message::NewWindow(None),
             '1' => Message::SetView(ViewMode::Grid),
             '2' => Message::SetView(ViewMode::List),
-            'w' | 'q' => Message::Quit,
+            't' => Message::NewTab(None),
+            'w' => Message::CloseCurrent,
+            'q' => Message::Quit,
             _ => return None,
         },
         _ if !command && !alt => {

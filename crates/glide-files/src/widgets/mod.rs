@@ -27,6 +27,7 @@ pub const HEADER_HEIGHT: f32 = glide_sdk::window::HEADER;
 pub(crate) const STATUS_HEIGHT: f32 = 28.0;
 pub const INSPECTOR_MIN_WINDOW: f32 = SIDEBAR_WIDTH + glide_sdk::widget::INSPECTOR_WIDTH + 440.0;
 pub const TRASH_BANNER: f32 = glide_sdk::widget::INFO_BAR;
+pub const TAB_STRIP: f32 = 36.0;
 pub const CONTROL: f32 = theme::SMALL_CONTROL;
 
 #[must_use]
@@ -71,13 +72,36 @@ fn browser(app: &App) -> Element<'_, Message> {
         row![vertical_separator(t), inspector::view(app)].height(Fill),
     );
     let middle = row![content::view(app), inspector].height(Fill);
-    let body = column![header::view(app), divider(t), banner, middle, divider(t), status::view(app)];
+    let tabs = glide_sdk::anim::grow(app.tabs_shown(), column![tab_bar(app), divider(t)]);
+    let body = column![header::view(app), divider(t), tabs, banner, middle, divider(t), status::view(app)];
     let corner = app.corner();
     pane(
         t.win_bg(),
         corner,
         row![sidebar::view(app), vertical_separator(t), pane(t.view_bg(), window_corners(Side::Right, corner), body),],
     )
+    .into()
+}
+
+fn tab_bar(app: &App) -> Element<'_, Message> {
+    use glide_sdk::widget::{Tab, icon_button, tab_strip};
+    let t = &app.theme;
+    let lang = app.lang;
+    let tabs = app.tabs.iter().enumerate().map(|(index, tab)| Tab::new(tab.id, app.tab_title(index))).collect();
+    let strip = tab_strip(t, tabs, app.active_tab)
+        .height(TAB_STRIP)
+        .on_select(Message::SelectTab)
+        .hovered(app.hovered_tab(), Message::TabHover)
+        .on_reorder(Message::MoveTab)
+        .on_close(Message::CloseTab, Key::CloseTab.text(lang));
+    let add = icon_button(t, Icon::Plus, Key::NewTab.text(lang), Some(Message::NewTab(None)), false);
+    container(
+        row![container(Element::from(strip)).width(Fill), add]
+            .spacing(theme::SP2)
+            .padding(Padding::ZERO.right(theme::SP2))
+            .align_y(Alignment::Center),
+    )
+    .height(TAB_STRIP)
     .into()
 }
 

@@ -104,6 +104,7 @@ struct Line<'a> {
     key: Hover,
     menu: Option<MenuKind>,
     drag: Option<Message>,
+    tab: Option<std::path::PathBuf>,
     count: usize,
     meter: Option<f32>,
     app: &'a App,
@@ -146,6 +147,9 @@ impl<'a> Line<'a> {
         if let Some(drag) = self.drag {
             area = area.on_press(drag);
         }
+        if let Some(path) = self.tab {
+            area = area.on_middle_press(Message::NewTab(Some(path)));
+        }
         area.into()
     }
 }
@@ -169,6 +173,7 @@ fn item<'a>(app: &'a App, place: &'a Place, bookmark: bool) -> Element<'a, Messa
         key: Hover::Place(place.path.clone()),
         menu: Some(MenuKind::Location(place.path.clone())),
         drag: bookmark.then(|| Message::BookmarkPressed(place.path.clone())),
+        tab: Some(place.path.clone()),
         count: if app.trash.is_files_dir(&place.path) { app.trash_count } else { 0 },
         meter: app.is_device(&place.path).then(|| app.usage_of(&place.path)).flatten(),
         app,
@@ -198,6 +203,7 @@ fn phone_item<'a>(app: &'a App, phone: &'a crate::fs::mtp::Phone) -> Element<'a,
         key: Hover::Place(phone.mount.clone().unwrap_or_else(|| std::path::PathBuf::from(&phone.id))),
         menu: None,
         drag: None,
+        tab: phone.mount.clone(),
         count: 0,
         meter: None,
         app,
@@ -238,6 +244,7 @@ fn volume_item<'a>(app: &'a App, volume: &'a Volume) -> Element<'a, Message> {
         key: Hover::Place(volume.mount.clone().unwrap_or_else(|| volume.device.clone())),
         menu: Some(MenuKind::Volume(volume.object.clone())),
         drag: None,
+        tab: volume.mount.clone(),
         count: 0,
         meter: volume.mount.as_deref().and_then(|mount| app.usage_of(mount)),
         app,

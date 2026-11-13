@@ -282,6 +282,10 @@ glide_sdk::catalogue! {
     ChooserReplaceTitle => "Replace the file?", "Замінити файл?";
     ChooserReplacePrompt => "A file with this name already exists in this folder. Replacing it overwrites its contents.", "У цій папці вже є файл із такою назвою. Заміна перезапише його вміст.";
     ChooserFileType => "File type", "Тип файлів";
+    NewTab => "New Tab", "Нова вкладка";
+    NewWindow => "New Window", "Нове вікно";
+    OpenInNewTab => "Open in New Tab", "Відкрити в новій вкладці";
+    CloseTab => "Close Tab", "Закрити вкладку";
     ErrHoldsMount => "The item is in use or a drive is mounted inside it", "Об’єкт використовується або всередині нього змонтовано диск";
     Extracting => "Extracting", "Розпакування";
     Compressing => "Compressing", "Стискання";

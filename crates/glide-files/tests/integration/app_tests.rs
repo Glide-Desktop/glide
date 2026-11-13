@@ -69,7 +69,13 @@ fn keyboard_shortcuts_map_to_intended_messages() {
         (chord("N", ctrl | shift), Message::NewFolder),
         (chord("1", ctrl), Message::SetView(ViewMode::Grid)),
         (chord("2", ctrl), Message::SetView(ViewMode::List)),
-        (chord("w", ctrl), Message::Quit),
+        (chord("w", ctrl), Message::CloseCurrent),
+        (chord("q", ctrl), Message::Quit),
+        (chord("t", ctrl), Message::NewTab(None)),
+        (named(Named::Tab, ctrl), Message::NextTab(true)),
+        (named(Named::Tab, ctrl | shift), Message::NextTab(false)),
+        (named(Named::PageDown, ctrl), Message::NextTab(true)),
+        (chord("3", alt), Message::SelectTab(2)),
     ];
     for (actual, expected) in cases {
         assert_eq!(actual, Some(expected.clone()), "{expected:?}");
@@ -419,7 +425,12 @@ fn the_zoom_stepper_in_more_answers_left_and_right() {
     app.view = ViewMode::Grid;
     let before = app.zoom_level().0;
     let _ = app.update(Message::ToggleOptions);
-    let _ = app.update(Message::MenuHover(1, true));
+    let open = app.menu.clone().expect("options menu");
+    let stepper = menu::entries(&app, &open)
+        .iter()
+        .position(|entry| matches!(entry, glide_sdk::menu::Item::Stepper { .. }))
+        .expect("zoom row");
+    let _ = app.update(Message::MenuHover(stepper, true));
     let _ = app.update(Message::Move(Step::Right, false));
     assert_eq!(app.zoom_level().0, before + 1, "Right steps the zoom up");
     assert!(app.menu.is_some(), "and the menu stays open for the next step");
@@ -1482,6 +1493,60 @@ fn open_with_dialog_allows_picking_app_and_toggling_always() {
         }
         _ => panic!("expected OpenWith dialog"),
     }
+}
+
+#[test]
+fn tabs_open_beside_the_current_one_remember_their_place_and_close_onto_a_neighbour() {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let root = std::env::temp_dir().join(format!("glide-files-tabs-{nanos}"));
+    for dir in ["a", "b", "c"] {
+        std::fs::create_dir_all(root.join(dir)).expect("dirs");
+    }
+    let mut app = listed_app();
+    app.current = root.join("a");
+    assert!(!app.tabs_shown(), "one tab needs no strip");
+    let top = app.content_top();
+
+    let _ = app.update(Message::NewTab(Some(root.join("b"))));
+    assert_eq!((app.tabs.len(), app.active_tab), (2, 1));
+    assert_eq!(app.current, root.join("b"));
+    assert!(app.entries.is_empty(), "the other folder's items are not shown under the new tab");
+    assert!(app.tabs_shown());
+    assert!(app.content_top() > top, "the strip pushes the listing down, and hit testing with it");
+    assert_eq!(app.tabs[0].path, root.join("a"), "the tab left behind keeps its folder");
+
+    let _ = app.update(Message::NewTab(Some(root.join("c"))));
+    assert_eq!(app.active_tab, 2);
+    let _ = app.update(Message::SelectTab(0));
+    assert_eq!(app.current, root.join("a"));
+    assert_eq!(app.tab_title(2), "c");
+    let _ = app.update(Message::NextTab(false));
+    assert_eq!(app.current, root.join("c"), "stepping back from the first tab wraps to the last");
+
+    let _ = app.update(Message::MoveTab(2, 0));
+    assert_eq!(app.active_tab, 0, "the active tab follows its own move");
+    assert_eq!(app.current, root.join("c"));
+
+    let _ = app.update(Message::CloseTab(2));
+    assert_eq!((app.tabs.len(), app.active_tab), (2, 0));
+    assert_eq!(app.current, root.join("c"), "closing another tab leaves this one alone");
+    let _ = app.update(Message::CloseCurrent);
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.current, root.join("a"));
+    assert!(!app.tabs_shown());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_tab_keeps_its_own_history() {
+    let mut app = listed_app();
+    let first = app.current.clone();
+    let _ = app.update(Message::NewTab(Some(std::path::PathBuf::from("/"))));
+    assert!(named(Named::Backspace, Modifiers::empty()).is_some());
+    let _ = app.update(Message::Back);
+    assert_eq!(app.current, std::path::PathBuf::from("/"), "a fresh tab has nowhere to go back to");
+    let _ = app.update(Message::SelectTab(0));
+    assert_eq!(app.current, first);
 }
 
 fn select(app: &mut glide_files::App, picked: &[usize]) {

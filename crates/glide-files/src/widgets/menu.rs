@@ -98,6 +98,7 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith), Icon::Apps).cascades());
             }
             if single_dir {
+                entries.push(item(Key::OpenInNewTab, Message::NewTab(Some(selected[0].clone())), Icon::Tab));
                 entries.push(item(Key::OpenInNewWindow, Message::NewWindow(Some(selected[0].clone())), Icon::Window));
             }
             if let (true, [found]) = (app.is_searching(), selected.as_slice()) {
@@ -173,6 +174,7 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
         MenuKind::Location(path) => {
             let mut entries = vec![
                 item(Key::Open, Message::Navigate(path.clone()), Icon::Open),
+                item(Key::OpenInNewTab, Message::NewTab(Some(path.clone())), Icon::Tab),
                 item(Key::OpenInNewWindow, Message::NewWindow(Some(path.clone())), Icon::Window),
                 item(Key::OpenInTerminal, Message::TerminalAt(path.clone()), Icon::Terminal)
                     .enabled(!app.trash.contains(path)),
@@ -206,6 +208,9 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             )
             .glyph(Icon::Zoom.handle());
             let mut entries = vec![
+                item(Key::NewTab, Message::NewTab(None), Icon::Tab).shortcut("Ctrl+T"),
+                item(Key::NewWindow, Message::NewWindow(None), Icon::Window).shortcut("Ctrl+N"),
+                Entry::Separator,
                 Entry::heading(Key::ViewAs.text(app.lang)),
                 zoom,
                 item(Key::ShowHidden, Message::ToggleHidden, Icon::Eye).shortcut("Ctrl+H").checked(app.show_hidden),
@@ -345,6 +350,7 @@ fn volume_entries(app: &App, volume: &Volume) -> Vec<Entry> {
     match &volume.mount {
         Some(path) => entries.extend([
             item(Key::Open, Message::Navigate(path.clone()), Icon::Open),
+            item(Key::OpenInNewTab, Message::NewTab(Some(path.clone())), Icon::Tab),
             item(Key::OpenInNewWindow, Message::NewWindow(Some(path.clone())), Icon::Window),
         ]),
         None => entries.extend([

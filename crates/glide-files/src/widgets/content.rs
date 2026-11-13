@@ -331,12 +331,16 @@ fn tile<'a>(app: &'a App, entry: &'a FileEntry, metrics: &Metrics, tile_w: f32) 
     let art = file_icon(app, entry, metrics.icon);
     let state = (app.hover(&key), app.lift(&key));
     let tile = item_tile(&paint, art, badge, label, metrics.icon, (tile_w, metrics.tile_h), selected, state);
-    mouse_area(tile)
+    pressable(entry, key, tile)
+}
+
+fn pressable<'a>(entry: &FileEntry, key: Hover, face: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    let area = mouse_area(face)
         .on_press(Message::Pressed(entry.path.clone()))
         .on_right_press(Message::Secondary(entry.path.clone()))
         .on_enter(Message::Hover(key.clone(), true))
-        .on_exit(Message::Hover(key, false))
-        .into()
+        .on_exit(Message::Hover(key, false));
+    if entry.is_dir { area.on_middle_press(Message::NewTab(Some(entry.path.clone()))).into() } else { area.into() }
 }
 
 fn list(app: &App) -> Element<'_, Message> {
@@ -455,12 +459,7 @@ fn list_row<'a>(
         cells = cells.push(cell(shown, LOCATION_WIDTH, TextStyle::CALL, false));
     }
 
-    mouse_area(table_row(&paint, cells, selected, false, hover, metrics.row))
-        .on_press(Message::Pressed(entry.path.clone()))
-        .on_right_press(Message::Secondary(entry.path.clone()))
-        .on_enter(Message::Hover(key.clone(), true))
-        .on_exit(Message::Hover(key, false))
-        .into()
+    pressable(entry, key, table_row(&paint, cells, selected, false, hover, metrics.row))
 }
 
 fn location(app: &App, entry: &FileEntry) -> String {
