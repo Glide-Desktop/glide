@@ -17,9 +17,12 @@ const INDEX_LIMIT: usize = 5000;
 const INDEX_AGE: std::time::Duration = std::time::Duration::from_mins(1);
 const SEARCH_LIMIT: usize = 20;
 
+type Index = std::sync::Arc<Mutex<Option<(std::time::Instant, Vec<PathBuf>)>>>;
+
 struct Folders {
     requests: UnboundedSender<Request>,
-    cache: Mutex<Option<(std::time::Instant, Vec<PathBuf>)>>,
+    cache: Index,
+    refreshing: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 const QUICK_DIRS: [&str; 5] =
@@ -96,15 +99,28 @@ pub(crate) fn index_folders(root: &Path, depth: usize, limit: usize) -> Vec<Path
 
 impl Folders {
     fn folders(&self) -> Vec<PathBuf> {
-        if let Some((at, folders)) = self.cache.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
-            && at.elapsed() < INDEX_AGE
-        {
-            return folders.clone();
+        let known = self.cache.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if known.as_ref().is_none_or(|(at, _)| at.elapsed() >= INDEX_AGE) {
+            refresh_index(&self.cache, &self.refreshing);
         }
+        known.map(|(_, folders)| folders).unwrap_or_default()
+    }
+}
+
+fn refresh_index(cache: &Index, refreshing: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    use std::sync::atomic::Ordering;
+    if refreshing.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let (cache, busy) = (cache.clone(), refreshing.clone());
+    let spawned = std::thread::Builder::new().name(String::from("glide-files-index")).spawn(move || {
         let home = crate::fs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let folders = index_folders(&home, INDEX_DEPTH, INDEX_LIMIT);
-        *self.cache.lock().unwrap_or_else(PoisonError::into_inner) = Some((std::time::Instant::now(), folders.clone()));
-        folders
+        *cache.lock().unwrap_or_else(PoisonError::into_inner) = Some((std::time::Instant::now(), folders));
+        busy.store(false, Ordering::Release);
+    });
+    if spawned.is_err() {
+        refreshing.store(false, Ordering::Release);
     }
 }
 
@@ -145,7 +161,7 @@ impl glide_app::search_provider::Source for Folders {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Open(PathBuf, String),
-    Reveal(PathBuf, String),
+    Reveal(Vec<PathBuf>, String),
     Properties(PathBuf, String),
 }
 
@@ -168,7 +184,16 @@ impl FileManager {
     }
 
     fn show_items(&self, uris: Vec<String>, startup_id: &str) {
-        self.forward(uris, startup_id, Request::Reveal);
+        let mut folders: Vec<Vec<PathBuf>> = Vec::new();
+        for path in uris.into_iter().filter_map(|uri| path_from_arg(&uri)) {
+            match folders.iter_mut().find(|group| group[0].parent() == path.parent()) {
+                Some(group) => group.push(path),
+                None => folders.push(vec![path]),
+            }
+        }
+        for group in folders {
+            let _ = self.requests.unbounded_send(Request::Reveal(group, startup_id.to_string()));
+        }
     }
 
     fn show_item_properties(&self, uris: Vec<String>, startup_id: &str) {
@@ -192,7 +217,8 @@ pub enum Claim {
 #[must_use]
 pub fn claim() -> Claim {
     let (sender, receiver) = unbounded();
-    let folders = Folders { requests: sender.clone(), cache: Mutex::default() };
+    let folders = Folders { requests: sender.clone(), cache: Index::default(), refreshing: std::sync::Arc::default() };
+    let (index, indexing) = (folders.cache.clone(), folders.refreshing.clone());
     let menu = quicklist(sender.clone());
     let built = zbus::blocking::connection::Builder::session()
         .and_then(|builder| builder.serve_at(OBJECT, FileManager { requests: sender }))
@@ -209,7 +235,9 @@ pub fn claim() -> Claim {
         Err(_) => return Claim::Unavailable,
     }
     let _ = connection.request_name_with_flags(FILE_MANAGER, flags);
-    let _ = connection.request_name_with_flags(SEARCH_NAME, flags);
+    if connection.request_name_with_flags(SEARCH_NAME, flags).is_ok() {
+        refresh_index(&index, &indexing);
+    }
     glide_app::quicklist::keep_announced(&connection, "glide-files");
     let _ = SERVICE.set(Service { _connection: connection, requests: Mutex::new(Some(receiver)) });
     Claim::First

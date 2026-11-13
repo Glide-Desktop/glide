@@ -72,9 +72,14 @@ impl MimeDb {
         if let Some(mime) = self.literals.get(&lower) {
             return Some(mime);
         }
+        let aligned = lower.len() == name.len();
         let suffix = name.char_indices().find_map(|(index, _)| {
             let tail = &name[index..];
-            self.suffixes_cs.get(tail).or_else(|| self.suffixes.get(&tail.to_lowercase()))
+            let folded = if aligned { lower.get(index..) } else { None };
+            self.suffixes_cs.get(tail).or_else(|| match folded {
+                Some(folded) => self.suffixes.get(folded),
+                None => self.suffixes.get(&tail.to_lowercase()),
+            })
         });
         suffix
             .or_else(|| {
@@ -203,26 +208,52 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
     let (mut p, mut t) = (0, 0);
     let mut star = None;
     while t < text.len() {
-        match pattern.get(p) {
+        let next = match pattern.get(p) {
             Some('*') => {
                 star = Some((p, t));
                 p += 1;
+                continue;
             }
-            Some(&c) if c == '?' || c == text[t] => {
-                p += 1;
+            Some('?') => Some(p + 1),
+            Some('[') => class_match(&pattern, p, text[t]),
+            Some(&c) if c == text[t] => Some(p + 1),
+            _ => None,
+        };
+        match (next, star) {
+            (Some(next), _) => {
+                p = next;
                 t += 1;
             }
-            _ => match star {
-                Some((star_p, star_t)) => {
-                    p = star_p + 1;
-                    t = star_t + 1;
-                    star = Some((star_p, star_t + 1));
-                }
-                None => return false,
-            },
+            (None, Some((star_p, star_t))) => {
+                p = star_p + 1;
+                t = star_t + 1;
+                star = Some((star_p, star_t + 1));
+            }
+            (None, None) => return false,
         }
     }
     pattern[p..].iter().all(|&c| c == '*')
+}
+
+fn class_match(pattern: &[char], open: usize, c: char) -> Option<usize> {
+    let negated = matches!(pattern.get(open + 1), Some('!' | '^'));
+    let first = open + 1 + usize::from(negated);
+    let mut at = first;
+    let mut hit = false;
+    loop {
+        match (pattern.get(at), pattern.get(at + 1), pattern.get(at + 2)) {
+            (None, ..) => return (c == '[').then_some(open + 1),
+            (Some(']'), ..) if at > first => return (hit != negated).then_some(at + 1),
+            (Some(&low), Some('-'), Some(&high)) if high != ']' => {
+                hit |= (low..=high).contains(&c);
+                at += 3;
+            }
+            (Some(&one), ..) => {
+                hit |= one == c;
+                at += 1;
+            }
+        }
+    }
 }
 
 fn extension_key(name: &str) -> Option<String> {

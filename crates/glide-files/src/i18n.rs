@@ -434,7 +434,7 @@ pub fn disk_error(err: &DiskError, lang: Lang) -> String {
     let key = match err {
         DiskError::Unavailable => Key::ErrNoDisks,
         DiskError::NotAuthorized | DiskError::Cancelled => Key::ErrNotAuthorized,
-        DiskError::Busy => Key::ErrBusy,
+        DiskError::Busy | DiskError::AlreadyMounted => Key::ErrBusy,
         DiskError::Unrepaired => Key::ErrUnrepaired,
         DiskError::MissingTool(tool) => {
             return format!("{} {tool}", Key::ErrMissingTool.text(lang));

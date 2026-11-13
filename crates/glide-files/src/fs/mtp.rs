@@ -161,13 +161,17 @@ pub fn open(phone: &Phone) -> Result<PathBuf, OpenError> {
     if let Some(path) = find_mount(phone) {
         return Ok(path);
     }
-    if installed("gio") {
-        quiet("gio", &["mount", &phone.uri()]).map_err(OpenError::Failed)?;
-        return find_mount(phone).ok_or_else(|| OpenError::Failed(String::from("gio mount")));
-    }
+    let through_gvfs = installed("gio").then(|| {
+        quiet("gio", &["mount", &phone.uri()]).and_then(|()| find_mount(phone).ok_or_else(|| String::from("gio mount")))
+    });
+    let refused = match through_gvfs {
+        Some(Ok(path)) => return Ok(path),
+        Some(Err(text)) => OpenError::Failed(text),
+        None => OpenError::NoTool,
+    };
     let tool = FUSE_TOOLS.into_iter().find(|tool| installed(tool)).filter(|_| !phone.camera);
     let (Some(tool), Some(dir)) = (tool, fuse_dir(phone)) else {
-        return Err(OpenError::NoTool);
+        return Err(refused);
     };
     std::fs::create_dir_all(&dir).map_err(|err| OpenError::Failed(err.to_string()))?;
     let target = dir.to_string_lossy().into_owned();

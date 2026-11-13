@@ -106,10 +106,19 @@ impl Associations {
 }
 
 fn mimeapps_files(roots: &Roots) -> Vec<PathBuf> {
+    let desktops: Vec<String> = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|desktop| !desktop.is_empty())
+        .map(|desktop| format!("{}-mimeapps.list", desktop.to_lowercase()))
+        .collect();
+    let named = |dir: PathBuf| -> Vec<PathBuf> {
+        desktops.iter().map(|name| dir.join(name)).chain([dir.join("mimeapps.list")]).collect()
+    };
     glide_config::config_dirs()
         .into_iter()
-        .map(|dir| dir.join("mimeapps.list"))
-        .chain(roots.data.iter().map(|dir| dir.join("applications/mimeapps.list")))
+        .flat_map(named)
+        .chain(roots.data.iter().flat_map(|dir| named(dir.join("applications"))))
         .collect()
 }
 
@@ -177,6 +186,7 @@ pub fn with_default(text: &str, mime: &str, app: &str) -> String {
     let line = format!("{mime}={app};");
     let mut out: Vec<String> = Vec::new();
     let mut inside = false;
+    let mut removals = false;
     let mut written = false;
     for raw in text.lines() {
         let trimmed = raw.trim();
@@ -186,6 +196,13 @@ pub fn with_default(text: &str, mime: &str, app: &str) -> String {
                 written = true;
             }
             inside = trimmed == SECTION;
+            removals = trimmed == "[Removed Associations]";
+        } else if removals && let Some((key, value)) = trimmed.split_once('=').filter(|(key, _)| key.trim() == mime) {
+            let kept: Vec<&str> = value.split(';').map(str::trim).filter(|id| !id.is_empty() && *id != app).collect();
+            if !kept.is_empty() {
+                out.push(format!("{}={};", key.trim(), kept.join(";")));
+            }
+            continue;
         } else if inside && trimmed.split_once('=').is_some_and(|(key, _)| key.trim() == mime) {
             if !written {
                 out.push(line.clone());
@@ -243,7 +260,7 @@ impl Filter {
 
     fn fits(&self, db: &MimeDb, target: &Target) -> bool {
         let (allow, deny) = split_negated(&self.mimes);
-        let typed = allow.iter().any(|pattern| db.is_a(&target.mime, pattern))
+        let typed = (allow.is_empty() || allow.iter().any(|pattern| db.is_a(&target.mime, pattern)))
             && !deny.iter().any(|pattern| db.is_a(&target.mime, pattern));
         if !typed || self.names.is_empty() {
             return typed;
@@ -253,7 +270,7 @@ impl Filter {
         };
         let name = fold(&target.name());
         let (allow, deny) = split_negated(&self.names);
-        allow.iter().any(|pattern| glob_match(&fold(pattern), &name))
+        (allow.is_empty() || allow.iter().any(|pattern| glob_match(&fold(pattern), &name)))
             && !deny.iter().any(|pattern| glob_match(&fold(pattern), &name))
     }
 }
@@ -344,7 +361,7 @@ impl Extensions {
 
     fn app_handles(&self, app: &DesktopApp, mime: &str) -> bool {
         let lineage = self.association_lineage(mime);
-        if lineage.iter().any(|m| self.associations.removed.get(m).is_some_and(|list| list.contains(&app.id))) {
+        if self.removes(mime, &app.id) {
             return false;
         }
         let in_associations = lineage.iter().any(|m| {
@@ -408,17 +425,19 @@ impl Extensions {
     #[must_use]
     pub fn default_app(&self, mime: &str) -> Option<&str> {
         let lineage = self.association_lineage(mime);
-        let removed: HashSet<&String> =
-            lineage.iter().filter_map(|mime| self.associations.removed.get(mime)).flatten().collect();
-        lineage.iter().find_map(|mime| {
+        lineage.iter().find_map(|ancestor| {
             self.associations
                 .defaults
-                .get(mime)
+                .get(ancestor)
                 .and_then(|ids| {
-                    ids.iter().find(|id| !removed.contains(id) && self.apps.iter().any(|app| &app.id == *id))
+                    ids.iter().find(|id| !self.removes(mime, id) && self.apps.iter().any(|app| &app.id == *id))
                 })
                 .map(String::as_str)
         })
+    }
+
+    fn removes(&self, mime: &str, app: &str) -> bool {
+        self.associations.removed.get(self.mime.canonical(mime)).is_some_and(|ids| ids.iter().any(|id| id == app))
     }
 
     pub fn set_default(&mut self, mime: &str, app: &str) {
@@ -433,6 +452,11 @@ impl Extensions {
     #[must_use]
     pub fn target(&self, path: &Path, is_dir: bool) -> Target {
         Target { path: path.to_path_buf(), mime: self.mime.of(path, is_dir) }
+    }
+
+    #[must_use]
+    pub(crate) fn target_named(&self, path: &Path, is_dir: bool) -> Target {
+        Target { path: path.to_path_buf(), mime: self.mime.of_name(path, is_dir) }
     }
 
     #[must_use]
@@ -730,8 +754,13 @@ impl Run {
         if let Self::SetDefault { mime, app } = self {
             return set_default_app(mime, app);
         }
+        let home = glide_config::home();
+        let dir = match (self, &home) {
+            (Self::Exec { codes: Codes::Entry { .. }, .. }, Some(home)) => home.as_path(),
+            _ => cwd,
+        };
         for argv in self.commands(targets, cwd)? {
-            spawn(&argv, cwd)?;
+            spawn(&argv, dir)?;
         }
         Ok(())
     }
@@ -785,10 +814,16 @@ fn split_exec(line: &str) -> Option<Vec<String>> {
     let mut args = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
+    let mut literal = false;
     let mut started = false;
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
         match c {
+            '\'' if !quoted => {
+                literal = !literal;
+                started = true;
+            }
+            c if literal => current.push(c),
             '"' => {
                 quoted = !quoted;
                 started = true;
@@ -806,7 +841,7 @@ fn split_exec(line: &str) -> Option<Vec<String>> {
             }
         }
     }
-    if quoted {
+    if quoted || literal {
         return None;
     }
     if started {
@@ -883,18 +918,47 @@ fn shell_script(words: &[String], position: usize) -> bool {
         .is_some_and(|name| SHELLS.contains(&name))
 }
 
-fn shell_quoted(value: &std::ffi::OsStr) -> OsString {
-    let raw = std::os::unix::ffi::OsStrExt::as_bytes(value);
-    let mut bytes = Vec::with_capacity(raw.len() + 2);
-    bytes.push(b'\'');
-    for &byte in raw {
-        if byte == b'\'' {
-            bytes.extend_from_slice(b"'\\''");
-        } else {
-            bytes.push(byte);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Quoting {
+    Bare,
+    Single,
+    Double,
+}
+
+impl Quoting {
+    fn after(self, c: char, escaped: &mut bool) -> Self {
+        if std::mem::take(escaped) {
+            return self;
+        }
+        match (self, c) {
+            (Self::Bare | Self::Double, '\\') => {
+                *escaped = true;
+                self
+            }
+            (Self::Bare, '\'') => Self::Single,
+            (Self::Bare, '"') => Self::Double,
+            (Self::Single, '\'') | (Self::Double, '"') => Self::Bare,
+            _ => self,
         }
     }
-    bytes.push(b'\'');
+}
+
+fn shell_quoted(value: &std::ffi::OsStr, quoting: Quoting) -> OsString {
+    let raw = std::os::unix::ffi::OsStrExt::as_bytes(value);
+    let mut bytes = Vec::with_capacity(raw.len() + 2);
+    if quoting == Quoting::Bare {
+        bytes.push(b'\'');
+    }
+    for &byte in raw {
+        match (quoting, byte) {
+            (Quoting::Bare | Quoting::Single, b'\'') => bytes.extend_from_slice(b"'\\''"),
+            (Quoting::Double, b'"' | b'\\' | b'$' | b'`') => bytes.extend_from_slice(&[b'\\', byte]),
+            _ => bytes.push(byte),
+        }
+    }
+    if quoting == Quoting::Bare {
+        bytes.push(b'\'');
+    }
     <OsString as std::os::unix::ffi::OsStringExt>::from_vec(bytes)
 }
 
@@ -911,11 +975,14 @@ fn expand(words: &[String], items: &[&Target], desktop: &Path, codes: &Codes) ->
         }
         let mut out = OsString::new();
         let mut chars = arg.chars();
+        let (mut quoting, mut escaped) = (Quoting::Bare, false);
         while let Some(c) = chars.next() {
             if c != '%' {
                 out.push(c.encode_utf8(&mut [0; 4]));
+                quoting = quoting.after(c, &mut escaped);
                 continue;
             }
+            escaped = false;
             match chars.next() {
                 Some('%') => out.push("%"),
                 Some(code) => {
@@ -925,7 +992,7 @@ fn expand(words: &[String], items: &[&Target], desktop: &Path, codes: &Codes) ->
                             out.push(" ");
                         }
                         if script {
-                            out.push(shell_quoted(value));
+                            out.push(shell_quoted(value, quoting));
                         } else {
                             out.push(value);
                         }

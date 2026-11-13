@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -11,7 +12,9 @@ use iced::futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded
 
 use super::uri::file_uri;
 
-pub const SIZE: u32 = 128;
+pub const SIZE: u32 = 256;
+const REFRESH: Duration = Duration::from_hours(24);
+const RETRY: Duration = Duration::from_hours(24);
 const WORKERS: usize = 2;
 const BUILTIN_LIMIT: u64 = 64 << 20;
 const TIMEOUT: Duration = Duration::from_secs(8);
@@ -69,7 +72,7 @@ fn cache_dir() -> Option<PathBuf> {
 pub fn cache_name(path: &Path, modified_nanos: u128, len: u64) -> String {
     let key =
         fnv(path.as_os_str().as_bytes().iter().copied().chain(modified_nanos.to_le_bytes()).chain(len.to_le_bytes()));
-    format!("{key:016x}.png")
+    format!("{key:016x}-{SIZE}.png")
 }
 
 fn run_thumbnailer(thumbnailer: &Thumbnailer, input: &Path, output: &Path) -> bool {
@@ -125,8 +128,13 @@ fn run_thumbnailer(thumbnailer: &Thumbnailer, input: &Path, output: &Path) -> bo
     let Some((program, args)) = command.split_first() else {
         return false;
     };
-    let Ok(mut child) =
-        Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+    let Ok(mut child) = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
     else {
         return false;
     };
@@ -138,23 +146,46 @@ fn run_thumbnailer(thumbnailer: &Thumbnailer, input: &Path, output: &Path) -> bo
                 std::thread::sleep(Duration::from_millis(40));
             }
             _ => {
+                if let Ok(group) = libc::pid_t::try_from(child.id()) {
+                    // SAFETY: the child leads its own process group, so the signal reaches it and its helpers only.
+                    unsafe {
+                        libc::killpg(group, libc::SIGKILL);
+                    }
+                }
                 let _ = child.kill();
                 let _ = child.wait();
+                STALLED.with(|stalled| stalled.set(true));
                 return false;
             }
         }
     }
 }
 
+thread_local! {
+    static STALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn builtin(input: &Path, output: &Path) -> bool {
+    use image::ImageDecoder;
     let decoded = image::ImageReader::open(input)
         .and_then(image::ImageReader::with_guessed_format)
         .map_err(image::ImageError::IoError)
-        .and_then(image::ImageReader::decode);
+        .and_then(image::ImageReader::into_decoder)
+        .and_then(|mut decoder| {
+            let orientation = decoder.orientation()?;
+            let mut image = image::DynamicImage::from_decoder(decoder)?;
+            image.apply_orientation(orientation);
+            Ok(image)
+        });
     decoded
-        .map(|image| image.thumbnail(SIZE, SIZE))
+        .map(|image| if image.width().max(image.height()) > SIZE { image.thumbnail(SIZE, SIZE) } else { image })
         .and_then(|thumb| thumb.save_with_format(output, image::ImageFormat::Png))
         .is_ok()
+}
+
+fn aged(path: &Path, limit: Duration) -> Option<bool> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(SystemTime::now().duration_since(modified).is_ok_and(|age| age > limit))
 }
 
 #[must_use]
@@ -167,14 +198,18 @@ pub fn make_in(dir: &Path, input: &Path, mime: &str, thumbnailers: &[Thumbnailer
     let meta = std::fs::metadata(input).ok().filter(std::fs::Metadata::is_file)?;
     let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
     let output = dir.join(cache_name(input, modified, meta.len()));
-    if output.is_file() {
+    if let Some(unused) = aged(&output, REFRESH) {
+        if unused && let Ok(file) = std::fs::File::open(&output) {
+            let _ = file.set_modified(SystemTime::now());
+        }
         return Some(output);
     }
     let failed = output.with_extension("fail");
-    if failed.exists() {
+    if aged(&failed, RETRY) == Some(false) {
         return None;
     }
     std::fs::create_dir_all(dir).ok()?;
+    STALLED.with(|stalled| stalled.set(false));
     let partial = output.with_extension(format!("{}-{:?}.part.png", std::process::id(), std::thread::current().id()));
     let external = thumbnailers
         .iter()
@@ -185,7 +220,9 @@ pub fn make_in(dir: &Path, input: &Path, mime: &str, thumbnailers: &[Thumbnailer
         return Some(output);
     }
     let _ = std::fs::remove_file(&partial);
-    let _ = std::fs::write(failed, b"");
+    if !STALLED.with(std::cell::Cell::get) {
+        let _ = std::fs::write(failed, b"");
+    }
     None
 }
 

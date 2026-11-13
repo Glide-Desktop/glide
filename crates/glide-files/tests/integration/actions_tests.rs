@@ -99,6 +99,84 @@ fn glob_match_handles_stars_and_question_marks() {
 }
 
 #[test]
+fn glob_classes_match_one_listed_character() {
+    assert!(glob_match("*.so.[0-9]*", "libfoo.so.6"));
+    assert!(glob_match("*.so.[0-9]*", "libfoo.so.12.3"));
+    assert!(!glob_match("*.so.[0-9]*", "libfoo.so.x"));
+    assert!(glob_match("*.[1-9]", "printf.3") && !glob_match("*.[1-9]", "printf.0"));
+    assert!(glob_match("[!a-c]x", "dx") && !glob_match("[!a-c]x", "bx"));
+    assert!(glob_match("a[]]b", "a]b"), "a bracket right after the opening one is literal");
+    assert!(glob_match("odd[name", "odd[name"), "an unclosed class is an ordinary bracket");
+    let mut db = MimeDb::default();
+    db.add_globs("50:application/x-sharedlib:*.so.[0-9]*\n50:text/troff:*.[1-9]\n");
+    assert_eq!(db.guess("libssl.so.3"), Some("application/x-sharedlib"));
+    assert_eq!(db.guess("ls.1"), Some("text/troff"));
+}
+
+#[test]
+fn a_field_code_is_quoted_for_the_quotes_it_sits_in() {
+    let extensions = Extensions::default();
+    let files = [target(&extensions, "/a/it's \"$(id)\" `x`.pdf", false)];
+    let plain = || Codes::Entry { name: String::from("Tool"), icon: None };
+    let args = exec_with("sh -c \"convert \\\"%f\\\" out.png\"", &files, plain());
+    assert_eq!(args, [["sh", "-c", "convert \"/a/it's \\\"\\$(id)\\\" \\`x\\`.pdf\" out.png"]]);
+    let args = exec_with("sh -c \"echo '%f'\"", &files, plain());
+    assert_eq!(args, [["sh", "-c", "echo '/a/it'\\''s \"$(id)\" `x`.pdf'"]]);
+    let args = exec_with("sh -c \"echo \\\\\\\"%f\"", &files, plain());
+    assert!(args[0][2].starts_with("echo \\\"'/a/it"), "an escaped quote opens nothing: {}", args[0][2]);
+}
+
+#[test]
+fn single_quotes_group_words_in_an_exec_line() {
+    let extensions = Extensions::default();
+    let files = [target(&extensions, "/a/b.jpg", false)];
+    let plain = Codes::Entry { name: String::from("Tool"), icon: None };
+    let args = exec_with("env MODE='a b' sh -c 'convert %f out.png'", &files, plain);
+    assert_eq!(args, [["env", "MODE=a b", "sh", "-c", "convert '/a/b.jpg' out.png"]]);
+}
+
+#[test]
+fn choosing_a_default_app_lifts_its_removal_for_that_type_only() {
+    use glide_files::fs::actions::with_default;
+    let before = "[Removed Associations]\nimage/png=new.desktop;other.desktop;\ntext/plain=new.desktop;\n";
+    let after = with_default(before, "image/png", "new.desktop");
+    assert!(after.contains("image/png=other.desktop;"), "{after}");
+    assert!(after.contains("text/plain=new.desktop;"), "{after}");
+    assert!(after.contains("[Default Applications]\nimage/png=new.desktop;"), "{after}");
+    let alone = with_default("[Removed Associations]\nimage/png=new.desktop;\n", "image/png", "new.desktop");
+    assert_eq!(alone, "[Removed Associations]\n[Default Applications]\nimage/png=new.desktop;\n");
+}
+
+#[test]
+fn a_removal_hides_an_app_for_that_type_but_not_for_its_subtypes() {
+    let scratch = scratch_with_mime("removed");
+    scratch.write(
+        "share/applications/writer.desktop",
+        "[Desktop Entry]\nName=Writer\nExec=writer %F\nMimeType=text/plain;text/x-csrc;\n",
+    );
+    scratch.write("share/applications/mimeapps.list", "[Removed Associations]\ntext/plain=writer.desktop;\n");
+    let extensions = Extensions::load(&scratch.roots(), Lang::En);
+    let plain = target(&extensions, "/x/notes.txt", false);
+    let source = target(&extensions, "/x/main.c", false);
+    assert!(extensions.apps_for(std::slice::from_ref(&plain)).is_empty());
+    assert_eq!(extensions.apps_for(std::slice::from_ref(&source)).len(), 1, "it declares text/x-csrc itself");
+}
+
+#[test]
+fn a_filter_of_exclusions_alone_accepts_everything_else() {
+    let scratch = scratch_with_mime("negated");
+    scratch.write(
+        "share/file-manager/actions/not-archives.desktop",
+        "[Desktop Entry]\nType=Action\nName=Checksum\nProfiles=main;\n\n\
+         [X-Action-Profile main]\nMimeTypes=!application/zip;\nBasenames=!*.bak;\nExec=sum %f\n",
+    );
+    let extensions = Extensions::load(&scratch.roots(), Lang::En);
+    let offered = |name: &str| !extensions.offers(&[target(&extensions, name, false)]).is_empty();
+    assert!(offered("/x/photo.png"));
+    assert!(!offered("/x/pack.zip") && !offered("/x/photo.png.bak"));
+}
+
+#[test]
 fn service_menu_offers_match_mime_count_and_submenu() {
     let scratch = scratch_with_mime("servicemenu");
     scratch.write(

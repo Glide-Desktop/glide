@@ -1556,7 +1556,8 @@ fn the_selection_inverts_and_follows_a_pattern() {
 
     let _ = app.update(Message::ModalInput(String::from("[35].TXT")));
     let _ = app.update(Message::ModalSubmit);
-    assert!(app.modal.is_some(), "brackets are not a wildcard");
+    assert_eq!(app.selected(), [path(3), path(5)], "a bracket lists the characters that fit");
+    let _ = app.update(Message::SelectPattern);
     let _ = app.update(Message::ModalInput(String::from("?.TXT")));
     let _ = app.update(Message::ModalSubmit);
     assert!(app.modal.is_none());

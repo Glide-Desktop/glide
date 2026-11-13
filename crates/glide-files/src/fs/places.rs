@@ -158,9 +158,6 @@ pub fn load_bookmarks() -> Vec<Place> {
             let (uri, label) =
                 line.trim().split_once(' ').map_or((line.trim(), None), |(uri, label)| (uri, Some(label)));
             let path = uri.starts_with("file://").then(|| path_from_arg(uri))??;
-            if !path.is_dir() {
-                return None;
-            }
             let name = label.map_or_else(
                 || path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy()).into_owned(),
                 str::to_string,

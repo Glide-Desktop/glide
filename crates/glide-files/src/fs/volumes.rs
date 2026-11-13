@@ -20,6 +20,15 @@ const DRIVE: &str = "org.freedesktop.UDisks2.Drive";
 const ENCRYPTED: &str = "org.freedesktop.UDisks2.Encrypted";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const ERROR_PREFIX: &str = "org.freedesktop.UDisks2.Error.";
+const PARTITION: &str = "org.freedesktop.UDisks2.Partition";
+const REMOVABLE_ROOTS: [&str; 3] = ["/run/media", "/media", "/mnt"];
+const FIRMWARE_PARTITIONS: [&str; 5] = [
+    "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+    "e3c9e316-0b5c-4db8-817d-f92df00215ae",
+    "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+    "21686148-6449-6e6f-744e-656564454649",
+    "0xef",
+];
 
 pub type Properties = HashMap<String, OwnedValue>;
 pub type Interfaces = HashMap<String, Properties>;
@@ -103,6 +112,7 @@ pub enum DiskError {
     NotAuthorized,
     Cancelled,
     Busy,
+    AlreadyMounted,
     MissingTool(String),
     Unrepaired,
     Failed(String),
@@ -115,6 +125,7 @@ impl DiskError {
             Some("NotAuthorizedDismissed" | "Cancelled") => Self::Cancelled,
             Some("NotAuthorized" | "NotAuthorizedCanObtain") => Self::NotAuthorized,
             Some("DeviceBusy") => Self::Busy,
+            Some("AlreadyMounted") => Self::AlreadyMounted,
             Some(_) => Self::Failed(detail.unwrap_or_default().trim().to_string()),
             None => Self::Unavailable,
         }
@@ -193,7 +204,15 @@ pub fn volumes_from(objects: &Objects) -> Vec<Volume> {
             let filesystem = interfaces.get(FILESYSTEM);
             let locked =
                 interfaces.get(ENCRYPTED).is_some_and(|encrypted| object_path(encrypted, "CleartextDevice").is_none());
-            if (filesystem.is_none() && !locked) || flag(block, "HintIgnore") || flag(block, "HintSystem") {
+            if (filesystem.is_none() && !locked) || flag(block, "HintIgnore") {
+                return None;
+            }
+            let mounts = filesystem.map(mount_points).unwrap_or_default();
+            let firmware = interfaces.get(PARTITION).is_some_and(|partition| {
+                FIRMWARE_PARTITIONS.contains(&string(partition, "Type").to_lowercase().as_str())
+            });
+            let in_use = mounts.iter().any(|mount| !REMOVABLE_ROOTS.iter().any(|root| mount.starts_with(root)));
+            if flag(block, "HintSystem") && (firmware || in_use) {
                 return None;
             }
             let device = byte_path(block, "PreferredDevice").or_else(|| byte_path(block, "Device"))?;
@@ -223,7 +242,7 @@ pub fn volumes_from(objects: &Objects) -> Vec<Volume> {
                 label,
                 fs_type: string(block, "IdType"),
                 size: number(block, "Size"),
-                mount: filesystem.and_then(|filesystem| mount_points(filesystem).into_iter().next()),
+                mount: mounts.into_iter().next(),
                 drive,
                 locked,
                 backing,
@@ -249,11 +268,17 @@ fn listen(sender: &iced::futures::channel::mpsc::UnboundedSender<()>) -> zbus::R
     if sender.unbounded_send(()).is_err() {
         return Ok(());
     }
-    for signal in signals {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        if signal.is_err() {
-            continue;
+    let (heard, inbox) = std::sync::mpsc::channel::<()>();
+    let _ = std::thread::Builder::new().name(String::from("glide-files-udisks-signals")).spawn(move || {
+        for signal in signals {
+            if signal.is_ok() && heard.send(()).is_err() {
+                break;
+            }
         }
+    });
+    while inbox.recv().is_ok() {
+        std::thread::sleep(SETTLE);
+        while inbox.try_recv().is_ok() {}
         if sender.unbounded_send(()).is_err() {
             break;
         }
@@ -261,11 +286,17 @@ fn listen(sender: &iced::futures::channel::mpsc::UnboundedSender<()>) -> zbus::R
     Ok(())
 }
 
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
+const RECONNECT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[must_use]
 pub fn changes() -> iced::futures::channel::mpsc::UnboundedReceiver<()> {
     let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
     let _ = std::thread::Builder::new().name(String::from("glide-files-udisks")).spawn(move || {
-        let _ = listen(&sender);
+        while !sender.is_closed() {
+            let _ = listen(&sender);
+            std::thread::sleep(RECONNECT);
+        }
     });
     receiver
 }
@@ -321,6 +352,13 @@ impl Disks {
                 Ok(path) => {
                     return Ok(Mounted { path: PathBuf::from(path), mode: attempt.mode(read_only) });
                 }
+                Err(DiskError::AlreadyMounted) => {
+                    let known = self.volumes()?.into_iter().find(|other| other.object == volume.object);
+                    return known
+                        .and_then(|found| found.mount)
+                        .map(|path| Mounted { path, mode: MountMode::Normal })
+                        .ok_or(DiskError::AlreadyMounted);
+                }
                 Err(err) if err.retryable() => last = err,
                 Err(err) => return Err(err),
             }
@@ -349,6 +387,7 @@ impl Disks {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+        let _ = self.call::<_, ()>(&volume.object, ENCRYPTED, "Lock", &(options(&[]),));
         Err(DiskError::Failed(String::from("no filesystem after unlocking")))
     }
 

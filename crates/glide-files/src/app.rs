@@ -42,6 +42,7 @@ pub(crate) const RENAME_ID: &str = "rename";
 const SEARCH_LIMIT: usize = 500;
 const OPEN_LIMIT: usize = 20;
 const OPEN_WITH_LIMIT: usize = 6;
+const SNIFF_LIMIT: usize = 16;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_secs(2);
@@ -327,6 +328,7 @@ pub struct Survey {
     pub trash_count: usize,
     pub elsewhere: Vec<PathBuf>,
     pub usage: Vec<(PathBuf, (u64, u64))>,
+    pub gone: Vec<PathBuf>,
 }
 
 #[must_use]
@@ -344,6 +346,7 @@ pub fn survey(trash: &Trash, mounts: &[PathBuf], current: PathBuf) -> Survey {
         elsewhere: elsewhere.iter().map(Trash::files).collect(),
         fallback,
         current,
+        gone: Vec::new(),
     }
 }
 
@@ -822,6 +825,7 @@ pub struct App {
     pub path_edit: Option<String>,
     pub places: Vec<Place>,
     pub bookmarks: Vec<Place>,
+    bookmarks_gone: HashSet<PathBuf>,
     pub drives: Vec<Place>,
     pub volumes: Vec<Volume>,
     pub busy: HashSet<String>,
@@ -867,6 +871,7 @@ pub struct App {
     window: Window,
     field: Option<Field>,
     pending_select: Option<PathBuf>,
+    reveal_more: Vec<PathBuf>,
     pub grid_zoom: u8,
     pub list_zoom: u8,
     pub columns: Vec<ListColumn>,
@@ -933,9 +938,17 @@ pub enum Field {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct DiskWatch {
-    scanning: bool,
+    scan: Scan,
     live: bool,
     phones: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Scan {
+    #[default]
+    Idle,
+    Running,
+    Stale,
 }
 
 fn blocking<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> impl Future<Output = Option<T>> {
@@ -952,6 +965,7 @@ fn run(job: impl FnOnce() -> Outcome + Send + 'static) -> Task<Message> {
 
 fn quit<T>() -> Task<T> {
     crate::config::flush_prefs();
+    crate::launcher::finish();
     iced::exit()
 }
 
@@ -1030,7 +1044,7 @@ fn by_parent(paths: Vec<PathBuf>, fallback: &Path) -> Vec<(PathBuf, Vec<PathBuf>
 pub fn matches_pattern(pattern: &str, name: &str) -> bool {
     let pattern = pattern.trim().to_lowercase();
     let name = name.to_lowercase();
-    if pattern.contains(['*', '?']) {
+    if pattern.contains(['*', '?', '[']) {
         crate::fs::mime::glob_match(&pattern, &name)
     } else {
         !pattern.is_empty() && name.contains(&pattern)
@@ -1070,6 +1084,7 @@ impl App {
             path_edit: None,
             places: standard_places(lang, &trash),
             bookmarks: Vec::new(),
+            bookmarks_gone: HashSet::new(),
             drives: mounted_drives(lang),
             volumes: Vec::new(),
             busy: HashSet::new(),
@@ -1115,6 +1130,7 @@ impl App {
             window: Window { size: Size::ZERO, focused: false, frame: Frame::Floating },
             field: None,
             pending_select: None,
+            reveal_more: Vec::new(),
             grid_zoom: prefs.grid_zoom,
             list_zoom: prefs.list_zoom,
             columns: prefs.columns.clone(),
@@ -1139,7 +1155,8 @@ impl App {
         let scan = app.scan();
         let handles = glide_sdk::window::handles().map(Message::Handles);
         let phones = app.scan_phones();
-        (app, Task::batch([task, extensions, scan, handles, phones]))
+        let survey = app.start_survey();
+        (app, Task::batch([task, extensions, scan, handles, phones, survey]))
     }
 
     fn open_as_dialog(&mut self) -> Task<Message> {
@@ -1199,7 +1216,7 @@ impl App {
     }
 
     pub fn shown_bookmarks(&self) -> impl Iterator<Item = &Place> {
-        self.bookmarks.iter().filter(|mark| !self.is_device(&mark.path))
+        self.bookmarks.iter().filter(|mark| !self.bookmarks_gone.contains(&mark.path) && !self.is_device(&mark.path))
     }
 
     #[must_use]
@@ -1443,13 +1460,7 @@ impl App {
             Message::KeyMenu => return self.key_menu(),
             Message::Navigate(path) => return self.navigate(path),
             Message::GoHome => return home_dir().map_or_else(Task::none, |home| self.navigate(home)),
-            Message::Reveal(path) => {
-                let Some(parent) = path.parent().map(Path::to_path_buf) else {
-                    return Task::none();
-                };
-                let arrival = if parent == self.current { Arrival::Refresh } else { Arrival::Push };
-                return self.list(parent, arrival, Some(path));
-            }
+            Message::Reveal(path) => return self.reveal(vec![path]),
             Message::Back if self.history_index > 0 => {
                 return self.jump(self.history_index - 1);
             }
@@ -2065,10 +2076,13 @@ impl App {
                 }
             }
             Message::Volumes(volumes) => {
-                self.disk_watch.scanning = false;
+                let stale = std::mem::take(&mut self.disk_watch.scan) == Scan::Stale;
                 if volumes != self.volumes {
                     self.volumes = volumes;
                     self.drives = mounted_drives(self.lang);
+                }
+                if stale {
+                    return self.scan();
                 }
             }
             Message::Mount(object, read_only) => return self.mount(&object, read_only),
@@ -2338,6 +2352,7 @@ impl App {
             self.enter(listed.path.clone());
         }
         match listed.arrival {
+            Arrival::Push if self.history.get(self.history_index) == Some(&listed.path) => {}
             Arrival::Push => {
                 self.history.truncate(self.history_index + 1);
                 self.history.push(listed.path);
@@ -2361,6 +2376,11 @@ impl App {
         match listed.select.filter(|path| self.index_of(path).is_some()) {
             Some(path) => {
                 self.select_only(path);
+                let more: Vec<PathBuf> = std::mem::take(&mut self.reveal_more)
+                    .into_iter()
+                    .filter(|extra| self.index_of(extra).is_some())
+                    .collect();
+                self.selection.extend(more);
                 Task::batch([thumbs, self.reveal_cursor(), refresh])
             }
             None => Task::batch([thumbs, refresh]),
@@ -2402,8 +2422,14 @@ impl App {
             return Task::none();
         }
         let (trash, mounts, current) = (self.trash.clone(), self.mounts(), self.current.clone());
+        let marks: Vec<PathBuf> = self.bookmarks.iter().map(|mark| mark.path.clone()).collect();
         let done = Arc::clone(&self.surveying);
-        Task::perform(blocking(move || survey(&trash, &mounts, current)), move |found| {
+        let look = move || {
+            let mut found = survey(&trash, &mounts, current);
+            found.gone = marks.into_iter().filter(|mark| !mark.is_dir()).collect();
+            found
+        };
+        Task::perform(blocking(look), move |found| {
             done.store(false, Ordering::Release);
             Message::Surveyed(found.map(Box::new))
         })
@@ -2413,6 +2439,7 @@ impl App {
         self.trash_count = survey.trash_count;
         self.trash_elsewhere = survey.elsewhere;
         self.usage = survey.usage.into_iter().collect();
+        self.bookmarks_gone = survey.gone.into_iter().collect();
         match survey.fallback {
             Some(fallback) if survey.current == self.current => self.navigate(fallback),
             _ => Task::none(),
@@ -2833,7 +2860,13 @@ impl App {
                 if !request.files.iter().all(|name| crate::chooser::valid_name(name)) {
                     return self.notify(Key::ChooserBadName.text(self.lang).to_string(), None);
                 }
-                request.files.iter().map(|name| folder.join(name.trim())).collect()
+                request
+                    .files
+                    .iter()
+                    .map(|name| {
+                        unique_path(&folder, std::ffi::OsStr::new(name.trim()), true, crate::fs::operations::occupied)
+                    })
+                    .collect()
             }
         };
         if request.mode == Mode::Open && !request.multiple {
@@ -2904,7 +2937,16 @@ impl App {
     }
 
     fn targets(&self) -> Vec<Target> {
-        self.selected_entries().map(|entry| self.extensions.target(&entry.path, entry.is_dir)).collect()
+        let sniff = self.selection.len() <= SNIFF_LIMIT;
+        self.selected_entries()
+            .map(|entry| {
+                if sniff {
+                    self.extensions.target(&entry.path, entry.is_dir)
+                } else {
+                    self.extensions.target_named(&entry.path, entry.is_dir)
+                }
+            })
+            .collect()
     }
 
     fn open_with_offers(&self, targets: &[Target]) -> Vec<Offer> {
@@ -3130,10 +3172,16 @@ impl App {
         use crate::service::Request;
         let here = matches!(request, Request::Properties(..)) || self.takes_requests_here(Instant::now());
         self.pristine = None;
-        let (Request::Open(path, token) | Request::Reveal(path, token) | Request::Properties(path, token)) = &request;
+        let (first, token) = match &request {
+            Request::Open(path, token) | Request::Properties(path, token) => (Some(path), token),
+            Request::Reveal(paths, token) => (paths.first(), token),
+        };
+        let Some(first) = first.cloned() else {
+            return Task::none();
+        };
         let token = (!token.is_empty()).then(|| token.clone());
         if !here {
-            return new_window(path.clone(), token, self.lang);
+            return new_window(first, token, self.lang);
         }
         if let (Some(handles), Some(token)) = (self.handles, token) {
             let _ = std::thread::Builder::new().name("glide-files-activate".into()).spawn(move || {
@@ -3143,17 +3191,29 @@ impl App {
         let focus = Task::done(Message::Window(WindowAction::Activate));
         let task = match request {
             Request::Open(path, _) if path.is_dir() => self.navigate(path),
-            Request::Open(path, _) | Request::Reveal(path, _) => match path.parent() {
-                Some(parent) if parent == self.current => self.list(parent.to_path_buf(), Arrival::Refresh, Some(path)),
-                Some(parent) => self.navigate_select(parent.to_path_buf(), Some(path)),
-                None => Task::none(),
-            },
+            Request::Open(path, _) => self.reveal(vec![path]),
+            Request::Reveal(paths, _) => self.reveal(paths),
             Request::Properties(path, _) => {
                 self.modal = None;
                 self.properties_of(path)
             }
         };
         Task::batch([task, focus])
+    }
+
+    fn reveal(&mut self, mut paths: Vec<PathBuf>) -> Task<Message> {
+        if paths.is_empty() {
+            return Task::none();
+        }
+        let first = paths.remove(0);
+        let Some(parent) = first.parent().map(Path::to_path_buf) else {
+            return Task::none();
+        };
+        self.reveal_more = paths;
+        if parent == self.current && self.search.is_none() {
+            return self.list(parent, Arrival::Refresh, Some(first));
+        }
+        self.list(parent, Arrival::Push, Some(first))
     }
 
     #[must_use]
@@ -4003,17 +4063,19 @@ impl App {
         let Some(file) = bookmarks_file() else {
             return Task::none();
         };
-        let mut lines: Vec<String> = std::fs::read_to_string(&file)
-            .unwrap_or_default()
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(str::to_string)
-            .collect();
+        let text = match std::fs::read_to_string(&file) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => return self.notify(i18n::io_error(&err, self.lang), None),
+        };
+        let mut lines: Vec<String> = text.lines().filter(|line| !line.trim().is_empty()).map(str::to_string).collect();
         edit(&mut lines);
         let mut content = lines.join("\n");
         content.push('\n');
-        let written =
-            file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&file, content));
+        let written = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| glide_config::write_atomic(&file, content.as_bytes(), 0o644));
         self.bookmarks = self.fresh_bookmarks();
         match written {
             Ok(()) => Task::none(),
@@ -4332,10 +4394,11 @@ impl App {
     }
 
     fn scan(&mut self) -> Task<Message> {
-        if self.disk_watch.scanning {
+        if self.disk_watch.scan != Scan::Idle {
+            self.disk_watch.scan = Scan::Stale;
             return Task::none();
         }
-        self.disk_watch.scanning = true;
+        self.disk_watch.scan = Scan::Running;
         let disks = Arc::clone(&self.disks);
         Task::perform(blocking(move || disks.volumes()), |volumes| {
             Message::Volumes(volumes.and_then(Result::ok).unwrap_or_default())
@@ -4397,7 +4460,6 @@ impl App {
 
     fn disk_done(&mut self, outcome: DiskOutcome) -> Task<Message> {
         self.busy.remove(&outcome.object);
-        self.disk_watch.scanning = false;
         let rescan = self.scan();
         self.drives = mounted_drives(self.lang);
         let lang = self.lang;

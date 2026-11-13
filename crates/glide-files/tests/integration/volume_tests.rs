@@ -175,3 +175,34 @@ fn a_locked_luks_drive_is_listed_and_its_unlocked_filesystem_inherits_the_drive(
     assert_eq!(clear.backing.as_deref(), Some(LUKS));
     assert!(clear.can_remove());
 }
+
+#[test]
+fn internal_partitions_are_offered_unless_the_system_uses_them() {
+    let internal = |device: &str, label: &str, fs_type: &str, mounts: &[&str], kind: Option<&str>| {
+        let mut properties = block(device, label, fs_type, "/");
+        properties.insert(String::from("HintSystem"), owned(Value::from(true)));
+        let mut interfaces = partition(properties, Some(filesystem(mounts)));
+        if let Some(kind) = kind {
+            interfaces.insert(
+                String::from("org.freedesktop.UDisks2.Partition"),
+                HashMap::from([(String::from("Type"), owned(Value::from(kind)))]),
+            );
+        }
+        interfaces
+    };
+    let at = |name: &str| object(&format!("/org/freedesktop/UDisks2/block_devices/{name}"));
+    let objects: Objects = HashMap::from([
+        (at("nvme0n1p1"), internal("/dev/nvme0n1p1", "EFI", "vfat", &[], Some("C12A7328-F81F-11D2-BA4B-00A0C93EC93B"))),
+        (at("nvme0n1p2"), internal("/dev/nvme0n1p2", "root", "ext4", &["/"], None)),
+        (at("nvme0n1p3"), internal("/dev/nvme0n1p3", "home", "ext4", &["/home"], None)),
+        (at("nvme0n1p4"), internal("/dev/nvme0n1p4", "Windows", "ntfs", &[], None)),
+        (at("sdc1"), internal("/dev/sdc1", "Data", "ext4", &["/run/media/me/Data"], None)),
+    ]);
+    let shown: Vec<String> = volumes_from(&objects).into_iter().map(|volume| volume.label).collect();
+    assert_eq!(shown, ["Windows", "Data"], "the firmware partition and what the system runs from stay hidden");
+    assert_eq!(
+        DiskError::classify("org.freedesktop.UDisks2.Error.AlreadyMounted", None),
+        DiskError::AlreadyMounted,
+        "a volume someone else mounted is opened, not retried with other drivers"
+    );
+}
