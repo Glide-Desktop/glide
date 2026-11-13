@@ -1,16 +1,17 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use glide_app::chooser::{CANCEL_EXIT, FLAG, Filter, Mode, REQUEST_ENV, Request, Response};
 use zbus::object_server::ObjectServer;
-use zbus::zvariant::{DeserializeDict, OwnedObjectPath, SerializeDict, Type};
+use zbus::zvariant::{DeserializeDict, OwnedObjectPath, OwnedValue, SerializeDict, Type};
 
 const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.glide";
 const FRONTEND: &str = "org.freedesktop.portal.Desktop";
@@ -161,6 +162,7 @@ struct PortalRequest {
     process: Option<std::os::fd::OwnedFd>,
     pid: libc::pid_t,
     reaped: Arc<Mutex<bool>>,
+    cancel: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 fn pidfd(pid: u32) -> Option<std::os::fd::OwnedFd> {
@@ -187,6 +189,10 @@ impl PortalRequest {
 impl PortalRequest {
     fn stop(&self) {
         use std::os::fd::AsRawFd;
+        if let Some(cancel) = &self.cancel {
+            cancel();
+            return;
+        }
         if let Some(process) = &self.process {
             // SAFETY: pidfd_send_signal(2) on a pidfd this request owns; it names the chooser it started even after
             // that process has exited and its pid has been reused, in which case the call fails with ESRCH.
@@ -276,8 +282,12 @@ async fn run(server: &ObjectServer, handle: OwnedObjectPath, request: Request) -
     };
     let pid = child.id();
     let reaped = Arc::new(Mutex::new(false));
-    let portal_request =
-        PortalRequest { process: pidfd(pid), pid: libc::pid_t::try_from(pid).unwrap_or(0), reaped: reaped.clone() };
+    let portal_request = PortalRequest {
+        process: pidfd(pid),
+        pid: libc::pid_t::try_from(pid).unwrap_or(0),
+        reaped: reaped.clone(),
+        cancel: None,
+    };
     let registered = matches!(server.at(handle.clone(), portal_request).await, Ok(true));
     if !registered {
         let _ = child.kill();
@@ -455,8 +465,255 @@ impl Screenshot {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default)]
+struct ScreenCastSession {
+    pub app_id: String,
+    pub types: u32,
+    pub multiple: bool,
+    pub cursor_mode: u32,
+    pub stream_id: Option<u64>,
+}
+
+struct PortalSession {
+    session_handle: String,
+    sessions: Arc<Mutex<HashMap<String, ScreenCastSession>>>,
+}
+
+#[zbus::interface(name = "org.freedesktop.impl.portal.Session")]
+impl PortalSession {
+    async fn close(
+        &self, #[zbus(header)] header: zbus::message::Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
+    ) {
+        if !from_frontend(&header, connection).await {
+            return;
+        }
+        let stream_id = if let Ok(mut map) = self.sessions.lock() {
+            map.remove(&self.session_handle).and_then(|s| s.stream_id)
+        } else {
+            None
+        };
+        if let Some(stream_id) = stream_id {
+            let _ = blocking("glide-portal-session-close", move || {
+                glide_ipc::client::exchange(
+                    &glide_ipc::Request::ScreenShareStop { stream_id: Some(stream_id) },
+                    Duration::from_secs(1),
+                )
+            })
+            .await;
+        }
+    }
+}
+
+fn parse_select_sources_options(options: &HashMap<String, OwnedValue>) -> (u32, bool, u32) {
+    let types = options
+        .get("types")
+        .and_then(|v| {
+            u32::try_from(v)
+                .ok()
+                .or_else(|| i32::try_from(v).ok().map(|i| i as u32))
+                .or_else(|| u64::try_from(v).ok().map(|u| u as u32))
+        })
+        .unwrap_or(1 | 2 | 4);
+    let multiple = options.get("multiple").and_then(|v| bool::try_from(v).ok()).unwrap_or(false);
+    let cursor_mode = options
+        .get("cursor_mode")
+        .and_then(|v| {
+            u32::try_from(v)
+                .ok()
+                .or_else(|| i32::try_from(v).ok().map(|i| i as u32))
+                .or_else(|| u64::try_from(v).ok().map(|u| u as u32))
+        })
+        .unwrap_or(1);
+    (types, multiple, cursor_mode)
+}
+
+type PortalStreams = Vec<(u32, HashMap<String, OwnedValue>)>;
+
+fn format_screencast_streams(info: &glide_ipc::ShareStreamInfo) -> (PortalStreams, String) {
+    let source_type_u32 = match info.source_kind {
+        glide_ipc::ShareSourceKind::Screen | glide_ipc::ShareSourceKind::FilteredDesktop => 1u32,
+        glide_ipc::ShareSourceKind::Window => 2u32,
+        glide_ipc::ShareSourceKind::MultiWindow => 4u32,
+    };
+    let mut props = HashMap::new();
+    let size_val = zbus::zvariant::Value::from((info.width as i32, info.height as i32));
+    if let Ok(owned) = OwnedValue::try_from(size_val) {
+        props.insert("size".to_string(), owned);
+    }
+    let type_val = zbus::zvariant::Value::from(source_type_u32);
+    if let Ok(owned) = OwnedValue::try_from(type_val) {
+        props.insert("source_type".to_string(), owned);
+    }
+    let restore_token = format!("glide-stream-{}", info.stream_id);
+    (vec![(info.node_id, props)], restore_token)
+}
+
+struct ScreenCast {
+    sessions: Arc<Mutex<HashMap<String, ScreenCastSession>>>,
+}
+
+impl ScreenCast {
+    fn new(sessions: Arc<Mutex<HashMap<String, ScreenCastSession>>>) -> Self {
+        Self { sessions }
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::unused_self)]
+#[zbus::interface(name = "org.freedesktop.impl.portal.ScreenCast")]
+impl ScreenCast {
+    async fn create_session(
+        &self, handle: OwnedObjectPath, session_handle: OwnedObjectPath, app_id: String,
+        options: HashMap<String, OwnedValue>, #[zbus(object_server)] server: &ObjectServer,
+        #[zbus(header)] header: zbus::message::Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
+    ) -> (u32, HashMap<String, OwnedValue>) {
+        let _busy = Busy::start();
+        drop((handle, options));
+        if !from_frontend(&header, connection).await {
+            return (FAILED, HashMap::new());
+        }
+        let session_key = session_handle.as_str().to_string();
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.insert(
+                session_key.clone(),
+                ScreenCastSession { app_id, types: 1 | 2 | 4, multiple: false, cursor_mode: 1, stream_id: None },
+            );
+        }
+        let session_obj = PortalSession { session_handle: session_key, sessions: self.sessions.clone() };
+        let _ = server.at(session_handle.clone(), session_obj).await;
+
+        let mut results = HashMap::new();
+        let val = zbus::zvariant::Value::from(session_handle);
+        if let Ok(owned) = OwnedValue::try_from(val) {
+            results.insert("session_id".to_string(), owned);
+        }
+        (SUCCESS, results)
+    }
+
+    async fn select_sources(
+        &self, handle: OwnedObjectPath, session_handle: OwnedObjectPath, app_id: String,
+        options: HashMap<String, OwnedValue>, #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> (u32, HashMap<String, OwnedValue>) {
+        let _busy = Busy::start();
+        drop(handle);
+        if !from_frontend(&header, connection).await {
+            return (FAILED, HashMap::new());
+        }
+        let (types, multiple, cursor_mode) = parse_select_sources_options(&options);
+        let session_key = session_handle.as_str().to_string();
+        if let Ok(mut sessions) = self.sessions.lock() {
+            if let Some(session) = sessions.get_mut(&session_key) {
+                session.types = types;
+                session.multiple = multiple;
+                session.cursor_mode = cursor_mode;
+            } else {
+                sessions
+                    .insert(session_key, ScreenCastSession { app_id, types, multiple, cursor_mode, stream_id: None });
+            }
+        }
+        (SUCCESS, HashMap::new())
+    }
+
+    async fn start(
+        &self, handle: OwnedObjectPath, session_handle: OwnedObjectPath, app_id: String, parent_window: String,
+        options: HashMap<String, OwnedValue>, #[zbus(object_server)] server: &ObjectServer,
+        #[zbus(header)] header: zbus::message::Header<'_>, #[zbus(connection)] connection: &zbus::Connection,
+    ) -> (u32, HashMap<String, OwnedValue>) {
+        let _busy = Busy::start();
+        drop((parent_window, options));
+        if !from_frontend(&header, connection).await {
+            return (FAILED, HashMap::new());
+        }
+        let session_key = session_handle.as_str().to_string();
+        let (multiple, cursor_mode) = if let Ok(sessions) = self.sessions.lock() {
+            sessions.get(&session_key).map_or((false, 1), |s| (s.multiple, s.cursor_mode))
+        } else {
+            (false, 1)
+        };
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let c = cancelled.clone();
+        let portal_request = PortalRequest {
+            process: None,
+            pid: 0,
+            reaped: Arc::default(),
+            cancel: Some(Arc::new(move || {
+                c.store(true, Ordering::SeqCst);
+                let _ = glide_ipc::client::exchange(
+                    &glide_ipc::Request::ScreenShareStop { stream_id: None },
+                    Duration::from_millis(500),
+                );
+            })),
+        };
+        let registered = matches!(server.at(handle.clone(), portal_request).await, Ok(true));
+
+        let req =
+            glide_ipc::Request::ScreenShareStart { app_id: Some(app_id), multiple, cursor: Some(cursor_mode != 1) };
+        let response =
+            blocking("glide-portal-screen-share", move || glide_ipc::client::exchange(&req, PICK_TIMEOUT)).await;
+
+        if registered {
+            let _ = server.remove::<PortalRequest, _>(&handle).await;
+        }
+
+        if cancelled.load(Ordering::SeqCst) {
+            return (CANCELLED, HashMap::new());
+        }
+
+        let Some(Ok(glide_ipc::Response::ScreenShareStarted(info))) = response else {
+            return (CANCELLED, HashMap::new());
+        };
+
+        if let Ok(mut sessions) = self.sessions.lock()
+            && let Some(session) = sessions.get_mut(&session_key)
+        {
+            session.stream_id = Some(info.stream_id);
+        }
+
+        let (streams, restore_token) = format_screencast_streams(&info);
+        let mut results = HashMap::new();
+        let streams_val = zbus::zvariant::Value::from(streams);
+        if let Ok(owned) = OwnedValue::try_from(streams_val) {
+            results.insert("streams".to_string(), owned);
+        }
+        let restore_token_val = zbus::zvariant::Value::from(restore_token);
+        if let Ok(owned) = OwnedValue::try_from(restore_token_val) {
+            results.insert("restore_token".to_string(), owned);
+        }
+
+        (SUCCESS, results)
+    }
+
+    #[zbus(property)]
+    fn available_source_types(&self) -> u32 {
+        1 | 2 | 4
+    }
+
+    #[zbus(property)]
+    fn available_cursor_modes(&self) -> u32 {
+        1 | 2
+    }
+
+    #[zbus(property)]
+    fn version(&self) -> u32 {
+        4
+    }
+}
+
+fn serve_with_sessions(
+    builder: zbus::blocking::connection::Builder<'_>, sessions: Arc<Mutex<HashMap<String, ScreenCastSession>>>,
+) -> zbus::Result<zbus::blocking::Connection> {
+    builder
+        .name(BUS_NAME)?
+        .serve_at(PATH, FileChooser)?
+        .serve_at(PATH, Screenshot)?
+        .serve_at(PATH, ScreenCast::new(sessions))?
+        .build()
+}
+
 fn serve(builder: zbus::blocking::connection::Builder<'_>) -> zbus::Result<zbus::blocking::Connection> {
-    builder.name(BUS_NAME)?.serve_at(PATH, FileChooser)?.serve_at(PATH, Screenshot)?.build()
+    serve_with_sessions(builder, Arc::new(Mutex::new(HashMap::new())))
 }
 
 fn main() -> zbus::Result<()> {
@@ -580,7 +837,7 @@ mod tests {
         let choices: Vec<(String, String)> =
             results["choices"].try_clone().expect("clone").try_into().expect("choices");
         assert_eq!(choices, [("encoding".to_string(), "latin1".to_string())]);
-        let stale = PortalRequest { process: None, pid: 0, reaped: Arc::default() };
+        let stale = PortalRequest { process: None, pid: 0, reaped: Arc::default(), cancel: None };
         assert!(portal.object_server().at(handle.clone(), stale).unwrap());
         let reply = client
             .call_method(
@@ -664,6 +921,7 @@ mod tests {
             process: pidfd(chooser.id()),
             pid: libc::pid_t::try_from(chooser.id()).expect("pid"),
             reaped: Arc::default(),
+            cancel: None,
         };
         let handle =
             zbus::zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1_2/open").expect("path");
@@ -706,5 +964,155 @@ mod tests {
         let request = request(Mode::SaveFiles, String::new(), String::new(), options);
         assert_eq!(request.files, ["a.txt", "b.txt"]);
         assert_eq!(request.parent, None);
+    }
+
+    #[test]
+    fn screencast_session_creation_and_options_parsing() {
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let screencast = ScreenCast::new(sessions);
+
+        assert_eq!(screencast.available_source_types(), 1 | 2 | 4);
+        assert_eq!(screencast.available_cursor_modes(), 1 | 2);
+        assert_eq!(screencast.version(), 4);
+
+        let mut opts = HashMap::new();
+        opts.insert("types".to_string(), OwnedValue::try_from(zbus::zvariant::Value::from(2u32)).unwrap());
+        opts.insert("multiple".to_string(), OwnedValue::try_from(zbus::zvariant::Value::from(true)).unwrap());
+        opts.insert("cursor_mode".to_string(), OwnedValue::try_from(zbus::zvariant::Value::from(2u32)).unwrap());
+
+        let (types, multiple, cursor_mode) = parse_select_sources_options(&opts);
+        assert_eq!(types, 2);
+        assert!(multiple);
+        assert_eq!(cursor_mode, 2);
+
+        let empty = HashMap::new();
+        let (def_types, def_multiple, def_cursor) = parse_select_sources_options(&empty);
+        assert_eq!(def_types, 1 | 2 | 4);
+        assert!(!def_multiple);
+        assert_eq!(def_cursor, 1);
+    }
+
+    #[test]
+    fn screencast_response_construction() {
+        let info = glide_ipc::ShareStreamInfo {
+            stream_id: 123,
+            node_id: 456,
+            source_kind: glide_ipc::ShareSourceKind::Window,
+            width: 1920,
+            height: 1080,
+            window_count: 1,
+            app_id: Some("org.example.App".into()),
+        };
+        let (streams, token) = format_screencast_streams(&info);
+        assert_eq!(token, "glide-stream-123");
+        assert_eq!(streams.len(), 1);
+        let (node_id, props) = &streams[0];
+        assert_eq!(*node_id, 456);
+
+        let size: (i32, i32) = props["size"].try_clone().unwrap().try_into().unwrap();
+        assert_eq!(size, (1920, 1080));
+
+        let source_type: u32 = props["source_type"].try_clone().unwrap().try_into().unwrap();
+        assert_eq!(source_type, 2);
+
+        let screen_info = glide_ipc::ShareStreamInfo {
+            stream_id: 7,
+            node_id: 8,
+            source_kind: glide_ipc::ShareSourceKind::Screen,
+            width: 2560,
+            height: 1440,
+            window_count: 0,
+            app_id: None,
+        };
+        let (screen_streams, _) = format_screencast_streams(&screen_info);
+        let screen_source_type: u32 = screen_streams[0].1["source_type"].try_clone().unwrap().try_into().unwrap();
+        assert_eq!(screen_source_type, 1);
+
+        let multi_info = glide_ipc::ShareStreamInfo {
+            stream_id: 9,
+            node_id: 10,
+            source_kind: glide_ipc::ShareSourceKind::MultiWindow,
+            width: 1280,
+            height: 720,
+            window_count: 3,
+            app_id: None,
+        };
+        let (multi_streams, _) = format_screencast_streams(&multi_info);
+        let multi_source_type: u32 = multi_streams[0].1["source_type"].try_clone().unwrap().try_into().unwrap();
+        assert_eq!(multi_source_type, 4);
+    }
+
+    #[test]
+    fn screencast_portal_dbus_lifecycle() {
+        let Some(bus) = private_bus() else {
+            return;
+        };
+        let sessions = Arc::new(Mutex::new(HashMap::new()));
+        let builder = zbus::blocking::connection::Builder::address(bus.1.as_str()).expect("address");
+        let _portal = serve_with_sessions(builder, sessions.clone()).expect("serve");
+
+        let client = zbus::blocking::connection::Builder::address(bus.1.as_str())
+            .expect("address")
+            .name(FRONTEND)
+            .expect("frontend name")
+            .build()
+            .expect("client");
+
+        let handle =
+            zbus::zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1_3/sc_create").unwrap();
+        let session_handle =
+            zbus::zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/session/1_3/s1").unwrap();
+
+        let create_reply = client
+            .call_method(
+                Some(BUS_NAME),
+                PATH,
+                Some("org.freedesktop.impl.portal.ScreenCast"),
+                "CreateSession",
+                &(
+                    handle.clone(),
+                    session_handle.clone(),
+                    "org.example.screen",
+                    HashMap::<String, zbus::zvariant::Value<'_>>::new(),
+                ),
+            )
+            .expect("create reply");
+        let (code, results): (u32, HashMap<String, OwnedValue>) = create_reply.body().deserialize().expect("body");
+        assert_eq!(code, SUCCESS);
+        assert!(results.contains_key("session_id"));
+
+        let sess_key = session_handle.as_str().to_string();
+        {
+            let guard = sessions.lock().unwrap();
+            let sess = guard.get(&sess_key).expect("session exists");
+            assert_eq!(sess.app_id, "org.example.screen");
+        }
+
+        let mut select_opts = HashMap::new();
+        select_opts.insert("multiple", zbus::zvariant::Value::from(true));
+        select_opts.insert("cursor_mode", zbus::zvariant::Value::from(2u32));
+        select_opts.insert("types", zbus::zvariant::Value::from(2u32));
+
+        let sel_handle =
+            zbus::zvariant::ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1_3/sc_select").unwrap();
+        let select_reply = client
+            .call_method(
+                Some(BUS_NAME),
+                PATH,
+                Some("org.freedesktop.impl.portal.ScreenCast"),
+                "SelectSources",
+                &(sel_handle, session_handle.clone(), "org.example.screen", select_opts),
+            )
+            .expect("select reply");
+        let (code, _): (u32, HashMap<String, OwnedValue>) = select_reply.body().deserialize().expect("body");
+        assert_eq!(code, SUCCESS);
+
+        {
+            let guard = sessions.lock().unwrap();
+            let sess = guard.get(&sess_key).expect("session exists");
+            assert!(sess.multiple);
+            assert_eq!(sess.cursor_mode, 2);
+            assert_eq!(sess.types, 2);
+        }
     }
 }

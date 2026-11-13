@@ -212,6 +212,21 @@ fn format_event(event: &Event) -> String {
             format!("recording saved: {}", printable(path))
         }
         Event::RecordingStateChanged { active: false, path: None } => "recording stopped".to_string(),
+        Event::ScreenShareStateChanged { stream_id, active: true, source_kind, app_id } => {
+            match (source_kind, app_id) {
+                (Some(kind), Some(app)) => {
+                    format!("screen share started: stream {stream_id} ({kind:?}) by {}", printable(app))
+                }
+                (Some(kind), None) => format!("screen share started: stream {stream_id} ({kind:?})"),
+                (None, Some(app)) => {
+                    format!("screen share started: stream {stream_id} by {}", printable(app))
+                }
+                (None, None) => format!("screen share started: stream {stream_id}"),
+            }
+        }
+        Event::ScreenShareStateChanged { stream_id, active: false, .. } => {
+            format!("screen share stopped: stream {stream_id}")
+        }
     }
 }
 
@@ -232,6 +247,7 @@ COMMANDS:
     reload                     Reload configuration from glide.toml
     lock                       Lock the screen
     record [start|stop|status] Start, stop, or query screen recording
+    share [start|stop [ID]|status] Start, stop, or query screen sharing
     inhibitors                 List what keeps the screen from going dark
     action <name>              Run a named shell action, as a keybind would (e.g. screen-mirroring)
     exec <command...>          Execute shell command
@@ -280,6 +296,18 @@ fn parse_args(args: &[String]) -> anyhow::Result<Request> {
             Some("stop") => Ok(Request::StopRecording),
             Some("status") => Ok(Request::RecordingStatus),
             _ => anyhow::bail!("Usage: glidectl record [start|stop|status]"),
+        },
+        "share" => match args.get(1).map(String::as_str) {
+            Some("start") | None => Ok(Request::ScreenShareStart { app_id: None, multiple: true, cursor: None }),
+            Some("stop") => {
+                let stream_id = match args.get(2) {
+                    Some(id) => Some(id.parse()?),
+                    None => None,
+                };
+                Ok(Request::ScreenShareStop { stream_id })
+            }
+            Some("status") => Ok(Request::ScreenShareStatus),
+            _ => anyhow::bail!("Usage: glidectl share [start|stop [stream_id]|status]"),
         },
         "inhibitors" => Ok(Request::IdleInhibitors),
         "action" => match args.get(1) {
@@ -375,6 +403,15 @@ fn print_response(out: &mut impl Write, response: &Response) -> std::io::Result<
                 writeln!(out, "stopped")?;
             }
         }
+        Response::ScreenShareStarted(info) => {
+            let app = info.app_id.as_deref().map_or_else(|| "<unknown>".to_string(), printable);
+            writeln!(
+                out,
+                "started stream {} (node {}, {:?}, {}x{}, {} windows, app {})",
+                info.stream_id, info.node_id, info.source_kind, info.width, info.height, info.window_count, app
+            )?;
+        }
+        Response::ScreenShareStatus { streams } => print_share_status(out, streams)?,
         Response::ActivationToken { token } => writeln!(out, "{token}")?,
         Response::Screenshot { path } => writeln!(out, "{path}")?,
         Response::Color { red, green, blue } => writeln!(out, "{red:.4} {green:.4} {blue:.4}")?,
@@ -442,6 +479,30 @@ fn print_response(out: &mut impl Write, response: &Response) -> std::io::Result<
 
 fn star(on: bool) -> &'static str {
     if on { "*" } else { "" }
+}
+
+fn print_share_status(out: &mut impl Write, streams: &[glide_ipc::ShareStreamInfo]) -> std::io::Result<()> {
+    if streams.is_empty() {
+        writeln!(out, "no active screen share streams")?;
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "{:<10} {:<8} {:<16} {:<12} {:<8} {:<15}",
+        "STREAM_ID", "NODE_ID", "KIND", "RESOLUTION", "WINDOWS", "APP_ID"
+    )?;
+    writeln!(out, "{}", "-".repeat(73))?;
+    for s in streams {
+        let res = format!("{}x{}", s.width, s.height);
+        let kind = format!("{:?}", s.source_kind);
+        let app = s.app_id.as_deref().map_or_else(|| "<unknown>".to_string(), printable);
+        writeln!(
+            out,
+            "{:<10} {:<8} {:<16} {:<12} {:<8} {:<15}",
+            s.stream_id, s.node_id, kind, res, s.window_count, app
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -626,5 +687,62 @@ mod tests {
         let mut out = Vec::new();
         print_response(&mut out, &Response::Recording { active: false, elapsed_secs: None, path: None }).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "stopped\n");
+    }
+
+    #[test]
+    fn usage_lists_share_and_parses_share_subcommands() {
+        assert!(USAGE.contains("\n    share [start|stop [ID]|status] "));
+        assert_eq!(parse(&["share"]), Request::ScreenShareStart { app_id: None, multiple: true, cursor: None });
+        assert_eq!(
+            parse(&["share", "start"]),
+            Request::ScreenShareStart { app_id: None, multiple: true, cursor: None }
+        );
+        assert_eq!(parse(&["share", "stop"]), Request::ScreenShareStop { stream_id: None });
+        assert_eq!(parse(&["share", "stop", "42"]), Request::ScreenShareStop { stream_id: Some(42) });
+        assert_eq!(parse(&["share", "status"]), Request::ScreenShareStatus);
+        assert!(parse_args(&words(&["share", "invalid"])).is_err());
+    }
+
+    #[test]
+    fn screen_share_responses_and_events_format_correctly() {
+        let stream = glide_ipc::ShareStreamInfo {
+            stream_id: 1,
+            node_id: 100,
+            source_kind: glide_ipc::ShareSourceKind::Window,
+            width: 1920,
+            height: 1080,
+            window_count: 1,
+            app_id: Some("org.mozilla.firefox".into()),
+        };
+
+        let mut out = Vec::new();
+        print_response(&mut out, &Response::ScreenShareStarted(stream.clone())).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("started stream 1"));
+        assert!(text.contains("1920x1080"));
+        assert!(text.contains("org.mozilla.firefox"));
+
+        let mut out = Vec::new();
+        print_response(&mut out, &Response::ScreenShareStatus { streams: vec![stream] }).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("STREAM_ID"));
+        assert!(text.contains("1920x1080"));
+        assert!(text.contains("org.mozilla.firefox"));
+
+        let mut out = Vec::new();
+        print_response(&mut out, &Response::ScreenShareStatus { streams: vec![] }).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "no active screen share streams\n");
+
+        let active_event = Event::ScreenShareStateChanged {
+            stream_id: 5,
+            active: true,
+            source_kind: Some(glide_ipc::ShareSourceKind::Screen),
+            app_id: Some("discord".into()),
+        };
+        assert_eq!(format_event(&active_event), "screen share started: stream 5 (Screen) by discord");
+
+        let stopped_event =
+            Event::ScreenShareStateChanged { stream_id: 5, active: false, source_kind: None, app_id: None };
+        assert_eq!(format_event(&stopped_event), "screen share stopped: stream 5");
     }
 }

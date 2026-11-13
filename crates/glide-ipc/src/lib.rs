@@ -1,6 +1,27 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareSourceKind {
+    Screen,
+    Window,
+    MultiWindow,
+    FilteredDesktop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareStreamInfo {
+    pub stream_id: u64,
+    pub node_id: u32,
+    pub source_kind: ShareSourceKind,
+    pub width: u32,
+    pub height: u32,
+    pub window_count: usize,
+    #[serde(default)]
+    pub app_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "kebab-case")]
 pub enum WorkspaceTarget {
     Index(usize),
@@ -25,30 +46,66 @@ pub enum Request {
     Quit,
     ListWorkspaces,
     ListWindows,
-    SwitchWorkspace { target: WorkspaceTarget },
-    MoveWindow { window: WindowSelector, target: WorkspaceTarget },
-    FocusWindow { selector: WindowSelector },
+    SwitchWorkspace {
+        target: WorkspaceTarget,
+    },
+    MoveWindow {
+        window: WindowSelector,
+        target: WorkspaceTarget,
+    },
+    FocusWindow {
+        selector: WindowSelector,
+    },
     Reload,
-    Exec { command: String },
+    Exec {
+        command: String,
+    },
     Subscribe,
-    SetDpms { on: bool },
+    SetDpms {
+        on: bool,
+    },
     CycleLayout,
     GetLayout,
     ListOutputs,
-    NightLight { on: Option<bool> },
+    NightLight {
+        on: Option<bool>,
+    },
     Lock,
     PracticeGestures,
-    ActivationToken { app_id: Option<String> },
+    ActivationToken {
+        app_id: Option<String>,
+    },
     Screenshot,
     ScreenshotArea,
     PickColor,
     ScanQr,
-    Action { name: String },
+    Action {
+        name: String,
+    },
     IdleInhibitors,
-    LoginPasswordChanged { password: keychain::Hidden },
+    LoginPasswordChanged {
+        password: keychain::Hidden,
+    },
     ScreenRecord,
     StopRecording,
     RecordingStatus,
+    ScreenShareStart {
+        #[serde(default)]
+        app_id: Option<String>,
+        #[serde(default)]
+        multiple: bool,
+        #[serde(default)]
+        cursor: Option<bool>,
+    },
+    ScreenShareStop {
+        #[serde(default)]
+        stream_id: Option<u64>,
+    },
+    ScreenShareStatus,
+    ScreenShareUpdateWindows {
+        stream_id: u64,
+        window_indices: Vec<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +248,10 @@ pub enum Response {
         #[serde(default)]
         path: Option<String>,
     },
+    ScreenShareStarted(ShareStreamInfo),
+    ScreenShareStatus {
+        streams: Vec<ShareStreamInfo>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -231,11 +292,72 @@ pub enum Event {
         #[serde(default)]
         path: Option<String>,
     },
+    ScreenShareStateChanged {
+        stream_id: u64,
+        active: bool,
+        #[serde(default)]
+        source_kind: Option<ShareSourceKind>,
+        #[serde(default)]
+        app_id: Option<String>,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_share_ipc_messages_round_trip() {
+        let requests = [
+            Request::ScreenShareStart { app_id: Some("org.example".into()), multiple: true, cursor: Some(true) },
+            Request::ScreenShareStart { app_id: None, multiple: false, cursor: None },
+            Request::ScreenShareStop { stream_id: Some(42) },
+            Request::ScreenShareStop { stream_id: None },
+            Request::ScreenShareStatus,
+            Request::ScreenShareUpdateWindows { stream_id: 7, window_indices: vec![0, 2] },
+        ];
+        for req in requests {
+            let json = serde_json::to_string(&req).unwrap();
+            let parsed: Request = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, req);
+        }
+
+        let stream_info = ShareStreamInfo {
+            stream_id: 10,
+            node_id: 42,
+            source_kind: ShareSourceKind::MultiWindow,
+            width: 1920,
+            height: 1080,
+            window_count: 2,
+            app_id: Some("org.example".into()),
+        };
+
+        let started_resp = Response::ScreenShareStarted(stream_info.clone());
+        let json = serde_json::to_string(&started_resp).unwrap();
+        let parsed: Response = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, started_resp);
+
+        let status_resp = Response::ScreenShareStatus { streams: vec![stream_info] };
+        let json = serde_json::to_string(&status_resp).unwrap();
+        let parsed: Response = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, status_resp);
+
+        let event = Event::ScreenShareStateChanged {
+            stream_id: 10,
+            active: true,
+            source_kind: Some(ShareSourceKind::FilteredDesktop),
+            app_id: Some("org.example".into()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, event);
+
+        let stopped_event =
+            Event::ScreenShareStateChanged { stream_id: 10, active: false, source_kind: None, app_id: None };
+        let json = serde_json::to_string(&stopped_event).unwrap();
+        let parsed: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, stopped_event);
+    }
 
     #[test]
     fn a_response_from_a_newer_compositor_parses_as_unknown() {
