@@ -222,22 +222,16 @@ impl Page {
         let warm = tinted(display::night_tint(NIGHT_MIN_KELVIN), 1.0);
         let cool = tinted(display::night_tint(NIGHT_MAX_KELVIN), 1.0);
         let strip = sketch::gradient_strip(t, warm, cool, 8.0);
-        let slider = column![
-            strip,
-            widgets::value_slider(
-                t,
-                NIGHT_MIN_KELVIN as f64..=NIGHT_MAX_KELVIN as f64,
-                kelvin as f64,
-                100.0,
-                Msg::Temperature,
-                Some(Msg::CommitTemperature),
-            ),
-            row![
-                text(c.t(tr::Key::Warmer), TextStyle::CAP).color(t.fg_3()).width(Fill),
-                text(c.t(tr::Key::Cooler), TextStyle::CAP).color(t.fg_3()),
-            ],
-        ]
-        .spacing(6);
+        let slider = widgets::value_slider(
+            t,
+            NIGHT_MIN_KELVIN as f64..=NIGHT_MAX_KELVIN as f64,
+            kelvin as f64,
+            100.0,
+            Msg::Temperature,
+            Some(Msg::CommitTemperature),
+        );
+        let control =
+            glide_sdk::widget::slider_readout(&widgets::paint(&t), None, slider, format!("{kelvin} K"), false);
         let reset = widgets::secondary(
             t,
             c.t(K::Reset),
@@ -253,13 +247,29 @@ impl Page {
                     .build(),
             )
             .push(
-                Row::new(t, format!("{} · {kelvin} K", c.t(tr::Key::Temperature)))
+                Row::new(t, c.t(tr::Key::Temperature))
                     .subtitle(c.t(tr::Key::TemperatureHint))
-                    .suffix(reset)
+                    .suffix(gated(*c, widgets::flexible(control, 360.0)))
                     .stacked(t.compact)
                     .build(),
             )
-            .push(gated(*c, container(column![container(preview).center_x(Fill), slider].spacing(18)).padding(12)))
+            .push(
+                container(
+                    column![
+                        container(preview).center_x(Fill),
+                        strip,
+                        row![
+                            text(c.t(tr::Key::Warmer), TextStyle::CAP).color(t.fg_3()).width(Fill),
+                            reset,
+                            text(c.t(tr::Key::Cooler), TextStyle::CAP).color(t.fg_3()),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                    ]
+                    .spacing(10),
+                )
+                .padding(12),
+            )
             .extend(self.schedule_rows(c, config))
             .build()
     }
