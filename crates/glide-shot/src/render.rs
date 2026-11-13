@@ -63,6 +63,8 @@ pub struct Palette {
     pub fill: Color,
     pub inverse_bg: Color,
     pub inverse_fg: Color,
+    pub danger: Color,
+    pub danger_soft: Color,
     pub appearance_dark: bool,
 }
 
@@ -82,6 +84,8 @@ impl Palette {
             fill: tokens.fill_1,
             inverse_bg: tokens.inverse_bg,
             inverse_fg: tokens.inverse_fg,
+            danger: tokens.danger,
+            danger_soft: tokens.danger_soft,
             appearance_dark: tokens.appearance == glide_theme::Appearance::Dark,
         }
     }
@@ -100,6 +104,8 @@ impl Palette {
             self.fill,
             self.inverse_bg,
             self.inverse_fg,
+            self.danger,
+            self.danger_soft,
         ]
         .into_iter()
         .fold(glide_theme::Revision::new(), glide_theme::Revision::color)
@@ -560,7 +566,7 @@ fn render_bar<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &Shot, c
         let alpha = (glide_theme::motion::assist(f64::from(openness)) * glide_theme::motion::assist(shown)) as f32;
         if visible
             && let Some(control) = cache.hover.target()
-            && let Some(text) = tip_text(Some(control))
+            && let Some(text) = tip_text_for(Some(control), shot.kind)
             && let Some(hovered) = cache.hover_since.map(glide_ui::clock::since)
             && hovered >= glide_theme::component::TOOLTIP_DELAY
             && let Some(item) = bar.item(control)
@@ -602,7 +608,9 @@ fn render_bar<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &Shot, c
             let radius = match control {
                 Control::Swatch(_) | Control::Capture => glide_theme::shape::R_ROUND,
                 Control::Close if !shot.editing() => glide_theme::shape::R_ROUND,
-                Control::Mode(_) | Control::Shadow => glide_theme::shape::R3,
+                Control::Kind(_) | Control::Mode(_) | Control::Shadow | Control::Audio | Control::Cursor => {
+                    glide_theme::shape::R3
+                }
                 _ => glide_theme::shape::R2,
             };
             let on_accent = *control == Control::Save;
@@ -647,7 +655,9 @@ fn render_selection<R: crate::raster::ShellRenderer>(cache: &mut Cache, shot: &S
     let (painter, palette, scale, openness) = (ctx.painter, ctx.palette, ctx.scale, ctx.openness);
     let (output_scale, base_key, full, frozen_size) = (ctx.output_scale, ctx.base_key, ctx.full, ctx.frozen_size);
     let target = shot.target();
-    let show_badge = shot.selecting() || (shot.editing() && shot.mode == Mode::Area);
+    let show_badge = shot.selecting()
+        || (shot.editing() && shot.mode == Mode::Area)
+        || (shot.kind == model::CaptureKind::Record && shot.mode == Mode::Area && shot.selection.is_some());
     let closing = cache.closing;
     let badge_shown = if closing { 1.0 } else { presence(&mut cache.badge_shown, show_badge && target.is_some()) };
     let handles_shown = if closing { 1.0 } else { presence(&mut cache.handles_shown, shot.resizable()) };
@@ -917,10 +927,13 @@ fn render_base<R: crate::raster::ShellRenderer>(cache: &mut Cache, scene: &Scene
 fn bar_state(shot: &Shot) -> u64 {
     let mut revision = glide_theme::Revision::new()
         .bool(shot.editing())
+        .u64(shot.kind as u64)
         .u64(shot.mode as u64)
         .u64(shot.tool as u64)
         .u64(shot.swatch as u64)
         .bool(shot.shadow)
+        .bool(shot.audio)
+        .bool(shot.cursor)
         .bool(shot.can_capture())
         .bool(shot.can_undo())
         .bool(shot.can_redo())
@@ -930,12 +943,16 @@ fn bar_state(shot: &Shot) -> u64 {
     revision.finish()
 }
 
-fn bar_margin() -> i32 {
+pub(crate) fn bar_margin() -> i32 {
     glide_paint::shadow_fade_margin(52)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Glyph {
+    Screenshot,
+    Record,
+    Audio,
+    Cursor,
     Area,
     Window,
     Screen,
@@ -957,6 +974,10 @@ pub enum Glyph {
 
 const fn glyph_of(control: Control) -> Option<Glyph> {
     Some(match control {
+        Control::Kind(model::CaptureKind::Screenshot) => Glyph::Screenshot,
+        Control::Kind(model::CaptureKind::Record) => Glyph::Record,
+        Control::Audio => Glyph::Audio,
+        Control::Cursor => Glyph::Cursor,
         Control::Mode(Mode::Area) => Glyph::Area,
         Control::Mode(Mode::Window) => Glyph::Window,
         Control::Mode(Mode::Screen) => Glyph::Screen,
@@ -979,8 +1000,20 @@ const fn glyph_of(control: Control) -> Option<Glyph> {
 }
 
 #[must_use]
+pub const fn label_key_for(control: Control, kind: model::CaptureKind) -> Option<Key> {
+    if matches!(control, Control::Capture) && matches!(kind, model::CaptureKind::Record) {
+        return Some(Key::ShotStartRecord);
+    }
+    label_key(control)
+}
+
+#[must_use]
 pub const fn label_key(control: Control) -> Option<Key> {
     Some(match control {
+        Control::Kind(model::CaptureKind::Screenshot) => Key::ShotCaptureMode,
+        Control::Kind(model::CaptureKind::Record) => Key::ShotRecordMode,
+        Control::Audio => Key::ShotAudio,
+        Control::Cursor => Key::ShotCursor,
         Control::Mode(Mode::Area) => Key::ShotArea,
         Control::Mode(Mode::Window) => Key::ShotWindow,
         Control::Mode(Mode::Screen) => Key::ShotScreen,
@@ -1022,18 +1055,23 @@ pub const fn shortcut(control: Control) -> Option<&'static str> {
         Control::Undo => "Ctrl+Z",
         Control::Redo => "Ctrl+Shift+Z",
         Control::Copy => "Ctrl+C",
-        Control::Swatch(_) => return None,
+        Control::Kind(_) | Control::Audio | Control::Cursor | Control::Swatch(_) => return None,
+    })
+}
+
+#[must_use]
+pub fn tip_text_for(control: Option<Control>, kind: model::CaptureKind) -> Option<String> {
+    let control = control?;
+    let label = crate::i18n::t(label_key_for(control, kind)?);
+    Some(match shortcut(control) {
+        Some(keys) => format!("{label}   {keys}"),
+        None => label.to_string(),
     })
 }
 
 #[must_use]
 pub fn tip_text(control: Option<Control>) -> Option<String> {
-    let control = control?;
-    let label = crate::i18n::t(label_key(control)?);
-    Some(match shortcut(control) {
-        Some(keys) => format!("{label}   {keys}"),
-        None => label.to_string(),
-    })
+    tip_text_for(control, model::CaptureKind::Screenshot)
 }
 
 fn with_bgr(pixmap_color: Color, alpha: f32) -> Paint<'static> {
@@ -1084,7 +1122,7 @@ pub fn draw_glyph(
     let transform = Affine::from_row(unit, 0.0, 0.0, unit, x, y);
     let stroke = Stroke { width: 1.8, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Stroke::default() };
     let mut outline = Outline { lines: PathBuilder::new(), fills: Vec::new() };
-    if !tool_outline(glyph, &mut outline) {
+    if !tool_outline(glyph, &mut outline) && !recording_outline(glyph, &mut outline) {
         shell_outline(glyph, &mut outline);
     }
     for (builder, fill) in outline.fills {
@@ -1157,6 +1195,42 @@ fn tool_outline(glyph: Glyph, outline: &mut Outline) -> bool {
             circle(lines, 12.0, 12.0, 9.0);
             polyline(lines, &[(10.0, 9.5), (12.5, 8.0), (12.5, 16.0)]);
             polyline(lines, &[(10.0, 16.0), (15.0, 16.0)]);
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn recording_outline(glyph: Glyph, outline: &mut Outline) -> bool {
+    let lines = &mut outline.lines;
+    match glyph {
+        Glyph::Screenshot => {
+            rounded(lines, (3.0, 7.0, 21.0, 20.0), 2.5);
+            circle(lines, 12.0, 13.5, 3.5);
+            polyline(lines, &[(8.0, 7.0), (9.5, 4.0), (14.5, 4.0), (16.0, 7.0)]);
+        }
+        Glyph::Record => {
+            rounded(lines, (3.0, 6.0, 15.5, 18.0), 2.0);
+            polyline(lines, &[(15.5, 9.5), (21.0, 6.5), (21.0, 17.5), (15.5, 14.5)]);
+            circle(lines, 9.25, 12.0, 2.0);
+        }
+        Glyph::Audio => {
+            rounded(lines, (9.0, 3.0, 15.0, 13.0), 3.0);
+            lines.move_to(6.0, 10.0);
+            lines.quad_to(6.0, 17.0, 12.0, 17.0);
+            lines.quad_to(18.0, 17.0, 18.0, 10.0);
+            polyline(lines, &[(12.0, 17.0), (12.0, 21.0)]);
+            polyline(lines, &[(8.0, 21.0), (16.0, 21.0)]);
+        }
+        Glyph::Cursor => {
+            lines.move_to(4.5, 3.5);
+            lines.line_to(4.5, 19.5);
+            lines.line_to(9.0, 15.5);
+            lines.line_to(13.0, 21.5);
+            lines.line_to(15.5, 20.0);
+            lines.line_to(11.5, 14.0);
+            lines.line_to(17.5, 14.0);
+            lines.close();
         }
         _ => return false,
     }
@@ -1346,7 +1420,12 @@ fn decorate(
             let alpha = if enabled { 1.0 } else { 0.4 };
             let half = model::DISC as f32 / 2.0;
             decor.discs.push(disc(half - 1.5, palette.text.with_alpha(palette.text.0[3] * alpha), Some(2.5)));
-            decor.discs.push(disc(half - 6.5, palette.accent.with_alpha(alpha), None));
+            let inner_color = if shot.kind == model::CaptureKind::Record {
+                palette.danger.with_alpha(alpha)
+            } else {
+                palette.accent.with_alpha(alpha)
+            };
+            decor.discs.push(disc(half - 6.5, inner_color, None));
         }
         Control::Swatch(index) => {
             if active {
@@ -1361,7 +1440,7 @@ fn decorate(
                 GlyphMark { glyph: Glyph::Close, at: centred(16.0), color: palette.muted, backdrop: palette.fill };
             decor.glyphs.push(mark);
         }
-        Control::Mode(_) | Control::Shadow => {
+        Control::Kind(_) | Control::Mode(_) | Control::Shadow | Control::Audio | Control::Cursor => {
             let (fill, ink) = if active { (Some(palette.soft), palette.soft_fg) } else { (None, palette.muted) };
             if let Some(fill) = fill {
                 canvas.fill(cell, fill, glide_theme::shape::R3);
@@ -1370,7 +1449,7 @@ fn decorate(
                 let at = (x - GLYPH / 2.0, cell.loc.y as f32 + 6.0, GLYPH);
                 decor.glyphs.push(GlyphMark { glyph, at, color: ink, backdrop: fill.unwrap_or(palette.panel) });
             }
-            if let Some(key) = label_key(control) {
+            if let Some(key) = label_key_for(control, shot.kind) {
                 let band = rect(cell.loc.x, cell.loc.y + 28, cell.size.w, 16);
                 decor.labels.push((band, crate::i18n::t(key), ink));
             }
@@ -1718,6 +1797,10 @@ mod tests {
     #[test]
     fn every_glyph_paints_inside_its_box() {
         for glyph in [
+            Glyph::Screenshot,
+            Glyph::Record,
+            Glyph::Audio,
+            Glyph::Cursor,
             Glyph::Area,
             Glyph::Window,
             Glyph::Screen,

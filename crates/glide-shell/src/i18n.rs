@@ -123,6 +123,17 @@ glide_app::catalogue! {
     ShotCopiedBody => "Paste it anywhere with Ctrl+V", "Вставте його будь-де через Ctrl+V";
     ShotOpen => "Open", "Відкрити";
     ShotShowInFolder => "Show in Folder", "Показати в теці";
+    ShotCaptureMode => "Screenshot", "Знімок";
+    ShotRecordMode => "Record", "Запис";
+    ShotAudio => "Record audio", "Записувати звук";
+    ShotCursor => "Show pointer", "Показувати курсор";
+    ShotStartRecord => "Start recording", "Почати запис";
+    TbStopRecording => "Stop recording", "Зупинити запис";
+    ShotPreviewOpen => "Open", "Відкрити";
+    ShotPreviewTrim => "Trim in Clips", "Обрізати в Clips";
+    ShotPreviewFolder => "Show in Files", "Показати у Файлах";
+    ShotPreviewDismiss => "Dismiss", "Закрити";
+    NoticeRecordingSaved => "Screen recording saved", "Запис екрана збережено";
     User => "User", "Користувач";
     JustNow => "just now", "щойно";
     MinutesAgo => "{} min", "{} хв";

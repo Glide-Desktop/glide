@@ -12,6 +12,15 @@ pub const MIN_SIDE: f64 = 4.0;
 pub const HANDLE_REACH: f64 = 9.0;
 const MIN_MARK: f64 = 3.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CaptureKind {
+    #[default]
+    Screenshot,
+    Record,
+}
+
+pub const KINDS: [CaptureKind; 2] = [CaptureKind::Screenshot, CaptureKind::Record];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     #[default]
@@ -173,8 +182,11 @@ impl Mark {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Control {
+    Kind(CaptureKind),
     Mode(Mode),
     Shadow,
+    Audio,
+    Cursor,
     Capture,
     Close,
     Tool(Tool),
@@ -193,7 +205,16 @@ enum Gesture {
     Draw,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecordRequest {
+    pub mode: Mode,
+    pub target: Area,
+    pub window: Option<usize>,
+    pub audio: bool,
+    pub cursor: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Outcome {
     Nothing,
     Redraw,
@@ -201,9 +222,12 @@ pub enum Outcome {
     Copy,
     Save,
     Window(usize),
+    Record(RecordRequest),
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent capture options and editor flags
 pub struct Shot {
+    pub kind: CaptureKind,
     pub mode: Mode,
     pub stage: Stage,
     pub bounds: Size<f64, Logical>,
@@ -214,6 +238,8 @@ pub struct Shot {
     pub tool: Tool,
     pub swatch: usize,
     pub shadow: bool,
+    pub audio: bool,
+    pub cursor: bool,
     pub marks: Vec<Mark>,
     redo: Vec<Mark>,
     pub draft: Option<Mark>,
@@ -229,6 +255,7 @@ impl Shot {
     pub fn new(bounds: Size<f64, Logical>, windows: Vec<Area>, memory: &Memory) -> Self {
         let selection = memory.selection.filter(|area| fits(*area, bounds));
         Self {
+            kind: memory.kind,
             mode: memory.mode,
             stage: Stage::Choose,
             bounds,
@@ -239,6 +266,8 @@ impl Shot {
             tool: memory.tool,
             swatch: memory.swatch,
             shadow: memory.shadow,
+            audio: memory.audio,
+            cursor: memory.cursor,
             marks: Vec::new(),
             redo: Vec::new(),
             draft: None,
@@ -252,7 +281,38 @@ impl Shot {
 
     #[must_use]
     pub fn memory(&self) -> Memory {
-        Memory { mode: self.mode, selection: self.selection, tool: self.tool, swatch: self.swatch, shadow: self.shadow }
+        Memory {
+            kind: self.kind,
+            mode: self.mode,
+            selection: self.selection,
+            tool: self.tool,
+            swatch: self.swatch,
+            shadow: self.shadow,
+            audio: self.audio,
+            cursor: self.cursor,
+        }
+    }
+
+    #[must_use]
+    pub fn with_kind(mut self, kind: CaptureKind) -> Self {
+        self.set_kind(kind);
+        self
+    }
+
+    pub fn set_kind(&mut self, kind: CaptureKind) -> bool {
+        if self.editing() || self.kind == kind {
+            return false;
+        }
+        self.kind = kind;
+        true
+    }
+
+    pub fn toggle_audio(&mut self) {
+        self.audio = !self.audio;
+    }
+
+    pub fn toggle_cursor(&mut self) {
+        self.cursor = !self.cursor;
     }
 
     #[must_use]
@@ -286,7 +346,9 @@ impl Shot {
 
     #[must_use]
     pub fn resizable(&self) -> bool {
-        self.editing() && self.mode == Mode::Area && !self.selecting()
+        let active =
+            if self.kind == CaptureKind::Record { !self.editing() && self.selection.is_some() } else { self.editing() };
+        active && self.mode == Mode::Area && !self.selecting()
     }
 
     #[must_use]
@@ -340,6 +402,12 @@ impl Shot {
     pub fn capture(&mut self) -> Outcome {
         if self.editing() || !self.can_capture() {
             return Outcome::Nothing;
+        }
+        if self.kind == CaptureKind::Record {
+            let mode = self.mode;
+            let Some(target) = self.target() else { return Outcome::Nothing };
+            let window = if mode == Mode::Window { self.window.or(self.hovered) } else { None };
+            return Outcome::Record(RecordRequest { mode, target, window, audio: self.audio, cursor: self.cursor });
         }
         self.enter_edit()
     }
@@ -460,20 +528,7 @@ impl Shot {
             }
         }
         if !self.editing() {
-            return match self.mode {
-                Mode::Area => {
-                    self.begin_select(pos);
-                    Outcome::Redraw
-                }
-                Mode::Window => match self.window_at(pos) {
-                    Some(index) => {
-                        self.window = Some(index);
-                        self.enter_edit()
-                    }
-                    None => Outcome::Nothing,
-                },
-                Mode::Screen => self.enter_edit(),
-            };
+            return self.press_choose(pos);
         }
         if let Some(handle) = self.handle_at(pos)
             && let Some(from) = self.target()
@@ -521,6 +576,66 @@ impl Shot {
         Outcome::Redraw
     }
 
+    fn press_choose(&mut self, pos: Pos) -> Outcome {
+        if self.kind == CaptureKind::Record {
+            match self.mode {
+                Mode::Area => {
+                    if let Some(handle) = self.handle_at(pos)
+                        && let Some(from) = self.target()
+                    {
+                        self.gesture = Some(Gesture::Resize { handle, from });
+                        return Outcome::Redraw;
+                    }
+                    if let Some(from) = self.target().filter(|target| target.contains(pos)) {
+                        self.gesture = Some(Gesture::Move { grab: pos, from });
+                        return Outcome::Redraw;
+                    }
+                    self.begin_select(pos);
+                    return Outcome::Redraw;
+                }
+                Mode::Window => {
+                    return match self.window_at(pos) {
+                        Some(index) => {
+                            self.window = Some(index);
+                            let target = self.windows[index];
+                            Outcome::Record(RecordRequest {
+                                mode: Mode::Window,
+                                target,
+                                window: Some(index),
+                                audio: self.audio,
+                                cursor: self.cursor,
+                            })
+                        }
+                        None => Outcome::Nothing,
+                    };
+                }
+                Mode::Screen => {
+                    return Outcome::Record(RecordRequest {
+                        mode: Mode::Screen,
+                        target: self.full(),
+                        window: None,
+                        audio: self.audio,
+                        cursor: self.cursor,
+                    });
+                }
+            }
+        }
+        match self.mode {
+            Mode::Area => {
+                self.begin_select(pos);
+                Outcome::Redraw
+            }
+            Mode::Window => match self.window_at(pos) {
+                Some(index) => {
+                    self.window = Some(index);
+                    self.enter_edit()
+                }
+                None => Outcome::Nothing,
+            },
+            Mode::Screen => self.enter_edit(),
+        }
+    }
+
     fn begin_select(&mut self, pos: Pos) {
         self.gesture = Some(Gesture::Select { origin: pos, before: self.selection });
         self.selection = Some(Rectangle::new(pos, Size::from((0.0, 0.0))));
@@ -548,7 +663,7 @@ impl Shot {
                 let area = rect_between(origin, pos);
                 if area.size.w >= MIN_SIDE && area.size.h >= MIN_SIDE {
                     self.selection = Some(area);
-                    if !self.editing() {
+                    if self.kind == CaptureKind::Screenshot && !self.editing() {
                         return self.enter_edit();
                     }
                 } else {
@@ -570,12 +685,24 @@ impl Shot {
 
     pub fn activate(&mut self, control: Control) -> Outcome {
         match control {
+            Control::Kind(kind) => {
+                self.set_kind(kind);
+                Outcome::Redraw
+            }
             Control::Mode(mode) => {
                 self.set_mode(mode);
                 Outcome::Redraw
             }
             Control::Shadow => {
                 self.toggle_shadow();
+                Outcome::Redraw
+            }
+            Control::Audio => {
+                self.toggle_audio();
+                Outcome::Redraw
+            }
+            Control::Cursor => {
+                self.toggle_cursor();
                 Outcome::Redraw
             }
             Control::Capture => self.capture(),
@@ -760,16 +887,28 @@ pub fn resized(from: Area, handle: Handle, pos: Pos, bounds: Size<f64, Logical>)
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Memory {
+    pub kind: CaptureKind,
     pub mode: Mode,
     pub selection: Option<Area>,
     pub tool: Tool,
     pub swatch: usize,
     pub shadow: bool,
+    pub audio: bool,
+    pub cursor: bool,
 }
 
 impl Default for Memory {
     fn default() -> Self {
-        Self { mode: Mode::Area, selection: None, tool: Tool::Move, swatch: 0, shadow: true }
+        Self {
+            kind: CaptureKind::Screenshot,
+            mode: Mode::Area,
+            selection: None,
+            tool: Tool::Move,
+            swatch: 0,
+            shadow: true,
+            audio: false,
+            cursor: true,
+        }
     }
 }
 
@@ -798,17 +937,31 @@ pub const EDIT_GAP: f64 = 10.0;
 pub const EDGE: f64 = 12.0;
 
 #[must_use]
-pub fn choose_slots() -> Vec<Slot> {
-    let mut slots: Vec<Slot> = Vec::new();
+pub fn choose_slots(kind: CaptureKind) -> Vec<Slot> {
+    let mut slots: Vec<Slot> = vec![
+        Slot::Control(Control::Kind(CaptureKind::Screenshot), MODE_W),
+        Slot::Gap(2.0),
+        Slot::Control(Control::Kind(CaptureKind::Record), MODE_W),
+        Slot::Rule,
+    ];
     for (index, mode) in MODES.into_iter().enumerate() {
         if index > 0 {
             slots.push(Slot::Gap(2.0));
         }
         slots.push(Slot::Control(Control::Mode(mode), MODE_W));
     }
+    slots.push(Slot::Rule);
+    match kind {
+        CaptureKind::Screenshot => {
+            slots.push(Slot::Control(Control::Shadow, TOGGLE_W));
+        }
+        CaptureKind::Record => {
+            slots.push(Slot::Control(Control::Audio, TOGGLE_W));
+            slots.push(Slot::Gap(2.0));
+            slots.push(Slot::Control(Control::Cursor, TOGGLE_W));
+        }
+    }
     slots.extend([
-        Slot::Rule,
-        Slot::Control(Control::Shadow, TOGGLE_W),
         Slot::Rule,
         Slot::Control(Control::Capture, DISC),
         Slot::Gap(12.0),
@@ -898,8 +1051,8 @@ fn lay_out(slots: &[Slot], height: f64, pad: f64, control_h: f64) -> (f64, Vec<(
 }
 
 #[must_use]
-pub fn choose_bar(bounds: Size<f64, Logical>) -> Bar {
-    let (width, items, rules) = lay_out(&choose_slots(), CHOOSE_H, CHOOSE_PAD, CONTROL_H);
+pub fn choose_bar(bounds: Size<f64, Logical>, kind: CaptureKind) -> Bar {
+    let (width, items, rules) = lay_out(&choose_slots(kind), CHOOSE_H, CHOOSE_PAD, CONTROL_H);
     let x = ((bounds.w - width) / 2.0).round().max(0.0);
     let y = (bounds.h - CHOOSE_BOTTOM - CHOOSE_H).max(0.0);
     Bar { rect: Rectangle::new(Point::from((x, y)), Size::from((width, CHOOSE_H))), items, rules }
@@ -952,7 +1105,7 @@ impl Shot {
     pub fn bar(&self) -> Bar {
         match self.target().filter(|_| self.editing()) {
             Some(target) => edit_bar(self.bounds, target),
-            None => choose_bar(self.bounds),
+            None => choose_bar(self.bounds, self.kind),
         }
     }
 
@@ -980,8 +1133,11 @@ impl Shot {
     #[must_use]
     pub fn active(&self, control: Control) -> bool {
         match control {
+            Control::Kind(kind) => self.kind == kind,
             Control::Mode(mode) => self.mode == mode,
             Control::Shadow => self.shadow,
+            Control::Audio => self.audio,
+            Control::Cursor => self.cursor,
             Control::Tool(tool) => self.tool == tool,
             Control::Swatch(swatch) => self.swatch == swatch,
             _ => false,
@@ -1408,7 +1564,8 @@ mod tests {
         let narrow = Size::from((540.0, 960.0));
         let capture = Rectangle::new(p(100.0, 100.0), Size::from((300.0, 300.0)));
         for bar in [
-            choose_bar(bounds),
+            choose_bar(bounds, CaptureKind::Screenshot),
+            choose_bar(bounds, CaptureKind::Record),
             edit_bar(bounds, Rectangle::new(p(400.0, 100.0), Size::from((600.0, 300.0)))),
             edit_bar(narrow, capture),
         ] {
@@ -1464,5 +1621,89 @@ mod tests {
         assert_eq!(shot.control_at(centre), None, "nothing selected yet");
         shot.set_mode(Mode::Screen);
         assert_eq!(shot.control_at(centre), Some(Control::Capture));
+    }
+
+    #[test]
+    fn capture_kind_record_area_flow() {
+        let mut shot = shot().with_kind(CaptureKind::Record);
+        assert_eq!(shot.kind, CaptureKind::Record);
+        assert_eq!(shot.stage, Stage::Choose);
+        assert!(!shot.audio);
+        assert!(shot.cursor);
+
+        shot.activate(Control::Audio);
+        assert!(shot.audio);
+        shot.activate(Control::Cursor);
+        assert!(!shot.cursor);
+
+        shot.press(p(100.0, 100.0), None);
+        shot.motion(p(400.0, 300.0), None);
+        assert_eq!(shot.release(p(400.0, 300.0)), Outcome::Redraw);
+        assert_eq!(shot.stage, Stage::Choose);
+        assert_eq!(shot.selection, Some(Rectangle::new(p(100.0, 100.0), Size::from((300.0, 200.0)))));
+        assert!(shot.resizable());
+
+        let outcome = shot.capture();
+        assert_eq!(
+            outcome,
+            Outcome::Record(RecordRequest {
+                mode: Mode::Area,
+                target: Rectangle::new(p(100.0, 100.0), Size::from((300.0, 200.0))),
+                window: None,
+                audio: true,
+                cursor: false,
+            })
+        );
+    }
+
+    #[test]
+    fn capture_kind_record_window_flow() {
+        let mut shot = shot().with_kind(CaptureKind::Record);
+        shot.set_mode(Mode::Window);
+        let win = shot.windows[0];
+
+        let outcome = shot.press(p(win.loc.x + 10.0, win.loc.y + 10.0), None);
+        assert_eq!(
+            outcome,
+            Outcome::Record(RecordRequest {
+                mode: Mode::Window,
+                target: win,
+                window: Some(0),
+                audio: false,
+                cursor: true,
+            })
+        );
+    }
+
+    #[test]
+    fn capture_kind_record_screen_flow() {
+        let mut shot = shot().with_kind(CaptureKind::Record);
+        shot.set_mode(Mode::Screen);
+        let full = shot.full();
+
+        let outcome = shot.press(p(200.0, 200.0), None);
+        assert_eq!(
+            outcome,
+            Outcome::Record(RecordRequest {
+                mode: Mode::Screen,
+                target: full,
+                window: None,
+                audio: false,
+                cursor: true,
+            })
+        );
+    }
+
+    #[test]
+    fn record_slots_contain_audio_and_cursor_options() {
+        let ss_slots = choose_slots(CaptureKind::Screenshot);
+        assert!(ss_slots.iter().any(|s| matches!(s, Slot::Control(Control::Shadow, _))));
+        assert!(!ss_slots.iter().any(|s| matches!(s, Slot::Control(Control::Audio, _))));
+        assert!(!ss_slots.iter().any(|s| matches!(s, Slot::Control(Control::Cursor, _))));
+
+        let rec_slots = choose_slots(CaptureKind::Record);
+        assert!(!rec_slots.iter().any(|s| matches!(s, Slot::Control(Control::Shadow, _))));
+        assert!(rec_slots.iter().any(|s| matches!(s, Slot::Control(Control::Audio, _))));
+        assert!(rec_slots.iter().any(|s| matches!(s, Slot::Control(Control::Cursor, _))));
     }
 }

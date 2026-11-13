@@ -1,5 +1,6 @@
 pub mod compose;
 pub mod model;
+pub mod preview;
 pub mod render;
 
 use glide_paint as paint;
