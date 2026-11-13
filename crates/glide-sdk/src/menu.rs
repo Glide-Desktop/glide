@@ -748,14 +748,12 @@ fn card_layer<'a, E: Clone + 'a>(
     let scale = component::POPOVER_CLOSED_SCALE + (1.0 - component::POPOVER_CLOSED_SCALE) * progress;
     let card = pin(widgets::scale(card, scale)).x(at.x).y(at.y + (1.0 - progress) * component::POPOVER_RISE);
     match dismiss {
-        Some(dismiss) => stack![
-            mouse_area(Space::new().width(Fill).height(Fill))
-                .on_press(dismiss.clone())
-                .on_right_press(dismiss.clone())
-                .on_middle_press(dismiss),
-            card,
-        ]
-        .into(),
+        Some(dismiss) => {
+            let again = dismiss.clone();
+            let outside =
+                mouse_area(Space::new().width(Fill).height(Fill)).on_press(dismiss.clone()).on_middle_press(dismiss);
+            stack![crate::widget::context_area(outside, move |_| again.clone()), card].into()
+        }
         None => card.into(),
     }
 }
