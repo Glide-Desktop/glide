@@ -36,7 +36,7 @@ mod tr {
         Connector => "Connector", "Роз'єм";
         Model => "Model", "Модель";
         ScreenSize => "Screen size", "Розмір екрана";
-        Workspace => "Workspace size", "Розмір робочої області";
+        LogicalResolution => "Logical resolution", "Логічна роздільність";
         Position => "Position", "Позиція";
         BuiltIn => "Built-in display", "Вбудований дисплей";
         External => "External display", "Зовнішній дисплей";
@@ -682,23 +682,29 @@ impl Page {
         let model = format!("{} {}", output.make, output.model).trim().to_string();
         let kind = if display::is_internal(&output.name) { c.t(tr::Key::BuiltIn) } else { c.t(tr::Key::External) };
         let scale = self.effective_scale(config, self.selected);
+        let (logical_width, logical_height) = self.logical(config, self.selected);
+        let scale_hint = if output.width > 0 && output.height > 0 {
+            format!("{} · {logical_width:.0} × {logical_height:.0}", c.t(tr::Key::LogicalResolution))
+        } else {
+            c.t(K::ScaleHint).to_string()
+        };
         let mut options: Vec<(u32, String)> =
             SCALES.iter().map(|value| (scale_id(*value), display::scale_label(*value))).collect();
         if !options.iter().any(|(id, _)| *id == scale_id(scale)) {
             options.push((scale_id(scale), display::scale_label(scale)));
         }
         let mut group = Group::new(t)
-            .title(output.name.clone())
+            .title(kind)
             .description(if model.is_empty() || model == "Unknown Unknown" {
-                kind.to_string()
+                output.name.clone()
             } else {
-                format!("{kind} · {model}")
+                format!("{} · {model}", output.name)
             })
             .stacked_header(t.compact)
             .extend(self.mode_rows(c, config, output))
             .push(
                 Row::new(t, c.t(K::Scale))
-                    .subtitle(c.t(K::ScaleHint))
+                    .subtitle(scale_hint)
                     .suffix(widgets::inert(
                         t,
                         c.writable,
@@ -749,7 +755,7 @@ impl Page {
                 ),
             ));
         }
-        rows.push((c.t(tr::Key::Workspace).to_string(), format!("{w:.0} × {h:.0}")));
+        rows.push((c.t(tr::Key::LogicalResolution).to_string(), format!("{w:.0} × {h:.0}")));
         if self.state.live {
             rows.push((c.t(tr::Key::Position).to_string(), format!("{}, {}", output.x, output.y)));
         }
