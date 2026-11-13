@@ -62,6 +62,7 @@ pub enum KeyAction {
     ScreenshotScreen,
     ScreenshotWindow,
     ScreenRecord,
+    ScreenShare,
     Shot(crate::shot::ShotKey),
     ToggleLauncher,
     LauncherPage(bool),
@@ -476,6 +477,7 @@ fn is_global_shortcut(action: &KeyAction) -> bool {
             | KeyAction::ScreenshotScreen
             | KeyAction::ScreenshotWindow
             | KeyAction::ScreenRecord
+            | KeyAction::ScreenShare
             | KeyAction::Lock
             | KeyAction::PowerDialog
     )
@@ -2084,6 +2086,9 @@ impl GlideState {
                 } else {
                     self.open_shot_with_kind(None, Some(glide_shot::model::CaptureKind::Record));
                 }
+            }
+            KeyAction::ScreenShare => {
+                self.open_shot_with_kind(None, Some(glide_shot::model::CaptureKind::Share));
             }
             KeyAction::Shot(key) => self.shot_key(key),
             KeyAction::TopbarClosePopup => {

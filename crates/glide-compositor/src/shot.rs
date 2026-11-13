@@ -270,7 +270,7 @@ pub fn shortcut(
     ShotKey::None
 }
 
-fn refuse(waiter: &UnixStream, message: &str) {
+pub(crate) fn refuse(waiter: &UnixStream, message: &str) {
     crate::ipc::reply(waiter, &glide_ipc::Response::Error { message: message.to_string() });
 }
 
@@ -374,6 +374,9 @@ impl GlideState {
         let Some((output, geometry)) = self.pointer_output() else {
             if let Some(waiter) = waiter {
                 refuse(&waiter, "no output to capture");
+            }
+            for share_waiter in self.session.share_waiters.drain(..) {
+                refuse(&share_waiter.stream, "no output to capture");
             }
             return;
         };
@@ -706,7 +709,18 @@ impl GlideState {
                 };
                 let output = session.output.clone();
                 let target = match req.mode {
-                    Mode::Screen => crate::recording::Target::Screen(output),
+                    Mode::Screen => {
+                        if req.filter_desktop {
+                            let windows = req
+                                .windows
+                                .into_iter()
+                                .filter_map(|idx| session.windows.get(idx).map(|c| c.window.clone()))
+                                .collect();
+                            crate::recording::Target::FilteredDesktop { output, windows }
+                        } else {
+                            crate::recording::Target::Screen(output)
+                        }
+                    }
                     Mode::Area => crate::recording::Target::Area { output, area: req.target },
                     Mode::Window => {
                         if let Some(candidate) = req.window.and_then(|idx| session.windows.get(idx)) {
@@ -718,6 +732,40 @@ impl GlideState {
                 };
                 self.close_shot_session();
                 self.start_recording(target, crate::recording::Options { audio: req.audio, cursor: req.cursor });
+            }
+            Outcome::Share(req) => {
+                let Some(session) = self.session.shot.as_ref() else {
+                    return;
+                };
+                let output = session.output.clone();
+                let selected_windows: Vec<GlideWindow> = req
+                    .windows
+                    .into_iter()
+                    .filter_map(|idx| session.windows.get(idx).map(|c| c.window.clone()))
+                    .collect();
+                let target = match req.mode {
+                    Mode::Window => {
+                        if selected_windows.len() > 1 {
+                            crate::screen_share::ShareTarget::MultiWindow { windows: selected_windows, output }
+                        } else if let Some(window) = selected_windows.into_iter().next() {
+                            crate::screen_share::ShareTarget::Window { window, output }
+                        } else {
+                            crate::screen_share::ShareTarget::Screen { output }
+                        }
+                    }
+                    Mode::Screen => {
+                        if req.filter_desktop {
+                            crate::screen_share::ShareTarget::FilteredDesktop { output, windows: selected_windows }
+                        } else {
+                            crate::screen_share::ShareTarget::Screen { output }
+                        }
+                    }
+                    Mode::Area => crate::screen_share::ShareTarget::Screen { output },
+                };
+                let waiters = std::mem::take(&mut self.session.share_waiters);
+                self.close_shot_session();
+                self.session.share_waiters = waiters;
+                self.start_screen_share(target, req.cursor);
             }
         }
     }
@@ -736,6 +784,9 @@ impl GlideState {
             if session.shot.is_none() || session.frozen.is_none() || !session.cache.is_animating() {
                 self.session.shot = None;
             }
+        }
+        for waiter in self.session.share_waiters.drain(..) {
+            refuse(&waiter.stream, "cancelled");
         }
         self.session.window_capture.take_if(|capture| !capture.direct);
         self.shell_cursor = None;

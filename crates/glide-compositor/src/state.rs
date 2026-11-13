@@ -407,6 +407,9 @@ pub struct SessionServices {
     pub last_screenshot: Option<std::path::PathBuf>,
     pub recording: Option<crate::recording::Session>,
     pub last_recording: Option<std::path::PathBuf>,
+    pub screen_shares: Vec<crate::screen_share::Stream>,
+    pub next_share_id: u64,
+    pub share_waiters: Vec<crate::screen_share::ShareWaiter>,
     pub shot_preview: Option<crate::shot::FloatingPreview>,
     pub last_shot_output: Option<Output>,
     pub search_providers: Option<crate::launcher::providers::Handle>,
@@ -935,11 +938,13 @@ impl GlideState {
         if let Some(switcher) = self.switcher.as_mut() {
             switcher.remove(id);
         }
-        if let Some(ref recording) = self.session.recording
-            && let Some(window) = self.window_map.get(&id)
-            && recording.uses_window(window)
-        {
-            self.stop_recording();
+        if let Some(window) = self.window_map.get(&id).cloned() {
+            if let Some(ref mut recording) = self.session.recording
+                && !recording.on_window_closed(&window)
+            {
+                self.stop_recording();
+            }
+            self.prune_window_from_shares(&window);
         }
         self.layout.remove_window(id);
         if let Some(handle) = self.foreign_toplevel_handles.remove(&id) {
@@ -1012,11 +1017,13 @@ impl GlideState {
     }
 
     pub fn on_window_unmapped(&mut self, id: glide_layout::WindowId) {
-        if let Some(ref recording) = self.session.recording
-            && let Some(window) = self.window_map.get(&id)
-            && recording.uses_window(window)
-        {
-            self.stop_recording();
+        if let Some(window) = self.window_map.get(&id).cloned() {
+            if let Some(ref mut recording) = self.session.recording
+                && !recording.on_window_closed(&window)
+            {
+                self.stop_recording();
+            }
+            self.prune_window_from_shares(&window);
         }
         if self.layout.unmap_window(id) {
             tracing::info!(window = id.0, "window unmapped");
@@ -1675,6 +1682,9 @@ impl GlideState {
         }
         if let Some(display) = self.session.cast.label() {
             recording.push(crate::i18n::t(crate::i18n::Key::CastIndicator).replace("{name}", &display));
+        }
+        for stream in &self.session.screen_shares {
+            recording.push(stream.options.app_id.as_deref().unwrap_or("Screen Share").to_string());
         }
         self.topbar.set_screen_capture(recording)
     }
@@ -3970,6 +3980,7 @@ impl GlideState {
         if self.session.recording.is_some() {
             self.stop_recording();
         }
+        self.stop_all_screen_shares();
         if self.session.shot_preview.is_some() {
             self.session.shot_preview = None;
         }
@@ -4640,6 +4651,159 @@ impl GlideState {
         self.notifications.push(&mut self.dock.icons, notice, true);
         self.refresh_topbar();
         self.queue_redraw();
+    }
+
+    #[must_use]
+    pub fn share_output_size(output: &smithay::output::Output) -> (u32, u32) {
+        output.current_mode().map_or((1920, 1080), |m| {
+            let s = crate::backend::screenshot::upright_size((m.size.w, m.size.h), output.current_transform());
+            (u32::try_from(s.0).unwrap_or(0), u32::try_from(s.1).unwrap_or(0))
+        })
+    }
+
+    pub fn start_screen_share(&mut self, target: crate::screen_share::ShareTarget, cursor: bool) {
+        let stream_id = self.session.next_share_id.max(1);
+        self.session.next_share_id = stream_id + 1;
+        #[allow(clippy::cast_possible_truncation)] // Stream IDs start small
+        let node_id = stream_id as u32;
+        let app_id = self.session.share_waiters.first().and_then(|w| w.app_id.clone());
+        let options = crate::screen_share::ShareOptions { app_id: app_id.clone(), cursor, framerate: 60 };
+        let now = glide_ui::clock::now();
+        let target_output = target.output().clone();
+        let stream = crate::screen_share::Stream::new(stream_id, node_id, target, options, now);
+        let size = Self::share_output_size(stream.output());
+        let info = stream.info(size);
+        let response = glide_ipc::Response::ScreenShareStarted(info.clone());
+        if let Ok(mut payload) = serde_json::to_vec(&response) {
+            payload.push(b'\n');
+            for waiter in self.session.share_waiters.drain(..) {
+                use std::io::Write;
+                let _ = (&waiter.stream).write_all(&payload);
+            }
+        }
+        self.session.screen_shares.push(stream);
+        self.sync_screen_capture();
+        self.ipc_subscribers.broadcast(&glide_ipc::Event::ScreenShareStateChanged {
+            stream_id,
+            active: true,
+            source_kind: Some(info.source_kind),
+            app_id,
+        });
+        self.queue_redraw_output(&target_output);
+        self.sync_wake_timer();
+    }
+
+    pub fn start_screen_share_request(
+        &mut self, waiter: std::os::unix::net::UnixStream, app_id: Option<String>, cursor: Option<bool>,
+    ) {
+        if self.screen_locked() || self.greeter.is_some() || self.picker_active() || self.handoff_blocks_input() {
+            crate::shot::refuse(&waiter, "the screen cannot be captured right now");
+            return;
+        }
+        if self.shot_active() {
+            crate::shot::refuse(&waiter, "another capture tool is already open");
+            return;
+        }
+        self.session.share_waiters.push(crate::screen_share::ShareWaiter { stream: waiter, app_id, cursor });
+        if let Some(cursor) = cursor {
+            self.session.shot_memory.cursor = cursor;
+        }
+        self.open_shot_with_kind(None, Some(glide_shot::model::CaptureKind::Share));
+    }
+
+    pub fn stop_screen_share(&mut self, stream_id: Option<u64>) {
+        let mut stopped = Vec::new();
+        self.session.screen_shares.retain_mut(|stream| {
+            let matches = stream_id.is_none_or(|id| stream.id == id);
+            if matches {
+                stopped.push(stream.id);
+                if let Some(sink) = stream.sink.take() {
+                    sink.stop();
+                }
+                false
+            } else {
+                true
+            }
+        });
+        for id in stopped {
+            self.ipc_subscribers.broadcast(&glide_ipc::Event::ScreenShareStateChanged {
+                stream_id: id,
+                active: false,
+                source_kind: None,
+                app_id: None,
+            });
+        }
+        self.sync_screen_capture();
+        self.sync_wake_timer();
+    }
+
+    pub fn stop_screen_shares_for_output(&mut self, output: &Output) {
+        let mut stopped = Vec::new();
+        self.session.screen_shares.retain_mut(|stream| {
+            if stream.output() == output {
+                stopped.push(stream.id);
+                if let Some(sink) = stream.sink.take() {
+                    sink.stop();
+                }
+                false
+            } else {
+                true
+            }
+        });
+        for stream_id in &stopped {
+            self.ipc_subscribers.broadcast(&glide_ipc::Event::ScreenShareStateChanged {
+                stream_id: *stream_id,
+                active: false,
+                source_kind: None,
+                app_id: None,
+            });
+        }
+        self.sync_screen_capture();
+        self.sync_wake_timer();
+    }
+
+    pub fn stop_all_screen_shares(&mut self) {
+        let shares = std::mem::take(&mut self.session.screen_shares);
+        for mut stream in shares {
+            if let Some(sink) = stream.sink.take() {
+                sink.stop();
+            }
+            self.ipc_subscribers.broadcast(&glide_ipc::Event::ScreenShareStateChanged {
+                stream_id: stream.id,
+                active: false,
+                source_kind: None,
+                app_id: None,
+            });
+        }
+        self.sync_screen_capture();
+        self.sync_wake_timer();
+    }
+
+    pub fn prune_window_from_shares(&mut self, window: &GlideWindow) {
+        let mut stopped = Vec::new();
+        self.session.screen_shares.retain_mut(|stream| {
+            if stream.on_window_closed(window) {
+                true
+            } else {
+                stopped.push(stream.id);
+                if let Some(sink) = stream.sink.take() {
+                    sink.stop();
+                }
+                false
+            }
+        });
+        for stream_id in &stopped {
+            self.ipc_subscribers.broadcast(&glide_ipc::Event::ScreenShareStateChanged {
+                stream_id: *stream_id,
+                active: false,
+                source_kind: None,
+                app_id: None,
+            });
+        }
+        if !stopped.is_empty() {
+            self.sync_screen_capture();
+            self.sync_wake_timer();
+        }
     }
 
     pub fn tick_shot_preview(&mut self) -> bool {

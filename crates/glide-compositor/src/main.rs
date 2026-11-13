@@ -57,6 +57,7 @@ mod qs_net;
 mod recording;
 mod removable;
 mod screen_picker;
+mod screen_share;
 mod screencopy;
 mod screenshot_ui;
 mod session_end;

@@ -59,6 +59,7 @@ tracy-client = { version = "0.18.4", optional = true }
 zbus.workspace = true
 zeroize = "1"
 glide-app = { path = "../glide-app" }
+tiny-skia = "0.12.0"
 
 [dependencies.smithay]
 workspace = true

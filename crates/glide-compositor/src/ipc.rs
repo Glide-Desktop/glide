@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use crate::window::GlideWindow;
 use glide_ipc::{Event, OutputInfo, Request, Response, WindowInfo, WorkspaceInfo};
 use smithay::reexports::calloop::{
     EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken,
@@ -324,6 +325,13 @@ fn respond(stream: &UnixStream, state: &mut GlideState, line: &[u8]) {
         }
         return;
     }
+    if let Ok(Request::ScreenShareStart { app_id, cursor, .. }) = &request {
+        match stream.try_clone() {
+            Ok(waiter) => state.start_screen_share_request(waiter, app_id.clone(), *cursor),
+            Err(err) => reply(stream, &Response::Error { message: err.to_string() }),
+        }
+        return;
+    }
     let subscribing = matches!(request, Ok(Request::Subscribe));
     let practising = matches!(request, Ok(Request::PracticeGestures));
     let response = match request {
@@ -486,11 +494,39 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
                 }
             }
         }
+        Request::ScreenShareStop { stream_id } => {
+            state.stop_screen_share(stream_id);
+            Response::Ok
+        }
+        Request::ScreenShareStatus => {
+            let streams = state
+                .session
+                .screen_shares
+                .iter()
+                .map(|stream| stream.info(GlideState::share_output_size(stream.output())))
+                .collect();
+            Response::ScreenShareStatus { streams }
+        }
+        Request::ScreenShareUpdateWindows { stream_id, window_indices } => {
+            let Some(stream) = state.session.screen_shares.iter_mut().find(|s| s.id == stream_id) else {
+                return Response::Error { message: format!("stream {stream_id} not found") };
+            };
+            let target_output = stream.output().clone();
+            let space_windows: Vec<GlideWindow> = state.space.elements().rev().cloned().collect();
+            let selected: Vec<GlideWindow> =
+                window_indices.into_iter().filter_map(|idx| space_windows.get(idx).cloned()).collect();
+            stream.set_windows(selected);
+            state.queue_redraw_output(&target_output);
+            Response::Ok
+        }
         Request::ActivationToken { .. }
         | Request::Screenshot
         | Request::ScreenshotArea
         | Request::PickColor
-        | Request::ScanQr => Response::Error { message: "this request needs a client connection".into() },
+        | Request::ScanQr
+        | Request::ScreenShareStart { .. } => {
+            Response::Error { message: "this request needs a client connection".into() }
+        }
     }
 }
 

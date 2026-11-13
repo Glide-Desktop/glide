@@ -88,6 +88,7 @@ const SUPPORTED_FORMATS: &[Fourcc] = &[Fourcc::Xrgb8888, Fourcc::Xbgr8888, Fourc
 render_elements! {
     pub GlideRenderElements<=GlesRenderer>;
     Space=SpaceRenderElements<GlesRenderer, GlideWindowRenderElement<GlesRenderer>>,
+    Window=GlideWindowRenderElement<GlesRenderer>,
     Pointer=PointerRenderElement<GlesRenderer>,
     MagnifiedPointer=RescaleRenderElement<PointerRenderElement<GlesRenderer>>,
     Overview=crate::overview::OverviewRenderElement<GlesRenderer>,
@@ -674,6 +675,125 @@ fn push_wallpaper_elements(
     }
 }
 
+fn capture_window_frame(
+    gles_renderer: &mut GlesRenderer, window: &GlideWindow, is_locked: bool, scale: Scale<f64>, fractional: f64,
+) -> Option<glide_shell::image::Image> {
+    let geometry = window.geometry();
+    let header = window.header_height();
+    let frame = smithay::utils::Size::<i32, Logical>::from((geometry.size.w, geometry.size.h + header));
+    let physical = frame.to_f64().to_physical(fractional).to_i32_ceil::<i32>();
+    let location = Point::<i32, Logical>::from((-geometry.loc.x, header - geometry.loc.y))
+        .to_f64()
+        .to_physical(fractional)
+        .to_i32_round();
+    let (clip, _radius) = crate::shot::window_capture_radius(is_locked, window);
+    let shape = crate::window::PreviewShape { radius: clip, scale: 1.0, shadow_alpha: 0.0 };
+    let alone = window.preview_render_elements(gles_renderer, location, scale, 1.0, shape);
+    match super::screenshot::capture_elements(
+        gles_renderer,
+        &alone,
+        (physical.w, physical.h),
+        fractional,
+        Transform::Normal,
+        [0.0; 4],
+    ) {
+        Ok(pixels) => glide_shell::image::Image::from_bgra(physical.w.max(0) as u32, physical.h.max(0) as u32, pixels),
+        Err(err) => {
+            tracing::error!(?err, "failed to capture window frame");
+            None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // filtered desktop capture aggregates layers, masks, geometry, and rendering targets
+fn capture_filtered_desktop(
+    gles_renderer: &mut GlesRenderer, surface: &mut SurfaceData, space: &Space<GlideWindow>, windows: &[GlideWindow],
+    cursor: bool, pointer_element: &mut PointerElement, local_pointer: Option<Point<f64, Logical>>,
+    cursor_hotspot: Point<f64, Logical>, magnify: f64, masks: &[Rectangle<i32, Logical>],
+    palette: (glide_theme::Appearance, glide_theme::Accent), output_geometry: Rectangle<i32, Logical>,
+    output_mode: (i32, i32), logical_size: (i32, i32), buffer_size: (i32, i32), scale: Scale<f64>, fractional: f64,
+) -> Option<glide_shell::image::Image> {
+    let mut filtered_elements: Vec<GlideRenderElements> = Vec::new();
+    if cursor && let Some(local) = local_pointer {
+        filtered_elements.extend(cursor_elements(
+            gles_renderer,
+            pointer_element,
+            local,
+            cursor_hotspot,
+            scale,
+            magnify,
+        ));
+    }
+    if !masks.is_empty() {
+        let tokens = glide_theme::Tokens::new(palette.0, palette.1);
+        let [r, g, b, a] = tokens.island_bg.0;
+        let covers = masks.iter().map(|rect| {
+            let local = Rectangle::new(rect.loc - output_geometry.loc, rect.size);
+            let geometry = local.to_f64().to_physical(scale).to_i32_round();
+            GlideRenderElements::LockBackdrop(SolidColorRenderElement::new(
+                smithay::backend::renderer::element::Id::new(),
+                geometry,
+                smithay::backend::renderer::utils::CommitCounter::default(),
+                [r * a, g * a, b * a, a],
+                Kind::Unspecified,
+            ))
+        });
+        filtered_elements.extend(covers);
+    }
+
+    let space_windows: Vec<GlideWindow> = space.elements().rev().cloned().collect();
+    let selected = crate::screen_share::filter_desktop_windows(&space_windows, windows);
+    for window in &selected {
+        if let Some(loc) = space.element_location(window) {
+            let render_loc = loc - window.geometry().loc;
+            let bbox = smithay::utils::Rectangle::new(render_loc, window.bbox().size);
+            if !output_geometry.overlaps(bbox) {
+                continue;
+            }
+            let local = render_loc - output_geometry.loc;
+            let physical_loc = local.to_physical_precise_round(scale);
+            let window_elements: Vec<GlideRenderElements> =
+                AsRenderElements::render_elements(window, gles_renderer, physical_loc, scale, 1.0);
+            filtered_elements.extend(window_elements);
+        }
+    }
+
+    push_wallpaper_elements(gles_renderer, surface, buffer_size, logical_size, 0.0, &mut filtered_elements);
+
+    match super::screenshot::capture_elements(
+        gles_renderer,
+        &filtered_elements,
+        output_mode,
+        fractional,
+        Transform::Normal,
+        [0.0, 0.0, 0.0, 1.0],
+    ) {
+        Ok(pixels) => {
+            glide_shell::image::Image::from_bgra(output_mode.0.max(0) as u32, output_mode.1.max(0) as u32, pixels)
+        }
+        Err(err) => {
+            tracing::error!(?err, "failed to capture filtered desktop frame");
+            None
+        }
+    }
+}
+
+fn capture_multi_window(
+    gles_renderer: &mut GlesRenderer, windows: &[GlideWindow], is_locked: impl Fn(&GlideWindow) -> bool,
+    canvas_size: (u32, u32), scale: Scale<f64>, fractional: f64,
+) -> Option<glide_shell::image::Image> {
+    let mut frames = Vec::with_capacity(windows.len());
+    for window in windows {
+        if let Some(frame) = capture_window_frame(gles_renderer, window, is_locked(window), scale, fractional) {
+            frames.push(frame);
+        }
+    }
+    if frames.is_empty() {
+        return None;
+    }
+    Some(crate::screen_share::composite_multi_windows(canvas_size, &frames))
+}
+
 #[allow(clippy::too_many_arguments)] // one overview pass needs the renderer, its output, the icons, the wallpaper fit and both window lookups
 fn overview_elements<'a>(
     gles_renderer: &mut GlesRenderer, overview: &mut crate::overview::OverviewUi, icons: &mut crate::icon::IconLoader,
@@ -721,6 +841,7 @@ fn is_window_element(element: &GlideRenderElements) -> bool {
         GlideRenderElements::Space(SpaceRenderElements::Element(_))
             | GlideRenderElements::Overview(_)
             | GlideRenderElements::RelocatedOverview(_)
+            | GlideRenderElements::Window(_)
     )
 }
 
@@ -953,6 +1074,7 @@ impl GlideState {
         if self.session.recording.as_ref().is_some_and(|r| r.output() == &surface.output) {
             self.stop_recording();
         }
+        self.stop_screen_shares_for_output(&surface.output);
         if self.session.shot_preview.as_ref().is_some_and(|p| p.output == surface.output) {
             self.session.shot_preview = None;
         }
@@ -2134,40 +2256,34 @@ impl GlideState {
             };
             let captured_image = match target {
                 crate::recording::Target::Window { ref window, .. } => {
-                    let geometry = window.geometry();
-                    let header = window.header_height();
-                    let frame = smithay::utils::Size::<i32, Logical>::from((geometry.size.w, geometry.size.h + header));
-                    let physical = frame.to_f64().to_physical(fractional).to_i32_ceil::<i32>();
-                    let location = Point::<i32, Logical>::from((-geometry.loc.x, header - geometry.loc.y))
-                        .to_f64()
-                        .to_physical(fractional)
-                        .to_i32_round();
                     let is_locked = self
                         .window_to_id
                         .get(window)
                         .and_then(|id| self.layout.window_state(*id))
                         .is_some_and(|state| state.maximized || state.fullscreen);
-                    let (clip, _radius) = crate::shot::window_capture_radius(is_locked, window);
-                    let shape = crate::window::PreviewShape { radius: clip, scale: 1.0, shadow_alpha: 0.0 };
-                    let alone = window.preview_render_elements(gles_renderer, location, scale, 1.0, shape);
-                    match super::screenshot::capture_elements(
+                    capture_window_frame(gles_renderer, window, is_locked, scale, fractional)
+                }
+                crate::recording::Target::FilteredDesktop { ref windows, .. } => {
+                    let upright = super::screenshot::upright_size(output_mode, transform);
+                    capture_filtered_desktop(
                         gles_renderer,
-                        &alone,
-                        (physical.w, physical.h),
+                        surface,
+                        &self.space,
+                        windows,
+                        options.cursor,
+                        pointer_element,
+                        local_pointer,
+                        cursor_hotspot,
+                        magnify,
+                        &masks,
+                        self.shell_palette,
+                        output_geometry,
+                        upright,
+                        logical_size,
+                        (phys_w, phys_h),
+                        scale,
                         fractional,
-                        Transform::Normal,
-                        [0.0; 4],
-                    ) {
-                        Ok(pixels) => glide_shell::image::Image::from_bgra(
-                            physical.w.max(0) as u32,
-                            physical.h.max(0) as u32,
-                            pixels,
-                        ),
-                        Err(err) => {
-                            tracing::error!(?err, "failed to capture recording frame for window");
-                            None
-                        }
-                    }
+                    )
                 }
                 crate::recording::Target::Area { area, .. } => {
                     let upright = super::screenshot::upright_size(output_mode, transform);
@@ -2213,6 +2329,84 @@ impl GlideState {
                 && let Some(recording) = self.session.recording.as_mut()
             {
                 recording.accept_frame(std::sync::Arc::new(image), now);
+            }
+        }
+
+        let share_indices: Vec<usize> = self
+            .session
+            .screen_shares
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.needs_frame(&output, now).then_some(i))
+            .collect();
+        for idx in share_indices {
+            let (target, cursor) = {
+                let stream = &self.session.screen_shares[idx];
+                (stream.target.clone(), stream.options.cursor)
+            };
+            let captured_image = match target {
+                crate::screen_share::ShareTarget::Window { ref window, .. } => {
+                    let is_locked = self
+                        .window_to_id
+                        .get(window)
+                        .and_then(|id| self.layout.window_state(*id))
+                        .is_some_and(|state| state.maximized || state.fullscreen);
+                    capture_window_frame(gles_renderer, window, is_locked, scale, fractional)
+                }
+                crate::screen_share::ShareTarget::FilteredDesktop { ref windows, .. } => {
+                    let upright = super::screenshot::upright_size(output_mode, transform);
+                    capture_filtered_desktop(
+                        gles_renderer,
+                        surface,
+                        &self.space,
+                        windows,
+                        cursor,
+                        pointer_element,
+                        local_pointer,
+                        cursor_hotspot,
+                        magnify,
+                        &masks,
+                        self.shell_palette,
+                        output_geometry,
+                        upright,
+                        logical_size,
+                        (phys_w, phys_h),
+                        scale,
+                        fractional,
+                    )
+                }
+                crate::screen_share::ShareTarget::MultiWindow { ref windows, .. } => {
+                    let is_locked = |w: &GlideWindow| {
+                        self.window_to_id
+                            .get(w)
+                            .and_then(|id| self.layout.window_state(*id))
+                            .is_some_and(|state| state.maximized || state.fullscreen)
+                    };
+                    let upright = super::screenshot::upright_size(output_mode, transform);
+                    let canvas_size = (upright.0.max(0) as u32, upright.1.max(0) as u32);
+                    capture_multi_window(gles_renderer, windows, is_locked, canvas_size, scale, fractional)
+                }
+                crate::screen_share::ShareTarget::Screen { .. } => {
+                    let upright = super::screenshot::upright_size(output_mode, transform);
+                    let elems = if cursor { &elements[..] } else { &elements[cursor_count..] };
+                    match super::screenshot::capture_frame(gles_renderer, elems, upright, fractional, Transform::Normal)
+                    {
+                        Ok(pixels) => glide_shell::image::Image::from_bgra(
+                            upright.0.max(0) as u32,
+                            upright.1.max(0) as u32,
+                            pixels,
+                        ),
+                        Err(err) => {
+                            tracing::error!(?err, "failed to capture screen share frame for screen");
+                            None
+                        }
+                    }
+                }
+            };
+            if let Some(image) = captured_image
+                && let Some(stream) = self.session.screen_shares.get_mut(idx)
+            {
+                stream.accept_frame(std::sync::Arc::new(image), now);
             }
         }
 

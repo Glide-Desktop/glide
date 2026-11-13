@@ -1498,6 +1498,7 @@ fn parse_action(cfg: &KeyActionConfig) -> Option<crate::input::KeyAction> {
             "screenshot-screen" => KeyAction::ScreenshotScreen,
             "screenshot-window" => KeyAction::ScreenshotWindow,
             "screen-recording" => KeyAction::ScreenRecord,
+            "screen-share" => KeyAction::ScreenShare,
             "toggle-launcher" => KeyAction::ToggleLauncher,
             "switch-windows" => KeyAction::SwitchWindows(false),
             "switch-windows-backward" => KeyAction::SwitchWindows(true),

@@ -11,6 +11,7 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 #[derive(Debug, Clone)]
 pub enum Target {
     Screen(Output),
+    FilteredDesktop { output: Output, windows: Vec<GlideWindow> },
     Area { output: Output, area: crate::shot::model::Area },
     Window { window: GlideWindow, output: Output },
 }
@@ -19,7 +20,10 @@ impl Target {
     #[must_use]
     pub fn output(&self) -> &Output {
         match self {
-            Self::Screen(output) | Self::Area { output, .. } | Self::Window { output, .. } => output,
+            Self::Screen(output)
+            | Self::FilteredDesktop { output, .. }
+            | Self::Area { output, .. }
+            | Self::Window { output, .. } => output,
         }
     }
 }
@@ -150,7 +154,19 @@ impl Session {
     pub fn uses_window(&self, window: &GlideWindow) -> bool {
         match &self.target {
             Target::Window { window: target_window, .. } => target_window == window,
+            Target::FilteredDesktop { windows, .. } => windows.iter().any(|w| w == window),
             _ => false,
+        }
+    }
+
+    pub fn on_window_closed(&mut self, window: &GlideWindow) -> bool {
+        match &mut self.target {
+            Target::Window { window: target_window, .. } => target_window != window,
+            Target::FilteredDesktop { windows, .. } => {
+                windows.retain(|w| w != window);
+                true
+            }
+            Target::Screen(_) | Target::Area { .. } => true,
         }
     }
 
