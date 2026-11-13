@@ -163,6 +163,33 @@ fn click_sound_output(
     )));
 }
 
+fn click_dock_autohide(
+    element: &mut glide_sdk::iced::Element<'_, Message>, tree: &mut Tree, renderer: &Renderer, node: &layout::Node,
+    bounds: &Rectangle, messages: &mut Vec<Message>,
+) {
+    messages.clear();
+    let cursor = mouse::Cursor::Available(glide_sdk::iced::Point::new(1190.0, 443.0));
+    for event in [mouse::Event::ButtonPressed(mouse::Button::Left), mouse::Event::ButtonReleased(mouse::Button::Left)] {
+        let mut shell = Shell::new(messages);
+        element.as_widget_mut().update(
+            tree,
+            &Event::Mouse(event),
+            Layout::new(node),
+            cursor,
+            renderer,
+            &mut clipboard::Null,
+            &mut shell,
+            bounds,
+        );
+    }
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        Message::Desktop(glide_settings::panels::desktop::Msg::Autohide(
+            glide_settings::panels::desktop::Autohide::Always
+        ))
+    )));
+}
+
 fn fixture_wallpaper(app: &mut App) {
     let items = [[179, 202, 237], [231, 188, 191], [122, 184, 159], [44, 47, 68], [235, 215, 167]]
         .into_iter()
@@ -300,6 +327,9 @@ fn preview_page() {
         && height == 1800
     {
         click_sound_output(&mut element, &mut tree, &renderer, &node, &bounds, &mut messages);
+    }
+    if panel == Panel::Desktop && width == 1500 && height == 2000 {
+        click_dock_autohide(&mut element, &mut tree, &renderer, &node, &bounds, &mut messages);
     }
     let Renderer::Secondary(renderer) = &mut renderer else { unreachable!() };
     let rgba = renderer.screenshot(Size::new(width, height), 1.0, Color::BLACK);

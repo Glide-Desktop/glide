@@ -22,8 +22,6 @@ mod tr {
     crate::i18n::catalogue! {
         Preview => "Preview", "Попередній перегляд";
         PreviewHint => "Hover magnification and size as they will look", "Так виглядатимуть розмір і збільшення під вказівником";
-        BehaviourHint => "When the dock gets out of the way", "Коли док поступається місцем вікнам";
-        SizeAndMotion => "Size and motion", "Розмір і рух";
         SizeHint => "Tiles and icons together", "Плитки й іконки разом";
         Magnification => "Magnification", "Збільшення";
         MagnificationHint => "How much an icon grows under the pointer", "Наскільки збільшується іконка під вказівником";
@@ -282,9 +280,7 @@ impl Pane for Page {
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let dock_on = config.bool_or("dock", "enabled", true);
         let mut page = Column::new().spacing(theme::SECTION_GAP).push(self.preview_group(&c, config, dock_on));
-        if dock_on {
-            page = page.push(Self::behaviour_group(&c, config)).push(self.size_group(&c, config));
-        }
+        page = page.push(self.dock_group(&c, config, dock_on));
         page.push(self.pins_group(&c)).into()
     }
 }
@@ -353,34 +349,46 @@ impl Page {
         Group::new(t)
             .title(c.t(tr::Key::Preview))
             .description(c.t(tr::Key::PreviewHint))
+            .stacked_header(t.compact)
             .push(container(illustration).padding(8))
-            .push(switch_row(*c, c.t(K::ShowDock), c.t(K::ShowDockHint), on, Msg::Dock))
             .build()
     }
 
-    fn behaviour_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+    fn dock_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore, on: bool) -> Element<'a, Msg> {
         let t = c.theme;
+        let mut group = Group::new(t).title(c.t(K::Dock)).push(switch_row(
+            *c,
+            c.t(K::ShowDock),
+            c.t(K::ShowDockHint),
+            on,
+            Msg::Dock,
+        ));
+        if !on {
+            return group.build();
+        }
         let current = Autohide::from_config(config);
-        let card = |mode: Autohide, heading: K, hint: K| {
-            widgets::radio_card(
-                t,
-                autohide_sketch(&t, mode),
-                c.t(heading),
-                Some(c.t(hint).to_string()),
-                current == mode,
-                Msg::Autohide(mode),
-            )
+        let hint = match current {
+            Autohide::Smart => K::AutohideSmartHint,
+            Autohide::Always => K::AutohideAlwaysHint,
+            Autohide::Never => K::AutohideNeverHint,
         };
-        let cards = row![
-            card(Autohide::Smart, K::AutohideSmart, K::AutohideSmartHint),
-            card(Autohide::Always, K::AutohideAlways, K::AutohideAlwaysHint),
-            card(Autohide::Never, K::AutohideNever, K::AutohideNeverHint),
-        ]
-        .spacing(12);
-        Group::new(t)
-            .title(c.t(K::AutoHide))
-            .description(c.t(tr::Key::BehaviourHint))
-            .push(container(gated(*c, cards)).padding(8))
+        let modes = vec![
+            (Autohide::Smart, c.t(K::AutohideSmart).to_string()),
+            (Autohide::Always, c.t(K::AutohideAlways).to_string()),
+            (Autohide::Never, c.t(K::AutohideNever).to_string()),
+        ];
+        group = group.push(
+            Row::new(t, c.t(K::AutoHide))
+                .subtitle(c.t(hint))
+                .suffix(gated(*c, widgets::segmented(t, modes, current, Msg::Autohide)))
+                .stacked(t.compact)
+                .build(),
+        );
+        group
+            .extend(
+                [Knob::Size, Knob::Magnification, Knob::Lift, Knob::Margin]
+                    .map(|knob| self.slider_row(c, config, knob)),
+            )
             .build()
     }
 
@@ -418,17 +426,10 @@ impl Page {
             .build()
     }
 
-    fn size_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
-        let knobs = [Knob::Size, Knob::Magnification, Knob::Lift, Knob::Margin];
-        Group::new(c.theme)
-            .title(c.t(tr::Key::SizeAndMotion))
-            .extend(knobs.map(|knob| self.slider_row(c, config, knob)))
-            .build()
-    }
-
     fn pins_group<'a>(&'a self, c: &Ctx) -> Element<'a, Msg> {
         let t = c.theme;
-        let mut group = Group::new(t).title(c.t(tr::Key::Pinned)).description(c.t(tr::Key::PinnedHint));
+        let mut group =
+            Group::new(t).title(c.t(tr::Key::Pinned)).description(c.t(tr::Key::PinnedHint)).stacked_header(t.compact);
         if !self.pins_loaded {
             group = group.suffix(widgets::spinner_label(t, c.t(K::Loading)));
         }
@@ -508,13 +509,4 @@ fn dock_preview<'a>(
         })
         .collect();
     sketch::dock_scene(*t, tiles, (margin * 0.62) as f32 + 4.0, PREVIEW_HEIGHT)
-}
-
-fn autohide_sketch<'a>(t: &ThemeState, mode: Autohide) -> Element<'a, Msg> {
-    let hiding = match mode {
-        Autohide::Smart => sketch::DockHiding::WhenCovered,
-        Autohide::Always => sketch::DockHiding::Always,
-        Autohide::Never => sketch::DockHiding::Never,
-    };
-    sketch::dock_hiding(*t, hiding)
 }
