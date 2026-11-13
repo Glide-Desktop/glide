@@ -26,6 +26,7 @@ pub(super) enum Glyph {
     Send,
     Headphones,
     Phone,
+    StopRecording,
 }
 
 const SPEAKER: &str = "<path d=\"M3 6.6h2.6L9 3.6v10.8L5.6 11.4H3z\"/>";
@@ -34,7 +35,7 @@ const FAR_WAVE: &str = "<path d=\"M13.8 4.6a6.4 6.4 0 010 9\"/>";
 
 impl Glyph {
     #[cfg(test)]
-    pub(super) const ALL: [Self; 22] = [
+    pub(super) const ALL: [Self; 23] = [
         Self::Bell,
         Self::Quiet,
         Self::Play,
@@ -57,6 +58,7 @@ impl Glyph {
         Self::Send,
         Self::Headphones,
         Self::Phone,
+        Self::StopRecording,
     ];
 
     fn body(self) -> String {
@@ -93,6 +95,9 @@ impl Glyph {
             Self::Phone => {
                 "<rect x=\"4\" y=\"1.8\" width=\"8\" height=\"12.4\" rx=\"1.8\"/><path d=\"M6.8 3.8h2.4M6.7 12h2.6\"/>"
             }
+            Self::StopRecording => {
+                "<path d=\"M8 1.5A6.5 6.5 0 1 1 7.999 1.5ZM8 3A5 5 0 1 0 8.001 3ZM6.5 5.5h3a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z\"/>"
+            }
         };
         fixed.to_string()
     }
@@ -106,7 +111,7 @@ impl Glyph {
 
     const fn stroke(self) -> Option<&'static str> {
         match self {
-            Self::Play | Self::Pause | Self::Previous | Self::Next => None,
+            Self::Play | Self::Pause | Self::Previous | Self::Next | Self::StopRecording => None,
             Self::Bell => Some("1.6"),
             Self::Quiet => Some("1.3"),
             Self::Collapse | Self::Close | Self::Send => Some("2.2"),
@@ -159,6 +164,7 @@ impl Glyph {
             Self::Send => "go-up",
             Self::Headphones => "audio-headphones",
             Self::Phone => "phone",
+            Self::StopRecording => "media-playback-stop",
         }
     }
 }
@@ -168,7 +174,7 @@ const fn centred(rect: LocalRect, side: i32) -> (i32, i32) {
 }
 
 pub(super) fn glyph(c: &mut Canvas<'_>, glyph: Glyph, side: i32, rect: LocalRect, colour: Color) {
-    if glyph == Glyph::Phone || !themed(c, glyph.theme_name(), side, rect, colour) {
+    if glyph == Glyph::Phone || glyph == Glyph::StopRecording || !themed(c, glyph.theme_name(), side, rect, colour) {
         svg_glyph(c, &glyph.svg(), side, rect, colour);
     }
 }

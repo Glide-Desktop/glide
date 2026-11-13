@@ -73,14 +73,15 @@ pub enum Indicator {
     Battery,
 }
 
-type ClusterKey = (u64, u64, Option<OpenPopup>, Option<Slot>, [u8; 3], i32, (bool, bool));
+type ClusterKey = (u64, u64, Option<OpenPopup>, Option<Slot>, [u8; 3], i32, (bool, bool), (Option<u64>, u8));
 
 #[derive(Debug, Default)]
 pub(super) struct Indicators {
     dots: [Anim; 3],
     reserved: [bool; 3],
     screen_clients: Vec<String>,
-    rev: u64,
+    pub(super) rev: u64,
+    pub(super) recording_reserved: bool,
     cluster_cache: Cache<ClusterKey>,
     privacy_cache: Cache<(u64, u64, i32)>,
     swap: ClusterSwap,
@@ -172,7 +173,7 @@ pub fn privacy_entries(status: &SystemStatus, screen_clients: &[String]) -> Vec<
 }
 
 #[must_use]
-pub fn cluster_order(privacy_dots: bool, headset: bool) -> Vec<Slot> {
+pub fn cluster_order(privacy_dots: bool, headset: bool, recording: bool) -> Vec<Slot> {
     let mut order = vec![Slot::Status];
     if headset {
         order.push(Slot::Headset);
@@ -181,6 +182,9 @@ pub fn cluster_order(privacy_dots: bool, headset: bool) -> Vec<Slot> {
     order.push(Slot::Passwords);
     if privacy_dots {
         order.push(Slot::Privacy);
+    }
+    if recording {
+        order.push(Slot::StopRecording);
     }
     order
 }
@@ -271,7 +275,9 @@ impl Topbar {
 
     #[must_use]
     pub fn sharing_screen(&self) -> bool {
-        !self.system_status.privacy.screen.is_empty() || !self.indicators.screen_clients.is_empty()
+        self.is_recording()
+            || !self.system_status.privacy.screen.is_empty()
+            || !self.indicators.screen_clients.is_empty()
     }
 
     fn privacy_active(&self) -> [bool; 3] {
@@ -309,6 +315,14 @@ impl Topbar {
                 changed = true;
             }
         }
+        let recording_in_cluster = self.recording_active();
+        if self.indicators.recording_reserved != recording_in_cluster {
+            self.indicators.recording_reserved = recording_in_cluster;
+            if !recording_in_cluster {
+                self.recording_last_sec = None;
+            }
+            changed = true;
+        }
         if !changed {
             return;
         }
@@ -328,6 +342,11 @@ impl Topbar {
         match slot {
             Slot::Status => block_width(painter, &self.system_status, self.theme.battery_percentage),
             Slot::Privacy => privacy_width(self.indicators.reserved_count()),
+            Slot::StopRecording => {
+                let elapsed =
+                    self.recording_started.map(|started| glide_ui::clock::now().saturating_duration_since(started));
+                recording_pill_width(painter, elapsed)
+            }
             Slot::Headset => {
                 self.headset().map_or(CONTROL_W, |headset| super::headset_view::applet_width(painter, headset))
             }
@@ -341,7 +360,11 @@ impl Topbar {
         &self, painter: &crate::paint::Painter, mut right: i32, y: i32,
         slots: &mut Vec<(Slot, Rectangle<i32, Logical>)>,
     ) -> i32 {
-        let mut order = cluster_order(self.indicators.reserved_count() > 0, self.headset().is_some());
+        let mut order = cluster_order(
+            self.indicators.reserved_count() > 0,
+            self.headset().is_some(),
+            self.indicators.recording_reserved,
+        );
         if self.phone().is_some() {
             let insert_at = if self.headset().is_some() { 2 } else { 1 };
             order.insert(insert_at, Slot::Phone);
@@ -383,6 +406,8 @@ struct ClusterPaint<'a> {
     headset: Option<&'a crate::headset::Headset>,
     phone: Option<&'a crate::phone::PhoneState>,
     passwords: &'a super::passwords_view::Applet,
+    recording_progress: f64,
+    recording_elapsed: Option<Duration>,
 }
 
 pub(super) fn push_cluster<R>(
@@ -417,6 +442,7 @@ pub(super) fn push_cluster<R>(
         levels.map(|level| quantize(level, MOTION_QUANTUM)),
         width,
         (topbar.passwords.locked, topbar.passwords.offer),
+        (topbar.recording_last_sec, quantize(topbar.recording_anim.value(), MOTION_QUANTUM)),
     );
     let ctx = ClusterPaint {
         painter,
@@ -431,6 +457,10 @@ pub(super) fn push_cluster<R>(
         headset: topbar.headsets.last(),
         phone: topbar.phone.as_ref(),
         passwords: &topbar.passwords,
+        recording_progress: topbar.recording_anim.value().clamp(0.0, 1.0),
+        recording_elapsed: topbar
+            .recording_started
+            .map(|started| glide_ui::clock::now().saturating_duration_since(started)),
     };
     let local: Vec<(Slot, i32, i32)> =
         items.iter().map(|(slot, rect)| (*slot, rect.loc.x - left, rect.size.w)).collect();
@@ -442,7 +472,7 @@ pub(super) fn push_cluster<R>(
     let buffer = buffer.clone();
     let height = items.first().map_or(HEIGHT, |(_, rect)| rect.size.h);
     let area = Rectangle::new(Point::from((left, y)), Size::from((width, height)));
-    let count = items.iter().filter(|(slot, _)| *slot != Slot::Privacy).count();
+    let count = items.iter().filter(|(slot, _)| *slot != Slot::Privacy && *slot != Slot::StopRecording).count();
     let swap = &mut topbar.indicators.swap;
     if let Some((seen, old_area, old)) = swap.seen.take()
         && seen != count
@@ -573,10 +603,75 @@ fn draw_cluster(
                 }
             }
             Slot::Passwords => super::passwords_view::draw_applet(&mut c, ctx.theme, ctx.passwords, x, fg),
+            Slot::StopRecording => draw_stop_recording(&mut c, ctx, x, width),
             _ => {}
         }
     }
     Some(c.finish())
+}
+
+pub(super) const REC_TIME_STYLE: glide_theme::TextStyle = glide_theme::TextStyle {
+    size_px: 12.0,
+    line_height_px: 16.0,
+    weight: 550,
+    tracking_em: 0.0,
+    uppercase: false,
+    tabular: true,
+};
+const REC_PAD_X: i32 = SP2;
+const REC_ICON_SIZE: i32 = 14;
+const REC_GAP: i32 = SP1;
+
+fn format_recording_elapsed(elapsed: Duration) -> String {
+    let total_secs = elapsed.as_secs();
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+    let secs = total_secs % 60;
+    if hours > 0 { format!("{hours}:{mins:02}:{secs:02}") } else { format!("{mins:02}:{secs:02}") }
+}
+
+fn recording_pill_width(painter: &crate::paint::Painter, elapsed: Option<Duration>) -> i32 {
+    let time_str = elapsed.map_or_else(|| "00:00".to_string(), format_recording_elapsed);
+    let text_w = numeric_label_width(painter, &time_str, &REC_TIME_STYLE);
+    REC_PAD_X * 2 + REC_ICON_SIZE + REC_GAP + text_w
+}
+
+fn scaled_about_centre(rect: Rectangle<i32, Logical>, scale: f64) -> Rectangle<i32, Logical> {
+    let w = (f64::from(rect.size.w) * scale).round() as i32;
+    let h = (f64::from(rect.size.h) * scale).round() as i32;
+    let dx = (rect.size.w - w) / 2;
+    let dy = (rect.size.h - h) / 2;
+    local_rect(rect.loc.x + dx, rect.loc.y + dy, w, h)
+}
+
+fn draw_stop_recording(c: &mut Canvas<'_>, ctx: &ClusterPaint<'_>, x: i32, width: i32) {
+    let progress = ctx.recording_progress;
+    if progress <= 0.0 {
+        return;
+    }
+    let alpha = glide_theme::motion::assist(progress) as f32;
+    let travel_y = ((1.0 - progress) * -6.0).round() as i32;
+    let scale = lerp(0.92, 1.0, progress);
+    let base_rect = local_rect(x, travel_y, width, BUTTON_HEIGHT);
+    let pill_rect = scaled_about_centre(base_rect, scale);
+
+    let bg = ctx.theme.danger_soft.with_alpha(ctx.theme.danger_soft.0[3] * alpha);
+    c.fill(pill_rect, bg, BUTTON_RADIUS);
+
+    let icon_rect = local_rect(pill_rect.loc.x + REC_PAD_X, pill_rect.loc.y, REC_ICON_SIZE, pill_rect.size.h);
+    glyph(c, Glyph::StopRecording, REC_ICON_SIZE, icon_rect, ctx.theme.danger.with_alpha(alpha));
+
+    let time_str = ctx.recording_elapsed.map_or_else(|| "00:00".to_string(), format_recording_elapsed);
+    let text_start = icon_rect.loc.x + icon_rect.size.w + REC_GAP;
+    let text_end = pill_rect.loc.x + pill_rect.size.w - REC_PAD_X;
+    c.text(
+        ctx.painter,
+        (text_start, text_end, pill_rect.loc.y, pill_rect.loc.y + pill_rect.size.h),
+        TextAlign::Left,
+        &time_str,
+        ctx.theme.danger.with_alpha(alpha),
+        &REC_TIME_STYLE,
+    );
 }
 
 fn draw_separator(theme: &TopbarTheme, scale: i32) -> Option<MemoryRenderBuffer> {
@@ -747,12 +842,20 @@ mod tests {
 
     #[test]
     fn the_cluster_is_the_status_block_then_search_then_passwords_then_privacy() {
-        assert_eq!(cluster_order(true, false), vec![Slot::Status, Slot::Search, Slot::Passwords, Slot::Privacy]);
-        assert_eq!(cluster_order(false, false), vec![Slot::Status, Slot::Search, Slot::Passwords]);
+        assert_eq!(cluster_order(true, false, false), vec![Slot::Status, Slot::Search, Slot::Passwords, Slot::Privacy]);
+        assert_eq!(cluster_order(false, false, false), vec![Slot::Status, Slot::Search, Slot::Passwords]);
         assert_eq!(
-            cluster_order(false, true),
+            cluster_order(false, true, false),
             vec![Slot::Status, Slot::Headset, Slot::Search, Slot::Passwords],
             "a connected headset sits beside the status block"
+        );
+        assert_eq!(
+            cluster_order(false, false, true),
+            vec![Slot::Status, Slot::Search, Slot::Passwords, Slot::StopRecording]
+        );
+        assert_eq!(
+            cluster_order(true, false, true),
+            vec![Slot::Status, Slot::Search, Slot::Passwords, Slot::Privacy, Slot::StopRecording]
         );
     }
 
@@ -860,6 +963,8 @@ mod tests {
                     headset: None,
                     phone: None,
                     passwords: &passwords,
+                    recording_progress: 0.0,
+                    recording_elapsed: None,
                 };
                 let mut c = Canvas::new(width + 16, HEIGHT, 2).expect("canvas");
                 c.fill(c.full(), theme.background, 0.0);

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use glide_shell::i18n::Key;
 
 use glide_theme::TextStyle;
 use glide_theme::motion::{self, CubicBezier, E_IO, E_OUT, E_OVER, ease_io, ease_out, lerp};
@@ -360,6 +362,7 @@ pub enum TopbarAction {
     Tray(TrayClick),
     Polkit(crate::polkit::Control),
     Keychain(crate::keychain_prompt::Control),
+    StopRecording,
 }
 
 impl TopbarAction {
@@ -480,6 +483,7 @@ pub enum Slot {
     Tray(u16),
     Polkit(crate::polkit::Control),
     Keychain(crate::keychain_prompt::Control),
+    StopRecording,
 }
 
 impl Slot {
@@ -502,7 +506,16 @@ impl Slot {
     }
 
     const fn in_status_cluster(self) -> bool {
-        matches!(self, Self::Status | Self::Search | Self::Privacy | Self::Headset | Self::Phone | Self::Passwords)
+        matches!(
+            self,
+            Self::Status
+                | Self::Search
+                | Self::Privacy
+                | Self::Headset
+                | Self::Phone
+                | Self::Passwords
+                | Self::StopRecording
+        )
     }
 
     const fn in_headset_popup(self) -> bool {
@@ -743,6 +756,15 @@ impl Slot {
             Self::Tray(id) => TopbarAction::Tray(TrayClick { id, button: TrayButton::Primary }),
             Self::Polkit(control) => TopbarAction::Polkit(control),
             Self::Keychain(control) => TopbarAction::Keychain(control),
+            Self::StopRecording => TopbarAction::StopRecording,
+        }
+    }
+
+    #[must_use]
+    pub const fn accessible_key(self) -> Option<Key> {
+        match self {
+            Self::StopRecording => Some(Key::TbScreenRecording),
+            _ => None,
         }
     }
 }
@@ -862,6 +884,9 @@ pub struct Topbar {
     drawer_extent: Option<(Drawer, i32)>,
     slider_dragging: bool,
     scroll: crate::system_info::ScrollAccumulator,
+    recording_started: Option<Instant>,
+    recording_anim: Anim,
+    recording_last_sec: Option<u64>,
 
     rev: u64,
     layouts_rev: u64,
@@ -1216,8 +1241,20 @@ impl Topbar {
     }
 
     #[must_use]
-    pub const fn next_wake(&self) -> Option<std::time::Instant> {
-        self.indicators.next_wake()
+    pub fn next_wake(&self) -> Option<std::time::Instant> {
+        let mut wake = self.indicators.next_wake();
+        if let Some(started) = self.recording_started
+            && !self.is_animating()
+        {
+            let now = glide_ui::clock::now();
+            let elapsed_secs = now.saturating_duration_since(started).as_secs();
+            let next_tick = started + Duration::from_secs(elapsed_secs + 1);
+            wake = match wake {
+                Some(earliest) => Some(earliest.min(next_tick)),
+                None => Some(next_tick),
+            };
+        }
+        wake
     }
 
     #[must_use]
@@ -1237,6 +1274,7 @@ impl Topbar {
             &self.profile_anim,
             &self.arm_anim,
             &self.drawer_anim,
+            &self.recording_anim,
         ]
         .into_iter()
         .any(Anim::is_animating);
@@ -1319,7 +1357,9 @@ impl Topbar {
     }
 
     fn pending_settle(&self) -> bool {
-        self.closing_popup.is_some() || (self.unread == 0 && self.badge.reserved)
+        self.closing_popup.is_some()
+            || (self.unread == 0 && self.badge.reserved)
+            || (self.recording_started.is_none() && self.indicators.recording_reserved)
     }
 
     pub fn set_pressed(&mut self, slot: Option<Slot>) -> bool {
@@ -1333,6 +1373,9 @@ impl Topbar {
         }
         if let Some(slot) = slot {
             self.press_layers.entry(slot).or_default().jump(1.0);
+            if slot == Slot::StopRecording && self.open_popup.is_some() {
+                self.close_popup();
+            }
         }
         self.pressed = slot;
         true
@@ -1438,6 +1481,18 @@ impl Topbar {
         if let Some(rect) = self.focus_ring_rect() {
             self.focus_ring_last = Some(rect);
         }
+        if let Some(started) = self.recording_started {
+            let sec = glide_ui::clock::now().saturating_duration_since(started).as_secs();
+            if self.recording_last_sec != Some(sec) {
+                let hour_before = self.recording_last_sec.is_some_and(|s| s >= 3600);
+                let hour_now = sec >= 3600;
+                self.recording_last_sec = Some(sec);
+                self.indicators.rev = self.indicators.rev.wrapping_add(1);
+                if hour_before != hour_now {
+                    self.touch();
+                }
+            }
+        }
         self.settle_indicators();
         self.tray_settle();
         self.prune_layers();
@@ -1456,6 +1511,7 @@ impl Topbar {
         }
         match (slot, self.alert()) {
             (Slot::IslandAlert, Some(alert)) => TopbarAction::ActivateNotification(alert.id),
+            (Slot::StopRecording, _) => TopbarAction::StopRecording,
             _ => slot.action(),
         }
     }
@@ -1600,6 +1656,37 @@ impl Topbar {
         self.caffeinated = on;
         self.caffeine_anim.retarget(if on { 1.0 } else { 0.0 }, motion::t2(), E_OVER);
         self.status_rev = self.status_rev.wrapping_add(1);
+    }
+
+    pub fn set_recording(&mut self, started: Option<Instant>) {
+        if self.recording_started == started
+            && (self.recording_anim.target() - if started.is_some() { 1.0 } else { 0.0 }).abs() < f64::EPSILON
+        {
+            return;
+        }
+        self.recording_started = started;
+        if started.is_some() {
+            self.recording_anim.retarget(1.0, motion::t2(), E_OUT);
+        } else {
+            self.recording_anim.retarget(0.0, motion::t2(), E_IO);
+        }
+        self.indicators.recording_reserved = self.recording_active();
+        self.indicators.rev = self.indicators.rev.wrapping_add(1);
+        self.touch();
+    }
+
+    #[must_use]
+    pub fn is_recording(&self) -> bool {
+        self.recording_started.is_some()
+    }
+
+    #[must_use]
+    pub fn recording_elapsed(&self, now: Instant) -> Option<Duration> {
+        self.recording_started.map(|started| now.saturating_duration_since(started))
+    }
+
+    pub(crate) fn recording_active(&self) -> bool {
+        self.recording_started.is_some() || self.recording_anim.value() > 0.0 || self.recording_anim.is_animating()
     }
 
     #[must_use]
@@ -7290,5 +7377,118 @@ mod tests {
             ));
             assert_eq!(bar.action_at(chevron), open);
         }
+    }
+
+    #[test]
+    fn set_recording_activates_is_recording_and_sharing_screen() {
+        let mut bar = topbar_with(&["US", "UA"]);
+        assert!(!bar.is_recording());
+        assert!(!bar.sharing_screen());
+        assert_eq!(bar.recording_elapsed(Instant::now()), None);
+        assert_eq!(bar.slot_rect(Slot::StopRecording), None);
+
+        let started = Instant::now();
+        bar.set_recording(Some(started));
+        assert!(bar.is_recording());
+        assert!(bar.sharing_screen());
+        let future = started + Duration::from_secs(5);
+        assert_eq!(bar.recording_elapsed(future), Some(Duration::from_secs(5)));
+
+        bar.set_recording(None);
+        assert!(!bar.is_recording());
+        assert_eq!(bar.recording_elapsed(Instant::now()), None);
+    }
+
+    #[test]
+    fn stop_recording_pill_layout_hit_tests_and_motion() {
+        let mut bar = topbar_with(&["US", "UA"]);
+        let started = Instant::now();
+        let _pass = glide_ui::clock::FramePass::enter(started);
+        bar.set_recording(Some(started));
+        assert!(bar.recording_anim.is_animating());
+        assert!((bar.recording_anim.target() - 1.0).abs() < f64::EPSILON);
+
+        bar.layout_slots(&painter(), output());
+
+        let rect = bar.slot_rect(Slot::StopRecording).expect("recording slot present");
+        assert!(rect.size.w > 40);
+        assert_eq!(rect.size.h, BUTTON_HEIGHT);
+
+        let hit = centre(rect);
+        assert_eq!(bar.action_at(hit), Some(TopbarAction::StopRecording));
+        assert_eq!(Slot::StopRecording.action(), TopbarAction::StopRecording);
+        assert_eq!(Slot::StopRecording.accessible_key(), Some(Key::TbScreenRecording));
+
+        let mid = 0.5;
+        let progress_half = glide_theme::motion::assist(mid);
+        assert!((progress_half - 1.0).abs() < 1e-6);
+        let progress_early = glide_theme::motion::assist(0.2);
+        assert!(progress_early > 0.0 && progress_early < 1.0);
+        let travel_at_half: f64 = (1.0 - mid) * -6.0;
+        assert!(travel_at_half.abs() >= 3.0);
+        let travel_at_start: f64 = (1.0 - 0.0) * -6.0;
+        assert!((travel_at_start.abs() - 6.0).abs() < 1e-6);
+        let scale_at_start = lerp(0.92, 1.0, 0.0);
+        assert!((scale_at_start - 0.92).abs() < 1e-6);
+        assert!((1.0 - scale_at_start) >= 0.06);
+
+        assert!(bar.toggle_popup(OpenPopup::QuickSettings));
+        assert!(bar.has_open_popup());
+        assert!(bar.set_pressed(Some(Slot::StopRecording)));
+        assert!(!bar.has_open_popup());
+    }
+
+    #[test]
+    fn next_wake_computes_one_second_tick_and_idle_recording_is_not_animating() {
+        let mut bar = topbar_with(&["US", "UA"]);
+        let base_instant = Instant::now();
+        let pass = glide_ui::clock::FramePass::enter(base_instant);
+
+        bar.set_recording(Some(base_instant));
+        assert!(bar.is_animating());
+
+        drop(pass);
+        let after_tween = base_instant + motion::t2() + Duration::from_millis(50);
+        let pass2 = glide_ui::clock::FramePass::enter(after_tween);
+
+        bar.settle_motion();
+        assert!(!bar.is_animating());
+
+        let wake = bar.next_wake().expect("wake time scheduled");
+        let expected_next_second = base_instant + Duration::from_secs(1);
+        assert_eq!(wake, expected_next_second);
+
+        drop(pass2);
+        let later = base_instant + Duration::from_millis(3200);
+        let pass3 = glide_ui::clock::FramePass::enter(later);
+        let wake_later = bar.next_wake().expect("wake time scheduled");
+        let expected_later = base_instant + Duration::from_secs(4);
+        assert_eq!(wake_later, expected_later);
+        drop(pass3);
+    }
+
+    #[test]
+    fn recording_invalidates_raster_when_whole_second_changes() {
+        let mut bar = topbar_with(&["US", "UA"]);
+        let start = Instant::now();
+        let pass = glide_ui::clock::FramePass::enter(start);
+        bar.set_recording(Some(start));
+        bar.settle_motion();
+        assert_eq!(bar.recording_last_sec, Some(0));
+        let rev1 = bar.indicators.rev;
+
+        drop(pass);
+        let subsecond = start + Duration::from_millis(400);
+        let pass2 = glide_ui::clock::FramePass::enter(subsecond);
+        bar.settle_motion();
+        assert_eq!(bar.indicators.rev, rev1);
+
+        drop(pass2);
+        let next_sec = start + Duration::from_millis(1050);
+        let pass3 = glide_ui::clock::FramePass::enter(next_sec);
+        bar.settle_motion();
+        assert_eq!(bar.recording_last_sec, Some(1));
+        assert!(bar.indicators.rev > rev1);
+        drop(pass3);
     }
 }
