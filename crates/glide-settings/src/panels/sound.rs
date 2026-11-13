@@ -466,6 +466,8 @@ impl Page {
                     (channel == Channel::Output).then(|| self.state.default_sink()).flatten().map(|d| d.name.as_str()),
                     level.muted.then(|| c.t(K::Muted)),
                 ),
+                (channel == Channel::Input && self.meter.running && !t.compact)
+                    .then_some((self.meter.level, self.meter.peak)),
             ),
             None => Row::new(t, c.t(K::NoDevices)).dimmed(true).build(),
         };
@@ -558,15 +560,11 @@ impl Page {
         } else {
             widgets::tonal(t, c.t(tr::Key::TestMic), Some(Msg::MeterStart))
         };
-        let tone = if meter.level > 0.9 {
-            theme::Tone::Danger
-        } else if meter.level > 0.75 {
-            theme::Tone::Warn
+        let control = if meter.running && !t.compact {
+            row![action].align_y(Alignment::Center)
         } else {
-            theme::Tone::Ok
+            row![input_meter(&t, meter.level, meter.peak), action].spacing(12).align_y(Alignment::Center)
         };
-        let meter = sdk::level_meter(&widgets::paint(&t), meter.level, meter.peak, tone);
-        let control = row![meter, action].spacing(12).align_y(Alignment::Center);
         Row::new(t, c.t(tr::Key::InputLevel)).subtitle(subtitle).suffix(widgets::flexible(control, 360.0)).build()
     }
 
@@ -748,8 +746,20 @@ fn volume_subtitle(device: Option<&str>, muted: Option<&str>) -> String {
     [device.filter(|name| !name.trim().is_empty()), muted].into_iter().flatten().collect::<Vec<_>>().join(" · ")
 }
 
+fn input_meter<'a>(t: &ThemeState, level: f32, peak: f32) -> Element<'a, Msg> {
+    let tone = if level > 0.9 {
+        theme::Tone::Danger
+    } else if level > 0.75 {
+        theme::Tone::Warn
+    } else {
+        theme::Tone::Ok
+    };
+    sdk::level_meter(&widgets::paint(t), level, peak, tone)
+}
+
 fn volume_row<'a>(
     c: &Ctx, channel: Channel, (volume, max): (f32, f32), muted: bool, glyph: Icon, subtitle: String,
+    meter: Option<(f32, f32)>,
 ) -> Element<'a, Msg> {
     let t = c.theme;
     let volume = volume.min(max);
@@ -767,6 +777,11 @@ fn volume_row<'a>(
         sdk::slider_readout(&widgets::paint(&t), Some(button), slider, format!("{:.0}%", volume * 100.0), muted)
     } else {
         mixer(&t, glyph, Msg::Mute(channel, !muted), slider, volume, muted)
+    };
+    let control: Element<'_, Msg> = if let Some((level, peak)) = meter {
+        row![container(input_meter(&t, level, peak)).width(70), control].spacing(12).align_y(Alignment::Center).into()
+    } else {
+        control
     };
     let title = match channel {
         Channel::Output => c.t(K::Volume),

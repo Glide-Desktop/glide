@@ -100,6 +100,10 @@ fn fixture_sound(app: &mut App) {
         ..AudioState::default()
     };
     let _ = app.update(Message::Sound(Msg::Loaded(state)));
+    if std::env::var_os("GLIDE_SETTINGS_SOUND_METER_ACTIVE").is_some() {
+        let _ = app.update(Message::Sound(Msg::MeterStart));
+        let _ = app.update(Message::Sound(Msg::Meter(1, glide_settings::services::audio::MeterEvent::Level(0.6))));
+    }
 }
 
 fn click_sound_output(
