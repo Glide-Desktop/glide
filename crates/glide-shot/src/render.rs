@@ -146,7 +146,7 @@ pub struct Cache {
     handle: HashMap<i32, Keyed>,
     badge: HashMap<i32, Keyed>,
     tip: HashMap<i32, Keyed>,
-    ring: HashMap<i32, Keyed>,
+    ring: HashMap<(i32, i32, i32), Keyed>,
     ids: Vec<Id>,
     pub hover: glide_ui::HoverAnimation<Control>,
     hover_since: Option<Instant>,
@@ -866,11 +866,37 @@ fn render_base<R: crate::raster::ShellRenderer>(cache: &mut Cache, scene: &Scene
                 }
             }
         }
-        Mode::Window => {
-            if let Some(target) = target.filter(|_| !shot.editing()) {
+        Mode::Window => {}
+        Mode::Screen => {
+            if !shot.editing() {
+                for (line, id) in frame_lines(full, 3.0, true).into_iter().zip(&cache.ids[4..8]) {
+                    pieces.push(solid(id, line, accent, scale));
+                }
+            }
+        }
+    }
+
+    if !shot.editing() {
+        let show_window_rings = shot.mode == Mode::Window || (shot.mode == Mode::Screen && shot.filter_windows);
+        if show_window_rings {
+            let mut window_indices: Vec<usize> = Vec::new();
+            for &idx in shot.selected_windows() {
+                if !window_indices.contains(&idx) && idx < shot.windows.len() {
+                    window_indices.push(idx);
+                }
+            }
+            if let Some(hovered) = shot.hovered
+                && !window_indices.contains(&hovered)
+                && hovered < shot.windows.len()
+            {
+                window_indices.push(hovered);
+            }
+            for idx in window_indices {
+                let win_area = shot.windows[idx];
+                let target = selection_area(Mode::Window, win_area, scale, ctx.frozen_size);
                 let size = (target.size.w.round() as i32, target.size.h.round() as i32);
                 let key = glide_theme::Revision::new().u64(base_key).i32(size.0).i32(size.1).f32(scene.radius).finish();
-                let ring = cache.ring.entry(output_scale).or_insert_with(|| Keyed {
+                let ring = cache.ring.entry((output_scale, size.0, size.1)).or_insert_with(|| Keyed {
                     key: 0,
                     buffer: MemoryRenderBuffer::default(),
                     size: (0, 0),
@@ -883,13 +909,6 @@ fn render_base<R: crate::raster::ShellRenderer>(cache: &mut Cache, scene: &Scene
                 if ring.key == key {
                     let at = target.loc - Point::from((f64::from(RING_PAD), f64::from(RING_PAD)));
                     pieces.extend(raster(renderer, &ring.buffer, at, openness, scale));
-                }
-            }
-        }
-        Mode::Screen => {
-            if !shot.editing() {
-                for (line, id) in frame_lines(full, 3.0, true).into_iter().zip(&cache.ids[4..8]) {
-                    pieces.push(solid(id, line, accent, scale));
                 }
             }
         }
@@ -934,6 +953,7 @@ fn bar_state(shot: &Shot) -> u64 {
         .bool(shot.shadow)
         .bool(shot.audio)
         .bool(shot.cursor)
+        .bool(shot.filter_windows)
         .bool(shot.can_capture())
         .bool(shot.can_undo())
         .bool(shot.can_redo())
@@ -951,8 +971,10 @@ pub(crate) fn bar_margin() -> i32 {
 pub enum Glyph {
     Screenshot,
     Record,
+    Share,
     Audio,
     Cursor,
+    FilterWindows,
     Area,
     Window,
     Screen,
@@ -976,8 +998,10 @@ const fn glyph_of(control: Control) -> Option<Glyph> {
     Some(match control {
         Control::Kind(model::CaptureKind::Screenshot) => Glyph::Screenshot,
         Control::Kind(model::CaptureKind::Record) => Glyph::Record,
+        Control::Kind(model::CaptureKind::Share) => Glyph::Share,
         Control::Audio => Glyph::Audio,
         Control::Cursor => Glyph::Cursor,
+        Control::FilterWindows => Glyph::FilterWindows,
         Control::Mode(Mode::Area) => Glyph::Area,
         Control::Mode(Mode::Window) => Glyph::Window,
         Control::Mode(Mode::Screen) => Glyph::Screen,
@@ -1001,8 +1025,12 @@ const fn glyph_of(control: Control) -> Option<Glyph> {
 
 #[must_use]
 pub const fn label_key_for(control: Control, kind: model::CaptureKind) -> Option<Key> {
-    if matches!(control, Control::Capture) && matches!(kind, model::CaptureKind::Record) {
-        return Some(Key::ShotStartRecord);
+    if matches!(control, Control::Capture) {
+        return match kind {
+            model::CaptureKind::Screenshot => Some(Key::ShotCapture),
+            model::CaptureKind::Record => Some(Key::ShotStartRecord),
+            model::CaptureKind::Share => Some(Key::ShotStartShare),
+        };
     }
     label_key(control)
 }
@@ -1012,8 +1040,10 @@ pub const fn label_key(control: Control) -> Option<Key> {
     Some(match control {
         Control::Kind(model::CaptureKind::Screenshot) => Key::ShotCaptureMode,
         Control::Kind(model::CaptureKind::Record) => Key::ShotRecordMode,
+        Control::Kind(model::CaptureKind::Share) => Key::ShotShareMode,
         Control::Audio => Key::ShotAudio,
         Control::Cursor => Key::ShotCursor,
+        Control::FilterWindows => Key::ShotFilterWindows,
         Control::Mode(Mode::Area) => Key::ShotArea,
         Control::Mode(Mode::Window) => Key::ShotWindow,
         Control::Mode(Mode::Screen) => Key::ShotScreen,
@@ -1055,7 +1085,9 @@ pub const fn shortcut(control: Control) -> Option<&'static str> {
         Control::Undo => "Ctrl+Z",
         Control::Redo => "Ctrl+Shift+Z",
         Control::Copy => "Ctrl+C",
-        Control::Kind(_) | Control::Audio | Control::Cursor | Control::Swatch(_) => return None,
+        Control::Kind(_) | Control::Audio | Control::Cursor | Control::FilterWindows | Control::Swatch(_) => {
+            return None;
+        }
     })
 }
 
@@ -1214,6 +1246,13 @@ fn recording_outline(glyph: Glyph, outline: &mut Outline) -> bool {
             polyline(lines, &[(15.5, 9.5), (21.0, 6.5), (21.0, 17.5), (15.5, 14.5)]);
             circle(lines, 9.25, 12.0, 2.0);
         }
+        Glyph::Share => {
+            rounded(lines, (2.5, 3.5, 21.5, 16.5), 2.5);
+            polyline(lines, &[(8.0, 20.5), (16.0, 20.5)]);
+            polyline(lines, &[(12.0, 16.5), (12.0, 20.5)]);
+            polyline(lines, &[(12.0, 13.5), (12.0, 7.0)]);
+            polyline(lines, &[(9.0, 10.0), (12.0, 7.0), (15.0, 10.0)]);
+        }
         Glyph::Audio => {
             rounded(lines, (9.0, 3.0, 15.0, 13.0), 3.0);
             lines.move_to(6.0, 10.0);
@@ -1231,6 +1270,16 @@ fn recording_outline(glyph: Glyph, outline: &mut Outline) -> bool {
             lines.line_to(11.5, 14.0);
             lines.line_to(17.5, 14.0);
             lines.close();
+        }
+        Glyph::FilterWindows => {
+            rounded(lines, (3.0, 3.0, 16.0, 16.0), 2.0);
+            polyline(lines, &[(3.0, 7.0), (16.0, 7.0)]);
+            let mut front = PathBuilder::new();
+            rounded(&mut front, (8.0, 8.0, 21.0, 21.0), 2.0);
+            outline.fills.push((front, Fill::Backdrop));
+            rounded(lines, (8.0, 8.0, 21.0, 21.0), 2.0);
+            polyline(lines, &[(8.0, 12.0), (21.0, 12.0)]);
+            polyline(lines, &[(11.5, 16.5), (13.5, 18.5), (17.5, 14.5)]);
         }
         _ => return false,
     }
@@ -1426,6 +1475,14 @@ fn decorate(
                 palette.accent.with_alpha(alpha)
             };
             decor.discs.push(disc(half - 6.5, inner_color, None));
+            if shot.kind == model::CaptureKind::Share {
+                decor.glyphs.push(GlyphMark {
+                    glyph: Glyph::Share,
+                    at: centred(18.0),
+                    color: palette.accent_fg.with_alpha(alpha),
+                    backdrop: inner_color,
+                });
+            }
         }
         Control::Swatch(index) => {
             if active {
@@ -1440,7 +1497,12 @@ fn decorate(
                 GlyphMark { glyph: Glyph::Close, at: centred(16.0), color: palette.muted, backdrop: palette.fill };
             decor.glyphs.push(mark);
         }
-        Control::Kind(_) | Control::Mode(_) | Control::Shadow | Control::Audio | Control::Cursor => {
+        Control::Kind(_)
+        | Control::Mode(_)
+        | Control::Shadow
+        | Control::Audio
+        | Control::Cursor
+        | Control::FilterWindows => {
             let (fill, ink) = if active { (Some(palette.soft), palette.soft_fg) } else { (None, palette.muted) };
             if let Some(fill) = fill {
                 canvas.fill(cell, fill, glide_theme::shape::R3);

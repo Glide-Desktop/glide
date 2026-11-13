@@ -125,9 +125,12 @@ glide_app::catalogue! {
     ShotShowInFolder => "Show in Folder", "Показати в теці";
     ShotCaptureMode => "Screenshot", "Знімок";
     ShotRecordMode => "Record", "Запис";
+    ShotShareMode => "Share", "Трансляція";
     ShotAudio => "Record audio", "Записувати звук";
     ShotCursor => "Show pointer", "Показувати курсор";
+    ShotFilterWindows => "Selected windows only", "Лише вибрані вікна";
     ShotStartRecord => "Start recording", "Почати запис";
+    ShotStartShare => "Start sharing", "Почати трансляцію";
     TbStopRecording => "Stop recording", "Зупинити запис";
     ShotPreviewOpen => "Open", "Відкрити";
     ShotPreviewTrim => "Trim in Clips", "Обрізати в Clips";

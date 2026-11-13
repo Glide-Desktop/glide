@@ -17,9 +17,10 @@ pub enum CaptureKind {
     #[default]
     Screenshot,
     Record,
+    Share,
 }
 
-pub const KINDS: [CaptureKind; 2] = [CaptureKind::Screenshot, CaptureKind::Record];
+pub const KINDS: [CaptureKind; 3] = [CaptureKind::Screenshot, CaptureKind::Record, CaptureKind::Share];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
@@ -187,6 +188,7 @@ pub enum Control {
     Shadow,
     Audio,
     Cursor,
+    FilterWindows,
     Capture,
     Close,
     Tool(Tool),
@@ -205,16 +207,27 @@ enum Gesture {
     Draw,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RecordRequest {
     pub mode: Mode,
     pub target: Area,
     pub window: Option<usize>,
+    pub windows: Vec<usize>,
+    pub filter_desktop: bool,
     pub audio: bool,
     pub cursor: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShareRequest {
+    pub mode: Mode,
+    pub target: Area,
+    pub windows: Vec<usize>,
+    pub filter_desktop: bool,
+    pub cursor: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     Nothing,
     Redraw,
@@ -223,6 +236,7 @@ pub enum Outcome {
     Save,
     Window(usize),
     Record(RecordRequest),
+    Share(ShareRequest),
 }
 
 #[allow(clippy::struct_excessive_bools)] // Independent capture options and editor flags
@@ -240,6 +254,8 @@ pub struct Shot {
     pub shadow: bool,
     pub audio: bool,
     pub cursor: bool,
+    pub filter_windows: bool,
+    selected_windows: Vec<usize>,
     pub marks: Vec<Mark>,
     redo: Vec<Mark>,
     pub draft: Option<Mark>,
@@ -254,9 +270,13 @@ impl Shot {
     #[must_use]
     pub fn new(bounds: Size<f64, Logical>, windows: Vec<Area>, memory: &Memory) -> Self {
         let selection = memory.selection.filter(|area| fits(*area, bounds));
+        let mut mode = memory.mode;
+        if memory.kind == CaptureKind::Share && mode == Mode::Area {
+            mode = Mode::Window;
+        }
         Self {
             kind: memory.kind,
-            mode: memory.mode,
+            mode,
             stage: Stage::Choose,
             bounds,
             selection,
@@ -268,6 +288,8 @@ impl Shot {
             shadow: memory.shadow,
             audio: memory.audio,
             cursor: memory.cursor,
+            filter_windows: memory.filter_windows,
+            selected_windows: Vec::new(),
             marks: Vec::new(),
             redo: Vec::new(),
             draft: None,
@@ -290,6 +312,7 @@ impl Shot {
             shadow: self.shadow,
             audio: self.audio,
             cursor: self.cursor,
+            filter_windows: self.filter_windows,
         }
     }
 
@@ -304,6 +327,9 @@ impl Shot {
             return false;
         }
         self.kind = kind;
+        if self.kind == CaptureKind::Share && self.mode == Mode::Area {
+            self.mode = Mode::Window;
+        }
         true
     }
 
@@ -315,6 +341,41 @@ impl Shot {
         self.cursor = !self.cursor;
     }
 
+    pub fn toggle_filter_windows(&mut self) {
+        self.filter_windows = !self.filter_windows;
+        let window_hoverable = self.mode == Mode::Window
+            || (self.mode == Mode::Screen
+                && self.filter_windows
+                && (self.kind == CaptureKind::Share || self.kind == CaptureKind::Record));
+        if !window_hoverable {
+            self.hovered = None;
+        } else if !self.over_bar(self.pointer) {
+            self.hovered = self.window_at(self.pointer);
+        }
+    }
+
+    #[must_use]
+    pub fn filter_windows(&self) -> bool {
+        self.filter_windows
+    }
+
+    #[must_use]
+    pub fn selected_windows(&self) -> &[usize] {
+        &self.selected_windows
+    }
+
+    pub fn toggle_window_selection(&mut self, index: usize) -> bool {
+        if index >= self.windows.len() {
+            return false;
+        }
+        if let Some(pos) = self.selected_windows.iter().position(|&i| i == index) {
+            self.selected_windows.remove(pos);
+        } else {
+            self.selected_windows.push(index);
+        }
+        true
+    }
+
     #[must_use]
     pub fn full(&self) -> Area {
         Rectangle::from_size(self.bounds)
@@ -324,7 +385,19 @@ impl Shot {
     pub fn target(&self) -> Option<Area> {
         match self.mode {
             Mode::Area => self.selection,
-            Mode::Window => self.window.or(self.hovered).and_then(|index| self.windows.get(index).copied()),
+            Mode::Window => {
+                if self.kind == CaptureKind::Share && !self.selected_windows.is_empty() {
+                    let rects: Vec<Pos> = self
+                        .selected_windows
+                        .iter()
+                        .filter_map(|&i| self.windows.get(i))
+                        .flat_map(|w| [w.loc, Point::from((w.loc.x + w.size.w, w.loc.y + w.size.h))])
+                        .collect();
+                    span(&rects)
+                } else {
+                    self.window.or(self.hovered).and_then(|index| self.windows.get(index).copied())
+                }
+            }
             Mode::Screen => Some(self.full()),
         }
     }
@@ -353,6 +426,13 @@ impl Shot {
 
     #[must_use]
     pub fn can_capture(&self) -> bool {
+        if self.kind == CaptureKind::Share {
+            return match self.mode {
+                Mode::Window => !self.selected_windows.is_empty() || self.hovered.is_some() || !self.windows.is_empty(),
+                Mode::Screen => true,
+                Mode::Area => false,
+            };
+        }
         self.target().is_some_and(|area| area.size.w >= MIN_SIDE && area.size.h >= MIN_SIDE)
     }
 
@@ -370,9 +450,17 @@ impl Shot {
         if self.editing() || self.selecting() || self.mode == mode {
             return false;
         }
+        if self.kind == CaptureKind::Share && mode == Mode::Area {
+            return false;
+        }
         self.mode = mode;
         self.gesture = None;
-        self.hovered = if self.over_bar(self.pointer) { None } else { self.window_at(self.pointer) };
+        let window_hoverable = self.mode == Mode::Window
+            || (self.mode == Mode::Screen
+                && self.filter_windows
+                && (self.kind == CaptureKind::Share || self.kind == CaptureKind::Record));
+        self.hovered =
+            if window_hoverable && !self.over_bar(self.pointer) { self.window_at(self.pointer) } else { None };
         true
     }
 
@@ -403,11 +491,73 @@ impl Shot {
         if self.editing() || !self.can_capture() {
             return Outcome::Nothing;
         }
+        if self.kind == CaptureKind::Share {
+            match self.mode {
+                Mode::Window => {
+                    let windows = if !self.selected_windows.is_empty() {
+                        self.selected_windows.clone()
+                    } else if let Some(idx) = self.hovered {
+                        vec![idx]
+                    } else if !self.windows.is_empty() {
+                        vec![0]
+                    } else {
+                        return Outcome::Nothing;
+                    };
+                    let rects: Vec<Pos> = windows
+                        .iter()
+                        .filter_map(|&i| self.windows.get(i))
+                        .flat_map(|w| [w.loc, Point::from((w.loc.x + w.size.w, w.loc.y + w.size.h))])
+                        .collect();
+                    let target = span(&rects).unwrap_or_else(|| self.full());
+                    return Outcome::Share(ShareRequest {
+                        mode: Mode::Window,
+                        target,
+                        windows,
+                        filter_desktop: false,
+                        cursor: self.cursor,
+                    });
+                }
+                Mode::Screen => {
+                    let filter_desktop = self.filter_windows;
+                    let windows = if filter_desktop { self.selected_windows.clone() } else { Vec::new() };
+                    return Outcome::Share(ShareRequest {
+                        mode: Mode::Screen,
+                        target: self.full(),
+                        windows,
+                        filter_desktop,
+                        cursor: self.cursor,
+                    });
+                }
+                Mode::Area => return Outcome::Nothing,
+            }
+        }
         if self.kind == CaptureKind::Record {
             let mode = self.mode;
             let Some(target) = self.target() else { return Outcome::Nothing };
             let window = if mode == Mode::Window { self.window.or(self.hovered) } else { None };
-            return Outcome::Record(RecordRequest { mode, target, window, audio: self.audio, cursor: self.cursor });
+            let windows = if mode == Mode::Window {
+                if self.selected_windows.is_empty() {
+                    window.into_iter().collect()
+                } else {
+                    self.selected_windows.clone()
+                }
+            } else if mode == Mode::Screen && self.filter_windows {
+                self.selected_windows.clone()
+            } else {
+                Vec::new()
+            };
+            let filter_desktop = mode == Mode::Screen && self.filter_windows;
+            let window =
+                if mode == Mode::Screen && filter_desktop { self.selected_windows.first().copied() } else { window };
+            return Outcome::Record(RecordRequest {
+                mode,
+                target,
+                window,
+                windows,
+                filter_desktop,
+                audio: self.audio,
+                cursor: self.cursor,
+            });
         }
         self.enter_edit()
     }
@@ -484,12 +634,17 @@ impl Shot {
                 true
             }
             None => {
-                let hovered =
-                    if self.mode == Mode::Window && !self.editing() && control.is_none() && !self.over_bar(pos) {
-                        self.window_at(pos)
-                    } else {
-                        self.hovered
-                    };
+                let window_hoverable = self.mode == Mode::Window
+                    || (self.mode == Mode::Screen
+                        && self.filter_windows
+                        && (self.kind == CaptureKind::Share || self.kind == CaptureKind::Record));
+                let hovered = if window_hoverable && !self.editing() && control.is_none() && !self.over_bar(pos) {
+                    self.window_at(pos)
+                } else if !window_hoverable {
+                    None
+                } else {
+                    self.hovered
+                };
                 let window_changed = hovered != self.hovered;
                 self.hovered = hovered;
                 hover_changed || window_changed
@@ -577,6 +732,34 @@ impl Shot {
     }
 
     fn press_choose(&mut self, pos: Pos) -> Outcome {
+        if self.kind == CaptureKind::Share {
+            match self.mode {
+                Mode::Window => {
+                    if let Some(index) = self.window_at(pos) {
+                        self.toggle_window_selection(index);
+                        return Outcome::Redraw;
+                    }
+                    return Outcome::Nothing;
+                }
+                Mode::Screen => {
+                    if self.filter_windows {
+                        if let Some(index) = self.window_at(pos) {
+                            self.toggle_window_selection(index);
+                            return Outcome::Redraw;
+                        }
+                        return Outcome::Nothing;
+                    }
+                    return Outcome::Share(ShareRequest {
+                        mode: Mode::Screen,
+                        target: self.full(),
+                        windows: Vec::new(),
+                        filter_desktop: false,
+                        cursor: self.cursor,
+                    });
+                }
+                Mode::Area => return Outcome::Nothing,
+            }
+        }
         if self.kind == CaptureKind::Record {
             match self.mode {
                 Mode::Area => {
@@ -602,6 +785,8 @@ impl Shot {
                                 mode: Mode::Window,
                                 target,
                                 window: Some(index),
+                                windows: vec![index],
+                                filter_desktop: false,
                                 audio: self.audio,
                                 cursor: self.cursor,
                             })
@@ -610,10 +795,19 @@ impl Shot {
                     };
                 }
                 Mode::Screen => {
+                    if self.filter_windows {
+                        if let Some(index) = self.window_at(pos) {
+                            self.toggle_window_selection(index);
+                            return Outcome::Redraw;
+                        }
+                        return Outcome::Nothing;
+                    }
                     return Outcome::Record(RecordRequest {
                         mode: Mode::Screen,
                         target: self.full(),
                         window: None,
+                        windows: Vec::new(),
+                        filter_desktop: false,
                         audio: self.audio,
                         cursor: self.cursor,
                     });
@@ -703,6 +897,10 @@ impl Shot {
             }
             Control::Cursor => {
                 self.toggle_cursor();
+                Outcome::Redraw
+            }
+            Control::FilterWindows => {
+                self.toggle_filter_windows();
                 Outcome::Redraw
             }
             Control::Capture => self.capture(),
@@ -885,6 +1083,7 @@ pub fn resized(from: Area, handle: Handle, pos: Pos, bounds: Size<f64, Logical>)
     contained(rect_between(Point::from((x0, y0)), Point::from((x1, y1))), bounds)
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent capture settings
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Memory {
     pub kind: CaptureKind,
@@ -895,6 +1094,7 @@ pub struct Memory {
     pub shadow: bool,
     pub audio: bool,
     pub cursor: bool,
+    pub filter_windows: bool,
 }
 
 impl Default for Memory {
@@ -908,6 +1108,7 @@ impl Default for Memory {
             shadow: true,
             audio: false,
             cursor: true,
+            filter_windows: false,
         }
     }
 }
@@ -937,18 +1138,26 @@ pub const EDIT_GAP: f64 = 10.0;
 pub const EDGE: f64 = 12.0;
 
 #[must_use]
-pub fn choose_slots(kind: CaptureKind) -> Vec<Slot> {
+pub fn choose_slots(kind: CaptureKind, mode: Mode) -> Vec<Slot> {
     let mut slots: Vec<Slot> = vec![
         Slot::Control(Control::Kind(CaptureKind::Screenshot), MODE_W),
         Slot::Gap(2.0),
         Slot::Control(Control::Kind(CaptureKind::Record), MODE_W),
+        Slot::Gap(2.0),
+        Slot::Control(Control::Kind(CaptureKind::Share), MODE_W),
         Slot::Rule,
     ];
-    for (index, mode) in MODES.into_iter().enumerate() {
-        if index > 0 {
-            slots.push(Slot::Gap(2.0));
+    if kind == CaptureKind::Share {
+        slots.push(Slot::Control(Control::Mode(Mode::Window), MODE_W));
+        slots.push(Slot::Gap(2.0));
+        slots.push(Slot::Control(Control::Mode(Mode::Screen), MODE_W));
+    } else {
+        for (index, m) in MODES.into_iter().enumerate() {
+            if index > 0 {
+                slots.push(Slot::Gap(2.0));
+            }
+            slots.push(Slot::Control(Control::Mode(m), MODE_W));
         }
-        slots.push(Slot::Control(Control::Mode(mode), MODE_W));
     }
     slots.push(Slot::Rule);
     match kind {
@@ -956,8 +1165,19 @@ pub fn choose_slots(kind: CaptureKind) -> Vec<Slot> {
             slots.push(Slot::Control(Control::Shadow, TOGGLE_W));
         }
         CaptureKind::Record => {
+            if mode == Mode::Screen {
+                slots.push(Slot::Control(Control::FilterWindows, TOGGLE_W));
+                slots.push(Slot::Gap(2.0));
+            }
             slots.push(Slot::Control(Control::Audio, TOGGLE_W));
             slots.push(Slot::Gap(2.0));
+            slots.push(Slot::Control(Control::Cursor, TOGGLE_W));
+        }
+        CaptureKind::Share => {
+            if mode == Mode::Screen {
+                slots.push(Slot::Control(Control::FilterWindows, TOGGLE_W));
+                slots.push(Slot::Gap(2.0));
+            }
             slots.push(Slot::Control(Control::Cursor, TOGGLE_W));
         }
     }
@@ -1051,8 +1271,8 @@ fn lay_out(slots: &[Slot], height: f64, pad: f64, control_h: f64) -> (f64, Vec<(
 }
 
 #[must_use]
-pub fn choose_bar(bounds: Size<f64, Logical>, kind: CaptureKind) -> Bar {
-    let (width, items, rules) = lay_out(&choose_slots(kind), CHOOSE_H, CHOOSE_PAD, CONTROL_H);
+pub fn choose_bar(bounds: Size<f64, Logical>, kind: CaptureKind, mode: Mode) -> Bar {
+    let (width, items, rules) = lay_out(&choose_slots(kind, mode), CHOOSE_H, CHOOSE_PAD, CONTROL_H);
     let x = ((bounds.w - width) / 2.0).round().max(0.0);
     let y = (bounds.h - CHOOSE_BOTTOM - CHOOSE_H).max(0.0);
     Bar { rect: Rectangle::new(Point::from((x, y)), Size::from((width, CHOOSE_H))), items, rules }
@@ -1105,7 +1325,7 @@ impl Shot {
     pub fn bar(&self) -> Bar {
         match self.target().filter(|_| self.editing()) {
             Some(target) => edit_bar(self.bounds, target),
-            None => choose_bar(self.bounds, self.kind),
+            None => choose_bar(self.bounds, self.kind, self.mode),
         }
     }
 
@@ -1138,6 +1358,7 @@ impl Shot {
             Control::Shadow => self.shadow,
             Control::Audio => self.audio,
             Control::Cursor => self.cursor,
+            Control::FilterWindows => self.filter_windows,
             Control::Tool(tool) => self.tool == tool,
             Control::Swatch(swatch) => self.swatch == swatch,
             _ => false,
@@ -1564,8 +1785,9 @@ mod tests {
         let narrow = Size::from((540.0, 960.0));
         let capture = Rectangle::new(p(100.0, 100.0), Size::from((300.0, 300.0)));
         for bar in [
-            choose_bar(bounds, CaptureKind::Screenshot),
-            choose_bar(bounds, CaptureKind::Record),
+            choose_bar(bounds, CaptureKind::Screenshot, Mode::Area),
+            choose_bar(bounds, CaptureKind::Record, Mode::Area),
+            choose_bar(bounds, CaptureKind::Share, Mode::Window),
             edit_bar(bounds, Rectangle::new(p(400.0, 100.0), Size::from((600.0, 300.0)))),
             edit_bar(narrow, capture),
         ] {
@@ -1650,6 +1872,8 @@ mod tests {
                 mode: Mode::Area,
                 target: Rectangle::new(p(100.0, 100.0), Size::from((300.0, 200.0))),
                 window: None,
+                windows: Vec::new(),
+                filter_desktop: false,
                 audio: true,
                 cursor: false,
             })
@@ -1669,6 +1893,8 @@ mod tests {
                 mode: Mode::Window,
                 target: win,
                 window: Some(0),
+                windows: vec![0],
+                filter_desktop: false,
                 audio: false,
                 cursor: true,
             })
@@ -1688,6 +1914,8 @@ mod tests {
                 mode: Mode::Screen,
                 target: full,
                 window: None,
+                windows: Vec::new(),
+                filter_desktop: false,
                 audio: false,
                 cursor: true,
             })
@@ -1696,14 +1924,117 @@ mod tests {
 
     #[test]
     fn record_slots_contain_audio_and_cursor_options() {
-        let ss_slots = choose_slots(CaptureKind::Screenshot);
+        let ss_slots = choose_slots(CaptureKind::Screenshot, Mode::Area);
         assert!(ss_slots.iter().any(|s| matches!(s, Slot::Control(Control::Shadow, _))));
         assert!(!ss_slots.iter().any(|s| matches!(s, Slot::Control(Control::Audio, _))));
         assert!(!ss_slots.iter().any(|s| matches!(s, Slot::Control(Control::Cursor, _))));
 
-        let rec_slots = choose_slots(CaptureKind::Record);
+        let rec_slots = choose_slots(CaptureKind::Record, Mode::Screen);
         assert!(!rec_slots.iter().any(|s| matches!(s, Slot::Control(Control::Shadow, _))));
+        assert!(rec_slots.iter().any(|s| matches!(s, Slot::Control(Control::FilterWindows, _))));
         assert!(rec_slots.iter().any(|s| matches!(s, Slot::Control(Control::Audio, _))));
         assert!(rec_slots.iter().any(|s| matches!(s, Slot::Control(Control::Cursor, _))));
+    }
+
+    #[test]
+    fn capture_kind_share_multi_window_selection() {
+        let mut shot = shot().with_kind(CaptureKind::Share);
+        assert_eq!(shot.kind, CaptureKind::Share);
+        assert_eq!(shot.mode, Mode::Window);
+        assert!(shot.selected_windows().is_empty());
+
+        let win0 = shot.windows[0];
+        let win1 = shot.windows[1];
+
+        assert_eq!(shot.press(p(win0.loc.x + 10.0, win0.loc.y + 10.0), None), Outcome::Redraw);
+        assert_eq!(shot.selected_windows(), &[0]);
+
+        assert_eq!(shot.press(p(win1.loc.x + 10.0, win1.loc.y + 10.0), None), Outcome::Redraw);
+        assert_eq!(shot.selected_windows(), &[0, 1]);
+
+        let rects = [
+            win0.loc,
+            Point::from((win0.loc.x + win0.size.w, win0.loc.y + win0.size.h)),
+            win1.loc,
+            Point::from((win1.loc.x + win1.size.w, win1.loc.y + win1.size.h)),
+        ];
+        let bounding_target = span(&rects).expect("bounding target");
+
+        let outcome = shot.capture();
+        assert_eq!(
+            outcome,
+            Outcome::Share(ShareRequest {
+                mode: Mode::Window,
+                target: bounding_target,
+                windows: vec![0, 1],
+                filter_desktop: false,
+                cursor: true,
+            })
+        );
+    }
+
+    #[test]
+    fn deselecting_a_window_by_clicking_again() {
+        let mut shot = shot().with_kind(CaptureKind::Share);
+        let win0 = shot.windows[0];
+        let p0 = p(win0.loc.x + 10.0, win0.loc.y + 10.0);
+
+        assert_eq!(shot.press(p0, None), Outcome::Redraw);
+        assert_eq!(shot.selected_windows(), &[0]);
+
+        assert_eq!(shot.press(p0, None), Outcome::Redraw);
+        assert!(shot.selected_windows().is_empty());
+    }
+
+    #[test]
+    fn share_filtered_desktop_mode() {
+        let mut shot = shot().with_kind(CaptureKind::Share);
+        assert!(shot.set_mode(Mode::Screen));
+        assert!(!shot.filter_windows());
+
+        shot.activate(Control::FilterWindows);
+        assert!(shot.filter_windows());
+
+        let win0 = shot.windows[0];
+        let win1 = shot.windows[1];
+
+        shot.motion(p(win0.loc.x + 10.0, win0.loc.y + 10.0), None);
+        assert_eq!(shot.hovered, Some(0));
+
+        assert_eq!(shot.press(p(win0.loc.x + 10.0, win0.loc.y + 10.0), None), Outcome::Redraw);
+        assert_eq!(shot.selected_windows(), &[0]);
+
+        assert_eq!(shot.press(p(win1.loc.x + 10.0, win1.loc.y + 10.0), None), Outcome::Redraw);
+        assert_eq!(shot.selected_windows(), &[0, 1]);
+
+        let outcome = shot.capture();
+        assert_eq!(
+            outcome,
+            Outcome::Share(ShareRequest {
+                mode: Mode::Screen,
+                target: shot.full(),
+                windows: vec![0, 1],
+                filter_desktop: true,
+                cursor: true,
+            })
+        );
+    }
+
+    #[test]
+    fn share_slots_configuration() {
+        let share_screen_slots = choose_slots(CaptureKind::Share, Mode::Screen);
+        assert!(share_screen_slots.iter().any(|s| matches!(s, Slot::Control(Control::FilterWindows, _))));
+        assert!(share_screen_slots.iter().any(|s| matches!(s, Slot::Control(Control::Cursor, _))));
+        assert!(!share_screen_slots.iter().any(|s| matches!(s, Slot::Control(Control::Audio, _))));
+        assert!(!share_screen_slots.iter().any(|s| matches!(s, Slot::Control(Control::Shadow, _))));
+
+        let share_win_slots = choose_slots(CaptureKind::Share, Mode::Window);
+        assert!(!share_win_slots.iter().any(|s| matches!(s, Slot::Control(Control::FilterWindows, _))));
+        assert!(share_win_slots.iter().any(|s| matches!(s, Slot::Control(Control::Cursor, _))));
+
+        let rec_screen_slots = choose_slots(CaptureKind::Record, Mode::Screen);
+        assert!(rec_screen_slots.iter().any(|s| matches!(s, Slot::Control(Control::FilterWindows, _))));
+        assert!(rec_screen_slots.iter().any(|s| matches!(s, Slot::Control(Control::Audio, _))));
+        assert!(rec_screen_slots.iter().any(|s| matches!(s, Slot::Control(Control::Cursor, _))));
     }
 }
