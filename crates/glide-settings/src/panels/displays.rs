@@ -1,7 +1,7 @@
 use glide_ipc::OutputInfo;
 use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::text;
-use iced::widget::{Row as IcedRow, column, container, row};
+use iced::widget::{Row as IcedRow, column, container, mouse_area, row};
 use iced::{Alignment, Element, Fill, Task};
 use toml_edit::Table;
 
@@ -763,7 +763,28 @@ fn monitor_tile<'a>(
     t: &theme::ThemeState, output: &OutputInfo, index: usize, scale: f64, size: (f32, f32), selected: bool,
 ) -> Element<'a, Msg> {
     let detail = format!("{} · {}", resolution_text(output.width, output.height), display::scale_label(scale));
-    glide_sdk::widget::mock::monitor(*t, output.name.clone(), detail, size, selected, Msg::Select(index))
+    let paint = t.paint;
+    let labels = column![
+        text(output.name.clone(), TextStyle::HEAD).color(t.fg_1()),
+        text(detail, TextStyle::CAP).color(t.fg_2()),
+    ]
+    .spacing(4)
+    .align_x(Alignment::Center);
+    let face = container(labels)
+        .center_x(iced::Length::Fixed(size.0.max(72.0)))
+        .center_y(iced::Length::Fixed(size.1.max(44.0)))
+        .style(move |_| container::Style {
+            background: Some(paint.card_bg().into()),
+            border: iced::Border {
+                color: if selected { paint.acc_bg() } else { paint.line_2() },
+                width: if selected { 2.0 } else { 1.0 },
+                radius: glide_sdk::theme::R1.into(),
+            },
+            ..Default::default()
+        });
+    let message = Msg::Select(index);
+    let clickable = mouse_area(face).on_press(message.clone()).interaction(iced::mouse::Interaction::Pointer);
+    glide_sdk::widget::focusable(&paint, clickable, glide_sdk::theme::R1).on_activate(Some(message)).into()
 }
 
 fn fixed_mode_rows<'a>(c: &Ctx, output: &OutputInfo) -> Vec<Element<'a, Msg>> {

@@ -267,6 +267,30 @@ fn click_workspace_policy(
     )));
 }
 
+fn click_second_display(
+    element: &mut glide_sdk::iced::Element<'_, Message>, tree: &mut Tree, renderer: &Renderer, node: &layout::Node,
+    bounds: &Rectangle, messages: &mut Vec<Message>,
+) {
+    messages.clear();
+    let cursor = mouse::Cursor::Available(glide_sdk::iced::Point::new(960.0, 240.0));
+    let mut shell = Shell::new(messages);
+    element.as_widget_mut().update(
+        tree,
+        &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Layout::new(node),
+        cursor,
+        renderer,
+        &mut clipboard::Null,
+        &mut shell,
+        bounds,
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::Displays(glide_settings::panels::displays::Msg::Select(1))))
+    );
+}
+
 fn fixture_wallpaper(app: &mut App) {
     let items = [[179, 202, 237], [231, 188, 191], [122, 184, 159], [44, 47, 68], [235, 215, 167]]
         .into_iter()
@@ -417,6 +441,13 @@ fn preview_page() {
     }
     if panel == Panel::Multitasking && width == 1500 && height == 2600 {
         click_workspace_policy(&mut element, &mut tree, &renderer, &node, &bounds, &mut messages);
+    }
+    if panel == Panel::Displays
+        && std::env::var_os("GLIDE_SETTINGS_DISPLAYS_FIXTURE").is_some()
+        && width == 1500
+        && height == 2200
+    {
+        click_second_display(&mut element, &mut tree, &renderer, &node, &bounds, &mut messages);
     }
     let Renderer::Secondary(renderer) = &mut renderer else { unreachable!() };
     let rgba = renderer.screenshot(Size::new(width, height), 1.0, Color::BLACK);
