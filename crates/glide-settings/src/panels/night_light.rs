@@ -156,9 +156,8 @@ impl Pane for Page {
 
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         column![
-            self.hero(&c),
+            self.controls_group(&c, config),
             error_banner(c.theme, self.error.as_deref()),
-            self.temperature_group(&c, config),
             self.schedule_group(&c, config),
         ]
         .spacing(theme::SECTION_GAP)
@@ -203,24 +202,19 @@ impl Page {
             .clamp(NIGHT_MIN_KELVIN, NIGHT_MAX_KELVIN)
     }
 
-    fn hero(&self, c: &Ctx) -> Element<'_, Msg> {
+    fn controls_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         let t = c.theme;
-        let (heading, description) = match self.live {
+        let description = match self.live {
             Some(on) => {
                 let (state, hint) = if on { (tr::Key::On, tr::Key::HeroOn) } else { (tr::Key::Off, tr::Key::HeroOff) };
-                (format!("{} · {}", c.t(K::NightLight), c.t(state)), c.t(hint))
+                format!("{} · {}", c.t(state), c.t(hint))
             }
-            None => (c.t(K::NightLight).to_string(), c.t(tr::Key::HeroOffline)),
+            None => c.t(tr::Key::HeroOffline).to_string(),
         };
         let trailing = match self.live {
             Some(on) if !self.busy => widgets::switch(t, on, Msg::Toggle),
             live => widgets::switch_disabled(t, live == Some(true)),
         };
-        widgets::section_hero(t, Icon::Moon, Panel::NightLight.color(), heading, description, Some(trailing))
-    }
-
-    fn temperature_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
-        let t = c.theme;
         let kelvin = self.kelvin(config);
         let tint = display::night_tint(kelvin);
         let preview = row![
@@ -249,25 +243,29 @@ impl Page {
             ],
         ]
         .spacing(6);
-        let card = glide_sdk::widget::card(
-            &widgets::paint(&t),
-            column![container(preview).center_x(Fill), slider].spacing(18),
-        );
         let reset = widgets::secondary(
             t,
             c.t(K::Reset),
             (c.writable && kelvin != DEFAULT_NIGHT_LIGHT_KELVIN).then_some(Msg::ResetTemperature),
         );
-        column![
-            Group::new(t)
-                .title(format!("{} · {kelvin} K", c.t(tr::Key::Temperature)))
-                .description(c.t(tr::Key::TemperatureHint))
-                .suffix(reset)
-                .build(),
-            gated(*c, card),
-        ]
-        .spacing(8)
-        .into()
+        Group::new(t)
+            .title(c.t(K::NightLight))
+            .push(
+                Row::new(t, c.t(K::NightLight))
+                    .subtitle(description)
+                    .prefix(widgets::tile(Icon::Moon, Panel::NightLight.color(), theme::SMALL_CONTROL_HEIGHT))
+                    .suffix(trailing)
+                    .build(),
+            )
+            .push(
+                Row::new(t, format!("{} · {kelvin} K", c.t(tr::Key::Temperature)))
+                    .subtitle(c.t(tr::Key::TemperatureHint))
+                    .suffix(reset)
+                    .stacked(t.compact)
+                    .build(),
+            )
+            .push(gated(*c, container(column![container(preview).center_x(Fill), slider].spacing(18)).padding(12)))
+            .build()
     }
 
     fn schedule_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
@@ -275,17 +273,21 @@ impl Page {
         let scheduled = config.night_light_schedule();
         let from = self.night_from.clone().unwrap_or_else(|| config.night_light_from());
         let to = self.night_to.clone().unwrap_or_else(|| config.night_light_to());
-        let mut group = Group::new(t).title(c.t(tr::Key::Schedule)).description(c.t(tr::Key::ScheduleHint)).push(
-            Row::new(t, c.t(K::NightSchedule))
-                .subtitle(c.t(K::NightScheduleHint))
-                .prefix(widgets::tile(
-                    Icon::Clock,
-                    theme::ramp_color(theme::Accent::Amber, 3),
-                    theme::SMALL_CONTROL_HEIGHT,
-                ))
-                .suffix(toggle(*c, scheduled, Msg::NightSchedule))
-                .build(),
-        );
+        let mut group = Group::new(t)
+            .title(c.t(tr::Key::Schedule))
+            .description(c.t(tr::Key::ScheduleHint))
+            .stacked_header(t.compact)
+            .push(
+                Row::new(t, c.t(K::NightSchedule))
+                    .subtitle(c.t(K::NightScheduleHint))
+                    .prefix(widgets::tile(
+                        Icon::Clock,
+                        theme::ramp_color(theme::Accent::Amber, 3),
+                        theme::SMALL_CONTROL_HEIGHT,
+                    ))
+                    .suffix(toggle(*c, scheduled, Msg::NightSchedule))
+                    .build(),
+            );
         if scheduled {
             let time_row = |label: K, value: &str, on_input: fn(String) -> Msg| {
                 let invalid = parse_clock(value).is_none();
