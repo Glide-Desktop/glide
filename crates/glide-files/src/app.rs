@@ -46,6 +46,7 @@ const SNIFF_LIMIT: usize = 16;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_secs(2);
+const IDLE_POLL: Duration = Duration::from_secs(20);
 const QUIT_GRACE: Duration = Duration::from_secs(5);
 const DRAG_THRESHOLD: f32 = 6.0;
 const SPRING_DELAY: Duration = Duration::from_millis(900);
@@ -873,6 +874,7 @@ pub struct App {
     field: Option<Field>,
     pending_select: Option<PathBuf>,
     reveal_more: Vec<PathBuf>,
+    sizing: Arc<AtomicBool>,
     pub grid_zoom: u8,
     pub list_zoom: u8,
     pub columns: Vec<ListColumn>,
@@ -921,6 +923,7 @@ pub struct Drag {
     pub action: DropAction,
     folders: bool,
     dwell: Option<(PathBuf, Instant)>,
+    elsewhere: Option<(PathBuf, bool)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1132,6 +1135,7 @@ impl App {
             field: None,
             pending_select: None,
             reveal_more: Vec::new(),
+            sizing: Arc::default(),
             grid_zoom: prefs.grid_zoom,
             list_zoom: prefs.list_zoom,
             columns: prefs.columns.clone(),
@@ -1150,14 +1154,21 @@ impl App {
             phones: Vec::new(),
             look,
         };
-        app.bookmarks = app.fresh_bookmarks();
-        let task = Task::batch([app.open_as_dialog(), app.list(app.current.clone(), Arrival::Initial, focus)]);
-        let extensions = app.load_extensions();
-        let scan = app.scan();
-        let handles = glide_sdk::window::handles().map(Message::Handles);
-        let phones = app.scan_phones();
-        let survey = app.start_survey();
-        (app, Task::batch([task, extensions, scan, handles, phones, survey]))
+        let started = app.start(focus);
+        (app, started)
+    }
+
+    fn start(&mut self, focus: Option<PathBuf>) -> Task<Message> {
+        self.bookmarks = self.fresh_bookmarks();
+        Task::batch([
+            self.open_as_dialog(),
+            self.list(self.current.clone(), Arrival::Initial, focus),
+            self.load_extensions(),
+            self.scan(),
+            glide_sdk::window::handles().map(Message::Handles),
+            self.scan_phones(),
+            self.start_survey(),
+        ])
     }
 
     fn open_as_dialog(&mut self) -> Task<Message> {
@@ -1299,7 +1310,8 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let mut subscriptions = vec![iced::time::every(POLL).map(|_| Message::Tick)];
+        let awake = self.window.focused || !self.jobs.is_empty() || self.quit_requested.is_some();
+        let mut subscriptions = vec![iced::time::every(if awake { POLL } else { IDLE_POLL }).map(|_| Message::Tick)];
         if self.motion.is_animating(Instant::now()) {
             subscriptions.push(window::frames().map(Message::Frame));
         }
@@ -1386,6 +1398,9 @@ impl App {
         motion.modal.set(self.modal.is_some(), now);
         if self.modal.is_some() {
             motion.modal_ghost.clone_from(&self.modal);
+        }
+        if !matches!(self.modal, Some(Modal { dialog: Dialog::Properties(_), .. })) {
+            self.sizing.store(true, Ordering::Relaxed);
         }
         self.operations &= self.jobs.len() > JOB_CARDS;
         let motion = &mut self.motion;
@@ -1684,7 +1699,8 @@ impl App {
                 sort_entries(&mut found, self.sort);
                 self.entries = found;
                 self.filter_for_chooser();
-                self.selection.clear();
+                let listed: HashSet<&Path> = self.entries.iter().map(|entry| entry.path.as_path()).collect();
+                self.selection.retain(|selected| listed.contains(selected.as_path()));
                 self.forget_vanished();
                 if let Some(search) = &mut self.search {
                     search.pending = false;
@@ -2240,6 +2256,9 @@ impl App {
     }
 
     pub fn follow_window(&mut self, window: Window) {
+        if self.window.focused && !window.focused {
+            self.modifiers = Modifiers::empty();
+        }
         self.window = window;
     }
 
@@ -2348,7 +2367,8 @@ impl App {
             }
         };
         if refresh {
-            self.selection.retain(|selected| entries.iter().any(|entry| &entry.path == selected));
+            let listed: HashSet<&Path> = entries.iter().map(|entry| entry.path.as_path()).collect();
+            self.selection.retain(|selected| listed.contains(selected.as_path()));
         } else {
             self.enter(listed.path.clone());
         }
@@ -2913,19 +2933,29 @@ impl App {
         }
     }
 
-    fn open_files(&self, paths: Vec<PathBuf>) -> Task<Message> {
+    fn open_files(&mut self, paths: Vec<PathBuf>) -> Task<Message> {
         let lang = self.lang;
         let mut groups: Vec<(Option<Run>, Vec<Target>)> = Vec::new();
+        let mut unpacked: Vec<PathBuf> = Vec::new();
         for path in paths.into_iter().take(OPEN_LIMIT) {
             let target = self.extensions.target(&path, false);
             let app = self.extensions.apps_for(std::slice::from_ref(&target)).first().map(|app| app.run());
+            if app.is_none() && archive::available() && archive::is_archive(&path) && !self.in_trash() {
+                unpacked.push(path);
+                continue;
+            }
             match groups.iter_mut().find(|(run, _)| run.is_some() && *run == app) {
                 Some((_, targets)) => targets.push(target),
                 None => groups.push((app, vec![target])),
             }
         }
-        Task::batch(groups.into_iter().map(|(app, targets)| {
-            let cwd = self.current.clone();
+        let cwd = self.current.clone();
+        let mut tasks: Vec<Task<Message>> = by_parent(unpacked, &cwd)
+            .into_iter()
+            .map(|(dir, archives)| self.spawn_job(Op::Extract, archives, dir, false))
+            .collect();
+        tasks.extend(groups.into_iter().map(|(app, targets)| {
+            let cwd = cwd.clone();
             run(move || {
                 let opened = match app {
                     Some(run) => run.launch(&targets, &cwd),
@@ -2938,7 +2968,8 @@ impl App {
                     ..Outcome::default()
                 }
             })
-        }))
+        }));
+        Task::batch(tasks)
     }
 
     fn targets(&self) -> Vec<Target> {
@@ -3568,7 +3599,7 @@ impl App {
         }
         self.menu = None;
         let folders = paths.iter().all(|path| path.is_dir() && !self.trash.contains(path));
-        self.drag = Some(Drag { paths, at, action: DropAction::Move, folders, dwell: None });
+        self.drag = Some(Drag { paths, at, action: DropAction::Move, folders, dwell: None, elsewhere: None });
         self.track_drag(at);
     }
 
@@ -3630,13 +3661,15 @@ impl App {
         if drag.dwell.as_ref().map(|(path, _)| path) != target.as_ref() {
             drag.dwell = target.clone().map(|path| (path, Instant::now()));
         }
+        if let Some(target) = &target
+            && drag.elsewhere.as_ref().is_none_or(|(known, _)| known != target)
+        {
+            drag.elsewhere = Some((target.clone(), !same_device(&drag.paths[0], target)));
+        }
+        let crossing = drag.elsewhere.as_ref().is_some_and(|(_, crossing)| *crossing);
         drag.action = match &target {
             Some(target) if *target == trash => DropAction::Trash,
-            Some(target)
-                if self.modifiers.command() || (!self.modifiers.shift() && !same_device(&drag.paths[0], target)) =>
-            {
-                DropAction::Copy
-            }
+            Some(_) if self.modifiers.command() || (!self.modifiers.shift() && crossing) => DropAction::Copy,
             _ => DropAction::Move,
         };
         self.drop_target = target;
@@ -4103,16 +4136,19 @@ impl App {
                 },
             )
         });
+        self.sizing.store(true, Ordering::Relaxed);
+        self.sizing = Arc::new(AtomicBool::new(false));
         let sizing = properties.entry.is_dir.then(|| {
             let dir = properties.entry.path.clone();
+            let closed = Arc::clone(&self.sizing);
             Task::perform(
                 blocking(move || {
-                    let total = crate::fs::jobs::tree_size(&dir);
-                    (dir, total)
+                    let total = crate::fs::jobs::tree_size_until(&dir, &closed);
+                    (!closed.load(Ordering::Relaxed)).then_some((dir, total))
                 }),
-                |result| {
-                    let (dir, total) = result.unwrap_or_default();
-                    Message::FolderSize(dir, total)
+                |result| match result.flatten() {
+                    Some((dir, total)) => Message::FolderSize(dir, total),
+                    None => Message::FolderSize(PathBuf::new(), (0, 0)),
                 },
             )
         });
@@ -4683,8 +4719,9 @@ impl glide_sdk::App for App {
     }
 
     fn window_changed(&mut self, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        let returned = shell.window().focused && !self.window.focused;
         self.follow_window(*shell.window());
-        Task::none()
+        if returned { self.poll() } else { Task::none() }
     }
 
     fn key(&mut self, event: &keyboard::Event, captured: bool, shell: &mut glide_sdk::Shell<Message>) -> Task<Message> {

@@ -326,7 +326,12 @@ impl Drop for Inside {
 
 #[must_use]
 pub(crate) fn tree_size(path: &Path) -> (u64, usize) {
-    let size = measure(path, &AtomicBool::new(false));
+    tree_size_until(path, &AtomicBool::new(false))
+}
+
+#[must_use]
+pub(crate) fn tree_size_until(path: &Path, cancel: &AtomicBool) -> (u64, usize) {
+    let size = measure(path, cancel);
     (size.bytes, size.items.saturating_sub(1))
 }
 
