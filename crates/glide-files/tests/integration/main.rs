@@ -8,5 +8,6 @@ mod fs_tests;
 mod jobs_tests;
 mod listing_tests;
 mod rename_tests;
+mod safety_tests;
 mod stage5_tests;
 mod volume_tests;

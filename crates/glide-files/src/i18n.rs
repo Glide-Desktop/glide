@@ -282,6 +282,7 @@ glide_sdk::catalogue! {
     ChooserReplaceTitle => "Replace the file?", "Замінити файл?";
     ChooserReplacePrompt => "A file with this name already exists in this folder. Replacing it overwrites its contents.", "У цій папці вже є файл із такою назвою. Заміна перезапише його вміст.";
     ChooserFileType => "File type", "Тип файлів";
+    ErrHoldsMount => "The item is in use or a drive is mounted inside it", "Об’єкт використовується або всередині нього змонтовано диск";
     Extracting => "Extracting", "Розпакування";
     Compressing => "Compressing", "Стискання";
     Extracted => "Extracted", "Розпаковано";
@@ -454,6 +455,7 @@ pub fn io_error(err: &std::io::Error, lang: Lang) -> String {
         ErrorKind::StorageFull | ErrorKind::QuotaExceeded => Key::ErrNoSpace,
         ErrorKind::ReadOnlyFilesystem => Key::ErrReadOnly,
         ErrorKind::Unsupported => Key::ErrUnsupported,
+        ErrorKind::ResourceBusy => Key::ErrHoldsMount,
         _ => return err.to_string(),
     };
     key.text(lang).to_string()

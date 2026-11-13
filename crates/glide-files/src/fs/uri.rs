@@ -11,13 +11,14 @@ pub fn decode_path(encoded: &str) -> PathBuf {
 
 #[must_use]
 pub fn path_from_arg(arg: &str) -> Option<PathBuf> {
-    match arg.strip_prefix("file://") {
-        Some(rest) => {
-            let path = rest.find('/').map_or(rest, |slash| &rest[slash..]);
-            Some(decode_path(path))
-        }
-        None if arg.contains("://") => None,
-        None if Path::new(arg).is_absolute() => Some(PathBuf::from(arg)),
-        None => std::fs::canonicalize(arg).or_else(|_| std::path::absolute(arg)).ok(),
+    if Path::new(arg).is_absolute() {
+        return Some(PathBuf::from(arg));
     }
+    if arg.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("file:")) {
+        return glide_config::uri::local_path(arg);
+    }
+    if arg.contains("://") {
+        return None;
+    }
+    std::fs::canonicalize(arg).or_else(|_| std::path::absolute(arg)).ok()
 }

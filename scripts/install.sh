@@ -385,7 +385,7 @@ if [ -n "$readers" ]; then
     echo "  gs (ghostscript)         PostScript and EPS; pacman -S ghostscript"
     echo "  ddjvu (djvulibre)        DjVu; pacman -S djvulibre"
     echo "  xpstopdf (libgxps)       XPS and OpenXPS; pacman -S libgxps"
-    echo "  bsdtar (libarchive)      CBR, CB7 and CBT comics; pacman -S libarchive"
+    echo "  bsdtar (libarchive)      CBR, CB7 and CBT comics, Extract and Compress in Files; pacman -S libarchive"
     echo "  soffice (libreoffice)    office documents; pacman -S libreoffice-fresh"
     echo "  tesseract                text recognition in scans; pacman -S tesseract tesseract-data-ukr tesseract-data-eng"
 fi

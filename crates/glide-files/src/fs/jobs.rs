@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, ErrorKind, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::io::{self, ErrorKind, Read};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use super::operations::{occupied, remove_recursive, unique_path};
+use super::operations::{occupied, remove_recursive, remove_tree, rename_noreplace, unique_path};
 
-const CHUNK: usize = 1 << 20;
+const CHUNK: u64 = 4 << 20;
 const REPORT_EVERY: Duration = Duration::from_millis(80);
 pub const PER_DEVICE: usize = 2;
 
@@ -266,6 +266,7 @@ struct Worker<'a> {
     failures: Vec<Failure>,
     known: HashMap<PathBuf, Size>,
     placed: Vec<(PathBuf, PathBuf)>,
+    halted: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -370,7 +371,7 @@ fn unique_beside(dest: &Path, is_dir: bool) -> PathBuf {
 impl Worker<'_> {
     fn cancelled(&self) -> bool {
         hold(self.sink, self.cancel);
-        self.cancel.load(Ordering::Relaxed)
+        self.halted || self.cancel.load(Ordering::Relaxed)
     }
 
     fn advance(&mut self, bytes: u64, items: usize) {
@@ -386,13 +387,13 @@ impl Worker<'_> {
         self.failures.push(Failure::new(path, err));
     }
 
-    fn resolve(&mut self, source: &Path, dest: &Path, folders: bool) -> Choice {
+    fn resolve(&mut self, source: &Path, dest: &Path, folders: bool, mixed: bool) -> Choice {
         let remembered = if folders { self.remember_folders } else { self.remember_files };
-        if let Some(choice) = remembered {
+        if let Some(choice) = remembered.filter(|_| !mixed) {
             return choice;
         }
         let answer = self.sink.ask(Question::new(source, dest, folders));
-        if answer.for_all {
+        if answer.for_all && !mixed {
             if folders {
                 self.remember_folders = Some(answer.choice);
             } else {
@@ -421,7 +422,7 @@ impl Worker<'_> {
         let mut aside = None;
         if let Ok(existing) = std::fs::symlink_metadata(&dest) {
             let folders = meta.is_dir() && existing.is_dir();
-            match self.resolve(source, &dest, folders) {
+            match self.resolve(source, &dest, folders, meta.is_dir() != existing.is_dir()) {
                 Choice::Cancel => return None,
                 Choice::Skip => {
                     let size = measure(source, self.cancel);
@@ -465,7 +466,8 @@ impl Worker<'_> {
         &mut self, source: &Path, dest: PathBuf, meta: &std::fs::Metadata, swap: bool, strict: bool,
     ) -> Option<PathBuf> {
         if self.op == Op::Move {
-            match std::fs::rename(source, &dest) {
+            let renamed = if swap { std::fs::rename(source, &dest) } else { rename_noreplace(source, &dest) };
+            match renamed {
                 Ok(()) => {
                     let size = match self.known.remove(source) {
                         Some(size) => size,
@@ -582,7 +584,8 @@ impl Worker<'_> {
                     return false;
                 }
                 self.fail(source, &err);
-                true
+                self.halted = matches!(err.kind(), ErrorKind::StorageFull | ErrorKind::QuotaExceeded);
+                !self.halted
             }
         }
     }
@@ -616,6 +619,7 @@ impl Worker<'_> {
             }
             Err(err) => self.fail(source, &err),
         }
+        super::xattr::copy(source, dest);
         let _ = std::fs::set_permissions(dest, meta.permissions());
         if let (Ok(modified), Ok(file)) = (meta.modified(), File::open(dest)) {
             let _ = file.set_modified(modified);
@@ -627,25 +631,24 @@ impl Worker<'_> {
         &mut self, source: &Path, dest: &Path, meta: &std::fs::Metadata, created: &mut bool,
     ) -> io::Result<()> {
         self.progress.current = name_of(source);
-        let mut input = File::open(source)?;
+        let input = File::open(source)?;
         let mut output = OpenOptions::new().write(true).create_new(true).mode(0o600).open(dest)?;
         *created = true;
-        let mut buffer = vec![0_u8; CHUNK];
         loop {
             if self.cancelled() {
                 return Err(io::Error::new(ErrorKind::Interrupted, "cancelled"));
             }
-            let read = input.read(&mut buffer)?;
-            if read == 0 {
+            let copied = io::copy(&mut (&input).take(CHUNK), &mut output)?;
+            if copied == 0 {
                 break;
             }
-            output.write_all(&buffer[..read])?;
-            self.advance(read as u64, 0);
+            self.advance(copied, 0);
         }
         if self.op == Op::Move {
             output.sync_all()?;
         }
-        output.set_permissions(meta.permissions())?;
+        super::xattr::copy(source, dest);
+        let _ = output.set_permissions(std::fs::Permissions::from_mode(meta.permissions().mode() & 0o777));
         if let Ok(modified) = meta.modified() {
             let _ = output.set_modified(modified);
         }
@@ -672,6 +675,7 @@ pub fn transfer(op: Op, sources: &[PathBuf], target: &Path, sink: &dyn Sink, can
         failures: Vec::new(),
         known,
         placed: Vec::new(),
+        halted: false,
     };
     sink.progress(worker.progress.clone());
     for source in sources {
@@ -697,7 +701,7 @@ pub fn transfer(op: Op, sources: &[PathBuf], target: &Path, sink: &dyn Sink, can
         }
     }
     sink.progress(worker.progress.clone());
-    let cancelled = worker.cancelled();
+    let cancelled = cancel.load(Ordering::Relaxed);
     Report { done: worker.placed, failures: worker.failures, cancelled }
 }
 
@@ -724,6 +728,7 @@ pub fn copy_exact(source: &Path, dest: &Path) -> io::Result<()> {
         failures: Vec::new(),
         known: HashMap::new(),
         placed: Vec::new(),
+        halted: false,
     };
     let mut created = false;
     worker.copy_tree(source, dest, &mut created);
@@ -739,7 +744,7 @@ pub fn copy_exact(source: &Path, dest: &Path) -> io::Result<()> {
 }
 
 pub fn delete(paths: &[PathBuf], sink: &dyn Sink, cancel: &AtomicBool) -> Report {
-    each(paths, sink, cancel, |path| remove_recursive(path).map(|()| path.to_path_buf()))
+    each(paths, sink, cancel, |path| remove_tree(path, cancel).map(|()| path.to_path_buf()))
 }
 
 pub fn each(
@@ -758,6 +763,10 @@ pub fn each(
         sink.progress(progress.clone());
         match apply(path) {
             Ok(dest) => report.done.push((path.clone(), dest)),
+            Err(err) if err.kind() == ErrorKind::Interrupted && cancel.load(Ordering::Relaxed) => {
+                report.cancelled = true;
+                break;
+            }
             Err(err) => report.failures.push(Failure::new(path, &err)),
         }
         progress.items += 1;

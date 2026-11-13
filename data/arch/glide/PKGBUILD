@@ -71,7 +71,7 @@ optdepends=(
     'djvulibre: DjVu in Glide Folio'
     'libgxps: XPS and OXPS in Glide Folio'
     'libreoffice-fresh: Office documents in Glide Folio'
-    'libarchive: comic archives in Glide Folio'
+    'libarchive: Extract and Compress in Glide Files, comic archives in Glide Folio'
     '7zip: CB7 comics in Glide Folio'
     'unrar: CBR comics in Glide Folio'
     'libheif: HEIC and HEIF in Glide Photos'

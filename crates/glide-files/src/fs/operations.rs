@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardAction {
@@ -53,7 +54,8 @@ pub fn rename_item(target: &Path, new_name: &str) -> io::Result<PathBuf> {
     if renamed == target {
         return Ok(renamed);
     }
-    if same_file(target, &renamed) {
+    let recased = target.file_name().is_some_and(|old| old.to_string_lossy().to_lowercase() == name.to_lowercase());
+    if recased && same_file(target, &renamed) {
         std::fs::rename(target, &renamed)?;
         return Ok(renamed);
     }
@@ -61,7 +63,7 @@ pub fn rename_item(target: &Path, new_name: &str) -> io::Result<PathBuf> {
     Ok(renamed)
 }
 
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let c = |path: &Path| {
         std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(ErrorKind::InvalidFilename))
@@ -109,7 +111,18 @@ pub fn create_from_template(template: &Path, dir: &Path, name: &str) -> io::Resu
     if occupied(&dest) {
         return Err(io::Error::new(ErrorKind::AlreadyExists, "name taken"));
     }
-    super::jobs::copy_exact(template, &dest)?;
+    let source = std::fs::canonicalize(template)?;
+    if source.is_dir() {
+        super::jobs::copy_exact(&source, &dest)?;
+        return Ok(dest);
+    }
+    let mut input = std::fs::File::open(&source)?;
+    let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&dest)?;
+    if let Err(err) = io::copy(&mut input, &mut output) {
+        drop(output);
+        let _ = std::fs::remove_file(&dest);
+        return Err(err);
+    }
     Ok(dest)
 }
 
@@ -122,43 +135,58 @@ pub fn write_new_file(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBu
 }
 
 pub(crate) fn move_path(source: &Path, dest: &Path) -> io::Result<()> {
-    match std::fs::rename(source, dest) {
+    match rename_noreplace(source, dest) {
         Err(err) if err.kind() == ErrorKind::CrossesDevices => {
             super::jobs::copy_exact(source, dest)?;
-            remove_recursive(source)
+            remove_recursive(source).inspect_err(|_| {
+                let _ = remove_recursive(dest);
+            })
         }
         result => result,
     }
 }
 
 pub fn remove_recursive(path: &Path) -> io::Result<()> {
-    if !std::fs::symlink_metadata(path)?.is_dir() {
-        return std::fs::remove_file(path);
-    }
-    match std::fs::remove_dir_all(path) {
-        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
-            make_folders_writable(path);
-            std::fs::remove_dir_all(path)
-        }
-        result => result,
-    }
+    remove_tree(path, &AtomicBool::new(false))
 }
 
-fn make_folders_writable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return;
-    };
+pub(crate) fn remove_tree(path: &Path, cancel: &AtomicBool) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
     if !meta.is_dir() {
-        return;
+        return std::fs::remove_file(path);
     }
+    let table = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    let mounts: Vec<PathBuf> =
+        table.lines().filter_map(|line| line.split(' ').nth(1)).map(super::jobs::mount_point).collect();
+    let root = std::fs::canonicalize(path)?;
+    clear_folder(&root, &meta, &mounts, cancel)?;
+    std::fs::remove_dir(path)
+}
+
+fn clear_folder(dir: &Path, meta: &std::fs::Metadata, mounts: &[PathBuf], cancel: &AtomicBool) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let mode = meta.permissions().mode();
     if mode & 0o700 != 0o700 {
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o700));
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode | 0o700));
     }
-    for entry in std::fs::read_dir(path).into_iter().flatten().flatten() {
-        make_folders_writable(&entry.path());
+    for child in std::fs::read_dir(dir)? {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(ErrorKind::Interrupted, "cancelled"));
+        }
+        let child = child?;
+        let path = child.path();
+        if !child.file_type()?.is_dir() {
+            std::fs::remove_file(&path)?;
+            continue;
+        }
+        let inner = std::fs::symlink_metadata(&path)?;
+        if inner.dev() != meta.dev() || mounts.contains(&path) {
+            return Err(io::Error::from_raw_os_error(libc::EBUSY));
+        }
+        clear_folder(&path, &inner, mounts, cancel)?;
+        std::fs::remove_dir(&path)?;
     }
+    Ok(())
 }
 
 fn compound_extension(name: &OsStr) -> Option<(&OsStr, &OsStr)> {

@@ -43,7 +43,13 @@ impl Default for SortConfig {
     }
 }
 
-const PSEUDO_FS: [&str; 4] = ["/proc", "/sys", "/dev", "/run"];
+const PSEUDO_FS: [&str; 3] = ["/proc", "/sys", "/dev"];
+
+#[must_use]
+pub fn searchable(dir: &Path) -> bool {
+    let transient = dir.parent() == Some(Path::new("/run")) && dir.file_name().is_some_and(|name| name != "media");
+    !transient && !PSEUDO_FS.iter().any(|skip| dir == Path::new(skip))
+}
 
 pub fn read_directory(dir: &Path, show_hidden: bool, sort: SortConfig) -> std::io::Result<Vec<FileEntry>> {
     let mut entries: Vec<FileEntry> = std::fs::read_dir(dir)?
@@ -73,13 +79,16 @@ pub fn search_recursive(
             continue;
         };
         for entry in read_dir.flatten() {
+            if cancelled() {
+                return results;
+            }
             let Some(found) = FileEntry::from_path(entry.path()) else {
                 continue;
             };
             if !show_hidden && found.is_hidden() {
                 continue;
             }
-            if found.is_dir && !found.is_symlink && !PSEUDO_FS.iter().any(|skip| found.path == Path::new(skip)) {
+            if found.is_dir && !found.is_symlink && searchable(&found.path) {
                 queue.push_back(found.path.clone());
             }
             if found.name.to_lowercase().contains(&needle) || found.tags.iter().any(|tag| tag.to_lowercase() == needle)

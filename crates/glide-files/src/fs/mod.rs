@@ -14,6 +14,7 @@ pub mod trash;
 pub mod uri;
 pub mod volumes;
 pub mod watch;
+mod xattr;
 
 pub use actions::{Codes, DesktopApp, Extensions, Offer, Roots, Run, Target};
 pub use entry::{

@@ -106,7 +106,7 @@ fn tzset_due(last: u64, now: u64) -> bool {
     last == 0 || now.saturating_sub(last) >= TZSET_INTERVAL || now < last
 }
 
-fn refresh_time_zone(now: u64) {
+pub fn refresh_time_zone(now: u64) {
     let last = LAST_TZSET.load(Ordering::Relaxed);
     if tzset_due(last, now)
         && LAST_TZSET.compare_exchange(last, now.max(1), Ordering::Relaxed, Ordering::Relaxed).is_ok()

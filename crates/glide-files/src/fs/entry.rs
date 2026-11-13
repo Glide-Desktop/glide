@@ -190,6 +190,9 @@ impl LocalTime {
             Err(before) => -(before.duration().as_secs() as i64),
         };
         let stamp = secs as libc::time_t;
+        glide_config::refresh_time_zone(
+            SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_secs()),
+        );
         let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
         // SAFETY: `stamp` outlives the call and `tm` is writable storage for one `libc::tm`.
         let filled = unsafe { libc::localtime_r(&raw const stamp, tm.as_mut_ptr()) };

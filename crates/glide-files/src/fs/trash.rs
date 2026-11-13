@@ -62,9 +62,12 @@ impl Trash {
         let uid = uid();
         let mut found: Vec<Self> = Vec::new();
         for top in mounts {
-            for root in [top.join(format!(".Trash-{uid}")), top.join(".Trash").join(uid.to_string())] {
+            let shared = top.join(".Trash");
+            let roots = [(top.join(format!(".Trash-{uid}")), true), (shared.join(uid.to_string()), sticky(&shared))];
+            for (root, trusted) in roots {
+                let owned = std::fs::symlink_metadata(&root).is_ok_and(|meta| meta.is_dir() && meta.uid() == uid);
                 let trash = Self::new(root);
-                if trash != *self && confined(top, &trash.files()) && !found.contains(&trash) {
+                if trusted && owned && trash != *self && confined(top, &trash.files()) && !found.contains(&trash) {
                     found.push(trash);
                 }
             }
@@ -90,12 +93,8 @@ impl Trash {
         let top = mount_top(parent, target);
         let uid = uid();
         let shared = top.join(".Trash");
-        let sticky = matches!(
-            std::fs::symlink_metadata(&shared),
-            Ok(meta) if meta.is_dir() && meta.permissions().mode() & 0o1000 != 0
-        );
         let candidate = shared.join(uid.to_string());
-        let root = if sticky && own_dir(&candidate, uid).is_ok() {
+        let root = if sticky(&shared) && own_dir(&candidate, uid).is_ok() {
             candidate
         } else {
             let own = top.join(format!(".Trash-{uid}"));
@@ -118,16 +117,23 @@ impl Trash {
             std::fs::create_dir_all(trash.files())?;
             std::fs::create_dir_all(trash.info_dir())?;
         }
-        let dest = unique_path(&trash.files(), name, true, |candidate| {
-            occupied(candidate) || candidate.file_name().is_some_and(|slot| occupied(&trash.info_file(slot)))
-        });
-        let info = trash.info_file(dest.file_name().unwrap_or(name));
         let deleted = LocalTime::of(SystemTime::now()).map(LocalTime::iso);
         let recorded = top
             .as_deref()
             .and_then(|top| original.strip_prefix(top).ok())
             .map_or_else(|| encode_path(&original), encode_path);
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&info)?;
+        let mut attempts = 0;
+        let (dest, info, mut file) = loop {
+            let dest = unique_path(&trash.files(), name, true, |candidate| {
+                occupied(candidate) || candidate.file_name().is_some_and(|slot| occupied(&trash.info_file(slot)))
+            });
+            let info = trash.info_file(dest.file_name().unwrap_or(name));
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&info) {
+                Ok(file) => break (dest, info, file),
+                Err(err) if err.kind() == ErrorKind::AlreadyExists && attempts < 16 => attempts += 1,
+                Err(err) => return Err(err),
+            }
+        };
         if let Err(err) = write!(
             file,
             "[Trash Info]\nPath={recorded}\nDeletionDate={}\n",
@@ -151,11 +157,12 @@ impl Trash {
 
     fn top(&self) -> Option<&Path> {
         let name = self.root.file_name()?.to_string_lossy();
-        if name.starts_with(".Trash-") {
+        let uid = uid().to_string();
+        if name.strip_prefix(".Trash-") == Some(uid.as_str()) {
             return self.root.parent();
         }
         let shared = self.root.parent()?;
-        (shared.file_name()? == ".Trash").then(|| shared.parent()).flatten()
+        (name == uid.as_str() && shared.file_name()? == ".Trash").then(|| shared.parent()).flatten()
     }
 
     #[must_use]
@@ -218,25 +225,36 @@ impl Trash {
                 && dir.exists()
                 && !confined(top, &dir)
             {
-                failure.get_or_insert_with(|| io::Error::new(ErrorKind::InvalidData, "the trash folder is a link"));
-                continue;
+                return Err(io::Error::new(ErrorKind::InvalidData, "the trash folder is a link"));
             }
-            match std::fs::read_dir(&dir) {
-                Ok(entries) => {
-                    for entry in entries {
-                        if let Err(err) = entry.and_then(|entry| remove_recursive(&entry.path())) {
-                            failure.get_or_insert(err);
-                        }
-                    }
-                }
-                Err(err) if err.kind() == ErrorKind::NotFound => {}
+        }
+        let listed = |dir: PathBuf, failure: &mut Option<io::Error>| -> Vec<PathBuf> {
+            match std::fs::read_dir(dir) {
+                Ok(entries) => entries.flatten().map(|entry| entry.path()).collect(),
+                Err(err) if err.kind() == ErrorKind::NotFound => Vec::new(),
                 Err(err) => {
                     failure.get_or_insert(err);
+                    Vec::new()
                 }
+            }
+        };
+        for item in listed(self.files(), &mut failure) {
+            if let Err(err) = remove_recursive(&item) {
+                failure.get_or_insert(err);
+            }
+        }
+        for info in listed(self.info_dir(), &mut failure) {
+            let kept = info.file_stem().is_some_and(|slot| occupied(&self.files().join(slot)));
+            if !kept && let Err(err) = remove_recursive(&info) {
+                failure.get_or_insert(err);
             }
         }
         failure.map_or(Ok(()), Err)
     }
+}
+
+fn sticky(shared: &Path) -> bool {
+    std::fs::symlink_metadata(shared).is_ok_and(|meta| meta.is_dir() && meta.permissions().mode() & 0o1000 != 0)
 }
 
 fn plain_dir(path: &Path) -> bool {
