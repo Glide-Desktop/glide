@@ -1,13 +1,13 @@
-use iced::widget::{Column, container, row};
+use iced::widget::{Column, container};
 use iced::{Element, Task};
 
-use super::common::{choice, gated, switch_row};
+use super::common::{choice, switch_row};
 use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::icons::Icon;
 use crate::services::config::{ConfigStore, DEFAULT_BORDER_WIDTH, DEFAULT_TITLEBAR_HEIGHT};
 use crate::theme::{self, ThemeState};
-use crate::widgets::{self, Group, Row};
+use crate::widgets::{Group, Row};
 use glide_sdk::widget::mock as sketch;
 
 mod tr {
@@ -15,11 +15,8 @@ mod tr {
         Preview => "Preview", "Попередній перегляд";
         SampleTitle => "Documents", "Документи";
         Buttons => "Buttons", "Кнопки";
-        ButtonsHint => "Where the close button sits", "Де розташована кнопка закриття";
         CloseRight => "Close on the right", "Закриття праворуч";
-        CloseRightHint => "Maximize on the left", "Розгортання ліворуч";
         CloseLeft => "Close on the left", "Закриття ліворуч";
-        CloseLeftHint => "Maximize on the right, as on macOS", "Розгортання праворуч, як у macOS";
         DoubleClick => "Double-click the titlebar", "Подвійне клацання на заголовку";
         DoubleClickHint => "What happens to the window", "Що стається з вікном";
         ActionMaximize => "Maximize", "Розгорнути";
@@ -183,7 +180,6 @@ impl Pane for Page {
             .spacing(theme::SECTION_GAP)
             .push(preview_group(&c, mock))
             .push(titlebar_group(&c, mock))
-            .push(buttons_group(&c, mock))
             .push(actions_group(&c, config))
             .push(frame_group(&c, mock))
             .into()
@@ -220,6 +216,7 @@ fn preview_group<'a>(c: &Ctx, mock: Mock) -> Element<'a, Msg> {
     Group::new(t)
         .title(c.t(tr::Key::Preview))
         .description(c.t(K::TitlebarsHint))
+        .stacked_header(t.compact)
         .push(
             container(sketch::window_on_screen(t, window_mock(&t, c.t(tr::Key::SampleTitle), mock), 170.0)).padding(8),
         )
@@ -230,7 +227,21 @@ fn titlebar_group<'a>(c: &Ctx, mock: Mock) -> Element<'a, Msg> {
     let t = c.theme;
     let c = *c;
     Group::new(t)
-        .title(c.t(K::Titlebars))
+        .title(c.t(K::PanelWindows))
+        .push(
+            Row::new(t, c.t(tr::Key::Buttons))
+                .suffix(choice(
+                    c,
+                    [
+                        (ButtonLayout::CloseRight, c.t(tr::Key::CloseRight)),
+                        (ButtonLayout::CloseLeft, c.t(tr::Key::CloseLeft)),
+                    ],
+                    mock.layout,
+                    Msg::Buttons,
+                ))
+                .stacked(t.compact)
+                .build(),
+        )
         .push(
             Row::new(t, c.t(K::TitleAlignment))
                 .suffix(choice(
@@ -254,52 +265,12 @@ fn titlebar_group<'a>(c: &Ctx, mock: Mock) -> Element<'a, Msg> {
         .build()
 }
 
-fn buttons_group<'a>(c: &Ctx, mock: Mock) -> Element<'a, Msg> {
-    let t = c.theme;
-    let card = |option: ButtonLayout, heading: tr::Key, hint: tr::Key| {
-        widgets::radio_card(
-            t,
-            window_mock(
-                &t,
-                "",
-                Mock {
-                    align: TitleAlign::Center,
-                    density: Density::Standard,
-                    layout: option,
-                    shadow: false,
-                    border: true,
-                    width: 150.0,
-                    height: 58.0,
-                },
-            ),
-            c.t(heading),
-            Some(c.t(hint).to_string()),
-            mock.layout == option,
-            Msg::Buttons(option),
-        )
-    };
-    Group::new(t)
-        .title(c.t(tr::Key::Buttons))
-        .description(c.t(tr::Key::ButtonsHint))
-        .push(
-            container(gated(
-                *c,
-                row![
-                    card(ButtonLayout::CloseRight, tr::Key::CloseRight, tr::Key::CloseRightHint),
-                    card(ButtonLayout::CloseLeft, tr::Key::CloseLeft, tr::Key::CloseLeftHint),
-                ]
-                .spacing(12),
-            ))
-            .padding(8),
-        )
-        .build()
-}
-
 fn actions_group<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
     let t = c.theme;
     Group::new(t)
         .title(c.t(tr::Key::Behaviour))
         .description(c.t(tr::Key::BehaviourHint))
+        .stacked_header(t.compact)
         .push(
             Row::new(t, c.t(tr::Key::DoubleClick))
                 .subtitle(c.t(tr::Key::DoubleClickHint))
@@ -313,6 +284,7 @@ fn actions_group<'a>(c: &Ctx, config: &ConfigStore) -> Element<'a, Msg> {
                     DoubleClick::from_config(config),
                     Msg::DoubleClick,
                 ))
+                .stacked(t.compact)
                 .build(),
         )
         .build()
