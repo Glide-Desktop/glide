@@ -33,8 +33,6 @@ const PASTABLE: [(&str, &str, bool); 7] = [
     ("text/plain", "txt", false),
     ("UTF8_STRING", "txt", false),
 ];
-const POLL_MS: i32 = 30;
-
 pub use glide_sdk::window::Handles;
 
 #[derive(Debug)]
@@ -49,16 +47,36 @@ pub enum Command {
 pub struct Link {
     commands: Arc<Mutex<mpsc::Sender<Command>>>,
     accepting: Arc<AtomicBool>,
+    wake: Arc<OwnedFd>,
 }
 
 impl Link {
     pub fn send(&self, command: Command) -> bool {
-        self.commands.lock().unwrap_or_else(PoisonError::into_inner).send(command).is_ok()
+        let sent = self.commands.lock().unwrap_or_else(PoisonError::into_inner).send(command).is_ok();
+        self.wake();
+        sent
     }
 
     pub fn set_accepting(&self, accepting: bool) {
-        self.accepting.store(accepting, Ordering::Relaxed);
+        if self.accepting.swap(accepting, Ordering::Relaxed) != accepting {
+            self.wake();
+        }
     }
+
+    fn wake(&self) {
+        let one = 1_u64.to_ne_bytes();
+        // SAFETY: `wake` is a live eventfd and `one` is readable for the eight bytes an eventfd takes.
+        unsafe {
+            libc::write(std::os::fd::AsRawFd::as_raw_fd(&*self.wake), one.as_ptr().cast(), one.len());
+        }
+    }
+}
+
+fn wake_fd() -> Option<OwnedFd> {
+    // SAFETY: `eventfd` takes no pointers; a negative return is checked below.
+    let raw = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+    // SAFETY: a non-negative return is a fresh descriptor nobody else owns.
+    (raw >= 0).then(|| unsafe { OwnedFd::from_raw_fd(raw) })
 }
 
 impl PartialEq for Link {
@@ -243,7 +261,9 @@ pub fn serve(
     });
     let (commands, inbox) = mpsc::channel();
     let accepting = Arc::new(AtomicBool::new(true));
-    let link = Link { commands: Arc::new(Mutex::new(commands)), accepting: Arc::clone(&accepting) };
+    let wake = Arc::new(wake_fd().ok_or_else(|| String::from("no eventfd"))?);
+    let link =
+        Link { commands: Arc::new(Mutex::new(commands)), accepting: Arc::clone(&accepting), wake: Arc::clone(&wake) };
     events.unbounded_send(Event::Ready(link)).map_err(|err| err.to_string())?;
     let mut state = State {
         events,
@@ -276,19 +296,32 @@ pub fn serve(
         }
         queue.flush().map_err(|err| err.to_string())?;
         if let Some(guard) = queue.prepare_read() {
-            let mut poll = libc::pollfd {
-                fd: std::os::fd::AsRawFd::as_raw_fd(&guard.connection_fd()),
+            use std::os::fd::AsRawFd;
+            let mut polled = [guard.connection_fd().as_raw_fd(), wake.as_raw_fd()].map(|fd| libc::pollfd {
+                fd,
                 events: libc::POLLIN,
                 revents: 0,
-            };
-            // SAFETY: `poll` points to one valid `pollfd` for the duration of the call.
-            let ready = unsafe { libc::poll(&raw mut poll, 1, POLL_MS) };
-            if ready > 0 {
+            });
+            // SAFETY: `polled` holds two valid `pollfd`s for the duration of the call.
+            let ready = unsafe { libc::poll(polled.as_mut_ptr(), 2, KEEPALIVE_MS) };
+            if polled[1].revents != 0 {
+                let mut count = [0_u8; 8];
+                // SAFETY: `count` is writable for the eight bytes an eventfd read yields.
+                unsafe {
+                    libc::read(wake.as_raw_fd(), count.as_mut_ptr().cast(), count.len());
+                }
+            }
+            if ready > 0 && polled[0].revents != 0 {
                 guard.read().map_err(|err| err.to_string())?;
+            }
+            if state.events.is_closed() {
+                return Ok(());
             }
         }
     }
 }
+
+const KEEPALIVE_MS: i32 = 30_000;
 
 impl State {
     fn handle(&mut self, command: Command, qh: &QueueHandle<Self>) {
