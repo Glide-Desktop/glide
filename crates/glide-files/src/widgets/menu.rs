@@ -48,8 +48,7 @@ fn options_for(window: Size, width: f32) -> Point {
 }
 
 pub(crate) fn bookmarkable(app: &App, path: &Path) -> bool {
-    path.is_dir()
-        && !app.is_bookmarked(path)
+    !app.is_bookmarked(path)
         && !app.places.iter().any(|place| place.path == path)
         && !app.is_device(path)
         && !app.trash.contains(path)
@@ -82,7 +81,7 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
     let item = |key: Key, message: Message, icon: Icon| Entry::action(key.text(app.lang), message).glyph(icon.handle());
     let selected = app.selected();
     let single = selected.len() == 1;
-    let single_dir = single && selected[0].is_dir();
+    let single_dir = single && app.selected_entries().next().is_some_and(|entry| entry.is_dir);
     let in_trash = app.in_trash();
     let properties = item(Key::Properties, Message::Properties, Icon::Info).shortcut("Alt+Enter");
     match kind {
@@ -94,54 +93,57 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             properties.enabled(single),
         ],
         MenuKind::Selection => {
-            let bookmark = selected
-                .first()
-                .filter(|path| single && bookmarkable(app, path))
-                .map(|path| item(Key::AddBookmark, Message::AddBookmark(path.clone()), Icon::Star));
             let mut entries = vec![item(Key::Open, Message::OpenSelection, Icon::Open).shortcut("Enter")];
-            if let (true, [found]) = (app.is_searching(), selected.as_slice()) {
-                entries.push(item(Key::ShowInFolder, Message::Reveal(found.clone()), Icon::Folder));
+            if menu.open_with {
+                entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith), Icon::Apps).cascades());
             }
             if single_dir {
                 entries.push(item(Key::OpenInNewWindow, Message::NewWindow(Some(selected[0].clone())), Icon::Window));
             }
-            if menu.open_with {
-                entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith), Icon::Apps).cascades());
+            if let (true, [found]) = (app.is_searching(), selected.as_slice()) {
+                entries.push(item(Key::ShowInFolder, Message::Reveal(found.clone()), Icon::Folder));
             }
             entries.extend([
                 Entry::Separator,
                 item(Key::Cut, Message::Cut, Icon::Cut).shortcut("Ctrl+X"),
                 item(Key::Copy, Message::Copy, Icon::Copy).shortcut("Ctrl+C"),
                 item(Key::Duplicate, Message::Duplicate, Icon::Duplicate).shortcut("Ctrl+D"),
-                item(Key::CreateLink, Message::CreateLink, Icon::Link),
                 item(Key::Rename, Message::Rename, Icon::Pencil).shortcut("F2"),
+                Entry::Separator,
             ]);
             if crate::fs::archive::available() {
                 let archives =
                     app.selected_entries().all(|entry| !entry.is_dir && crate::fs::archive::is_archive(&entry.path));
-                entries.push(Entry::Separator);
                 if archives {
                     entries.push(item(Key::ExtractHere, Message::Extract, Icon::Extract));
                 }
                 entries.push(item(Key::Compress, Message::Compress, Icon::Compress));
             }
             entries.extend([
+                item(Key::MoreActions, Message::SubMenu(MenuKind::More), Icon::More).cascades(),
                 Entry::Separator,
-                Entry::heading(Key::Tags.text(app.lang)),
                 tag_swatches(app),
-                item(Key::EditTags, Message::EditTags, Icon::Tag),
-                Entry::Separator,
-                item(Key::OpenInTerminal, Message::Terminal, Icon::Terminal),
-                item(Key::CopyPath, Message::CopyPath, Icon::Path).shortcut("Ctrl+Shift+C"),
-            ]);
-            entries.extend(bookmark);
-            entries.extend(offered(&menu.offers).into_iter().skip(1));
-            entries.extend([
                 Entry::Separator,
                 item(Key::MoveToTrash, Message::Trash, Icon::Trash).shortcut("Delete").danger(),
-                Entry::Separator,
-                properties.enabled(single),
             ]);
+            if single {
+                entries.push(properties);
+            }
+            entries
+        }
+        MenuKind::More => {
+            let mut entries = vec![
+                item(Key::CreateLink, Message::CreateLink, Icon::Link),
+                item(Key::CopyPath, Message::CopyPath, Icon::Path).shortcut("Ctrl+Shift+C"),
+                item(Key::EditTags, Message::EditTags, Icon::Tag),
+            ];
+            if single_dir {
+                entries.push(item(Key::OpenInTerminal, Message::Terminal, Icon::Terminal));
+                if bookmarkable(app, &selected[0]) {
+                    entries.push(item(Key::AddBookmark, Message::AddBookmark(selected[0].clone()), Icon::Star));
+                }
+            }
+            entries.extend(offered(&menu.offers));
             entries
         }
         MenuKind::Background if in_trash => vec![
@@ -155,7 +157,6 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             item(Key::NewDocument, Message::SubMenu(MenuKind::Templates), Icon::FilePlus).cascades(),
             Entry::Separator,
             item(Key::Paste, Message::Paste, Icon::Paste).shortcut("Ctrl+V"),
-            Entry::Separator,
             item(Key::SelectAll, Message::SelectAll, Icon::SelectAll).shortcut("Ctrl+A"),
             item(Key::InvertSelection, Message::InvertSelection, Icon::Invert).shortcut("Ctrl+Shift+I"),
             item(Key::SelectMatching, Message::SelectPattern, Icon::Filter)

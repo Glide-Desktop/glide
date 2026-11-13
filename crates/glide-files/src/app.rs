@@ -166,6 +166,7 @@ pub enum MenuKind {
     Tags,
     Columns,
     OpenWith,
+    More,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2684,7 +2685,11 @@ impl App {
         if kind == MenuKind::Templates {
             self.templates = templates_dir().map(|dir| templates_in(&dir)).unwrap_or_default();
         }
-        let offers = if kind == MenuKind::OpenWith { self.open_with_offers(&self.targets()) } else { Vec::new() };
+        let offers = match kind {
+            MenuKind::OpenWith => self.open_with_offers(&self.targets()),
+            MenuKind::More => menu.offers.clone(),
+            _ => Vec::new(),
+        };
         let mut child = Menu { offers, ..Menu::new(kind, Point::ORIGIN) };
         if keyboard {
             child.highlight = widgets::menu::next_highlight(&widgets::menu::entries(self, &child), None, Step::First);
@@ -2959,30 +2964,10 @@ impl App {
         if apps.is_empty() {
             apps = self.extensions.all_listed_apps();
         }
-        let lang = self.lang;
-        let group = Some(Key::OpenWith.text(lang).to_string());
-        let mut offers: Vec<Offer> = apps
-            .iter()
+        apps.iter()
             .take(OPEN_WITH_LIMIT)
-            .map(|app| Offer { label: app.name.clone(), group: group.clone(), run: app.run() })
-            .collect();
-        let shared_mime = targets.first().map(|t| &t.mime).filter(|m| targets.iter().all(|t| &t.mime == *m));
-        if let Some(mime) = shared_mime {
-            let current = self
-                .extensions
-                .default_app(mime)
-                .and_then(|id| self.extensions.apps.iter().find(|app| app.id == id))
-                .map(|app| app.exec.as_str());
-            let group = Some(Key::AlwaysOpenWith.text(lang).to_string());
-            offers.extend(apps.iter().take(OPEN_WITH_LIMIT).filter(|app| Some(app.exec.as_str()) != current).map(
-                |app| Offer {
-                    label: app.name.clone(),
-                    group: group.clone(),
-                    run: Run::SetDefault { mime: mime.clone(), app: app.id.clone() },
-                },
-            ));
-        }
-        offers
+            .map(|app| Offer { label: app.name.clone(), group: None, run: app.run() })
+            .collect()
     }
 
     fn run_action(&mut self, offer: Offer) -> Task<Message> {
