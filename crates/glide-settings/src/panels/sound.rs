@@ -747,14 +747,33 @@ fn volume_subtitle(device: Option<&str>, muted: Option<&str>) -> String {
 }
 
 fn input_meter<'a>(t: &ThemeState, level: f32, peak: f32) -> Element<'a, Msg> {
-    let tone = if level > 0.9 {
-        theme::Tone::Danger
+    let ink = if level > 0.9 {
+        t.danger()
     } else if level > 0.75 {
-        theme::Tone::Warn
+        t.warn()
     } else {
-        theme::Tone::Ok
+        t.ok()
     };
-    sdk::level_meter(&widgets::paint(t), level, peak, tone)
+    let track = t.fill_2();
+    let mut meter = iced::widget::Row::new().spacing(3).width(Fill);
+    for active in meter_segments(level, peak) {
+        let color = if active { ink } else { track };
+        meter = meter.push(container(space().height(16)).width(iced::Length::FillPortion(1)).style(move |_| {
+            container::Style {
+                background: Some(color.into()),
+                border: iced::Border { radius: glide_sdk::theme::R1.into(), ..Default::default() },
+                ..Default::default()
+            }
+        }));
+    }
+    meter.into()
+}
+
+fn meter_segments(level: f32, peak: f32) -> [bool; 8] {
+    let count = |value: f32| (value.clamp(0.0, 1.0) * 8.0).ceil() as usize;
+    let filled = count(level);
+    let peak = count(peak);
+    std::array::from_fn(|index| index < filled || (peak > filled && index + 1 == peak))
 }
 
 fn volume_row<'a>(
@@ -792,7 +811,14 @@ fn volume_row<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::volume_subtitle;
+    use super::{meter_segments, volume_subtitle};
+
+    #[test]
+    fn input_meter_shows_signal_and_peak_without_inventing_a_level() {
+        assert_eq!(meter_segments(0.0, 0.0), [false; 8]);
+        assert_eq!(meter_segments(0.25, 0.75), [true, true, false, false, false, true, false, false]);
+        assert_eq!(meter_segments(2.0, 2.0), [true; 8]);
+    }
 
     #[test]
     fn volume_subtitle_preserves_device_and_mute_state_without_placeholders() {
