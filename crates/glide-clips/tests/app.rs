@@ -283,3 +283,61 @@ fn closing_remembers(harness: &mut Harness<App>, root: &Path) {
     }
     assert!(saved.contains("Карпати.mkv"), "the position is remembered: {saved}");
 }
+
+#[test]
+fn opening_in_trim_mode_via_args_or_reopen_transitions_on_loaded() {
+    let root = isolate();
+    let file = root.join("videos").join("rec.mkv");
+    fixture(&file, 4);
+
+    let parsed_trim = glide_clips::LaunchArgs::parse(["glide-clips", "--trim", &file.to_string_lossy()]);
+    assert!(parsed_trim.enter_trim_on_load);
+    assert_eq!(parsed_trim.path, Some(file.clone()));
+
+    let parsed_plain = glide_clips::LaunchArgs::parse(["glide-clips", &file.to_string_lossy()]);
+    assert!(!parsed_plain.enter_trim_on_load);
+    assert_eq!(parsed_plain.path, Some(file.clone()));
+
+    let parsed_suffix = glide_clips::LaunchArgs::parse([format!("{}#trim", file.display())]);
+    assert!(parsed_suffix.enter_trim_on_load);
+    assert_eq!(parsed_suffix.path, Some(file.clone()));
+
+    let harness = &mut Harness::<App>::new(glide_clips::APP_ID, Look::default(), iced::Size::new(1280.0, 720.0));
+    let _ = harness.view();
+    harness.message(Message::OpenPath(file.clone()));
+    harness.message(Message::Handles(None));
+    assert!(harness.app().media.is_some());
+    assert_eq!(harness.app().mode, Mode::Play);
+
+    let info = glide_video::info::discover(&harness.app().media.as_ref().unwrap().uri, Duration::from_secs(10))
+        .expect("video info discovers");
+
+    harness.app_mut().open_in_trim = true;
+    harness.message(Message::Loaded(Ok(info.clone())));
+    assert_eq!(harness.app().mode, Mode::Trim { start: 0.0, end: 1.0, head: 0.0 });
+    assert!(!harness.app().open_in_trim);
+
+    harness.message(Message::TrimCancel);
+    assert_eq!(harness.app().mode, Mode::Play);
+
+    harness.send(glide_sdk::app::Event::Reopened(glide_sdk::instance::Opened {
+        args: vec!["--trim".into(), file.to_string_lossy().into()],
+        token: String::new(),
+    }));
+    assert!(harness.app().open_in_trim);
+    harness.message(Message::Loaded(Ok(info.clone())));
+    assert_eq!(harness.app().mode, Mode::Trim { start: 0.0, end: 1.0, head: 0.0 });
+    assert!(!harness.app().open_in_trim);
+
+    harness.message(Message::TrimCancel);
+    assert_eq!(harness.app().mode, Mode::Play);
+
+    harness.send(glide_sdk::app::Event::Reopened(glide_sdk::instance::Opened {
+        args: vec![format!("{}#trim", file.display())],
+        token: String::new(),
+    }));
+    assert!(harness.app().open_in_trim);
+    harness.message(Message::Loaded(Ok(info)));
+    assert_eq!(harness.app().mode, Mode::Trim { start: 0.0, end: 1.0, head: 0.0 });
+    assert!(!harness.app().open_in_trim);
+}

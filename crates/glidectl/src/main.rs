@@ -207,6 +207,11 @@ fn format_event(event: &Event) -> String {
             "gesture: {:?} {:?} {} fingers ({:.0}, {:.0}) {:?}",
             sample.kind, sample.phase, sample.fingers, sample.dx, sample.dy, sample.action
         ),
+        Event::RecordingStateChanged { active: true, .. } => "recording started".to_string(),
+        Event::RecordingStateChanged { active: false, path: Some(path) } => {
+            format!("recording saved: {}", printable(path))
+        }
+        Event::RecordingStateChanged { active: false, path: None } => "recording stopped".to_string(),
     }
 }
 
@@ -226,6 +231,7 @@ COMMANDS:
     window move <N|next|prev>  Move focused window to workspace
     reload                     Reload configuration from glide.toml
     lock                       Lock the screen
+    record [start|stop|status] Start, stop, or query screen recording
     inhibitors                 List what keeps the screen from going dark
     action <name>              Run a named shell action, as a keybind would (e.g. screen-mirroring)
     exec <command...>          Execute shell command
@@ -269,6 +275,12 @@ fn parse_args(args: &[String]) -> anyhow::Result<Request> {
         "quit" => Ok(Request::Quit),
         "reload" => Ok(Request::Reload),
         "lock" => Ok(Request::Lock),
+        "record" => match args.get(1).map(String::as_str) {
+            Some("start") | None => Ok(Request::ScreenRecord),
+            Some("stop") => Ok(Request::StopRecording),
+            Some("status") => Ok(Request::RecordingStatus),
+            _ => anyhow::bail!("Usage: glidectl record [start|stop|status]"),
+        },
         "inhibitors" => Ok(Request::IdleInhibitors),
         "action" => match args.get(1) {
             Some(name) => Ok(Request::Action { name: name.clone() }),
@@ -350,6 +362,19 @@ fn print_response(out: &mut impl Write, response: &Response) -> std::io::Result<
         }
         Response::Layout { index, name } => writeln!(out, "{index} {}", printable(name))?,
         Response::NightLight { on } => writeln!(out, "{}", if *on { "on" } else { "off" })?,
+        Response::Recording { active, elapsed_secs, path } => {
+            if *active {
+                if let Some(secs) = elapsed_secs {
+                    writeln!(out, "recording ({secs}s)")?;
+                } else {
+                    writeln!(out, "recording")?;
+                }
+            } else if let Some(path) = path {
+                writeln!(out, "{}", printable(path))?;
+            } else {
+                writeln!(out, "stopped")?;
+            }
+        }
         Response::ActivationToken { token } => writeln!(out, "{token}")?,
         Response::Screenshot { path } => writeln!(out, "{path}")?,
         Response::Color { red, green, blue } => writeln!(out, "{red:.4} {green:.4} {blue:.4}")?,
@@ -568,5 +593,38 @@ mod tests {
         assert_eq!(parse(&["night-light", "on"]), Request::NightLight { on: Some(true) });
         assert_eq!(parse(&["night-light", "off"]), Request::NightLight { on: Some(false) });
         assert_eq!(parse(&["night-light", "status"]), Request::NightLight { on: None });
+    }
+
+    #[test]
+    fn usage_lists_record_and_parses_recording_subcommands() {
+        assert!(USAGE.contains("\n    record [start|stop|status] "));
+        assert_eq!(parse(&["record"]), Request::ScreenRecord);
+        assert_eq!(parse(&["record", "start"]), Request::ScreenRecord);
+        assert_eq!(parse(&["record", "stop"]), Request::StopRecording);
+        assert_eq!(parse(&["record", "status"]), Request::RecordingStatus);
+        assert!(parse_args(&words(&["record", "invalid"])).is_err());
+    }
+
+    #[test]
+    fn recording_responses_format_active_and_stopped_states() {
+        let mut out = Vec::new();
+        print_response(&mut out, &Response::Recording { active: true, elapsed_secs: Some(15), path: None }).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "recording (15s)\n");
+
+        let mut out = Vec::new();
+        print_response(&mut out, &Response::Recording { active: true, elapsed_secs: None, path: None }).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "recording\n");
+
+        let mut out = Vec::new();
+        print_response(
+            &mut out,
+            &Response::Recording { active: false, elapsed_secs: None, path: Some("/tmp/out.mp4".into()) },
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "/tmp/out.mp4\n");
+
+        let mut out = Vec::new();
+        print_response(&mut out, &Response::Recording { active: false, elapsed_secs: None, path: None }).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "stopped\n");
     }
 }

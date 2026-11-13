@@ -46,6 +46,9 @@ pub enum Request {
     Action { name: String },
     IdleInhibitors,
     LoginPasswordChanged { password: keychain::Hidden },
+    ScreenRecord,
+    StopRecording,
+    RecordingStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +184,13 @@ pub enum Response {
         apps: Vec<String>,
         caffeine: bool,
     },
+    Recording {
+        active: bool,
+        #[serde(default)]
+        elapsed_secs: Option<u64>,
+        #[serde(default)]
+        path: Option<String>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -188,15 +198,39 @@ pub enum Response {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Event {
-    WindowOpened { id: u64 },
-    WindowClosed { id: u64 },
-    TitleChanged { id: u64, title: String },
-    AppIdChanged { id: u64, app_id: String },
-    FocusChanged { id: Option<u64> },
-    WorkspaceChanged { id: u64 },
+    WindowOpened {
+        id: u64,
+    },
+    WindowClosed {
+        id: u64,
+    },
+    TitleChanged {
+        id: u64,
+        title: String,
+    },
+    AppIdChanged {
+        id: u64,
+        app_id: String,
+    },
+    FocusChanged {
+        id: Option<u64>,
+    },
+    WorkspaceChanged {
+        id: u64,
+    },
     OutputChanged,
-    LayoutChanged { index: usize, name: String },
-    Gesture { sample: GestureSample },
+    LayoutChanged {
+        index: usize,
+        name: String,
+    },
+    Gesture {
+        sample: GestureSample,
+    },
+    RecordingStateChanged {
+        active: bool,
+        #[serde(default)]
+        path: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -218,5 +252,41 @@ mod tests {
         let output: OutputInfo = serde_json::from_str(json).expect("old output info parses");
         assert!(output.modes.is_empty());
         assert_eq!(output.physical_mm, (0, 0));
+    }
+
+    #[test]
+    fn recording_ipc_messages_round_trip() {
+        for request in [Request::ScreenRecord, Request::StopRecording, Request::RecordingStatus] {
+            let json = serde_json::to_string(&request).unwrap();
+            let parsed: Request = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, request);
+        }
+
+        let active_resp = Response::Recording { active: true, elapsed_secs: Some(12), path: None };
+        let json = serde_json::to_string(&active_resp).unwrap();
+        let parsed: Response = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, active_resp);
+
+        let stopped_resp = Response::Recording {
+            active: false,
+            elapsed_secs: None,
+            path: Some("/home/user/Videos/glide-recording-1.mp4".into()),
+        };
+        let json = serde_json::to_string(&stopped_resp).unwrap();
+        let parsed: Response = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, stopped_resp);
+
+        let active_event = Event::RecordingStateChanged { active: true, path: None };
+        let json = serde_json::to_string(&active_event).unwrap();
+        let parsed: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, active_event);
+
+        let stopped_event = Event::RecordingStateChanged {
+            active: false,
+            path: Some("/home/user/Videos/glide-recording-1.mp4".into()),
+        };
+        let json = serde_json::to_string(&stopped_event).unwrap();
+        let parsed: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, stopped_event);
     }
 }

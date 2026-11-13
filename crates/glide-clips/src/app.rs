@@ -45,6 +45,87 @@ impl Default for Reopen {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LaunchArgs {
+    pub uri: Option<String>,
+    pub path: Option<PathBuf>,
+    pub trim: bool,
+    pub enter_trim_on_load: bool,
+}
+
+impl LaunchArgs {
+    pub fn parse<I, S>(args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut enter_trim_on_load = false;
+        let mut target = None;
+        let items: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+        for (i, item) in items.iter().enumerate() {
+            if i == 0 && (item == "glide-clips" || item.ends_with("/glide-clips")) {
+                continue;
+            }
+            if item == "--trim" || item == "-t" || item == "--preview" {
+                enter_trim_on_load = true;
+                continue;
+            }
+            if let Some(rest) = item.strip_prefix("--trim=") {
+                enter_trim_on_load = true;
+                if target.is_none() && !rest.is_empty() {
+                    target = Some(rest.to_string());
+                }
+                continue;
+            }
+            if let Some(rest) = item.strip_prefix("--trim ") {
+                enter_trim_on_load = true;
+                if target.is_none() && !rest.trim().is_empty() {
+                    target = Some(rest.trim().to_string());
+                }
+                continue;
+            }
+            if let Some(rest) = item.strip_prefix("-t ") {
+                enter_trim_on_load = true;
+                if target.is_none() && !rest.trim().is_empty() {
+                    target = Some(rest.trim().to_string());
+                }
+                continue;
+            }
+            if item.starts_with("--") {
+                continue;
+            }
+            if target.is_none() {
+                target = Some(item.clone());
+            }
+        }
+        let Some(mut raw) = target else {
+            return Self { uri: None, path: None, trim: enter_trim_on_load, enter_trim_on_load };
+        };
+        if let Some(stripped) = raw.strip_suffix("#trim") {
+            enter_trim_on_load = true;
+            raw = stripped.to_string();
+        }
+        if let Some(path) = glide_sdk::chooser::uri_path(&raw) {
+            return Self { uri: Some(uri_of(&path)), path: Some(path), trim: enter_trim_on_load, enter_trim_on_load };
+        }
+        if raw.contains("://") {
+            return Self { uri: Some(raw), path: None, trim: enter_trim_on_load, enter_trim_on_load };
+        }
+        let path = std::fs::canonicalize(&raw).unwrap_or_else(|_| PathBuf::from(&raw));
+        Self { uri: Some(uri_of(&path)), path: Some(path), trim: enter_trim_on_load, enter_trim_on_load }
+    }
+
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self::parse(std::env::args())
+    }
+
+    #[must_use]
+    pub fn trim(&self) -> bool {
+        self.trim
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Aspect {
     #[default]
@@ -260,6 +341,7 @@ pub struct Chrome {
     pub pointer: iced::Point,
 }
 
+#[allow(clippy::large_enum_variant)] // Loaded variant carries full media metadata
 #[derive(Debug, Clone)]
 pub enum Message {
     Handles(Option<Handles>),
@@ -369,6 +451,7 @@ pub enum Message {
     ForgetHistory,
     Shortcuts,
     Ignore,
+    Loaded(Result<glide_video::info::Info, String>),
 }
 
 #[allow(clippy::struct_excessive_bools)] // Independent window switches (inspector, drop hover, picture-in-picture)
@@ -405,6 +488,7 @@ pub struct App {
     pub pip: bool,
     pub aspect_sent: Option<(u32, u32)>,
     pub blur_sent: Option<Vec<window_traits::Region>>,
+    pub open_in_trim: bool,
 }
 
 async fn work<T: Send + 'static>(job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
@@ -784,8 +868,8 @@ impl App {
         }
         let probe = uri;
         tasks.push(later(
-            move || glide_video::info::discover(&probe, Duration::from_secs(15)).ok().map(Box::new),
-            move |info| Message::Info(generation, info),
+            move || glide_video::info::discover(&probe, Duration::from_secs(15)).map_err(|err| format!("{err:?}")),
+            Message::Loaded,
         ));
         self.publish();
         Task::batch(tasks)
@@ -801,6 +885,7 @@ impl App {
         self.exporting = None;
         self.ocr = None;
         self.inspector = false;
+        self.open_in_trim = false;
         if let Some(surface) = &mut self.surface {
             surface.inhibit_idle(false);
         }
@@ -1263,5 +1348,42 @@ mod tests {
         assert!(!read_by_app("file:///v/a.sub"));
         assert_eq!(player_subtitle(Some("file:///v/a.sub")).as_deref(), Some("file:///v/a.sub"));
         assert_eq!(sidecar_track(Some("file:///v/a.uk.srt")).codec.as_deref(), Some("SubRip"));
+    }
+
+    #[test]
+    fn launch_args_parses_flags_and_reopen_trim_encodings() {
+        let plain = LaunchArgs::parse(["glide-clips", "video.mp4"]);
+        assert_eq!(plain.path, Some(PathBuf::from("video.mp4")));
+        assert!(!plain.enter_trim_on_load);
+        assert!(!plain.trim());
+
+        let flag_trim = LaunchArgs::parse(["glide-clips", "--trim", "video.mp4"]);
+        assert_eq!(flag_trim.path, Some(PathBuf::from("video.mp4")));
+        assert!(flag_trim.enter_trim_on_load);
+        assert!(flag_trim.trim());
+
+        let flag_short = LaunchArgs::parse(["glide-clips", "-t", "video.mp4"]);
+        assert_eq!(flag_short.path, Some(PathBuf::from("video.mp4")));
+        assert!(flag_short.enter_trim_on_load);
+
+        let flag_preview = LaunchArgs::parse(["glide-clips", "--preview", "video.mp4"]);
+        assert_eq!(flag_preview.path, Some(PathBuf::from("video.mp4")));
+        assert!(flag_preview.enter_trim_on_load);
+
+        let suffix_trim = LaunchArgs::parse(["video.mp4#trim"]);
+        assert_eq!(suffix_trim.path, Some(PathBuf::from("video.mp4")));
+        assert!(suffix_trim.enter_trim_on_load);
+
+        let prefix_space = LaunchArgs::parse(["--trim video.mp4"]);
+        assert_eq!(prefix_space.path, Some(PathBuf::from("video.mp4")));
+        assert!(prefix_space.enter_trim_on_load);
+
+        let prefix_eq = LaunchArgs::parse(["--trim=video.mp4"]);
+        assert_eq!(prefix_eq.path, Some(PathBuf::from("video.mp4")));
+        assert!(prefix_eq.enter_trim_on_load);
+
+        let short_space = LaunchArgs::parse(["-t video.mp4"]);
+        assert_eq!(short_space.path, Some(PathBuf::from("video.mp4")));
+        assert!(short_space.enter_trim_on_load);
     }
 }

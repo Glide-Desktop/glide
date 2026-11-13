@@ -62,7 +62,9 @@ impl App {
                 Task::none()
             }
             Message::Open => self.choose(),
-            Message::Chosen(Some(path)) | Message::OpenPath(path) | Message::OpenRecent(path) => {
+            Message::OpenPath(path) => self.open_path(path, shell),
+            Message::Chosen(Some(path)) | Message::OpenRecent(path) => {
+                self.open_in_trim = false;
                 self.open_path(path, shell)
             }
             Message::Chosen(None) | Message::Ignore => Task::none(),
@@ -74,25 +76,14 @@ impl App {
                 self.address = Some(text);
                 Task::none()
             }
-            Message::AddressConfirm => {
-                let Some(address) =
-                    self.address.take().map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
-                else {
-                    return Task::none();
-                };
-                if let Some(path) = glide_sdk::chooser::uri_path(&address)
-                    .or_else(|| address.starts_with('/').then(|| PathBuf::from(&address)))
-                {
-                    return self.open_path(path, shell);
-                }
-                self.open_uri(address, None)
-            }
+            Message::AddressConfirm => self.confirm_address(shell),
             Message::AddressCancel => {
                 self.address = None;
                 Task::none()
             }
             Message::Player(generation, event) => self.on_player(generation, event),
             Message::Info(generation, info) => self.on_info(generation, info),
+            Message::Loaded(result) => self.on_loaded(result),
             Message::Frame(generation, frame) => {
                 if let Some(media) = self.media.as_mut().filter(|media| media.generation == generation) {
                     if frame.tag >= crate::app::CHAPTER_TAG {
@@ -133,6 +124,38 @@ impl App {
             }
             other => self.controls(other, shell),
         }
+    }
+
+    fn on_loaded(&mut self, result: Result<glide_video::info::Info, String>) -> Task<Message> {
+        if let Ok(info) = result {
+            let generation = self.generation;
+            let info_task = self.on_info(generation, Some(Box::new(info)));
+            if self.open_in_trim {
+                self.open_in_trim = false;
+                self.set_playing(false);
+                self.mode = Mode::Trim { start: 0.0, end: 1.0, head: 0.0 };
+                Task::batch([info_task, self.request_strip()])
+            } else {
+                info_task
+            }
+        } else {
+            self.open_in_trim = false;
+            Task::none()
+        }
+    }
+
+    fn confirm_address(&mut self, shell: &mut Shell<Message>) -> Task<Message> {
+        self.open_in_trim = false;
+        let Some(address) = self.address.take().map(|text| text.trim().to_string()).filter(|text| !text.is_empty())
+        else {
+            return Task::none();
+        };
+        if let Some(path) =
+            glide_sdk::chooser::uri_path(&address).or_else(|| address.starts_with('/').then(|| PathBuf::from(&address)))
+        {
+            return self.open_path(path, shell);
+        }
+        self.open_uri(address, None)
     }
 
     fn controls(&mut self, message: Message, shell: &mut Shell<Message>) -> Task<Message> {
@@ -1009,10 +1032,19 @@ impl App {
         let cover = media.path.clone();
         self.place();
         self.sync_aspect();
-        match cover {
+        let trim_task = if self.open_in_trim {
+            self.open_in_trim = false;
+            self.set_playing(false);
+            self.mode = Mode::Trim { start: 0.0, end: 1.0, head: 0.0 };
+            self.request_strip()
+        } else {
+            Task::none()
+        };
+        let cover_task = match cover {
             Some(path) => later_cover(path),
             None => Task::none(),
-        }
+        };
+        Task::batch([trim_task, cover_task])
     }
 
     fn command(&mut self, command: Command, shell: &mut Shell<Message>) -> Task<Message> {

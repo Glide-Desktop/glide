@@ -19,21 +19,15 @@ use glide_sdk::glide_theme::Appearance;
 use glide_sdk::{Paint, Shell};
 use iced::{Element, Subscription, Task, keyboard};
 
-pub use app::App;
+pub use app::{App, LaunchArgs};
 use app::{Chrome, Message, Mode};
 
 pub const APP_ID: &str = "glide-clips";
 
-fn argument() -> Option<(String, Option<PathBuf>)> {
-    let raw = std::env::args().skip(1).find(|arg| !arg.starts_with("--"))?;
-    if let Some(path) = glide_sdk::chooser::uri_path(&raw) {
-        return Some((app::uri_of(&path), Some(path)));
-    }
-    if raw.contains("://") {
-        return Some((raw, None));
-    }
-    let path = std::fs::canonicalize(&raw).unwrap_or_else(|_| PathBuf::from(&raw));
-    Some((app::uri_of(&path), Some(path)))
+fn argument() -> (Option<(String, Option<PathBuf>)>, bool) {
+    let launch = app::LaunchArgs::from_env();
+    let pending = launch.uri.map(|uri| (uri, launch.path));
+    (pending, launch.enter_trim_on_load)
 }
 
 impl App {
@@ -63,6 +57,7 @@ impl glide_sdk::App for App {
                 (None, None)
             }
         };
+        let (pending, open_in_trim) = argument();
         let mut app = Self {
             paint,
             dark: Paint::new(Appearance::Dark, accent),
@@ -70,7 +65,7 @@ impl glide_sdk::App for App {
             window: *shell.window(),
             handles: None,
             surface: None,
-            pending: argument(),
+            pending,
             memory,
             saver,
             recents: Vec::new(),
@@ -96,6 +91,7 @@ impl glide_sdk::App for App {
             pip: false,
             aspect_sent: None,
             blur_sent: None,
+            open_in_trim,
         };
         let recents = app.refresh_recents();
         let handles = glide_sdk::window::handles().map(Message::Handles);
@@ -185,13 +181,14 @@ impl glide_sdk::App for App {
     }
 
     fn reopened(&mut self, args: Vec<String>, shell: &mut Shell<Message>) -> Task<Message> {
-        let Some(raw) = args.into_iter().find(|arg| !arg.starts_with("--")) else { return Task::none() };
-        let task = if let Some(path) = glide_sdk::chooser::uri_path(&raw) {
+        let launch = app::LaunchArgs::parse(&args);
+        self.open_in_trim = launch.enter_trim_on_load;
+        let task = if let Some(path) = launch.path {
             self.open_path(path, shell)
-        } else if raw.contains("://") {
-            self.open_uri(raw, None)
+        } else if let Some(uri) = launch.uri {
+            self.open_uri(uri, None)
         } else {
-            self.open_path(PathBuf::from(raw), shell)
+            Task::none()
         };
         self.shell_paint(shell);
         task
