@@ -26,7 +26,6 @@ mod tr {
         Cooler => "Cooler", "Холодніше";
         Day => "Day", "День";
         Night => "Night", "Ніч";
-        Schedule => "Schedule", "Розклад";
         ScheduleHint => "Switching night light by hand keeps it that way until the next scheduled change", "Якщо перемкнути нічне світло вручну, воно так і залишиться до наступної зміни за розкладом";
         Presets => "Quick presets", "Швидкі варіанти";
         Timeline => "Active hours", "Години роботи";
@@ -155,13 +154,9 @@ impl Pane for Page {
     }
 
     fn view<'a>(&'a self, c: Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
-        column![
-            self.controls_group(&c, config),
-            error_banner(c.theme, self.error.as_deref()),
-            self.schedule_group(&c, config),
-        ]
-        .spacing(theme::SECTION_GAP)
-        .into()
+        column![self.controls_group(&c, config), error_banner(c.theme, self.error.as_deref()),]
+            .spacing(theme::SECTION_GAP)
+            .into()
     }
 
     fn tick(&mut self, _c: Ctx) -> Task<Msg> {
@@ -265,29 +260,26 @@ impl Page {
                     .build(),
             )
             .push(gated(*c, container(column![container(preview).center_x(Fill), slider].spacing(18)).padding(12)))
+            .extend(self.schedule_rows(c, config))
             .build()
     }
 
-    fn schedule_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
+    fn schedule_rows<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Vec<Element<'a, Msg>> {
         let t = c.theme;
         let scheduled = config.night_light_schedule();
         let from = self.night_from.clone().unwrap_or_else(|| config.night_light_from());
         let to = self.night_to.clone().unwrap_or_else(|| config.night_light_to());
-        let mut group = Group::new(t)
-            .title(c.t(tr::Key::Schedule))
-            .description(c.t(tr::Key::ScheduleHint))
-            .stacked_header(t.compact)
-            .push(
-                Row::new(t, c.t(K::NightSchedule))
-                    .subtitle(c.t(K::NightScheduleHint))
-                    .prefix(widgets::tile(
-                        Icon::Clock,
-                        theme::ramp_color(theme::Accent::Amber, 3),
-                        theme::SMALL_CONTROL_HEIGHT,
-                    ))
-                    .suffix(toggle(*c, scheduled, Msg::NightSchedule))
-                    .build(),
-            );
+        let mut rows = vec![
+            Row::new(t, c.t(K::NightSchedule))
+                .subtitle(c.t(tr::Key::ScheduleHint))
+                .prefix(widgets::tile(
+                    Icon::Clock,
+                    theme::ramp_color(theme::Accent::Amber, 3),
+                    theme::SMALL_CONTROL_HEIGHT,
+                ))
+                .suffix(toggle(*c, scheduled, Msg::NightSchedule))
+                .build(),
+        ];
         if scheduled {
             let time_row = |label: K, value: &str, on_input: fn(String) -> Msg| {
                 let invalid = parse_clock(value).is_none();
@@ -298,10 +290,11 @@ impl Page {
                     .suffix(gated(*c, field))
                     .build()
             };
-            group = group.push(time_row(K::From, &from, Msg::NightFrom)).push(time_row(K::To, &to, Msg::NightTo));
+            rows.push(time_row(K::From, &from, Msg::NightFrom));
+            rows.push(time_row(K::To, &to, Msg::NightTo));
             let window = parse_clock(&from).zip(parse_clock(&to));
             if let Some((start, end)) = window {
-                group = group.push(timeline(c, start, end, self.kelvin(config)));
+                rows.push(timeline(c, start, end, self.kelvin(config)));
             }
             let labels = [tr::Key::AllNight, tr::Key::LateNight, tr::Key::Evening];
             let mut chips = row![].spacing(6).align_y(Alignment::Center);
@@ -314,9 +307,9 @@ impl Page {
                     (c.writable && !active).then_some(Msg::Preset(index)),
                 ));
             }
-            group = group.push(Row::new(t, c.t(tr::Key::Presets)).suffix(chips).build());
+            rows.push(Row::new(t, c.t(tr::Key::Presets)).suffix(chips).stacked(t.compact).build());
         }
-        group.build()
+        rows
     }
 }
 
