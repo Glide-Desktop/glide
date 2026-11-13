@@ -28,7 +28,7 @@ pub fn occupied(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-fn same_file(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     let id = |path: &Path| std::fs::symlink_metadata(path).map(|meta| (meta.dev(), meta.ino())).ok();
     id(a).is_some_and(|first| Some(first) == id(b))

@@ -64,6 +64,8 @@ fn keyboard_shortcuts_map_to_intended_messages() {
         (chord("i", ctrl), Message::ToggleInspector),
         (chord("C", ctrl | shift), Message::CopyPath),
         (chord("b", ctrl), Message::BookmarkHere),
+        (chord("I", ctrl | shift), Message::InvertSelection),
+        (chord("s", ctrl), Message::SelectPattern),
         (chord("N", ctrl | shift), Message::NewFolder),
         (chord("1", ctrl), Message::SetView(ViewMode::Grid)),
         (chord("2", ctrl), Message::SetView(ViewMode::List)),
@@ -605,17 +607,17 @@ fn a_menu_highlight_does_not_stay_on_a_row_that_became_disabled() {
     let _ = app.update(Message::Pressed(path(1)));
     let _ = app.update(Message::Released);
     let _ = app.update(Message::KeyMenu);
-    let rename = Key::Rename.text(app.lang);
+    let properties = Key::Properties.text(app.lang);
     let open = app.menu.clone().expect("menu");
     let index = entries(&app, &open)
         .iter()
-        .position(|entry| matches!(entry, Entry::Action { label, .. } if label == rename))
-        .expect("rename row");
+        .position(|entry| matches!(entry, Entry::Action { label, .. } if label == properties))
+        .expect("properties row");
     let _ = app.update(Message::MenuHover(index, true));
     assert_eq!(app.menu.as_ref().and_then(|menu| menu.highlight), Some(index));
     app.selection.insert(path(2));
     let _ = app.update(Message::Frame(std::time::Instant::now()));
-    assert_eq!(app.menu.as_ref().and_then(|menu| menu.highlight), None, "Rename is disabled for two items");
+    assert_eq!(app.menu.as_ref().and_then(|menu| menu.highlight), None, "Properties is disabled for two items");
 }
 
 #[test]
@@ -1480,4 +1482,126 @@ fn open_with_dialog_allows_picking_app_and_toggling_always() {
         }
         _ => panic!("expected OpenWith dialog"),
     }
+}
+
+fn select(app: &mut glide_files::App, picked: &[usize]) {
+    app.selection = picked.iter().map(|&index| path(index)).collect();
+}
+
+#[test]
+fn f2_on_several_items_plans_a_batch_rename_and_refuses_what_cannot_work() {
+    use glide_files::app::Dialog;
+    let mut app = listed_app();
+    select(&mut app, &[1, 2, 3]);
+    let _ = app.update(Message::Rename);
+    let modal = app.modal.clone().expect("batch rename dialog");
+    assert!(matches!(&modal.dialog, Dialog::BatchRename { items, replace: false, .. } if items.len() == 3));
+    assert!(app.renaming.is_none(), "no inline field for several items");
+
+    let _ = app.update(Message::ModalInput(String::from("Звіт")));
+    let _ = app.update(Message::ModalSubmit);
+    assert!(app.modal.is_some(), "three items cannot share one name");
+
+    let _ = app.update(Message::ModalInput(String::from("Звіт [01]")));
+    let (plan, _) = app.modal.as_ref().and_then(glide_files::app::Modal::rename_plan).expect("plan");
+    let names: Vec<_> =
+        plan.iter().map(|(_, to)| to.file_name().expect("name").to_string_lossy().into_owned()).collect();
+    assert_eq!(names, ["Звіт 01.txt", "Звіт 02.txt", "Звіт 03.txt"]);
+
+    let _ = app.update(Message::RenameMode(true));
+    assert_eq!(app.modal.as_ref().map(|modal| modal.input.as_str()), Some(""), "the find field starts empty");
+    let _ = app.update(Message::ModalInput(String::from(".txt")));
+    let _ = app.update(Message::RenameWith(String::from(".md")));
+    let (plan, _) = app.modal.as_ref().and_then(glide_files::app::Modal::rename_plan).expect("plan");
+    assert_eq!(plan[0].1, std::path::PathBuf::from("/nowhere/1.md"));
+}
+
+#[test]
+fn a_batch_rename_renames_on_disk_and_ctrl_z_puts_every_name_back() {
+    use glide_files::app::Undo;
+    use glide_files::fs::rename::{Rule, apply, plan};
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let root = std::env::temp_dir().join(format!("glide-files-batch-{nanos}"));
+    std::fs::create_dir_all(&root).expect("scratch");
+    for name in ["a.txt", "b.txt"] {
+        std::fs::write(root.join(name), name).expect("file");
+    }
+    let items = vec![(root.join("a.txt"), false), (root.join("b.txt"), false)];
+    let (done, failure) = apply(&plan(&items, &Rule::Template(String::from("n[1]"))));
+    assert!(failure.is_none());
+    assert!(root.join("n1.txt").exists() && root.join("n2.txt").exists());
+    let undo = Undo::RenameMany(done);
+    assert!(matches!(&undo, Undo::RenameMany(pairs) if pairs.len() == 2));
+    let Undo::RenameMany(pairs) = undo else { return };
+    let back: Vec<_> = pairs.into_iter().map(|(original, now)| (now, original)).collect();
+    let (_, failure) = apply(&back);
+    assert!(failure.is_none());
+    assert_eq!(std::fs::read_to_string(root.join("b.txt")).expect("restored"), "b.txt");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn the_selection_inverts_and_follows_a_pattern() {
+    let mut app = listed_app();
+    select(&mut app, &[0, 1]);
+    let _ = app.update(Message::InvertSelection);
+    assert_eq!(app.selected(), [path(2), path(3), path(4), path(5)]);
+    assert_eq!(app.cursor(), Some(path(5).as_path()));
+
+    let _ = app.update(Message::SelectPattern);
+    let _ = app.update(Message::ModalInput(String::from("nothing-like-this")));
+    let _ = app.update(Message::ModalSubmit);
+    assert!(app.modal.as_ref().is_some_and(|modal| modal.error.is_some()), "a miss keeps the dialog and says so");
+    assert_eq!(app.selected().len(), 4, "and keeps the selection");
+
+    let _ = app.update(Message::ModalInput(String::from("[35].TXT")));
+    let _ = app.update(Message::ModalSubmit);
+    assert!(app.modal.is_some(), "brackets are not a wildcard");
+    let _ = app.update(Message::ModalInput(String::from("?.TXT")));
+    let _ = app.update(Message::ModalSubmit);
+    assert!(app.modal.is_none());
+    assert_eq!(app.selected().len(), 6, "patterns ignore case");
+    assert!(glide_files::app::matches_pattern("3", "13.txt") && !glide_files::app::matches_pattern("", "a"));
+}
+
+#[test]
+fn archives_offer_extraction_and_anything_can_be_compressed() {
+    use glide_files::app::Dialog;
+    use glide_files::fs::archive::Format;
+    if !glide_files::fs::archive::available() {
+        return;
+    }
+    let mut app = listed_app();
+    app.entries[2].name = String::from("Знімки.tar.gz");
+    app.entries[2].path = std::path::PathBuf::from("/nowhere/Знімки.tar.gz");
+    let labels = |app: &glide_files::App| -> Vec<String> {
+        let menu = app.menu.as_ref().expect("menu");
+        menu::entries(app, menu)
+            .iter()
+            .filter_map(|entry| match entry {
+                glide_sdk::menu::Item::Action { label, .. } => Some(label.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    app.selection = [path(1)].into_iter().collect();
+    let _ = app.update(Message::KeyMenu);
+    let shown = labels(&app);
+    assert!(shown.iter().any(|label| label == Key::Compress.text(app.lang)));
+    assert!(!shown.iter().any(|label| label == Key::ExtractHere.text(app.lang)), "a text file is no archive");
+
+    app.selection = [app.entries[2].path.clone()].into_iter().collect();
+    let _ = app.update(Message::KeyMenu);
+    assert!(labels(&app).iter().any(|label| label == Key::ExtractHere.text(app.lang)));
+
+    let _ = app.update(Message::Compress);
+    let modal = app.modal.clone().expect("compress dialog");
+    assert_eq!(modal.input, "Знімки", "the archive is named after the one item, without its extension");
+    assert!(matches!(modal.dialog, Dialog::Compress { format: Format::Zip, .. }));
+    let _ = app.update(Message::CompressFormat(Format::TarXz));
+    assert!(matches!(app.modal.as_ref().map(|m| &m.dialog), Some(Dialog::Compress { format: Format::TarXz, .. })));
+    let _ = app.update(Message::ModalInput(String::from("a/b")));
+    let _ = app.update(Message::ModalSubmit);
+    assert!(app.modal.as_ref().is_some_and(|modal| modal.error.is_some()), "a name with a slash is refused");
+    assert!(app.jobs.is_empty());
 }

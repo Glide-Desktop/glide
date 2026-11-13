@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod archive;
 pub mod entry;
 pub mod jobs;
 pub mod listing;
@@ -6,6 +7,7 @@ pub mod mime;
 pub mod mtp;
 pub mod operations;
 pub mod places;
+pub mod rename;
 pub mod tags;
 pub mod thumbs;
 pub mod trash;

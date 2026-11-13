@@ -13,7 +13,9 @@ use iced::{Element, Point, Size, Subscription, Task, window};
 
 use crate::config::{self, ListColumn, Look};
 use crate::dnd;
+use crate::fs::archive::{self, Format};
 use crate::fs::jobs::{Answer, Choice, Meter, Op, Progress, Question, Report, Sink};
+use crate::fs::rename::{self, Rule};
 use crate::fs::tags;
 use crate::fs::{
     ClipboardAction, DiskError, Disks, Extensions, FileClipboard, FileEntry, MountMode, Mounted, Offer, Place, Roots,
@@ -78,6 +80,9 @@ pub enum Dialog {
     OpenWith { targets: Vec<Target>, mime: Option<String>, chosen: String, always: bool },
     Quit,
     Replace(PathBuf),
+    Compress { paths: Vec<PathBuf>, format: Format },
+    BatchRename { items: Vec<(PathBuf, bool)>, replace: bool, with: String },
+    SelectPattern,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +119,19 @@ impl Modal {
         let last = self.actions().len().checked_sub(1)?;
         let safe = usize::from(matches!(self.dialog, Dialog::Conflict { .. }));
         Some(self.focus.unwrap_or(safe).min(last))
+    }
+
+    #[must_use]
+    pub fn rename_plan(&self) -> Option<(Vec<(PathBuf, PathBuf)>, Rule)> {
+        let Dialog::BatchRename { items, replace, with } = &self.dialog else {
+            return None;
+        };
+        let rule = if *replace {
+            Rule::Replace { find: self.input.clone(), with: with.clone() }
+        } else {
+            Rule::Template(self.input.clone())
+        };
+        Some((rename::plan(items, &rule), rule))
     }
 }
 
@@ -187,6 +205,7 @@ pub enum Undo {
     MoveBack(Vec<(PathBuf, PathBuf)>),
     TrashCopies(Vec<PathBuf>),
     Rename(PathBuf, PathBuf),
+    RenameMany(Vec<(PathBuf, PathBuf)>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -497,6 +516,13 @@ pub enum Message {
     OpenWithDialog,
     PickApp(String),
     ToggleAlwaysOpen,
+    Extract,
+    Compress,
+    CompressFormat(Format),
+    RenameMode(bool),
+    RenameWith(String),
+    InvertSelection,
+    SelectPattern,
 }
 
 pub(crate) type ThumbKey = (PathBuf, Option<SystemTime>);
@@ -564,6 +590,11 @@ impl Message {
                 | Self::ColumnPressed(_)
                 | Self::Service(_)
                 | Self::Repair(_)
+                | Self::Extract
+                | Self::Compress
+                | Self::CompressFormat(_)
+                | Self::RenameMode(_)
+                | Self::RenameWith(_)
         )
     }
 
@@ -594,6 +625,10 @@ impl Message {
                 | Self::Up
                 | Self::GoHome
                 | Self::TypeToSearch(_)
+                | Self::Extract
+                | Self::Compress
+                | Self::InvertSelection
+                | Self::SelectPattern
         )
     }
 
@@ -647,6 +682,9 @@ impl Message {
                 | Self::VolumesChanged
                 | Self::PickApp(_)
                 | Self::ToggleAlwaysOpen
+                | Self::CompressFormat(_)
+                | Self::RenameMode(_)
+                | Self::RenameWith(_)
         )
     }
 }
@@ -966,12 +1004,37 @@ fn job_label(op: Op, sources: &[PathBuf], lang: Lang) -> String {
         Op::Move => Key::Moving,
         Op::Delete => Key::Deleting,
         Op::Trash => Key::TrashingWhat,
+        Op::Extract => Key::Extracting,
+        Op::Compress(_) => Key::Compressing,
     };
     format!("{} {what}", verb.text(lang))
 }
 
 fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy()).into_owned()
+}
+
+fn by_parent(paths: Vec<PathBuf>, fallback: &Path) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    let mut groups: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    for path in paths {
+        let parent = path.parent().map_or_else(|| fallback.to_path_buf(), Path::to_path_buf);
+        match groups.iter_mut().find(|(dir, _)| *dir == parent) {
+            Some((_, paths)) => paths.push(path),
+            None => groups.push((parent, vec![path])),
+        }
+    }
+    groups
+}
+
+#[must_use]
+pub fn matches_pattern(pattern: &str, name: &str) -> bool {
+    let pattern = pattern.trim().to_lowercase();
+    let name = name.to_lowercase();
+    if pattern.contains(['*', '?']) {
+        crate::fs::mime::glob_match(&pattern, &name)
+    } else {
+        !pattern.is_empty() && name.contains(&pattern)
+    }
 }
 
 impl App {
@@ -1428,7 +1491,9 @@ impl App {
                     let (offers, open_with) = if kind == MenuKind::Selection && !self.in_trash() {
                         let targets = self.targets();
                         let open_with = !targets.is_empty();
-                        (self.extensions.offers(&targets), open_with)
+                        let mut offers = self.extensions.offers(&targets);
+                        offers.retain(|offer| !(archive::available() && matches!(offer.run, Run::Tap { .. })));
+                        (offers, open_with)
                     } else {
                         (Vec::new(), false)
                     };
@@ -1654,17 +1719,69 @@ impl App {
             }
             Message::RenameSubmit => return self.commit_rename(),
             Message::Duplicate if !self.in_trash() => {
-                let mut by_parent: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
-                for path in self.selected() {
-                    let parent = path.parent().map_or_else(|| self.current.clone(), Path::to_path_buf);
-                    match by_parent.iter_mut().find(|(dir, _)| *dir == parent) {
-                        Some((_, paths)) => paths.push(path),
-                        None => by_parent.push((parent, vec![path])),
-                    }
-                }
+                let groups = by_parent(self.selected(), &self.current);
                 let jobs: Vec<Task<Message>> =
-                    by_parent.into_iter().map(|(dir, paths)| self.spawn_job(Op::Copy, paths, dir, false)).collect();
+                    groups.into_iter().map(|(dir, paths)| self.spawn_job(Op::Copy, paths, dir, false)).collect();
                 return Task::batch(jobs);
+            }
+            Message::Extract if !self.in_trash() && archive::available() => {
+                let archives: Vec<PathBuf> = self
+                    .selected_entries()
+                    .filter(|entry| !entry.is_dir && archive::is_archive(&entry.path))
+                    .map(|entry| entry.path.clone())
+                    .collect();
+                let groups = by_parent(archives, &self.current);
+                let jobs: Vec<Task<Message>> =
+                    groups.into_iter().map(|(dir, paths)| self.spawn_job(Op::Extract, paths, dir, false)).collect();
+                return Task::batch(jobs);
+            }
+            Message::Compress if !self.in_trash() && archive::available() => {
+                let picked: Vec<(PathBuf, bool)> =
+                    self.selected_entries().map(|entry| (entry.path.clone(), entry.is_dir)).collect();
+                let name = match picked.as_slice() {
+                    [] => return Task::none(),
+                    [(one, is_dir)] => rename::split_name(&file_name(one), *is_dir).0.to_string(),
+                    _ => Key::ArchiveName.text(self.lang).to_string(),
+                };
+                let paths = picked.into_iter().map(|(path, _)| path).collect();
+                return self.prompt(Dialog::Compress { paths, format: Format::default() }, name, None);
+            }
+            Message::CompressFormat(picked) => {
+                if let Some(Modal { dialog: Dialog::Compress { format, .. }, error, .. }) = &mut self.modal {
+                    *format = picked;
+                    *error = None;
+                }
+            }
+            Message::RenameMode(by_replace) => {
+                if let Some(Modal { dialog: Dialog::BatchRename { replace, .. }, input, error, .. }) = &mut self.modal
+                    && *replace != by_replace
+                {
+                    *replace = by_replace;
+                    *input = if by_replace { String::new() } else { String::from(rename::NAME_TOKEN) };
+                    *error = None;
+                    return Task::batch([operation::focus(MODAL_ID), operation::select_all(MODAL_ID)]);
+                }
+            }
+            Message::RenameWith(text) => {
+                if let Some(Modal { dialog: Dialog::BatchRename { with, .. }, error, .. }) = &mut self.modal {
+                    *with = text;
+                    *error = None;
+                }
+            }
+            Message::InvertSelection => {
+                let inverted: HashSet<PathBuf> = self
+                    .entries
+                    .iter()
+                    .filter(|entry| !self.selection.contains(&entry.path))
+                    .map(|entry| entry.path.clone())
+                    .collect();
+                self.selection = inverted;
+                let edge = |entry: &&FileEntry| self.selection.contains(&entry.path);
+                self.anchor = self.entries.iter().find(edge).map(|entry| entry.path.clone());
+                self.cursor = self.entries.iter().rev().find(edge).map(|entry| entry.path.clone());
+            }
+            Message::SelectPattern if !self.entries.is_empty() => {
+                return self.prompt(Dialog::SelectPattern, String::from("*"), None);
             }
             Message::CreateLink if !self.in_trash() => {
                 let (paths, dir, prefix) = (self.selected(), self.current.clone(), Key::LinkTo.text(self.lang));
@@ -2028,11 +2145,19 @@ impl App {
                 }
             }
             Message::ToggleOperations => self.operations = !self.operations && self.jobs.len() > JOB_CARDS,
+            Message::ModalFocus(forward)
+                if matches!(self.modal, Some(Modal { dialog: Dialog::BatchRename { replace: true, .. }, .. })) =>
+            {
+                return if forward { operation::focus_next() } else { operation::focus_previous() };
+            }
             Message::Back
             | Message::Forward
             | Message::EmptyTrash
             | Message::Duplicate
             | Message::CreateLink
+            | Message::Extract
+            | Message::Compress
+            | Message::SelectPattern
             | Message::TypeToSearch(_)
             | Message::SearchResults(..)
             | Message::NoticeExpired(_)
@@ -3180,10 +3305,16 @@ impl App {
     }
 
     fn start_rename(&mut self) -> Task<Message> {
-        if self.renaming.is_some() {
+        if self.renaming.is_some() || self.in_trash() {
             return Task::none();
         }
-        let Some(target) = self.primary().filter(|_| !self.in_trash()) else {
+        let items: Vec<(PathBuf, bool)> =
+            self.selected_entries().map(|entry| (entry.path.clone(), entry.is_dir)).collect();
+        if items.len() > 1 {
+            let dialog = Dialog::BatchRename { items, replace: false, with: String::new() };
+            return self.prompt(dialog, String::from(rename::NAME_TOKEN), None);
+        }
+        let Some(target) = self.primary() else {
             return Task::none();
         };
         let name = file_name(&target);
@@ -3600,7 +3731,7 @@ impl App {
         let held = Arc::clone(&pause);
         let label = job_label(op, &sources, self.lang);
         let count = sources.len();
-        let devices = crate::fs::jobs::devices(&sources, matches!(op, Op::Copy | Op::Move).then_some(target.as_path()));
+        let devices = crate::fs::jobs::devices(&sources, op.places().then_some(target.as_path()));
         let start = move || {
             std::thread::Builder::new()
                 .name(String::from("glide-files-job"))
@@ -3610,6 +3741,8 @@ impl App {
                         Op::Delete => crate::fs::jobs::delete(&sources, &sink, &flag),
                         Op::Trash => crate::fs::jobs::each(&sources, &sink, &flag, |path| trash.put(path)),
                         Op::Copy | Op::Move => crate::fs::jobs::transfer(op, &sources, &dir, &sink, &flag),
+                        Op::Extract => crate::fs::archive::extract(&sources, &dir, &sink, &flag),
+                        Op::Compress(format) => crate::fs::archive::compress(&sources, &dir, format, &sink, &flag),
                     };
                     let _ = events.unbounded_send(JobEvent::Done(Box::new(report)));
                 })
@@ -3700,6 +3833,8 @@ impl App {
                 Op::Move => Key::Moved,
                 Op::Delete => Key::Deleted,
                 Op::Trash => Key::MovedToTrash,
+                Op::Extract => Key::Extracted,
+                Op::Compress(_) => Key::Compressed,
             };
             Some(format!("{}: {}", key.text(lang), i18n::items(count, lang)))
         } else {
@@ -3708,13 +3843,12 @@ impl App {
         let dests: Vec<PathBuf> = report.done.iter().map(|(_, dest)| dest.clone()).collect();
         let undo = match job.op {
             _ if report.done.is_empty() => None,
-            Op::Copy => Some(Undo::TrashCopies(dests.clone())),
+            Op::Copy | Op::Extract | Op::Compress(_) => Some(Undo::TrashCopies(dests.clone())),
             Op::Move => Some(Undo::MoveBack(report.done.clone())),
             Op::Trash => Some(Undo::Restore(dests.clone())),
             Op::Delete => None,
         };
-        let placed = matches!(job.op, Op::Copy | Op::Move);
-        let select = if job.target == self.current && placed { dests } else { Vec::new() };
+        let select = if job.op.places() { dests } else { Vec::new() };
         self.finish(Outcome {
             text,
             select,
@@ -3787,6 +3921,15 @@ impl App {
                     }
                 });
                 Outcome { text: error.map(|err| i18n::io_error(&err, lang)), ..Outcome::default() }
+            }),
+            Undo::RenameMany(pairs) => run(move || {
+                let back: Vec<(PathBuf, PathBuf)> = pairs.into_iter().map(|(original, now)| (now, original)).collect();
+                let (done, failure) = rename::apply(&back);
+                Outcome {
+                    text: failure.map(|err| i18n::io_error(&err, lang)),
+                    select: done.into_iter().map(|(_, original)| original).collect(),
+                    ..Outcome::default()
+                }
             }),
             Undo::Rename(now, original) => run(move || {
                 let name = file_name(&original);
@@ -3965,6 +4108,9 @@ impl App {
                 | Dialog::NewFromTemplate(_)
                 | Dialog::Tags(_)
                 | Dialog::OpenWith { .. }
+                | Dialog::Compress { .. }
+                | Dialog::BatchRename { .. }
+                | Dialog::SelectPattern
         );
         self.modal = Some(Modal { dialog, input, error: None, focus: None, shown: false });
         if !takes_input {
@@ -4045,6 +4191,9 @@ impl App {
                 });
             }
             Dialog::Properties(_) | Dialog::Conflict { .. } => return Task::none(),
+            Dialog::Compress { .. } => return self.submit_compress(modal),
+            Dialog::BatchRename { .. } => return self.submit_batch_rename(modal),
+            Dialog::SelectPattern => return self.submit_pattern(modal),
             Dialog::Quit => {
                 self.quit_requested = Some(Instant::now());
                 self.jobs.retain(|job| job.launch.is_none());
@@ -4083,6 +4232,65 @@ impl App {
                 operation::focus(MODAL_ID)
             }
         }
+    }
+
+    fn submit_compress(&mut self, modal: Modal) -> Task<Message> {
+        let Dialog::Compress { paths, format } = &modal.dialog else {
+            return Task::none();
+        };
+        let name = match crate::fs::validate_name(&modal.input) {
+            Ok(name) => format!("{name}{}", format.extension()),
+            Err(err) => return self.reject(modal, i18n::io_error(&err, self.lang)),
+        };
+        let dest = paths.first().and_then(|path| path.parent()).unwrap_or(&self.current).join(name);
+        if crate::fs::operations::occupied(&dest) {
+            return self.reject(modal, Key::ErrExists.text(self.lang).to_string());
+        }
+        self.spawn_job(Op::Compress(*format), paths.clone(), dest, false)
+    }
+
+    fn submit_batch_rename(&mut self, modal: Modal) -> Task<Message> {
+        let Some((plan, rule)) = modal.rename_plan() else {
+            return Task::none();
+        };
+        if rename::problem(&plan, &rule, crate::fs::operations::occupied).is_some() {
+            self.modal = Some(modal);
+            return Task::none();
+        }
+        let lang = self.lang;
+        run(move || {
+            let (done, failure) = rename::apply(&plan);
+            let renamed = format!("{}: {}", Key::Renamed.text(lang), i18n::items(done.len(), lang));
+            Outcome {
+                text: failure.map(|err| i18n::io_error(&err, lang)).or((!done.is_empty()).then_some(renamed)),
+                select: done.iter().map(|(_, to)| to.clone()).collect(),
+                undo: (!done.is_empty()).then_some(Undo::RenameMany(done)),
+                clear_clipboard: false,
+            }
+        })
+    }
+
+    fn submit_pattern(&mut self, modal: Modal) -> Task<Message> {
+        let picked: Vec<PathBuf> = self
+            .entries
+            .iter()
+            .filter(|entry| matches_pattern(&modal.input, &entry.name))
+            .map(|entry| entry.path.clone())
+            .collect();
+        let (Some(first), Some(last)) = (picked.first().cloned(), picked.last().cloned()) else {
+            return self.reject(modal, Key::NothingMatches.text(self.lang).to_string());
+        };
+        self.selection = picked.into_iter().collect();
+        self.anchor = Some(first.clone());
+        self.cursor = Some(first);
+        let reveal = self.reveal_cursor();
+        self.cursor = Some(last);
+        reveal
+    }
+
+    fn reject(&mut self, modal: Modal, error: String) -> Task<Message> {
+        self.modal = Some(Modal { error: Some(error), ..modal });
+        operation::focus(MODAL_ID)
     }
 
     fn finish(&mut self, outcome: Outcome) -> Task<Message> {
@@ -4488,6 +4696,8 @@ pub fn handle_shortcut(event: keyboard::Event) -> Option<Message> {
             'l' => Message::EditPath,
             'f' => Message::ToggleSearch,
             'a' => Message::SelectAll,
+            'i' if shift => Message::InvertSelection,
+            's' => Message::SelectPattern,
             'c' if shift => Message::CopyPath,
             'c' => Message::Copy,
             'b' => Message::BookmarkHere,

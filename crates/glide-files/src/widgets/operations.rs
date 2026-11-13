@@ -28,6 +28,8 @@ const fn glyph(op: Op) -> Icon {
         Op::Copy => Icon::Copy,
         Op::Move => Icon::Move,
         Op::Delete | Op::Trash => Icon::Trash,
+        Op::Extract => Icon::Extract,
+        Op::Compress(_) => Icon::Compress,
     }
 }
 
@@ -42,8 +44,13 @@ fn detail(app: &App, job: &Job) -> String {
     let lang = app.lang;
     let progress = &job.progress;
     let mut parts = Vec::new();
-    if matches!(job.op, Op::Copy | Op::Move) {
-        parts.push(format!("{} {}", Key::ToPlace.text(lang), app.location_name(job.target())));
+    let place = match job.op {
+        Op::Copy | Op::Move | Op::Extract => Some(job.target().as_path()),
+        Op::Compress(_) => job.target().parent(),
+        Op::Delete | Op::Trash => None,
+    };
+    if let Some(place) = place {
+        parts.push(format!("{} {}", Key::ToPlace.text(lang), app.location_name(place)));
     }
     if job.launch.is_some() {
         parts.push(Key::Queued.text(lang).to_lowercase());

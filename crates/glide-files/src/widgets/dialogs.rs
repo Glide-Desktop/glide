@@ -13,7 +13,9 @@ use iced::{Alignment, Element};
 
 use super::file_icon;
 use crate::app::{App, Dialog, MODAL_ID, Message, Modal, Properties, PropertiesTab};
+use crate::fs::archive::Format;
 use crate::fs::jobs::{Choice, Question};
+use crate::fs::rename::{self, Problem, Rule};
 use crate::fs::{Target, format_bytes, format_time, home_dir, permissions_string};
 use crate::i18n::{self, Key, Lang};
 use crate::icons::Icon;
@@ -80,6 +82,11 @@ pub fn view<'a>(app: &'a App, modal_state: &'a Modal, progress: f32) -> Element<
         Dialog::OpenWith { targets, mime, chosen, always } => {
             open_with(app, &paint, modal_state, targets, mime.as_deref(), chosen, *always)
         }
+        Dialog::Compress { format, .. } => compress(app, &paint, modal_state, *format),
+        Dialog::BatchRename { replace, with, .. } => batch_rename(app, &paint, modal_state, *replace, with),
+        Dialog::SelectPattern => {
+            input(app, &paint, modal_state, (Key::SelectMatchingTitle, Key::SelectMatchingPrompt), Key::SelectConfirm)
+        }
     };
     let width = card_width(&modal_state.dialog, app.lang);
     let buttons = dialog_buttons(&paint, parts.choices, parts.focus);
@@ -90,7 +97,7 @@ pub fn view<'a>(app: &'a App, modal_state: &'a Modal, progress: f32) -> Element<
 #[must_use]
 pub fn card_width(dialog: &Dialog, lang: Lang) -> f32 {
     match dialog {
-        Dialog::OpenWith { .. } => WIDE,
+        Dialog::OpenWith { .. } | Dialog::BatchRename { .. } => WIDE,
         Dialog::Conflict { question, .. } => {
             let labels = std::iter::once(Key::StopJob).chain(choices(question.folders).map(|(key, _)| key));
             let row: f32 =
@@ -154,6 +161,87 @@ fn input<'a>(
         title: heading.text(lang).to_string(),
         body: body.into(),
         choices: vec![cancel(app), (submit.text(lang), Tone::Accent, valid.then_some(Message::ModalSubmit))],
+        focus: None,
+    }
+}
+
+fn failure<'a>(paint: &glide_sdk::Paint, error: impl Into<std::borrow::Cow<'a, str>>) -> Element<'a, Message> {
+    text(error, TextStyle::CAP).color(paint.danger()).wrapping(WRAP).into()
+}
+
+fn compress<'a>(app: &'a App, paint: &glide_sdk::Paint, modal: &'a Modal, format: Format) -> Parts<'a> {
+    let lang = app.lang;
+    let formats = Format::ALL.map(|format| (format, format.extension()));
+    let mut body = column![
+        prompt(paint, Key::NamePrompt.text(lang)),
+        field(paint, modal, "", false),
+        prompt(paint, Key::ArchiveFormat.text(lang)),
+        glide_sdk::widget::segmented_fill(paint, &formats, format, Message::CompressFormat),
+    ]
+    .spacing(theme::SP2);
+    if let Some(error) = &modal.error {
+        body = body.push(failure(paint, error.as_str()));
+    }
+    let ready = (!modal.input.trim().is_empty()).then_some(Message::ModalSubmit);
+    Parts {
+        title: Key::CompressTitle.text(lang).to_string(),
+        body: body.into(),
+        choices: vec![cancel(app), (Key::CompressConfirm.text(lang), Tone::Accent, ready)],
+        focus: None,
+    }
+}
+
+fn batch_rename<'a>(
+    app: &'a App, paint: &glide_sdk::Paint, modal: &'a Modal, replace: bool, with: &'a str,
+) -> Parts<'a> {
+    const PREVIEW: usize = 4;
+    let lang = app.lang;
+    let modes = [(false, Key::RenameByTemplate.text(lang)), (true, Key::RenameByReplace.text(lang))];
+    let mut body =
+        column![glide_sdk::widget::segmented_fill(paint, &modes, replace, Message::RenameMode)].spacing(theme::SP2);
+    if replace {
+        let second = text_input("", with).on_input(Message::RenameWith).on_submit(Message::ModalSubmit);
+        body = body
+            .push(prompt(paint, Key::RenameFind.text(lang)))
+            .push(field(paint, modal, "", false))
+            .push(prompt(paint, Key::RenameWith.text(lang)))
+            .push(glide_sdk::widget::field(paint, second));
+    } else {
+        body = body
+            .push(prompt(paint, Key::NamePrompt.text(lang)))
+            .push(field(paint, modal, "", false))
+            .push(prompt(paint, Key::RenameTemplateHint.text(lang)));
+    }
+    let (plan, rule) = modal.rename_plan().unwrap_or_else(|| (Vec::new(), Rule::Template(String::new())));
+    let listed: std::collections::HashSet<&Path> = app.entries.iter().map(|entry| entry.path.as_path()).collect();
+    let problem = rename::problem(&plan, &rule, |path| listed.contains(path));
+    let room = (WIDE - 2.0 * theme::SP5 - 2.0 * theme::SP3 - theme::SP4) / 2.0;
+    let mut rows: Vec<(String, String)> = plan
+        .iter()
+        .take(PREVIEW)
+        .map(|(from, to)| (elide(&display_name(from), room, TextStyle::CAP), display_name(to)))
+        .collect();
+    if plan.len() > PREVIEW {
+        rows.push((String::from("…"), i18n::items(plan.len() - PREVIEW, lang)));
+    }
+    body = body.push(well(paint, facts(paint, rows, room)));
+    let complaint = match problem {
+        Some(Problem::Invalid) => Some(Key::ErrName),
+        Some(Problem::Repeats) => Some(Key::RenameRepeats),
+        Some(Problem::Taken) => Some(Key::RenameTaken),
+        Some(Problem::Unchanged) if modal.input != rename::NAME_TOKEN => Some(Key::RenameUnchanged),
+        Some(Problem::Unchanged | Problem::Empty) | None => None,
+    };
+    if let Some(error) = modal.error.as_deref().or(complaint.map(|key| key.text(lang))) {
+        body = body.push(failure(paint, error));
+    }
+    Parts {
+        title: format!("{} · {}", Key::BatchRenameTitle.text(lang), i18n::items(plan.len(), lang)),
+        body: body.into(),
+        choices: vec![
+            cancel(app),
+            (Key::RenameConfirm.text(lang), Tone::Accent, problem.is_none().then_some(Message::ModalSubmit)),
+        ],
         focus: None,
     }
 }

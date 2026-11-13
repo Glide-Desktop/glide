@@ -80,6 +80,15 @@ pub enum Op {
     Move,
     Delete,
     Trash,
+    Extract,
+    Compress(super::archive::Format),
+}
+
+impl Op {
+    #[must_use]
+    pub const fn places(self) -> bool {
+        matches!(self, Self::Copy | Self::Move | Self::Extract | Self::Compress(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,7 +220,7 @@ pub struct Failure {
 }
 
 impl Failure {
-    fn new(path: &Path, err: &io::Error) -> Self {
+    pub(crate) fn new(path: &Path, err: &io::Error) -> Self {
         Self { path: path.to_path_buf(), kind: err.kind(), message: err.to_string() }
     }
 

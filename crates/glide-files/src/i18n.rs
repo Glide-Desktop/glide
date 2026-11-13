@@ -282,6 +282,30 @@ glide_sdk::catalogue! {
     ChooserReplaceTitle => "Replace the file?", "Замінити файл?";
     ChooserReplacePrompt => "A file with this name already exists in this folder. Replacing it overwrites its contents.", "У цій папці вже є файл із такою назвою. Заміна перезапише його вміст.";
     ChooserFileType => "File type", "Тип файлів";
+    Extracting => "Extracting", "Розпакування";
+    Compressing => "Compressing", "Стискання";
+    Extracted => "Extracted", "Розпаковано";
+    Compressed => "Compressed", "Стиснуто";
+    CompressTitle => "Compress", "Стиснути";
+    CompressConfirm => "Compress", "Стиснути";
+    ArchiveName => "Archive", "Архів";
+    ArchiveFormat => "Format", "Формат";
+    BatchRenameTitle => "Rename items", "Перейменувати об’єкти";
+    RenameByTemplate => "Template", "Шаблон";
+    RenameByReplace => "Find and Replace", "Знайти й замінити";
+    RenameTemplateHint => "[N] is the old name, [1] or [001] is a counter", "[N] — стара назва, [1] або [001] — лічильник";
+    RenameFind => "Find", "Знайти";
+    RenameWith => "Replace with", "Замінити на";
+    RenameRepeats => "Several items would get the same name — add a counter like [1]", "Кілька об’єктів отримають однакову назву — додайте лічильник, наприклад [1]";
+    RenameTaken => "One of the new names is already taken in this folder", "Одна з нових назв уже зайнята в цій папці";
+    RenameUnchanged => "Nothing would change", "Нічого не зміниться";
+    Renamed => "Renamed", "Перейменовано";
+    InvertSelection => "Invert Selection", "Інвертувати вибір";
+    SelectMatching => "Select Matching…", "Вибрати за шаблоном…";
+    SelectMatchingTitle => "Select items matching", "Вибрати об’єкти за шаблоном";
+    SelectMatchingPrompt => "Pattern, for example *.png", "Шаблон, наприклад *.png";
+    SelectConfirm => "Select", "Вибрати";
+    NothingMatches => "Nothing matches this pattern", "Жоден об’єкт не відповідає шаблону";
 }
 
 const MONTHS_EN: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

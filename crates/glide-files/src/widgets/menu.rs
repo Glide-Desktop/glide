@@ -114,7 +114,18 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 item(Key::Copy, Message::Copy, Icon::Copy).shortcut("Ctrl+C"),
                 item(Key::Duplicate, Message::Duplicate, Icon::Duplicate).shortcut("Ctrl+D"),
                 item(Key::CreateLink, Message::CreateLink, Icon::Link),
-                item(Key::Rename, Message::Rename, Icon::Pencil).shortcut("F2").enabled(single),
+                item(Key::Rename, Message::Rename, Icon::Pencil).shortcut("F2"),
+            ]);
+            if crate::fs::archive::available() {
+                let archives =
+                    app.selected_entries().all(|entry| !entry.is_dir && crate::fs::archive::is_archive(&entry.path));
+                entries.push(Entry::Separator);
+                if archives {
+                    entries.push(item(Key::ExtractHere, Message::Extract, Icon::Extract));
+                }
+                entries.push(item(Key::Compress, Message::Compress, Icon::Compress));
+            }
+            entries.extend([
                 Entry::Separator,
                 Entry::heading(Key::Tags.text(app.lang)),
                 tag_swatches(app),
@@ -137,13 +148,19 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             item(Key::EmptyTrash, Message::EmptyTrash, Icon::Trash).danger().enabled(app.trash_count > 0),
             Entry::Separator,
             item(Key::SelectAll, Message::SelectAll, Icon::SelectAll).shortcut("Ctrl+A"),
+            item(Key::InvertSelection, Message::InvertSelection, Icon::Invert).shortcut("Ctrl+Shift+I"),
         ],
         MenuKind::Background => vec![
             item(Key::NewFolder, Message::NewFolder, Icon::FolderPlus).shortcut("Ctrl+Shift+N"),
             item(Key::NewDocument, Message::SubMenu(MenuKind::Templates), Icon::FilePlus).cascades(),
             Entry::Separator,
             item(Key::Paste, Message::Paste, Icon::Paste).shortcut("Ctrl+V"),
+            Entry::Separator,
             item(Key::SelectAll, Message::SelectAll, Icon::SelectAll).shortcut("Ctrl+A"),
+            item(Key::InvertSelection, Message::InvertSelection, Icon::Invert).shortcut("Ctrl+Shift+I"),
+            item(Key::SelectMatching, Message::SelectPattern, Icon::Filter)
+                .shortcut("Ctrl+S")
+                .enabled(!app.entries.is_empty()),
             Entry::Separator,
             item(Key::OpenInTerminal, Message::Terminal, Icon::Terminal),
             item(Key::AddBookmark, Message::BookmarkHere, Icon::Star)
