@@ -65,6 +65,40 @@ pub enum Icon {
     FolderPlus,
     Cut,
     Terminal,
+    Open,
+    Window,
+    Tab,
+    Paste,
+    Duplicate,
+    Pencil,
+    Tag,
+    Info,
+    Refresh,
+    Star,
+    Undo,
+    Redo,
+    SelectAll,
+    Invert,
+    Filter,
+    Eye,
+    Sort,
+    Columns,
+    Keyboard,
+    Compress,
+    Extract,
+    Restore,
+    Clock,
+    Path,
+    Wrench,
+    Lock,
+    Queue,
+    Panel,
+    Apps,
+    FilePlus,
+    Hash,
+    Shield,
+    Zoom,
+    Network,
 }
 
 impl Icon {
@@ -144,6 +178,72 @@ impl Icon {
                 "<circle cx='6' cy='6' r='3'/><circle cx='6' cy='18' r='3'/><path d='M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12'/>"
             ),
             Self::Terminal => glyph!("<path d='m4 17 6-5-6-5M12 19h8'/>"),
+            Self::Open => glyph!(
+                "<path d='M11 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-5'/><path d='M14 4h6v6M20 4l-9 9'/>"
+            ),
+            Self::Window => glyph!("<rect x='3' y='4' width='18' height='16' rx='2'/><path d='M3 9h18'/>"),
+            Self::Tab => glyph!(
+                "<path d='M3 19V7a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v2h7a2 2 0 0 1 2 2v8z'/><path d='M16.5 12.5v4M14.5 14.5h4'/>"
+            ),
+            Self::Paste => glyph!(
+                "<rect x='5' y='5' width='14' height='16' rx='2'/><path d='M9 5V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1'/><path d='M9 12h6M9 16h4'/>"
+            ),
+            Self::Duplicate => glyph!(
+                "<rect x='8' y='8' width='12' height='12' rx='2'/><path d='M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2'/><path d='M14 11.5v5M11.5 14h5'/>"
+            ),
+            Self::Pencil => glyph!("<path d='M4 20h4L19 9l-4-4L4 16z'/><path d='m13 7 4 4'/>"),
+            Self::Tag => glyph!("<path d='M3 12V4h8l10 10-8 8z'/><path d='M7.5 8h.01'/>"),
+            Self::Info => glyph!("<circle cx='12' cy='12' r='9'/><path d='M12 11v6M12 7.5h.01'/>"),
+            Self::Refresh => glyph!(
+                "<path d='M20 11a8 8 0 0 0-14.5-4L4 9'/><path d='M4 4v5h5'/><path d='M4 13a8 8 0 0 0 14.5 4L20 15'/><path d='M20 20v-5h-5'/>"
+            ),
+            Self::Star => {
+                glyph!("<path d='m12 3 2.7 5.6 6.1.8-4.5 4.3 1.1 6.1L12 16.9l-5.4 2.9 1.1-6.1-4.5-4.3 6.1-.8z'/>")
+            }
+            Self::Undo => glyph!("<path d='M9 14 4 9l5-5'/><path d='M4 9h10a6 6 0 0 1 0 12h-3'/>"),
+            Self::Redo => glyph!("<path d='m15 14 5-5-5-5'/><path d='M20 9H10a6 6 0 0 0 0 12h3'/>"),
+            Self::SelectAll => glyph!(
+                "<rect x='4' y='4' width='16' height='16' rx='2' stroke-dasharray='3 3'/><path d='m8.5 12.5 2.5 2.5 4.5-5'/>"
+            ),
+            Self::Invert => glyph!(
+                "<rect x='4' y='4' width='16' height='16' rx='2'/><path d='M4 20 20 4'/><path d='M12 4h6a2 2 0 0 1 2 2v6z' fill='currentColor' fill-opacity='.3'/>"
+            ),
+            Self::Filter => glyph!("<path d='M4 5h16l-6 8v6l-4-2v-4z'/>"),
+            Self::Eye => glyph!(
+                "<path d='M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z'/><circle cx='12' cy='12' r='2.5'/>"
+            ),
+            Self::Sort => glyph!("<path d='M7 4v16M3.5 16.5 7 20l3.5-3.5'/><path d='M17 20V4M13.5 7.5 17 4l3.5 3.5'/>"),
+            Self::Columns => glyph!("<rect x='3' y='4' width='18' height='16' rx='2'/><path d='M9 4v16M15 4v16'/>"),
+            Self::Keyboard => glyph!(
+                "<rect x='2' y='6' width='20' height='12' rx='2'/><path d='M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10'/>"
+            ),
+            Self::Compress => glyph!(
+                "<path d='M4 8h16v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z'/><path d='M3 4h18v4H3z'/><path d='M12 11v6M9.5 14.5 12 17l2.5-2.5'/>"
+            ),
+            Self::Extract => glyph!(
+                "<path d='M4 8h16v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z'/><path d='M3 4h18v4H3z'/><path d='M12 17v-6M9.5 13.5 12 11l2.5 2.5'/>"
+            ),
+            Self::Restore => glyph!("<path d='M4 12a8 8 0 1 0 2.5-5.8L4 8.5'/><path d='M4 4v4.5h4.5'/>"),
+            Self::Clock => glyph!("<circle cx='12' cy='12' r='9'/><path d='M12 7v5l3.5 2'/>"),
+            Self::Path => glyph!("<path d='M4 6h3M4 18h3M5.5 6v12'/><path d='M11 12h9M16.5 8.5 20 12l-3.5 3.5'/>"),
+            Self::Wrench => glyph!(
+                "<path d='M14.5 6.5a4.5 4.5 0 0 0-6 5.6L3 17.6V21h3.4l5.5-5.5a4.5 4.5 0 0 0 5.6-6L14.5 12.5 11.5 9.5z'/>"
+            ),
+            Self::Lock => {
+                glyph!("<rect x='5' y='11' width='14' height='10' rx='2'/><path d='M8 11V8a4 4 0 0 1 8 0v3'/>")
+            }
+            Self::Queue => glyph!("<path d='M9 6h11M9 12h11M9 18h11'/><path d='M4 5v2M4 11v2M4 17v2'/>"),
+            Self::Panel => glyph!("<rect x='3' y='4' width='18' height='16' rx='2'/><path d='M15 4v16'/>"),
+            Self::Apps => glyph!(
+                "<rect x='4' y='4' width='6.5' height='6.5' rx='1.5'/><rect x='13.5' y='4' width='6.5' height='6.5' rx='1.5'/><rect x='4' y='13.5' width='6.5' height='6.5' rx='1.5'/><path d='M16.75 14v6M13.75 17h6'/>"
+            ),
+            Self::FilePlus => page!("<path d='M12 12v6M9 15h6'/>"),
+            Self::Hash => glyph!("<path d='M9 4 7 20M17 4l-2 16M4 9h17M3 15h17'/>"),
+            Self::Shield => glyph!("<path d='M12 3 4.5 6v6c0 4.5 3.2 7.6 7.5 9 4.3-1.4 7.5-4.5 7.5-9V6z'/>"),
+            Self::Zoom => glyph!("<circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5M11 8v6M8 11h6'/>"),
+            Self::Network => glyph!(
+                "<circle cx='12' cy='12' r='9'/><path d='M3 12h18'/><path d='M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z'/>"
+            ),
         };
         svg::Handle::from_memory(bytes)
     }

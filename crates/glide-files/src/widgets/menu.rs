@@ -64,7 +64,13 @@ fn offered(offers: &[Offer]) -> Vec<Entry> {
             entries.extend(offer.group.clone().map(Entry::heading));
             group.clone_from(&offer.group);
         }
-        entries.push(Entry::action(offer.label.clone(), Message::RunAction(Box::new(offer.clone()))));
+        let glyph = match offer.run {
+            crate::fs::Run::Exec { codes: crate::fs::Codes::Action, .. } | crate::fs::Run::Tap { .. } => Icon::Play,
+            _ => Icon::Apps,
+        };
+        entries.push(
+            Entry::action(offer.label.clone(), Message::RunAction(Box::new(offer.clone()))).glyph(glyph.handle()),
+        );
     }
     entries
 }
@@ -73,17 +79,17 @@ fn offered(offers: &[Offer]) -> Vec<Entry> {
 #[allow(clippy::too_many_lines)] // One declarative entry list per menu kind
 pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
     let kind = &menu.kind;
-    let item = |key: Key, message: Message| Entry::action(key.text(app.lang), message);
+    let item = |key: Key, message: Message, icon: Icon| Entry::action(key.text(app.lang), message).glyph(icon.handle());
     let selected = app.selected();
     let single = selected.len() == 1;
     let single_dir = single && selected[0].is_dir();
     let in_trash = app.in_trash();
-    let glyphed = |key: Key, message: Message, icon: Icon| item(key, message).glyph(icon.handle());
-    let properties = item(Key::Properties, Message::Properties).shortcut("Alt+Enter");
+    let properties = item(Key::Properties, Message::Properties, Icon::Info).shortcut("Alt+Enter");
     match kind {
         MenuKind::Selection if in_trash => vec![
-            item(Key::Restore, Message::Restore).enabled(selected.iter().any(|path| app.trash.is_top_level(path))),
-            glyphed(Key::DeletePermanently, Message::Delete, Icon::Trash).shortcut("Shift+Delete").danger(),
+            item(Key::Restore, Message::Restore, Icon::Restore)
+                .enabled(selected.iter().any(|path| app.trash.is_top_level(path))),
+            item(Key::DeletePermanently, Message::Delete, Icon::Trash).shortcut("Shift+Delete").danger(),
             Entry::Separator,
             properties.enabled(single),
         ],
@@ -91,79 +97,84 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             let bookmark = selected
                 .first()
                 .filter(|path| single && bookmarkable(app, path))
-                .map(|path| item(Key::AddBookmark, Message::AddBookmark(path.clone())));
-            let mut entries = vec![item(Key::Open, Message::OpenSelection).shortcut("Enter")];
+                .map(|path| item(Key::AddBookmark, Message::AddBookmark(path.clone()), Icon::Star));
+            let mut entries = vec![item(Key::Open, Message::OpenSelection, Icon::Open).shortcut("Enter")];
             if let (true, [found]) = (app.is_searching(), selected.as_slice()) {
-                entries.push(item(Key::ShowInFolder, Message::Reveal(found.clone())));
+                entries.push(item(Key::ShowInFolder, Message::Reveal(found.clone()), Icon::Folder));
             }
             if single_dir {
-                entries.push(item(Key::OpenInNewWindow, Message::NewWindow(Some(selected[0].clone()))));
+                entries.push(item(Key::OpenInNewWindow, Message::NewWindow(Some(selected[0].clone())), Icon::Window));
             }
             if menu.open_with {
-                entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith)).cascades());
+                entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith), Icon::Apps).cascades());
             }
             entries.extend([
                 Entry::Separator,
-                glyphed(Key::Cut, Message::Cut, Icon::Cut).shortcut("Ctrl+X"),
-                glyphed(Key::Copy, Message::Copy, Icon::Copy).shortcut("Ctrl+C"),
-                item(Key::Duplicate, Message::Duplicate).shortcut("Ctrl+D"),
-                item(Key::CreateLink, Message::CreateLink),
-                item(Key::Rename, Message::Rename).shortcut("F2").enabled(single),
+                item(Key::Cut, Message::Cut, Icon::Cut).shortcut("Ctrl+X"),
+                item(Key::Copy, Message::Copy, Icon::Copy).shortcut("Ctrl+C"),
+                item(Key::Duplicate, Message::Duplicate, Icon::Duplicate).shortcut("Ctrl+D"),
+                item(Key::CreateLink, Message::CreateLink, Icon::Link),
+                item(Key::Rename, Message::Rename, Icon::Pencil).shortcut("F2").enabled(single),
                 Entry::Separator,
                 Entry::heading(Key::Tags.text(app.lang)),
                 tag_swatches(app),
-                item(Key::EditTags, Message::EditTags),
+                item(Key::EditTags, Message::EditTags, Icon::Tag),
                 Entry::Separator,
-                glyphed(Key::OpenInTerminal, Message::Terminal, Icon::Terminal),
-                item(Key::CopyPath, Message::CopyPath).shortcut("Ctrl+Shift+C"),
+                item(Key::OpenInTerminal, Message::Terminal, Icon::Terminal),
+                item(Key::CopyPath, Message::CopyPath, Icon::Path).shortcut("Ctrl+Shift+C"),
             ]);
             entries.extend(bookmark);
             entries.extend(offered(&menu.offers).into_iter().skip(1));
             entries.extend([
                 Entry::Separator,
-                glyphed(Key::MoveToTrash, Message::Trash, Icon::Trash).shortcut("Delete").danger(),
+                item(Key::MoveToTrash, Message::Trash, Icon::Trash).shortcut("Delete").danger(),
                 Entry::Separator,
                 properties.enabled(single),
             ]);
             entries
         }
         MenuKind::Background if in_trash => vec![
-            glyphed(Key::EmptyTrash, Message::EmptyTrash, Icon::Trash).danger().enabled(app.trash_count > 0),
+            item(Key::EmptyTrash, Message::EmptyTrash, Icon::Trash).danger().enabled(app.trash_count > 0),
             Entry::Separator,
-            item(Key::SelectAll, Message::SelectAll).shortcut("Ctrl+A"),
+            item(Key::SelectAll, Message::SelectAll, Icon::SelectAll).shortcut("Ctrl+A"),
         ],
         MenuKind::Background => vec![
-            glyphed(Key::NewFolder, Message::NewFolder, Icon::FolderPlus).shortcut("Ctrl+Shift+N"),
-            item(Key::NewDocument, Message::SubMenu(MenuKind::Templates)).cascades(),
+            item(Key::NewFolder, Message::NewFolder, Icon::FolderPlus).shortcut("Ctrl+Shift+N"),
+            item(Key::NewDocument, Message::SubMenu(MenuKind::Templates), Icon::FilePlus).cascades(),
             Entry::Separator,
-            item(Key::Paste, Message::Paste).shortcut("Ctrl+V"),
-            item(Key::SelectAll, Message::SelectAll).shortcut("Ctrl+A"),
+            item(Key::Paste, Message::Paste, Icon::Paste).shortcut("Ctrl+V"),
+            item(Key::SelectAll, Message::SelectAll, Icon::SelectAll).shortcut("Ctrl+A"),
             Entry::Separator,
-            glyphed(Key::OpenInTerminal, Message::Terminal, Icon::Terminal),
-            item(Key::AddBookmark, Message::BookmarkHere).shortcut("Ctrl+B").enabled(bookmarkable(app, &app.current)),
+            item(Key::OpenInTerminal, Message::Terminal, Icon::Terminal),
+            item(Key::AddBookmark, Message::BookmarkHere, Icon::Star)
+                .shortcut("Ctrl+B")
+                .enabled(bookmarkable(app, &app.current)),
             Entry::Separator,
-            item(Key::FolderProperties, Message::Properties),
+            item(Key::FolderProperties, Message::Properties, Icon::Info),
         ],
         MenuKind::Location(path) => {
             let mut entries = vec![
-                item(Key::Open, Message::Navigate(path.clone())),
-                item(Key::OpenInNewWindow, Message::NewWindow(Some(path.clone()))),
-                item(Key::OpenInTerminal, Message::TerminalAt(path.clone())).enabled(!app.trash.contains(path)),
-                item(Key::CopyPath, Message::CopyText(path.display().to_string())),
+                item(Key::Open, Message::Navigate(path.clone()), Icon::Open),
+                item(Key::OpenInNewWindow, Message::NewWindow(Some(path.clone())), Icon::Window),
+                item(Key::OpenInTerminal, Message::TerminalAt(path.clone()), Icon::Terminal)
+                    .enabled(!app.trash.contains(path)),
+                item(Key::CopyPath, Message::CopyText(path.display().to_string()), Icon::Path),
                 Entry::Separator,
             ];
             if app.is_bookmarked(path) {
-                entries.push(item(Key::RemoveBookmark, Message::RemoveBookmark(path.clone())));
+                entries.push(item(Key::RemoveBookmark, Message::RemoveBookmark(path.clone()), Icon::Star));
                 entries.push(Entry::Separator);
             } else if bookmarkable(app, path) {
-                entries.push(item(Key::AddBookmark, Message::AddBookmark(path.clone())));
+                entries.push(item(Key::AddBookmark, Message::AddBookmark(path.clone()), Icon::Star));
                 entries.push(Entry::Separator);
             }
             if *path == app.trash.files() {
-                entries.push(item(Key::EmptyTrash, Message::EmptyTrash).danger().enabled(app.trash_count > 0));
+                entries.push(
+                    item(Key::EmptyTrash, Message::EmptyTrash, Icon::Trash).danger().enabled(app.trash_count > 0),
+                );
                 entries.push(Entry::Separator);
             }
-            entries.push(item(Key::Properties, Message::PropertiesOf(path.clone())));
+            entries.push(item(Key::Properties, Message::PropertiesOf(path.clone()), Icon::Info));
             entries
         }
         MenuKind::Volume(object) => app.volume(object).map(|volume| volume_entries(app, volume)).unwrap_or_default(),
@@ -174,40 +185,47 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 format!("{} %", app.metrics().percent(app.view)),
                 (level > 0).then_some(Message::Zoom(-1)),
                 (level + 1 < levels).then_some(Message::Zoom(1)),
-            );
+            )
+            .glyph(Icon::Zoom.handle());
             let mut entries = vec![
                 Entry::heading(Key::ViewAs.text(app.lang)),
                 zoom,
-                item(Key::ShowHidden, Message::ToggleHidden).shortcut("Ctrl+H").checked(app.show_hidden),
-                item(Key::InspectorPanel, Message::ToggleInspector)
+                item(Key::ShowHidden, Message::ToggleHidden, Icon::Eye).shortcut("Ctrl+H").checked(app.show_hidden),
+                item(Key::InspectorPanel, Message::ToggleInspector, Icon::Panel)
                     .shortcut("Ctrl+I")
                     .checked(app.inspector_shown())
                     .enabled(app.inspector_fits()),
-                item(Key::Columns, Message::SubMenu(MenuKind::Columns)).cascades().enabled(app.view == ViewMode::List),
+                item(Key::Columns, Message::SubMenu(MenuKind::Columns), Icon::Columns)
+                    .cascades()
+                    .enabled(app.view == ViewMode::List),
                 Entry::Separator,
                 Entry::heading(Key::SortBy.text(app.lang)),
             ];
             entries.extend(
-                SortBy::ALL.into_iter().map(|by| item(sort_key(by), Message::SortKey(by)).checked(app.sort.by == by)),
+                SortBy::ALL
+                    .into_iter()
+                    .map(|by| item(sort_key(by), Message::SortKey(by), sort_icon(by)).checked(app.sort.by == by)),
             );
             entries.extend([
-                item(Key::Reversed, Message::ToggleReverse).checked(!app.sort.ascending),
+                item(Key::Reversed, Message::ToggleReverse, Icon::Sort).checked(!app.sort.ascending),
                 Entry::Separator,
-                item(Key::QueueOperations, Message::ToggleQueue).checked(app.queue),
-                item(Key::EnterPath, Message::EditPath).shortcut("Ctrl+L"),
+                item(Key::QueueOperations, Message::ToggleQueue, Icon::Queue).checked(app.queue),
+                item(Key::EnterPath, Message::EditPath, Icon::Path).shortcut("Ctrl+L"),
                 Entry::Separator,
-                item(Key::Shortcuts, Message::ShowShortcuts).shortcut("F1"),
+                item(Key::Shortcuts, Message::ShowShortcuts, Icon::Keyboard).shortcut("F1"),
             ]);
             entries
         }
         MenuKind::Templates => {
-            let mut entries = vec![item(Key::NewFile, Message::NewFile)];
+            let mut entries = vec![item(Key::NewFile, Message::NewFile, Icon::FilePlus)];
             let root = crate::fs::templates_dir().unwrap_or_default();
             entries.extend(app.templates.iter().map(|template| {
                 let shown = template.strip_prefix(&root).unwrap_or(template);
+                let glyph = crate::fs::FileCategory::classify(template, false, 0).icon();
                 Entry::action(shown.display().to_string(), Message::NewFromTemplate(template.clone()))
+                    .glyph(glyph.handle())
             }));
-            entries.extend([Entry::Separator, item(Key::OpenTemplates, Message::OpenTemplates)]);
+            entries.extend([Entry::Separator, item(Key::OpenTemplates, Message::OpenTemplates, Icon::Folder)]);
             entries
         }
         MenuKind::Tags => {
@@ -217,12 +235,12 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
                 .map(|color| {
                     let on = !picked.is_empty()
                         && picked.iter().all(|entry| crate::fs::tags::colors(&entry.tags).contains(&color));
-                    item(color_key(color), Message::ToggleTag(color))
+                    Entry::action(color_key(color).text(app.lang), Message::ToggleTag(color))
                         .swatch(super::content::tag_color(color))
                         .checked(on)
                 })
                 .collect();
-            entries.extend([Entry::Separator, item(Key::EditTags, Message::EditTags)]);
+            entries.extend([Entry::Separator, item(Key::EditTags, Message::EditTags, Icon::Tag)]);
             entries
         }
         MenuKind::OpenWith => {
@@ -230,16 +248,26 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
             if !entries.is_empty() {
                 entries.push(Entry::Separator);
             }
-            entries.push(item(Key::OtherApp, Message::OpenWithDialog));
+            entries.push(item(Key::OtherApp, Message::OpenWithDialog, Icon::Search));
             entries
         }
         MenuKind::Columns => crate::config::ListColumn::ALL
             .into_iter()
             .map(|column| {
                 Entry::action(super::content::column_label(column, app.lang), Message::ToggleColumn(column))
+                    .glyph(Icon::Columns.handle())
                     .checked(app.columns.contains(&column))
             })
             .collect(),
+    }
+}
+
+const fn sort_icon(by: SortBy) -> Icon {
+    match by {
+        SortBy::Name => Icon::FileText,
+        SortBy::Size => Icon::Drive,
+        SortBy::Modified => Icon::Clock,
+        SortBy::Type => Icon::Tag,
     }
 }
 
@@ -282,7 +310,7 @@ const fn color_key(color: crate::fs::tags::Color) -> Key {
 }
 
 fn volume_entries(app: &App, volume: &Volume) -> Vec<Entry> {
-    let item = |key: Key, message: Message| Entry::action(key.text(app.lang), message);
+    let item = |key: Key, message: Message, icon: Icon| Entry::action(key.text(app.lang), message).glyph(icon.handle());
     let idle = !app.busy.contains(&volume.object);
     let object = volume.object.clone();
     let lang = app.lang;
@@ -298,26 +326,26 @@ fn volume_entries(app: &App, volume: &Volume) -> Vec<Entry> {
     let mut entries = vec![Entry::heading(heading)];
     match &volume.mount {
         Some(path) => entries.extend([
-            item(Key::Open, Message::Navigate(path.clone())),
-            item(Key::OpenInNewWindow, Message::NewWindow(Some(path.clone()))),
+            item(Key::Open, Message::Navigate(path.clone()), Icon::Open),
+            item(Key::OpenInNewWindow, Message::NewWindow(Some(path.clone())), Icon::Window),
         ]),
         None => entries.extend([
-            item(Key::Open, Message::Mount(object.clone(), false)).enabled(idle),
-            item(Key::MountReadOnly, Message::Mount(object.clone(), true)).enabled(idle),
+            item(Key::Open, Message::Mount(object.clone(), false), Icon::Open).enabled(idle),
+            item(Key::MountReadOnly, Message::Mount(object.clone(), true), Icon::Lock).enabled(idle),
         ]),
     }
     entries.push(Entry::Separator);
     if volume.can_remove() {
-        entries.push(item(Key::Eject, Message::Eject(object.clone())).glyph(Icon::Eject.handle()).enabled(idle));
+        entries.push(item(Key::Eject, Message::Eject(object.clone()), Icon::Eject).enabled(idle));
     }
     if volume.mount.is_some() {
-        entries.push(item(Key::Unmount, Message::Unmount(object.clone())).enabled(idle));
+        entries.push(item(Key::Unmount, Message::Unmount(object.clone()), Icon::ArrowDown).enabled(idle));
     }
     entries.push(Entry::Separator);
-    entries.push(item(Key::Repair, Message::Repair(object)).enabled(idle));
+    entries.push(item(Key::Repair, Message::Repair(object), Icon::Wrench).enabled(idle));
     if let Some(path) = &volume.mount {
         entries.push(Entry::Separator);
-        entries.push(item(Key::Properties, Message::PropertiesOf(path.clone())));
+        entries.push(item(Key::Properties, Message::PropertiesOf(path.clone()), Icon::Info));
     }
     entries
 }
