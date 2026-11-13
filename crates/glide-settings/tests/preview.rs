@@ -80,6 +80,29 @@ fn fixture_vpn(app: &mut App) {
     let _ = app.update(Message::Vpn(Msg::Loaded(0, state)));
 }
 
+fn fixture_displays(app: &mut App) {
+    use glide_settings::panels::displays::Msg;
+    use glide_settings::services::display::{Backlight, DisplayState};
+    let output = |name: &str, model: &str, width, height, scale, x| glide_ipc::OutputInfo {
+        name: name.into(),
+        make: "Example".into(),
+        model: model.into(),
+        width,
+        height,
+        scale,
+        x,
+        refresh_mhz: 60_000,
+        ..Default::default()
+    };
+    let state = DisplayState {
+        live: true,
+        compositor_running: true,
+        outputs: vec![output("eDP-1", "Laptop", 1920, 1200, 1.25, 0), output("DP-2", "Monitor", 3840, 2160, 1.5, 1536)],
+        backlight: Some(Backlight { device: "fixture".into(), percent: 64 }),
+    };
+    let _ = app.update(Message::Displays(Msg::Loaded(state)));
+}
+
 fn fixture_sound(app: &mut App) {
     use glide_settings::panels::sound::Msg;
     use glide_settings::services::audio::{AudioState, Device, Level, Stereo, Stream};
@@ -327,6 +350,9 @@ fn preview_page() {
     }
     if panel == Panel::Sound && std::env::var_os("GLIDE_SETTINGS_SOUND_FIXTURE").is_some() {
         fixture_sound(&mut app);
+    }
+    if panel == Panel::Displays && std::env::var_os("GLIDE_SETTINGS_DISPLAYS_FIXTURE").is_some() {
+        fixture_displays(&mut app);
     }
     if panel == Panel::Home && std::env::var_os("GLIDE_SETTINGS_HOME_LOADING").is_none() {
         let _ = app.update(Message::Home(home::Msg::Loaded(1, Box::default())));

@@ -506,7 +506,8 @@ impl Page {
         let sizes: Vec<(f64, f64)> = order.iter().map(|index| self.logical(config, *index)).collect();
         let total_w: f64 = sizes.iter().map(|(w, _)| w).sum();
         let max_h = sizes.iter().map(|(_, h)| *h).fold(1.0, f64::max);
-        let factor = (130.0 / max_h).min(520.0 / total_w.max(1.0));
+        let width = if t.compact { 240.0 } else { 520.0 };
+        let factor = (130.0 / max_h).min(width / total_w.max(1.0));
         let mut monitors = IcedRow::new().spacing(10).align_y(Alignment::End);
         for (slot, index) in order.iter().copied().enumerate() {
             let output = &self.state.outputs[index];
@@ -532,31 +533,40 @@ impl Page {
                 Arrangement::Extend => c.t(tr::Key::ExtendHint),
                 Arrangement::Mirror => c.t(tr::Key::MirrorHint),
             };
-            card = card.push(
-                row![
-                    text(hint, TextStyle::CAP).color(t.fg_2()).width(Fill),
-                    super::common::gated(*c, widgets::segmented(t, choices, arrangement, Msg::Arrange)),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            );
+            let control = super::common::gated(*c, widgets::segmented(t, choices, arrangement, Msg::Arrange));
+            card = if t.compact {
+                card.push(column![text(hint, TextStyle::CAP).color(t.fg_2()), control].spacing(8))
+            } else {
+                card.push(
+                    row![text(hint, TextStyle::CAP).color(t.fg_2()).width(Fill), control]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                )
+            };
         }
         if order.len() > 1 && arrangement == Arrangement::Extend {
             let at = order.iter().position(|index| *index == self.selected).unwrap_or(0);
             let writable = c.writable;
-            card = card.push(
-                row![
-                    text(c.t(tr::Key::ArrangementHint), TextStyle::CAP).color(t.fg_2()).width(Fill),
-                    widgets::secondary(t, c.t(tr::Key::MoveLeft), (writable && at > 0).then_some(Msg::Move(false)),),
-                    widgets::secondary(
-                        t,
-                        c.t(tr::Key::MoveRight),
-                        (writable && at + 1 < order.len()).then_some(Msg::Move(true)),
-                    ),
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            );
+            let buttons = row![
+                widgets::secondary(t, c.t(tr::Key::MoveLeft), (writable && at > 0).then_some(Msg::Move(false)),),
+                widgets::secondary(
+                    t,
+                    c.t(tr::Key::MoveRight),
+                    (writable && at + 1 < order.len()).then_some(Msg::Move(true)),
+                ),
+            ]
+            .spacing(8);
+            card = if t.compact {
+                card.push(
+                    column![text(c.t(tr::Key::ArrangementHint), TextStyle::CAP).color(t.fg_2()), buttons].spacing(8),
+                )
+            } else {
+                card.push(
+                    row![text(c.t(tr::Key::ArrangementHint), TextStyle::CAP).color(t.fg_2()).width(Fill), buttons]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                )
+            };
         }
         let body = glide_sdk::widget::card(&widgets::paint(&t), container(card).padding(theme::SECTION_GAP - 16.0));
         column![
@@ -684,6 +694,7 @@ impl Page {
             } else {
                 format!("{kind} · {model}")
             })
+            .stacked_header(t.compact)
             .extend(self.mode_rows(c, config, output))
             .push(
                 Row::new(t, c.t(K::Scale))
