@@ -32,7 +32,6 @@ mod tr {
         FastestHint => "The fastest rate for this resolution", "Найвища частота для цієї роздільності";
         Brightness => "Brightness", "Яскравість";
         BrightnessHint => "Built-in screen backlight", "Підсвічування вбудованого екрана";
-        Details => "Details", "Подробиці";
         Connector => "Connector", "Роз'єм";
         Model => "Model", "Модель";
         ScreenSize => "Screen size", "Розмір екрана";
@@ -50,7 +49,7 @@ mod tr {
         Primary => "Main display", "Основний дисплей";
         PrimaryHint => "The dock, the top bar, the launcher and the overview show here", "Тут показуються док, верхня панель, лаунчер і огляд";
         PrimaryAutomatic => "Automatic · built-in first", "Автоматично · спершу вбудований";
-        Lid => "Lid closed with another display connected", "Кришка закрита, підключено інший дисплей";
+        Lid => "Closing the lid with another display connected", "Закриття кришки за підключеного іншого дисплея";
         LidHint => "The built-in screen turns off and everything moves to the other display. Opening the lid brings it back as it was.", "Вбудований екран вимикається, усе переїжджає на інший дисплей. Відкриєте кришку — повернеться як було.";
     }
 }
@@ -496,7 +495,6 @@ impl Page {
             .push(self.primary_group(&c, config))
             .push(self.output_group(&c, config))
             .push(lid)
-            .push(self.details_group(&c, config))
             .into()
     }
 
@@ -730,17 +728,7 @@ impl Page {
                     .build(),
             );
         }
-        group.build()
-    }
-
-    fn details_group<'a>(&'a self, c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
-        let t = c.theme;
-        let Some(output) = self.state.outputs.get(self.selected) else {
-            return widgets::gap(0.0);
-        };
-        let (w, h) = self.logical(config, self.selected);
         let mut rows = vec![(c.t(tr::Key::Connector).to_string(), output.name.clone())];
-        let model = format!("{} {}", output.make, output.model).trim().to_string();
         if !model.is_empty() && model != "Unknown Unknown" {
             rows.push((c.t(tr::Key::Model).to_string(), model));
         }
@@ -755,11 +743,19 @@ impl Page {
                 ),
             ));
         }
-        rows.push((c.t(tr::Key::LogicalResolution).to_string(), format!("{w:.0} × {h:.0}")));
         if self.state.live {
             rows.push((c.t(tr::Key::Position).to_string(), format!("{}, {}", output.x, output.y)));
         }
-        Group::new(t).title(c.t(tr::Key::Details)).extend(widgets::info_rows(t, rows)).build()
+        let details = rows
+            .into_iter()
+            .map(|(label, value)| {
+                column![text(label, TextStyle::CAP).color(t.fg_3()), text(value, TextStyle::CALL).color(t.fg_2())]
+                    .spacing(6)
+                    .width(Fill)
+                    .into()
+            })
+            .collect();
+        group.push(container(glide_sdk::widget::grid(details, if t.compact { 1 } else { 3 }, 12.0)).padding(12)).build()
     }
 }
 
