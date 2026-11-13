@@ -9,16 +9,13 @@ use super::{Ctx, Pane};
 use crate::i18n::Key as K;
 use crate::services::config::ConfigStore;
 use crate::services::keybinds;
-use crate::theme::{self, ThemeState};
+use crate::theme;
 use crate::widgets::{self, Group, Row};
 use glide_sdk::widget::mock as sketch;
 
 mod tr {
     crate::i18n::catalogue! {
-        NewWorkspaceHint => "Each app gets a clean workspace of its own", "Кожна програма отримує власний чистий простір";
-        ActiveWorkspaceHint => "Windows pile up where you are working", "Вікна збираються там, де ви працюєте";
-        Overview => "Overview", "Огляд";
-        OverviewHint => "Every window of the workspace side by side", "Усі вікна простору поруч одне з одним";
+        WorkspacesOverview => "Workspaces and overview", "Простори й огляд";
         HotCorner => "Hot corner", "Гарячий кут";
         HotCornerHint => "Push the pointer into the top-left corner to open the overview", "Відведіть вказівник у верхній лівий кут, щоб відкрити огляд";
         Snapping => "Edge snapping", "Прилипання до країв";
@@ -95,7 +92,6 @@ impl Pane for Page {
         Column::new()
             .spacing(theme::SECTION_GAP)
             .push(workspaces_group(&c, config))
-            .push(overview_group(&c, config))
             .push(snapping_group(&c, config))
             .push(shortcuts_group(&c, config))
             .into()
@@ -106,26 +102,19 @@ fn workspaces_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     let t = c.theme;
     let fixed = config.int_or("workspaces", "fixed", 0);
     let current = if fixed > 0 { NewWindow::ActiveWorkspace } else { NewWindow::from_config(config) };
-    let card = |policy: NewWindow, heading: K, hint: tr::Key| {
-        widgets::radio_card(
-            t,
-            workspace_sketch(&t, policy),
-            c.t(heading),
-            Some(c.t(hint).to_string()),
-            current == policy,
-            Msg::NewWindow(policy),
-        )
-    };
-    let cards = row![
-        card(NewWindow::NewWorkspace, K::OwnWorkspace, tr::Key::NewWorkspaceHint),
-        card(NewWindow::ActiveWorkspace, K::CurrentWorkspace, tr::Key::ActiveWorkspaceHint),
-    ]
-    .spacing(12);
     let cards_ctx = Ctx { writable: c.writable && fixed == 0, ..*c };
+    let choices = vec![
+        (NewWindow::NewWorkspace, c.t(K::OwnWorkspace).to_string()),
+        (NewWindow::ActiveWorkspace, c.t(K::CurrentWorkspace).to_string()),
+    ];
     let mut group = Group::new(t)
-        .title(c.t(K::NewWindows))
-        .description(c.t(K::WorkspacesHint))
-        .push(container(gated(cards_ctx, cards)).padding(8))
+        .title(c.t(tr::Key::WorkspacesOverview))
+        .push(
+            Row::new(t, c.t(K::NewWindows))
+                .suffix(gated(cards_ctx, widgets::segmented(t, choices, current, Msg::NewWindow)))
+                .stacked(t.compact)
+                .build(),
+        )
         .push(switch_row(*c, c.t(tr::Key::Fixed), c.t(tr::Key::FixedHint), fixed > 0, Msg::Fixed));
     if fixed > 0 {
         let selected = u8::try_from(fixed).ok();
@@ -135,14 +124,14 @@ fn workspaces_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
                 .build(),
         );
     }
-    group.build()
-}
-
-fn overview_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
-    let t = c.theme;
-    Group::new(t)
-        .title(c.t(tr::Key::Overview))
-        .description(c.t(tr::Key::OverviewHint))
+    group
+        .push(switch_row(
+            *c,
+            c.t(tr::Key::HotCorner),
+            c.t(tr::Key::HotCornerHint),
+            config.bool_or("overview", "hot-corner", false),
+            Msg::HotCorner,
+        ))
         .push(switch_row(
             *c,
             c.t(K::OverviewLabels),
@@ -150,13 +139,6 @@ fn overview_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
             config.bool_or("overview", "label", true),
             Msg::OverviewLabels,
         ))
-        .push(
-            Row::new(t, c.t(tr::Key::HotCorner))
-                .subtitle(c.t(tr::Key::HotCornerHint))
-                .prefix(corner_sketch(&t))
-                .suffix(toggle(*c, config.bool_or("overview", "hot-corner", false), Msg::HotCorner))
-                .build(),
-        )
         .build()
 }
 
@@ -178,6 +160,7 @@ fn snapping_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
     Group::new(t)
         .title(c.t(tr::Key::Snapping))
         .description(c.t(tr::Key::SnappingHint))
+        .stacked_header(t.compact)
         .push(container(zones).center_x(iced::Fill).padding([12, 8]))
         .push(Row::new(t, c.t(tr::Key::SnapWindows)).suffix(toggle(*c, on, Msg::EdgeSnapping)).build())
         .build()
@@ -194,7 +177,8 @@ fn shortcuts_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         (tr::Key::NextWorkspace, "next-workspace"),
         (tr::Key::PreviousWorkspace, "prev-workspace"),
     ];
-    let mut group = Group::new(t).title(c.t(tr::Key::Shortcuts)).description(c.t(tr::Key::ShortcutsHint));
+    let mut group =
+        Group::new(t).title(c.t(tr::Key::Shortcuts)).description(c.t(tr::Key::ShortcutsHint)).stacked_header(t.compact);
     for (label, action) in entries {
         let suffix: Element<'a, Msg> = match keybinds::combo_for(&binds, action) {
             Some(combo) => widgets::key_combo(t, &combo),
@@ -207,12 +191,4 @@ fn shortcuts_group<'a>(c: &Ctx, config: &'a ConfigStore) -> Element<'a, Msg> {
         group = group.push(line.build());
     }
     group.build()
-}
-
-fn workspace_sketch<'a>(t: &ThemeState, policy: NewWindow) -> Element<'a, Msg> {
-    sketch::new_window_placement(*t, policy == NewWindow::NewWorkspace)
-}
-
-fn corner_sketch<'a>(t: &ThemeState) -> Element<'a, Msg> {
-    sketch::hot_corner(*t)
 }
