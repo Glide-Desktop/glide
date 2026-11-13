@@ -385,6 +385,10 @@ fn night_light_times_are_only_stored_when_valid() {
     assert_eq!(app.config().night_light_from(), "20:00");
     let _ = app.update(Message::NightLight(Msg::NightFrom(String::from("21:30"))));
     assert_eq!(app.config().night_light_from(), "21:30");
+    let _ = app.update(Message::NightLight(Msg::NightTo(String::from("25:00"))));
+    assert_eq!(app.config().night_light_to(), "07:00");
+    let _ = app.update(Message::NightLight(Msg::NightTo(String::from("06:15"))));
+    assert_eq!(app.config().night_light_to(), "06:15");
     assert!(app.config().night_light_schedule());
 }
 

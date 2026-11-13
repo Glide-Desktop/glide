@@ -29,6 +29,7 @@ mod tr {
         ScheduleHint => "Switching night light by hand keeps it that way until the next scheduled change", "Якщо перемкнути нічне світло вручну, воно так і залишиться до наступної зміни за розкладом";
         Presets => "Quick presets", "Швидкі варіанти";
         Timeline => "Active hours", "Години роботи";
+        Interval => "Time interval", "Часовий інтервал";
         AllNight => "20:00 – 07:00", "20:00 – 07:00";
         LateNight => "22:00 – 06:00", "22:00 – 06:00";
         Evening => "18:00 – 08:00", "18:00 – 08:00";
@@ -291,17 +292,25 @@ impl Page {
                 .build(),
         ];
         if scheduled {
-            let time_row = |label: K, value: &str, on_input: fn(String) -> Msg| {
-                let invalid = parse_clock(value).is_none();
-                let field = widgets::field(t, "HH:MM", value, on_input, Some(Msg::CommitNight), invalid)
-                    .width(Length::Fixed(92.0));
-                Row::new(t, c.t(label))
-                    .subtitle(if invalid { c.t(K::TimeInvalid) } else { "" })
-                    .suffix(gated(*c, field))
-                    .build()
-            };
-            rows.push(time_row(K::From, &from, Msg::NightFrom));
-            rows.push(time_row(K::To, &to, Msg::NightTo));
+            let invalid_from = parse_clock(&from).is_none();
+            let invalid_to = parse_clock(&to).is_none();
+            let fields = row![
+                text(c.t(K::From), TextStyle::CAP).color(t.fg_2()),
+                widgets::field(t, "HH:MM", &from, Msg::NightFrom, Some(Msg::CommitNight), invalid_from)
+                    .width(Length::Fixed(76.0)),
+                text(c.t(K::To), TextStyle::CAP).color(t.fg_2()),
+                widgets::field(t, "HH:MM", &to, Msg::NightTo, Some(Msg::CommitNight), invalid_to)
+                    .width(Length::Fixed(76.0)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center);
+            rows.push(
+                Row::new(t, c.t(tr::Key::Interval))
+                    .subtitle(if invalid_from || invalid_to { c.t(K::TimeInvalid) } else { "" })
+                    .suffix(gated(*c, fields))
+                    .stacked(t.compact)
+                    .build(),
+            );
             let window = parse_clock(&from).zip(parse_clock(&to));
             if let Some((start, end)) = window {
                 rows.push(timeline(c, start, end, self.kelvin(config)));
