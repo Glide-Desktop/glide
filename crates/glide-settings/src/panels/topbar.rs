@@ -17,21 +17,15 @@ mod tr {
         Preview => "Preview", "Попередній перегляд";
         PreviewHint => "A sample of the bar with the options below", "Зразок панелі з налаштуваннями нижче";
         Clock => "Clock", "Годинник";
-        ClockHint => "Click the clock to open the calendar and notifications", "Клацніть годинник, щоб відкрити календар і сповіщення";
-        ClockFormat => "Time format and date", "Формат часу й дата";
         ClockFormatHint => "Set on the Date & Time page", "Налаштовується на сторінці «Дата й час»";
         WithDate => ", with the date", ", з датою";
         Auto => "By region", "За регіоном";
         Hours24 => "24-hour", "24 години";
         Hours12 => "12-hour", "12 годин";
-        Status => "Status area", "Область стану";
-        StatusHint => "The right-hand side of the bar", "Права частина панелі";
         BatteryPercent => "Battery percentage", "Відсоток заряду";
         BatteryPercentHint => "Show the charge as a number next to the battery icon", "Показувати заряд числом біля значка батареї";
         Tray => "App status icons", "Значки стану програм";
         TrayHint => "Tray icons of apps such as Telegram, Steam or Nextcloud", "Значки в треї від програм на кшталт Telegram, Steam чи Nextcloud";
-        Menus => "App menus", "Меню програм";
-        MenusHint => "Menus of the focused app sit next to its name, as on macOS", "Меню активної програми стоять поруч із її назвою, як у macOS";
         SampleApp => "Files", "Файли";
         SampleMenus => "File   Edit   View", "Файл   Зміни   Вигляд";
         SampleDate => "Thu 24 Sep", "чт 24 вер.";
@@ -118,6 +112,7 @@ impl Pane for Page {
         let preview = Group::new(t)
             .title(c.t(tr::Key::Preview))
             .description(c.t(tr::Key::PreviewHint))
+            .stacked_header(t.compact)
             .push(container(bar_preview(&c, config)).padding(8));
         let page = Column::new().spacing(theme::SECTION_GAP).push(preview.build());
         let format = TimeFormat::from_config(config);
@@ -130,26 +125,22 @@ impl Pane for Page {
             }),
             if config.bool_or("topbar", "clock-date", true) { c.t(tr::Key::WithDate) } else { "" }
         );
-        let clock = Group::new(t).title(c.t(tr::Key::Clock)).description(c.t(tr::Key::ClockHint)).push(
-            Row::new(t, c.t(tr::Key::ClockFormat))
-                .subtitle(c.t(tr::Key::ClockFormatHint))
-                .suffix(widgets::disclosure(t, Some(clock_value)))
-                .on_press(Msg::Open(super::Panel::DateTime))
-                .build(),
-        );
-        let status = Group::new(t)
-            .title(c.t(tr::Key::Status))
-            .description(c.t(tr::Key::StatusHint))
+        let settings = Group::new(t)
+            .title(c.t(K::TopBar))
+            .push(
+                Row::new(t, c.t(tr::Key::Clock))
+                    .subtitle(c.t(tr::Key::ClockFormatHint))
+                    .suffix(widgets::disclosure(t, Some(clock_value)))
+                    .on_press(Msg::Open(super::Panel::DateTime))
+                    .build(),
+            )
             .push(switch_row(
                 c.t(tr::Key::BatteryPercent),
                 c.t(tr::Key::BatteryPercentHint),
                 "battery-percentage",
                 Msg::Battery,
             ))
-            .push(switch_row(c.t(tr::Key::Tray), c.t(tr::Key::TrayHint), "tray", Msg::Tray));
-        let menus = Group::new(t)
-            .title(c.t(tr::Key::Menus))
-            .description(c.t(tr::Key::MenusHint))
+            .push(switch_row(c.t(tr::Key::Tray), c.t(tr::Key::TrayHint), "tray", Msg::Tray))
             .push(switch_row(c.t(K::GlobalMenu), c.t(K::GlobalMenuHint), "global-menu", Msg::GlobalMenu))
             .push(switch_row(
                 c.t(K::AppMenuRegistrar),
@@ -157,7 +148,7 @@ impl Pane for Page {
                 "appmenu-registrar",
                 Msg::Registrar,
             ));
-        page.push(clock.build()).push(status.build()).push(menus.build()).into()
+        page.push(settings.build()).into()
     }
 }
 
