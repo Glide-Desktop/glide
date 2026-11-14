@@ -8,6 +8,7 @@ pub mod find;
 pub mod finder;
 pub mod history;
 pub mod i18n;
+mod icons;
 pub mod syntax;
 pub mod table;
 pub mod tree;

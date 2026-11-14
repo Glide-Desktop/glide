@@ -20,6 +20,7 @@ pub enum Mode {
     Files,
     Symbols,
     Search,
+    Tabs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +28,7 @@ pub enum Target {
     File(PathBuf),
     Line(usize),
     Match(PathBuf, usize),
+    Tab(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +64,7 @@ impl Finder {
             selected: 0,
             reveal,
             root,
-            busy: mode != Mode::Symbols,
+            busy: !matches!(mode, Mode::Symbols | Mode::Tabs),
             generation,
         }
     }
@@ -99,6 +101,12 @@ impl Finder {
             return;
         }
         self.selected = if forward { (self.selected + 1) % count } else { (self.selected + count - 1) % count };
+    }
+
+    pub fn point_at(&mut self, target: &Target) {
+        let wanted =
+            self.hits.iter().position(|index| self.entries.get(*index).is_some_and(|entry| entry.target == *target));
+        self.selected = wanted.unwrap_or(self.selected);
     }
 
     #[must_use]

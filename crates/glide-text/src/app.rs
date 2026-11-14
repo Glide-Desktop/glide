@@ -90,6 +90,12 @@ pub enum Command {
     CopyPath,
     Close,
     CloseTab(usize),
+    CloseOthers,
+    CloseRight,
+    CloseSaved,
+    CloseAll,
+    ReopenClosed,
+    Tabs,
     CloseFolder,
     CloseWindow,
     Undo,
@@ -136,6 +142,8 @@ pub enum Command {
     TabWidth(usize),
     ToggleAutoIndent,
     ToggleAutoPair,
+    ToggleRestore,
+    FontSize(u16),
     ToggleFocus,
     QuickOpen,
     Symbols,
@@ -168,6 +176,7 @@ pub enum MenuKind {
     Endings,
     Recent,
     Tree(PathBuf),
+    Tab(u64),
 }
 
 #[derive(Debug, Clone)]
@@ -202,8 +211,20 @@ pub(crate) const FINDER_ID: &str = "glide-text-finder";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum After {
-    Close(u64),
+    Close,
     Window,
+}
+
+const CLOSED_KEPT: usize = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Poll {
+    Idle,
+    Asked,
+}
+
+fn unsaved(doc: &Document) -> bool {
+    doc.dirty() && (doc.path.is_some() || !doc.text.is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,6 +291,8 @@ pub enum Message {
     TreeClicked(PathBuf),
     TreeMenu(PathBuf),
     TabPressed(usize),
+    TabMenu(usize),
+    Reopened(Vec<String>),
     TabHovered(Option<usize>),
     TabMoved(usize, usize),
     BarPressed(Bar),
@@ -294,6 +317,7 @@ pub enum Message {
     Link(markdown::Uri),
     Pointer(Point),
     Tick,
+    Stamped(Vec<(u64, Option<SystemTime>, Option<SystemTime>)>),
     Frame,
     Window(WindowAction),
     Dropped(PathBuf),
@@ -346,6 +370,9 @@ pub struct App {
     session_at: Instant,
     queue: Vec<u64>,
     after: Option<After>,
+    batch: Vec<u64>,
+    pub(crate) closed: Vec<PathBuf>,
+    disk: Poll,
     stamp: Option<SystemTime>,
     reverting: HashSet<u64>,
 }
@@ -410,6 +437,9 @@ pub fn shortcut(key: &Key, physical: Physical, modifiers: Modifiers) -> Option<C
         ('s', true, false, true) => Command::SaveAll,
         ('w', true, false, false) => Command::Close,
         ('w', true, true, false) | ('q', true, false, false) => Command::CloseWindow,
+        ('w', true, false, true) => Command::CloseOthers,
+        ('t', true, true, false) => Command::ReopenClosed,
+        ('a', true, true, false) => Command::Tabs,
         ('z', true, false, false) => Command::Undo,
         ('z', true, true, false) | ('y', true, false, false) => Command::Redo,
         ('d', true, false, false) => Command::DeleteLine,
@@ -444,6 +474,9 @@ pub fn shortcut_label(command: Command) -> Option<&'static str> {
         Command::SaveAs => "Ctrl+Shift+S",
         Command::SaveAll => "Ctrl+Alt+S",
         Command::Close => "Ctrl+W",
+        Command::CloseOthers => "Ctrl+Alt+W",
+        Command::ReopenClosed => "Ctrl+Shift+T",
+        Command::Tabs => "Ctrl+Shift+A",
         Command::CloseWindow => "Ctrl+Q",
         Command::Undo => "Ctrl+Z",
         Command::Redo => "Ctrl+Shift+Z",
@@ -653,6 +686,21 @@ fn intern(family: &str) -> &'static str {
     name
 }
 
+type Watched = (u64, PathBuf, Option<SystemTime>);
+type Stamp = (u64, Option<SystemTime>, Option<SystemTime>);
+
+fn stamps(watched: Vec<Watched>) -> Vec<Stamp> {
+    watched.into_iter().map(|(id, path, seen)| (id, seen, document::modified(&path))).collect()
+}
+
+fn tilde(folder: &Path) -> String {
+    match glide_config::home().as_deref().and_then(|home| folder.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => String::from("~"),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => folder.display().to_string(),
+    }
+}
+
 fn date_time() -> String {
     glide_config::local_time().map_or_else(String::new, |time| {
         format!("{:04}-{:02}-{:02} {:02}:{:02}", time.year, time.month, time.day, time.hour, time.minute)
@@ -716,6 +764,9 @@ impl App {
             session_at: Instant::now(),
             queue: Vec::new(),
             after: None,
+            batch: Vec::new(),
+            closed: Vec::new(),
+            disk: Poll::Idle,
             stamp: stamp(),
             reverting: HashSet::new(),
         };
@@ -905,14 +956,18 @@ impl App {
 
     #[must_use]
     pub fn subtitle(&self) -> Option<String> {
-        let doc = self.doc()?;
-        let folder = doc.path.as_deref()?.parent()?;
-        let home = glide_config::home();
-        Some(match home.as_deref().and_then(|home| folder.strip_prefix(home).ok()) {
-            Some(rest) if rest.as_os_str().is_empty() => String::from("~"),
-            Some(rest) => format!("~/{}", rest.display()),
-            None => folder.display().to_string(),
-        })
+        Some(tilde(self.doc()?.path.as_deref()?.parent()?))
+    }
+
+    #[must_use]
+    pub(crate) fn tab_label(&self, doc: &Document) -> String {
+        let name = self.doc_name(doc);
+        let twin = |other: &Document| other.id != doc.id && other.path.is_some() && self.doc_name(other) == name;
+        let folder = doc.path.as_deref().and_then(Path::parent).and_then(Path::file_name);
+        match folder {
+            Some(folder) if self.docs.iter().any(twin) => format!("{name} — {}", folder.to_string_lossy()),
+            _ => name,
+        }
     }
 
     #[must_use]
@@ -1081,6 +1136,16 @@ impl App {
                 self.select(index);
                 operation::focus(EDITOR)
             }
+            Message::TabMenu(index) => {
+                if let Some(id) = self.docs.get(index).map(|doc| doc.id) {
+                    self.open_menu(MenuKind::Tab(id), self.pointer.get(), false);
+                }
+                Task::none()
+            }
+            Message::Reopened(args) => {
+                let (_, paths) = parse_args(args.into_iter().map(OsString::from));
+                Task::batch(paths.into_iter().map(|path| self.open_path(path)).collect::<Vec<_>>())
+            }
             Message::TabHovered(index) => {
                 self.hovered_tab = index;
                 Task::none()
@@ -1168,7 +1233,8 @@ impl App {
                 } else if let Some(base) =
                     self.doc().and_then(|doc| doc.path.as_deref()?.parent().map(Path::to_path_buf))
                 {
-                    let target = base.join(uri.split('#').next().unwrap_or_default());
+                    let link = glide_config::uri::decode(uri.split('#').next().unwrap_or_default());
+                    let target = base.join(<OsString as std::os::unix::ffi::OsStringExt>::from_vec(link));
                     if target.is_file() {
                         return self.open_path(target);
                     }
@@ -1187,6 +1253,7 @@ impl App {
                 self.open_path(path)
             }
             Message::Tick => self.tick(),
+            Message::Stamped(stamps) => self.stamped(stamps),
             Message::Frame => {
                 if let Some(menu) = &mut self.menu {
                     menu.reveal.settle(motion::t2());
@@ -1249,19 +1316,10 @@ impl App {
             doc.redetect();
         }
         let mut tasks = Vec::new();
-        for doc in &mut self.docs {
-            let Some(path) = doc.path.clone() else { continue };
-            let disk = document::modified(&path);
-            if disk == doc.disk || doc.changed_on_disk {
-                continue;
-            }
-            if disk.is_some() && !doc.dirty() {
-                let id = doc.id;
-                doc.disk = disk;
-                tasks.push(blocking(move || document::read(&path), move |result| Message::Reloaded(id, result)));
-            } else {
-                doc.changed_on_disk = true;
-            }
+        let watched = self.watched();
+        if self.disk == Poll::Idle && !watched.is_empty() {
+            self.disk = Poll::Asked;
+            tasks.push(blocking(move || stamps(watched), Message::Stamped));
         }
         if self.session_at.elapsed() >= SESSION_EVERY {
             self.session_at = Instant::now();
@@ -1271,6 +1329,30 @@ impl App {
             if mark != self.session_mark {
                 self.session_mark = mark;
                 self.save_session();
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    fn watched(&self) -> Vec<Watched> {
+        let docs = self.docs.iter().filter(|doc| !doc.changed_on_disk);
+        docs.filter_map(|doc| Some((doc.id, doc.path.clone()?, doc.disk))).collect()
+    }
+
+    fn stamped(&mut self, stamps: Vec<Stamp>) -> Task<Message> {
+        self.disk = Poll::Idle;
+        let mut tasks = Vec::new();
+        for (id, seen, disk) in stamps {
+            let Some(doc) = self.index_of(id).map(|index| &mut self.docs[index]) else { continue };
+            if doc.disk != seen || disk == seen || doc.changed_on_disk {
+                continue;
+            }
+            match doc.path.clone().filter(|_| disk.is_some() && !doc.dirty()) {
+                Some(path) => {
+                    doc.disk = disk;
+                    tasks.push(blocking(move || document::read(&path), move |result| Message::Reloaded(id, result)));
+                }
+                None => doc.changed_on_disk = true,
             }
         }
         Task::batch(tasks)
@@ -1385,6 +1467,17 @@ impl App {
         if let Some(menu) = &mut self.menu {
             menu.reveal.close(motion::t2());
         }
+    }
+
+    fn menu_tab(&self) -> Option<u64> {
+        match self.menu.as_ref().filter(|menu| menu.reveal.is_open())?.kind {
+            MenuKind::Tab(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    fn path_of(&self, id: Option<u64>) -> Option<PathBuf> {
+        self.docs.get(self.index_of(id?)?)?.path.clone()
     }
 
     #[must_use]
@@ -1502,6 +1595,7 @@ impl App {
     #[allow(clippy::too_many_lines)] // The command dispatcher: one short arm per menu or shortcut command
     fn command(&mut self, command: Command) -> Task<Message> {
         let keeps_menu = matches!(command, Command::Recent | Command::Syntax | Command::TabWidths | Command::Endings);
+        let target = self.menu_tab().or_else(|| self.doc().map(|doc| doc.id));
         if !keeps_menu {
             self.dismiss_menu();
         }
@@ -1525,7 +1619,12 @@ impl App {
             }
             Command::OpenRecent(index) => match self.recent.get(index).cloned() {
                 Some(path) if path.is_dir() => self.open_folder(path),
-                Some(path) => self.open_path(path),
+                Some(path) if path.exists() => self.open_path(path),
+                Some(path) => {
+                    self.recent.retain(|known| *known != path);
+                    self.tell(format!("{}: {}", Text::Missing.text(self.lang), path.display()));
+                    Task::none()
+                }
                 None => Task::none(),
             },
             Command::ClearRecent => {
@@ -1546,19 +1645,43 @@ impl App {
                 self.show(DialogKind::Revert(id))
             }
             Command::ShowInFiles => {
-                if let Some(path) = self.doc().and_then(|doc| doc.path.clone()) {
+                if let Some(path) = self.path_of(target) {
                     show_in_files(path);
                 }
                 Task::none()
             }
-            Command::CopyPath => self
-                .doc()
-                .and_then(|doc| doc.path.as_ref())
-                .map_or_else(Task::none, |path| clipboard::write(path.display().to_string())),
-            Command::Close => self.doc().map(|doc| doc.id).map_or_else(Task::none, |id| self.request_close(id)),
-            Command::CloseTab(index) => {
-                self.docs.get(index).map(|doc| doc.id).map_or_else(Task::none, |id| self.request_close(id))
+            Command::CopyPath => {
+                self.path_of(target).map_or_else(Task::none, |path| clipboard::write(path.display().to_string()))
             }
+            Command::Close => target.map_or_else(Task::none, |id| self.close_many(vec![id])),
+            Command::CloseTab(index) => {
+                self.docs.get(index).map(|doc| doc.id).map_or_else(Task::none, |id| self.close_many(vec![id]))
+            }
+            Command::CloseOthers | Command::CloseRight | Command::CloseSaved | Command::CloseAll => {
+                let at = target.and_then(|id| self.index_of(id));
+                let ids = self
+                    .docs
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, doc)| match command {
+                        Command::CloseOthers => Some(*index) != at,
+                        Command::CloseRight => at.is_some_and(|at| *index > at),
+                        Command::CloseSaved => !doc.dirty(),
+                        _ => true,
+                    })
+                    .map(|(_, doc)| doc.id)
+                    .collect();
+                self.close_many(ids)
+            }
+            Command::ReopenClosed => {
+                while let Some(path) = self.closed.pop() {
+                    if path.is_file() && !self.docs.iter().any(|doc| doc.path.as_deref() == Some(&path)) {
+                        return self.open_path(path);
+                    }
+                }
+                Task::none()
+            }
+            Command::Tabs => self.open_finder(finder::Mode::Tabs),
             Command::CloseFolder => {
                 self.tree = None;
                 Task::none()
@@ -1759,6 +1882,17 @@ impl App {
                 self.store_prefs();
                 Task::none()
             }
+            Command::ToggleRestore => {
+                self.prefs.restore_session = !self.prefs.restore_session;
+                self.store_prefs();
+                Task::none()
+            }
+            Command::FontSize(size) => {
+                self.prefs.font_size = f32::from(size).clamp(6.0, 72.0);
+                self.zoom = 0.0;
+                self.store_prefs();
+                Task::none()
+            }
             Command::SetEnding(ending) => {
                 if let Some(doc) = self.doc_mut()
                     && doc.ending != ending
@@ -1855,6 +1989,7 @@ impl App {
         let Some(doc) = self.doc_mut() else { return };
         let selection = doc.selected();
         let language = doc.language();
+        let caret = selection.is_empty().then_some(selection.start);
         let change = match command {
             Command::DuplicateLine => Some(edit::duplicate(&doc.text, &selection)),
             Command::DeleteLine => Some(edit::delete_lines(&doc.text, &selection)),
@@ -1876,6 +2011,13 @@ impl App {
                 Some(edit::Change { range: selection, text, select: at..at })
             }
             _ => None,
+        };
+        let change = match (change, caret, command) {
+            (Some(change), Some(caret), Command::ToggleComment | Command::Unindent) => {
+                Some(edit::keep_caret(change, caret, true))
+            }
+            (Some(change), Some(caret), Command::JoinLines) => Some(edit::keep_caret(change, caret, false)),
+            (change, ..) => change,
         };
         if let Some(change) = change {
             doc.replace(change.range, &change.text, Kind::Other);
@@ -2047,6 +2189,22 @@ impl App {
                 opened.busy = false;
                 Task::none()
             }
+            (finder::Mode::Tabs, _) => {
+                let entries = self
+                    .docs
+                    .iter()
+                    .map(|doc| finder::Entry {
+                        label: format!("{}{}", if doc.dirty() { "• " } else { "" }, self.doc_name(doc)),
+                        detail: doc.path.as_deref().and_then(Path::parent).map(tilde).unwrap_or_default(),
+                        target: finder::Target::Tab(doc.id),
+                    })
+                    .collect();
+                opened.fill(entries);
+                if let Some(doc) = self.doc() {
+                    opened.point_at(&finder::Target::Tab(doc.id));
+                }
+                Task::none()
+            }
         };
         self.finder = Some(opened);
         self.dismiss_menu();
@@ -2102,6 +2260,12 @@ impl App {
                 self.finder = None;
                 match target {
                     finder::Target::File(path) => self.open_path(path),
+                    finder::Target::Tab(id) => {
+                        if let Some(index) = self.index_of(id) {
+                            self.select(index);
+                        }
+                        operation::focus(EDITOR)
+                    }
                     finder::Target::Line(line) => {
                         self.place_line(line);
                         operation::focus(EDITOR)
@@ -2209,6 +2373,9 @@ impl App {
             Err(error) => {
                 let reason = match error {
                     LoadError::Binary => Text::Binary.text(self.lang).to_string(),
+                    LoadError::Large(size) => {
+                        format!("{} ({} MB)", Text::TooLarge.text(self.lang), size / (1024 * 1024))
+                    }
                     LoadError::Io(error) => error,
                 };
                 self.tell(format!("{} {}: {reason}", Text::OpenFailed.text(self.lang), path.display()));
@@ -2360,6 +2527,7 @@ impl App {
     fn abort_queue(&mut self) -> Task<Message> {
         self.queue.clear();
         self.after = None;
+        self.batch.clear();
         Task::none()
     }
 
@@ -2371,12 +2539,17 @@ impl App {
         blocking(move || document::read(&path), move |result| Message::Reloaded(id, result))
     }
 
-    fn request_close(&mut self, id: u64) -> Task<Message> {
-        let Some(index) = self.index_of(id) else { return Task::none() };
-        if self.docs[index].dirty() && (self.docs[index].path.is_some() || !self.docs[index].text.is_empty()) {
-            return self.show(DialogKind::Unsaved { docs: vec![id], then: After::Close(id) });
+    fn close_many(&mut self, ids: Vec<u64>) -> Task<Message> {
+        let dirty: Vec<u64> =
+            self.docs.iter().filter(|doc| ids.contains(&doc.id) && unsaved(doc)).map(|doc| doc.id).collect();
+        if ids.is_empty() {
+            return Task::none();
         }
-        self.finish(After::Close(id))
+        self.batch = ids;
+        if dirty.is_empty() {
+            return self.finish(After::Close);
+        }
+        self.show(DialogKind::Unsaved { docs: dirty, then: After::Close })
     }
 
     fn request_window_close(&mut self) -> Task<Message> {
@@ -2386,12 +2559,7 @@ impl App {
         {
             return iced::exit();
         }
-        let dirty: Vec<u64> = self
-            .docs
-            .iter()
-            .filter(|doc| doc.dirty() && (doc.path.is_some() || !doc.text.is_empty()))
-            .map(|doc| doc.id)
-            .collect();
+        let dirty: Vec<u64> = self.docs.iter().filter(|doc| unsaved(doc)).map(|doc| doc.id).collect();
         if dirty.is_empty() {
             return self.finish(After::Window);
         }
@@ -2400,19 +2568,28 @@ impl App {
 
     fn finish(&mut self, after: After) -> Task<Message> {
         match after {
-            After::Close(id) => {
-                let Some(index) = self.index_of(id) else { return Task::none() };
-                let doc = self.docs.remove(index);
-                if let Some(draft) = doc.draft {
-                    let _ = std::fs::remove_file(draft);
+            After::Close => {
+                let kept = self.doc().map(|doc| doc.id);
+                let was = self.active;
+                for id in std::mem::take(&mut self.batch) {
+                    let Some(index) = self.index_of(id) else { continue };
+                    let doc = self.docs.remove(index);
+                    if let Some(draft) = doc.draft {
+                        let _ = std::fs::remove_file(draft);
+                    }
+                    if let Some(path) = doc.path {
+                        self.closed.retain(|known| *known != path);
+                        self.closed.push(path);
+                    }
                 }
-                if self.active >= index && self.active > 0 {
-                    self.active -= 1;
-                }
+                let extra = self.closed.len().saturating_sub(CLOSED_KEPT);
+                self.closed.drain(..extra);
+                self.hovered_tab = None;
                 if self.docs.is_empty() {
                     self.new_document();
                 }
-                self.active = self.active.min(self.docs.len() - 1);
+                self.active = kept.and_then(|id| self.index_of(id)).unwrap_or_else(|| was.min(self.docs.len() - 1));
+                self.goto = None;
                 operation::focus(EDITOR)
             }
             After::Window => {
@@ -2441,17 +2618,10 @@ impl App {
         }
         let DialogKind::Unsaved { docs, then } = dialog.kind else { return Task::none() };
         match answer {
-            Answer::Cancel => Task::none(),
+            Answer::Cancel => self.abort_queue(),
             Answer::Discard => {
-                if let After::Close(id) = then
-                    && let Some(index) = self.index_of(id)
-                {
-                    self.docs[index].saved = self.docs[index].history.generation();
-                }
-                if then == After::Window {
-                    for doc in &mut self.docs {
-                        doc.saved = doc.history.generation();
-                    }
+                for doc in self.docs.iter_mut().filter(|doc| then == After::Window || docs.contains(&doc.id)) {
+                    doc.saved = doc.history.generation();
                 }
                 self.finish(then)
             }
@@ -2591,6 +2761,10 @@ impl glide_sdk::App for App {
         self.follow_look(shell.look(), *shell.paint());
         Task::none()
     }
+
+    fn reopened(&mut self, args: Vec<String>, _: &mut glide_sdk::Shell<Message>) -> Task<Message> {
+        Self::update(self, Message::Reopened(args))
+    }
 }
 
 #[cfg(test)]
@@ -2724,6 +2898,93 @@ mod tests {
         let _ = app.update(Message::Dialog(Answer::Discard));
         assert_eq!(app.docs.len(), 2);
         assert!(app.docs.iter().all(|doc| doc.id != first));
+    }
+
+    fn with_files(tag: &str, names: &[&str]) -> (App, PathBuf, Vec<u64>) {
+        let folder = std::env::temp_dir().join(format!("glide-text-{tag}-{}", std::process::id()));
+        let mut app = app();
+        for name in names {
+            let path = folder.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, format!("{name}\n")).unwrap();
+            let _ = app.update(Message::Loaded(path.clone(), document::read(&path)));
+        }
+        let ids = app.docs.iter().map(|doc| doc.id).collect();
+        (app, folder, ids)
+    }
+
+    #[test]
+    fn closing_the_active_tab_moves_to_its_right_neighbour_and_other_closes_keep_the_active_one() {
+        let (mut app, folder, ids) = with_files("neighbour", &["a.txt", "b.txt", "c.txt", "d.txt"]);
+        app.select(1);
+        let _ = app.update(Message::Command(Command::Close));
+        assert_eq!(app.doc().unwrap().id, ids[2], "the tab that slid under the pointer is next");
+        let _ = app.update(Message::Command(Command::CloseTab(0)));
+        assert_eq!(app.doc().unwrap().id, ids[2], "closing another tab keeps the document in front");
+        let _ = app.update(Message::Command(Command::CloseTab(1)));
+        let _ = app.update(Message::Command(Command::Close));
+        assert_eq!(app.docs.len(), 1);
+        assert!(app.doc().unwrap().path.is_none(), "closing the last document leaves a blank one");
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn the_tab_menu_closes_others_to_the_right_saved_and_all_asking_once_for_modified_ones() {
+        let (mut app, folder, ids) = with_files("bulk", &["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]);
+        app.select(4);
+        let _ = app.update(Message::TabMenu(2));
+        assert_eq!(app.menu.as_ref().map(|menu| menu.kind.clone()), Some(MenuKind::Tab(ids[2])));
+        let _ = app.update(Message::Command(Command::CloseRight));
+        assert_eq!(app.docs.iter().map(|doc| doc.id).collect::<Vec<_>>(), ids[..3]);
+        assert_eq!(app.doc().unwrap().id, ids[2], "the closed active tab gives way to the last one left");
+        app.select(0);
+        typed(&mut app, "x");
+        let _ = app.update(Message::Command(Command::CloseSaved));
+        assert_eq!(app.docs.iter().map(|doc| doc.id).collect::<Vec<_>>(), [ids[0]], "the modified one stays");
+        let _ = app.update(Message::Command(Command::ReopenClosed));
+        let reopened = folder.join("c.txt");
+        let _ = app.update(Message::Loaded(reopened.clone(), document::read(&reopened)));
+        assert_eq!(app.doc().and_then(|doc| doc.path.clone()), Some(reopened), "the last closed file comes back");
+        let _ = app.update(Message::TabMenu(1));
+        let _ = app.update(Message::Command(Command::CloseOthers));
+        let Some(DialogKind::Unsaved { docs, then }) = app.dialog.as_ref().map(|dialog| dialog.kind.clone()) else {
+            panic!("closing a modified document asks first");
+        };
+        assert_eq!((docs, then), (vec![ids[0]], After::Close));
+        let _ = app.update(Message::Dialog(Answer::Cancel));
+        assert_eq!(app.docs.len(), 2, "cancel closes nothing");
+        let _ = app.update(Message::Command(Command::CloseAll));
+        let _ = app.update(Message::Dialog(Answer::Discard));
+        assert_eq!(app.docs.len(), 1);
+        assert!(app.doc().unwrap().path.is_none() && app.doc().unwrap().text.is_empty());
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn the_document_finder_lists_open_tabs_and_twins_carry_their_folder() {
+        let (mut app, folder, ids) = with_files("pair", &["one/notes.md", "two/notes.md", "plan.md"]);
+        assert_eq!(app.tab_label(&app.docs[0]), "notes.md — one");
+        assert_eq!(app.tab_label(&app.docs[1]), "notes.md — two");
+        assert_eq!(app.tab_label(&app.docs[2]), "plan.md");
+        let _ = app.update(Message::Command(Command::Tabs));
+        let finder = app.finder.as_ref().unwrap();
+        assert_eq!(finder.hits.len(), 3);
+        assert_eq!(finder.current().map(|entry| entry.target.clone()), Some(finder::Target::Tab(ids[2])));
+        let _ = app.update(Message::Finder(FinderMessage::Input("two".into())));
+        let _ = app.update(Message::Finder(FinderMessage::Submit));
+        assert!(app.finder.is_none());
+        assert_eq!(app.doc().unwrap().id, ids[1], "the folder is searched too");
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn a_second_launch_opens_its_files_in_this_window() {
+        let (mut app, folder, _) = with_files("second", &["a.txt"]);
+        let _ = app.update(Message::Reopened(vec![folder.join("a.txt").to_string_lossy().into_owned()]));
+        assert_eq!(app.docs.len(), 1, "a file that is already open is only brought forward");
+        let _ = app.update(Message::Reopened(Vec::new()));
+        assert_eq!(app.docs.len(), 1);
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]
@@ -2961,12 +3222,57 @@ mod tests {
         app.docs[0].disk = Some(SystemTime::UNIX_EPOCH);
     }
 
+    fn poll_disk(app: &mut App) {
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.disk, Poll::Asked, "the files are looked at off the window's thread");
+        let seen = stamps(app.watched());
+        let _ = app.update(Message::Stamped(seen));
+    }
+
+    #[test]
+    fn a_stamp_taken_before_a_save_does_not_flag_the_document_the_save_just_wrote() {
+        let (mut app, folder, path) = opened_file("stale-stamp", "one\n");
+        let stale = stamps(app.watched());
+        let later = SystemTime::now() + Duration::from_secs(5);
+        app.docs[0].disk = Some(later);
+        let stale: Vec<Stamp> =
+            stale.into_iter().map(|(id, seen, _)| (id, seen, Some(SystemTime::UNIX_EPOCH))).collect();
+        let _ = app.update(Message::Stamped(stale));
+        assert!(!app.doc().unwrap().changed_on_disk);
+        assert_eq!(app.doc().unwrap().disk, Some(later));
+        assert_eq!(document::read(&path).map(|decoded| decoded.text), Ok("one\n".into()));
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn comment_unindent_and_join_keep_a_bare_caret_instead_of_selecting_the_line() {
+        let mut app = app();
+        let doc = app.doc_mut().unwrap();
+        doc.pinned = Some(Language::Rust);
+        doc.replace(0..0, "    let a = 1;\n    let b = 2;", Kind::Other);
+        doc.place(8..8);
+        let _ = app.update(Message::Command(Command::ToggleComment));
+        let doc = app.doc().unwrap();
+        assert_eq!(doc.text, "    // let a = 1;\n    let b = 2;");
+        assert_eq!(doc.selected(), 11..11, "the caret stays before the same letter");
+        let _ = app.update(Message::Command(Command::Unindent));
+        let doc = app.doc().unwrap();
+        assert_eq!(doc.text, "// let a = 1;\n    let b = 2;");
+        assert_eq!(doc.selected(), 7..7);
+        let _ = app.update(Message::Command(Command::JoinLines));
+        let doc = app.doc().unwrap();
+        assert_eq!(doc.text, "// let a = 1; let b = 2;");
+        assert_eq!(doc.selected(), 7..7);
+        let _ = app.update(Message::Command(Command::FontSize(18)));
+        assert_eq!(app.font_size(), 18.0);
+    }
+
     #[test]
     fn the_reload_button_replaces_a_modified_document_with_the_file_and_the_bar_stays_gone() {
         let (mut app, folder, path) = opened_file("reload", "one\n");
         typed(&mut app, "mine");
         changed_behind_our_back(&mut app, &path, "external\n");
-        let _ = app.update(Message::Tick);
+        poll_disk(&mut app);
         assert!(app.doc().unwrap().changed_on_disk, "a modified document is flagged, not reloaded");
         let id = app.doc().unwrap().id;
         let _ = app.update(Message::Disk(true));
@@ -2976,7 +3282,7 @@ mod tests {
         assert_eq!(doc.text, "external\n");
         assert!(!doc.dirty() && !doc.changed_on_disk);
         assert_eq!(doc.disk, document::modified(&path));
-        let _ = app.update(Message::Tick);
+        poll_disk(&mut app);
         assert!(!app.doc().unwrap().changed_on_disk, "the bar does not come back a second later");
         std::fs::remove_dir_all(&folder).unwrap();
     }
@@ -2985,7 +3291,7 @@ mod tests {
     fn an_external_change_read_while_the_user_types_is_flagged_instead_of_dropped() {
         let (mut app, folder, path) = opened_file("raced", "one\n");
         changed_behind_our_back(&mut app, &path, "external\n");
-        let _ = app.update(Message::Tick);
+        poll_disk(&mut app);
         assert!(!app.doc().unwrap().changed_on_disk, "a clean document is reloaded quietly");
         typed(&mut app, "x");
         let id = app.doc().unwrap().id;

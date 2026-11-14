@@ -88,13 +88,22 @@ pub(crate) fn toggle_comment(text: &str, selection: &Range<usize>, language: Lan
         trimmed.strip_prefix(open).and_then(|rest| rest.strip_suffix(close)).filter(|inner| !inner.contains(close))
     {
         let inner = inner.strip_prefix(' ').unwrap_or(inner);
-        format!("{indent}{}", inner.strip_suffix(' ').unwrap_or(inner))
+        format!("{indent}{}{}", inner.strip_suffix(' ').unwrap_or(inner), &block[block.trim_end().len()..])
     } else if trimmed.is_empty() {
         return None;
     } else {
         format!("{indent}{open} {} {close}", &block[indent.len()..])
     };
     Some(whole(span, text))
+}
+
+#[must_use]
+pub(crate) fn keep_caret(mut change: Change, caret: usize, follows: bool) -> Change {
+    let end = change.range.start + change.text.len();
+    let moved = if follows { (caret + change.text.len()).saturating_sub(change.range.len()) } else { caret };
+    let at = moved.clamp(change.range.start, end);
+    change.select = at..at;
+    change
 }
 
 #[must_use]
@@ -195,8 +204,9 @@ pub fn indent(text: &str, selection: &Range<usize>, indent: Indent) -> Change {
     let unit = indent.unit();
     if !text[selection.clone()].contains('\n') && selection.start == selection.end {
         let at = selection.start;
-        let column = at - text[..at].rfind('\n').map_or(0, |line| line + 1);
-        let pad = if indent.spaces { " ".repeat(indent.width - column % indent.width.max(1)) } else { unit };
+        let column = text[text[..at].rfind('\n').map_or(0, |line| line + 1)..at].chars().count();
+        let width = indent.width.max(1);
+        let pad = if indent.spaces { " ".repeat(width - column % width) } else { unit };
         return Change { range: at..at, select: at + pad.len()..at + pad.len(), text: pad };
     }
     let span = line_span(text, selection);
@@ -625,6 +635,13 @@ mod tests {
     fn indentation_uses_tabs_or_tab_stops() {
         let spaces = Indent { spaces: true, width: 4 };
         assert_eq!(apply("ab", &indent("ab", &(1..1), spaces)), "a   b");
+        assert_eq!(apply("кіт", &indent("кіт", &(6..6), spaces)), "кіт ", "a tab stop counts letters, not bytes");
+        let html = "<!-- a -->\n";
+        let bare = toggle_comment(html, &(0..html.len()), Language::Html).unwrap();
+        assert_eq!(apply(html, &bare), "a\n", "uncommenting keeps the line break the selection ended on");
+        let kept = keep_caret(Change { range: 4..10, text: "ab".into(), select: 4..6 }, 9, true);
+        assert_eq!(kept.select, 5..5, "a caret after removed text moves back with it");
+        assert_eq!(keep_caret(kept, 2, true).select, 4..4, "and never leaves the changed range");
         assert_eq!(apply("a\nb", &indent("a\nb", &(0..3), spaces)), "    a\n    b");
         let tabs = Indent { spaces: false, width: 4 };
         assert_eq!(apply("a\n\nb", &indent("a\n\nb", &(0..4), tabs)), "\ta\n\n\tb");

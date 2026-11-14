@@ -24,6 +24,15 @@ glide_sdk::catalogue! {
     ShowInFiles => "Show in Files", "Показати у Файлах";
     CopyPath => "Copy Path", "Копіювати шлях";
     CloseTab => "Close Document", "Закрити документ";
+    CloseOthers => "Close Other Documents", "Закрити інші документи";
+    CloseRight => "Close Documents to the Right", "Закрити документи праворуч";
+    CloseSaved => "Close Saved Documents", "Закрити збережені документи";
+    CloseAll => "Close All Documents", "Закрити всі документи";
+    ReopenClosed => "Reopen Closed Document", "Відкрити закритий документ";
+    GoToTab => "Go to Document…", "Перейти до документа…";
+    TabsHint => "Type a document name", "Введіть назву документа";
+    AllTabs => "All Documents", "Усі документи";
+    Missing => "The file is no longer there", "Файлу більше немає";
     CloseFolder => "Close Folder", "Закрити теку";
     CloseWindow => "Close Window", "Закрити вікно";
     Undo => "Undo", "Скасувати";
@@ -124,6 +133,9 @@ glide_sdk::catalogue! {
     SaveFailed => "Couldn’t save", "Не вдалося зберегти";
     OpenFailed => "Couldn’t open", "Не вдалося відкрити";
     Binary => "it is a binary file", "це двійковий файл";
+    TooLarge => "it is too large for the editor", "він завеликий для редактора";
+    FontSize => "Font Size", "Розмір шрифту";
+    RestoreSession => "Reopen Documents at Start", "Відкривати документи з минулого разу";
     ChangedOnDisk => "The file changed outside the editor.", "Файл змінено поза редактором.";
     Reload => "Reload", "Перезавантажити";
     KeepMine => "Keep Mine", "Лишити мою версію";

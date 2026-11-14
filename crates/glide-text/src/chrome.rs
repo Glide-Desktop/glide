@@ -23,6 +23,7 @@ use crate::app::{EDITOR, FIND_ID, FINDER_ID, FinderMessage};
 use crate::document::{Document, Ending, Hazard};
 use crate::edit::Case;
 use crate::i18n::Key;
+use crate::icons::Icon as Glyph;
 use crate::syntax::{Bridge, Highlight, Language};
 
 pub const HEADER: f32 = 38.0;
@@ -34,6 +35,8 @@ pub(crate) const SIDEBAR: f32 = 248.0;
 pub(crate) const SIDEBAR_MIN_WINDOW: f32 = 560.0;
 const CONTROL: f32 = component::SMALL_CONTROL;
 const MENU_WIDTH: f32 = 300.0;
+const TAB_WIDEST: f32 = 220.0;
+const TAB_GRIP: f32 = 28.0;
 
 fn bar_width(app: &App, bar: Bar) -> f32 {
     glide_sdk::menu::bar_width(bar.key().text(app.lang))
@@ -83,7 +86,8 @@ fn menu_bar(app: &App, paint: &Paint) -> Element<'static, Message> {
 fn header(app: &App) -> Element<'_, Message> {
     let paint = app.paint;
     let control_paint = app.window.controls_paint(&paint);
-    let title = if app.shell_menu {
+    let tabbed = app.docs.len() > 1 && !app.focus;
+    let title = if app.shell_menu || tabbed {
         String::new()
     } else {
         app.doc().map_or_else(
@@ -111,8 +115,8 @@ fn header(app: &App) -> Element<'_, Message> {
             menu_bar(app, &control_paint)
         });
     }
-    if app.docs.len() > 1 && !app.focus {
-        header = header.center(tab_bar(app));
+    if tabbed {
+        header = header.center(tab_bar(app, &control_paint));
     }
     let sidebar = Some(Message::Command(Command::ToggleSidebar));
     header = header
@@ -127,21 +131,43 @@ fn header(app: &App) -> Element<'_, Message> {
     glide_sdk::window::header(&paint, &app.window, header, Message::Window, Message::CloseRequested, taken)
 }
 
-fn tab_bar(app: &App) -> Element<'_, Message> {
-    use glide_sdk::widget::{Mark, Tab, tab_strip};
+fn tab_room(app: &App) -> f32 {
+    let menu = if app.shell_menu {
+        0.0
+    } else if compact(app) {
+        CONTROL + SP2
+    } else {
+        Bar::ALL.iter().map(|bar| bar_width(app, *bar) + SP1).sum::<f32>()
+    };
+    app.window.size.width - bar_start() - menu - controls_width() - 2.0 * SP2 - TAB_GRIP
+}
+
+fn tab_bar<'a>(app: &'a App, control_paint: &Paint) -> Element<'a, Message> {
+    use glide_sdk::widget::{Mark, Tab, tab_strip, tabs_fit};
     let tabs = app
         .docs
         .iter()
-        .map(|doc| Tab::new(doc.id, app.doc_name(doc)).mark(if doc.dirty() { Mark::Dot } else { Mark::None }))
+        .map(|doc| Tab::new(doc.id, app.tab_label(doc)).mark(if doc.dirty() { Mark::Dot } else { Mark::None }))
         .collect();
-    tab_strip(&app.paint, tabs, app.active)
+    let ground = if app.window.focused { app.paint.bar_bg() } else { app.paint.bar_bg_idle() };
+    let strip: Element<'a, Message> = tab_strip(&app.paint, tabs, app.active)
         .height(HEADER)
+        .widest(TAB_WIDEST)
+        .ground(ground)
         .bare()
         .on_select(Message::TabPressed)
         .hovered(app.hovered_tab, Message::TabHovered)
         .on_reorder(Message::TabMoved)
+        .on_menu(Message::TabMenu)
         .on_close(|index| Message::Command(Command::CloseTab(index)), Key::CloseTab.text(app.lang))
-        .into()
+        .into();
+    let mut bar = row![strip].align_y(Alignment::Center);
+    if !tabs_fit(tab_room(app), app.docs.len()) {
+        let listing = app.finder.as_ref().is_some_and(|finder| finder.mode == crate::finder::Mode::Tabs);
+        let list = Some(Message::Command(Command::Tabs));
+        bar = bar.push(icon_button(control_paint, Icon::Down, Key::AllTabs.text(app.lang), list, listing));
+    }
+    bar.push(Space::new().width(TAB_GRIP)).into()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -509,6 +535,10 @@ fn check(app: &App, key: Key, command: Command, on: bool, enabled: bool) -> Item
     action(app, key, command, enabled).checked(on)
 }
 
+fn drawn(app: &App, glyph: Glyph, key: Key, command: Command, enabled: bool) -> Item {
+    action(app, key, command, enabled).glyph(glyph.handle())
+}
+
 #[allow(clippy::too_many_lines)] // The whole menu bar as one table, so menus and shortcuts read side by side
 fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
     let doc = app.doc();
@@ -523,6 +553,7 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
             action(app, Key::Open, Command::Open, true),
             action(app, Key::OpenFolder, Command::OpenFolder, true),
             action(app, Key::OpenRecent, Command::Recent, !app.recent.is_empty()),
+            action(app, Key::ReopenClosed, Command::ReopenClosed, !app.closed.is_empty()),
             Item::Separator,
             action(app, Key::Save, Command::Save, has),
             action(app, Key::SaveAs, Command::SaveAs, has),
@@ -533,6 +564,8 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
             action(app, Key::CopyPath, Command::CopyPath, path),
             Item::Separator,
             action(app, Key::CloseTab, Command::Close, has),
+            action(app, Key::CloseOthers, Command::CloseOthers, app.docs.len() > 1),
+            action(app, Key::CloseAll, Command::CloseAll, has),
             action(app, Key::CloseFolder, Command::CloseFolder, app.tree.is_some()),
             action(app, Key::CloseWindow, Command::CloseWindow, true),
         ],
@@ -612,6 +645,7 @@ fn bar_items(app: &App, bar: Bar) -> Vec<Item> {
             Item::Separator,
             action(app, Key::GoToLine, Command::GoToLine, has),
             Item::Separator,
+            action(app, Key::GoToTab, Command::Tabs, has),
             action(app, Key::QuickOpen, Command::QuickOpen, true),
             action(app, Key::GoToSymbol, Command::Symbols, has),
             action(app, Key::SearchFolder, Command::SearchFolder, true),
@@ -657,22 +691,43 @@ pub fn menu_items(app: &App, kind: &MenuKind) -> Vec<Item> {
         MenuKind::Context => {
             let doc = app.doc();
             let selection = doc.is_some_and(|doc| !doc.selected().is_empty());
+            let comments = doc
+                .is_some_and(|doc| doc.language().line_comment().is_some() || doc.language().block_comment().is_some());
             vec![
-                action(app, Key::Undo, Command::Undo, doc.is_some_and(|doc| doc.history.can_undo())),
-                action(app, Key::Redo, Command::Redo, doc.is_some_and(|doc| doc.history.can_redo())),
+                drawn(app, Glyph::Undo, Key::Undo, Command::Undo, doc.is_some_and(|doc| doc.history.can_undo())),
+                drawn(app, Glyph::Redo, Key::Redo, Command::Redo, doc.is_some_and(|doc| doc.history.can_redo())),
                 Item::Separator,
-                action(app, Key::Cut, Command::Cut, selection),
-                action(app, Key::Copy, Command::Copy, selection),
-                action(app, Key::Paste, Command::Paste, true),
-                action(app, Key::SelectAll, Command::SelectAll, true),
+                drawn(app, Glyph::Cut, Key::Cut, Command::Cut, selection),
+                drawn(app, Glyph::Copy, Key::Copy, Command::Copy, selection),
+                drawn(app, Glyph::Paste, Key::Paste, Command::Paste, true),
+                drawn(app, Glyph::SelectAll, Key::SelectAll, Command::SelectAll, true),
                 Item::Separator,
-                action(app, Key::ToggleComment, Command::ToggleComment, true),
-                action(app, Key::DuplicateLine, Command::DuplicateLine, true),
-                action(app, Key::Uppercase, Command::Case(Case::Upper), true),
-                action(app, Key::Lowercase, Command::Case(Case::Lower), true),
+                drawn(app, Glyph::Comment, Key::ToggleComment, Command::ToggleComment, comments),
+                drawn(app, Glyph::Duplicate, Key::DuplicateLine, Command::DuplicateLine, true),
+                drawn(app, Glyph::Upper, Key::Uppercase, Command::Case(Case::Upper), true),
+                drawn(app, Glyph::Lower, Key::Lowercase, Command::Case(Case::Lower), true),
                 Item::Separator,
-                action(app, Key::UseSelection, Command::UseSelection, selection),
-                labelled(Key::Syntax.text(app.lang).to_string(), Command::Syntax, true, None),
+                drawn(app, Glyph::Find, Key::UseSelection, Command::UseSelection, selection),
+                labelled(Key::Syntax.text(app.lang).to_string(), Command::Syntax, true, None)
+                    .glyph(Glyph::Code.handle()),
+            ]
+        }
+        MenuKind::Tab(id) => {
+            let at = app.docs.iter().position(|doc| doc.id == *id);
+            let path = at.is_some_and(|at| app.docs[at].path.is_some());
+            let last = at.is_none_or(|at| at + 1 >= app.docs.len());
+            let label = |key: Key| key.text(app.lang).to_string();
+            vec![
+                labelled(label(Key::CloseTab), Command::Close, at.is_some(), None).glyph(Glyph::Close.handle()),
+                labelled(label(Key::CloseOthers), Command::CloseOthers, app.docs.len() > 1, None)
+                    .glyph(Glyph::CloseOthers.handle()),
+                labelled(label(Key::CloseRight), Command::CloseRight, !last, None).glyph(Glyph::CloseRight.handle()),
+                labelled(label(Key::CloseSaved), Command::CloseSaved, app.docs.iter().any(|doc| !doc.dirty()), None)
+                    .glyph(Glyph::CloseSaved.handle()),
+                labelled(label(Key::CloseAll), Command::CloseAll, true, None).glyph(Glyph::CloseAll.handle()),
+                Item::Separator,
+                labelled(label(Key::CopyPath), Command::CopyPath, path, None).glyph(Glyph::Path.handle()),
+                labelled(label(Key::ShowInFiles), Command::ShowInFiles, path, None).glyph(Glyph::Folder.handle()),
             ]
         }
         MenuKind::Syntax => {
@@ -685,16 +740,19 @@ pub fn menu_items(app: &App, kind: &MenuKind) -> Vec<Item> {
                     Command::SetLanguage(None),
                     true,
                     Some(pinned.is_none()),
-                ),
+                )
+                .glyph(Glyph::Code.handle()),
                 Item::Separator,
             ];
             items.extend(Language::ALL.into_iter().map(|language| {
+                let glyph = if language == Language::Plain { Glyph::File } else { Glyph::Code };
                 labelled(
                     language.name().to_string(),
                     Command::SetLanguage(Some(language)),
                     true,
                     Some(pinned == Some(language)),
                 )
+                .glyph(glyph.handle())
             }));
             items
         }
@@ -703,28 +761,23 @@ pub fn menu_items(app: &App, kind: &MenuKind) -> Vec<Item> {
                 .into_iter()
                 .map(|width| {
                     labelled(width.to_string(), Command::TabWidth(width), true, Some(app.prefs.tab_width == width))
+                        .glyph(Glyph::Indent.handle())
                 })
                 .collect();
             items.push(Item::Separator);
-            items.push(check(app, Key::SpacesForTabs, Command::ToggleSpaces, app.prefs.spaces, true));
+            items.push(
+                check(app, Key::SpacesForTabs, Command::ToggleSpaces, app.prefs.spaces, true)
+                    .glyph(Glyph::Check.handle()),
+            );
             items
         }
         MenuKind::Endings => {
             let ending = app.doc().map_or(Ending::Lf, |doc| doc.ending);
-            vec![
-                labelled(
-                    Key::UnixEndings.text(app.lang).to_string(),
-                    Command::SetEnding(Ending::Lf),
-                    true,
-                    Some(ending == Ending::Lf),
-                ),
-                labelled(
-                    Key::WindowsEndings.text(app.lang).to_string(),
-                    Command::SetEnding(Ending::CrLf),
-                    true,
-                    Some(ending == Ending::CrLf),
-                ),
-            ]
+            let row = |key: Key, kind: Ending| {
+                labelled(key.text(app.lang).to_string(), Command::SetEnding(kind), true, Some(ending == kind))
+                    .glyph(Glyph::Ending.handle())
+            };
+            vec![row(Key::UnixEndings, Ending::Lf), row(Key::WindowsEndings, Ending::CrLf)]
         }
         MenuKind::Recent => {
             if app.recent.is_empty() {
@@ -738,20 +791,28 @@ pub fn menu_items(app: &App, kind: &MenuKind) -> Vec<Item> {
                     let name = path
                         .file_name()
                         .map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
-                    labelled(name, Command::OpenRecent(index), true, None)
+                    labelled(name, Command::OpenRecent(index), true, None).glyph(Glyph::File.handle())
                 })
                 .collect();
             items.push(Item::Separator);
-            items.push(labelled(Key::ClearRecent.text(app.lang).to_string(), Command::ClearRecent, true, None));
+            items.push(
+                labelled(Key::ClearRecent.text(app.lang).to_string(), Command::ClearRecent, true, None)
+                    .glyph(Glyph::Clear.handle()),
+            );
             items
         }
-        MenuKind::Tree(_) => vec![
-            labelled(Key::OpenItem.text(app.lang).to_string(), Command::TreeOpen, true, None),
-            labelled(Key::ShowInFiles.text(app.lang).to_string(), Command::TreeShow, true, None),
-            labelled(Key::CopyPath.text(app.lang).to_string(), Command::TreeCopyPath, true, None),
-            Item::Separator,
-            labelled(Key::Refresh.text(app.lang).to_string(), Command::RefreshTree, true, None),
-        ],
+        MenuKind::Tree(_) => {
+            let row = |glyph: Glyph, key: Key, command| {
+                labelled(key.text(app.lang).to_string(), command, true, None).glyph(glyph.handle())
+            };
+            vec![
+                row(Glyph::Open, Key::OpenItem, Command::TreeOpen),
+                row(Glyph::Folder, Key::ShowInFiles, Command::TreeShow),
+                row(Glyph::Path, Key::CopyPath, Command::TreeCopyPath),
+                Item::Separator,
+                row(Glyph::Refresh, Key::Refresh, Command::RefreshTree),
+            ]
+        }
     }
 }
 
@@ -855,6 +916,7 @@ fn finder_layer<'a>(app: &'a App, finder: &'a crate::finder::Finder) -> Element<
         Mode::Files => Key::QuickOpenHint,
         Mode::Symbols => Key::SymbolHint,
         Mode::Search => Key::SearchHint,
+        Mode::Tabs => Key::TabsHint,
     };
     let input = glide_sdk::widget::search_input(
         &app.paint.faded(progress),
@@ -1019,11 +1081,26 @@ fn setting(app: &App, key: Key, command: Command, on: bool, enabled: bool) -> El
 }
 
 fn settings_body(app: &App) -> Element<'_, Message> {
-    use glide_sdk::widget::Group;
+    use glide_sdk::widget::{Group, ListRow};
     let prefs = &app.prefs;
     let lang = app.lang;
+    let size = prefs.font_size.round() as u16;
+    let font_size = glide_sdk::widget::stepper(
+        &app.paint,
+        size,
+        (size > 6).then(|| size - 1),
+        (size < 72).then(|| size + 1),
+        |size| Message::Command(Command::FontSize(size)),
+    );
+    let tab_width =
+        glide_sdk::widget::segmented(&app.paint, &[(2, "2"), (4, "4"), (8, "8")], prefs.tab_width, |width| {
+            Message::Command(Command::TabWidth(width))
+        });
+    let row = |key: Key, control| ListRow::new(app.paint, key.text(lang)).suffix(control);
     let editor = Group::new(app.paint)
         .title(Key::SettingsEditor.text(lang))
+        .push(row(Key::FontSize, font_size))
+        .push(row(Key::TabWidth, tab_width))
         .push(setting(app, Key::SpacesForTabs, Command::ToggleSpaces, prefs.spaces, true))
         .push(setting(app, Key::AutoIndent, Command::ToggleAutoIndent, prefs.auto_indent, true))
         .push(setting(app, Key::AutoPair, Command::ToggleAutoPair, prefs.auto_pair, true))
@@ -1042,6 +1119,8 @@ fn settings_body(app: &App) -> Element<'_, Message> {
             prefs.auto_hide_status,
             prefs.status_bar && prefs.status_islands,
         ))
+        .push(setting(app, Key::HiddenFiles, Command::ToggleHidden, prefs.hidden_files, true))
+        .push(setting(app, Key::RestoreSession, Command::ToggleRestore, prefs.restore_session, true))
         .build();
     column![editor, window].spacing(SP3).into()
 }

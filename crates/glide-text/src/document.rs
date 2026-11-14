@@ -88,8 +88,11 @@ pub enum Hazard {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadError {
     Binary,
+    Large(u64),
     Io(String),
 }
+
+pub const MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 fn utf16(bytes: &[u8], little: bool) -> Option<String> {
     if !bytes.len().is_multiple_of(2) {
@@ -191,6 +194,10 @@ pub fn fits(text: &str, encoding: Encoding) -> bool {
 }
 
 pub fn read(path: &Path) -> Result<Decoded, LoadError> {
+    let size = std::fs::metadata(path).map_err(|error| LoadError::Io(error.to_string()))?.len();
+    if size > MAX_BYTES {
+        return Err(LoadError::Large(size));
+    }
     let bytes = std::fs::read(path).map_err(|error| LoadError::Io(error.to_string()))?;
     decode(&bytes)
 }
