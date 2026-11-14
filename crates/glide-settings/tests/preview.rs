@@ -350,6 +350,31 @@ fn check_home_pixels(rgba: &[u8], width: u32) {
     }
 }
 
+fn fixture_panel(app: &mut App, panel: Panel) {
+    if panel == Panel::Bluetooth && std::env::var_os("GLIDE_SETTINGS_BLUETOOTH_FIXTURE").is_some() {
+        fixture_bluetooth(app);
+    }
+    if panel == Panel::Vpn && std::env::var_os("GLIDE_SETTINGS_VPN_FIXTURE").is_some() {
+        fixture_vpn(app);
+    }
+    if panel == Panel::Sound && std::env::var_os("GLIDE_SETTINGS_SOUND_FIXTURE").is_some() {
+        fixture_sound(app);
+    }
+    if panel == Panel::Displays && std::env::var_os("GLIDE_SETTINGS_DISPLAYS_FIXTURE").is_some() {
+        fixture_displays(app);
+    }
+    if panel == Panel::Home && std::env::var_os("GLIDE_SETTINGS_HOME_LOADING").is_none() {
+        let _ = app.update(Message::Home(home::Msg::Loaded(1, Box::default())));
+    }
+    if matches!(panel, Panel::Appearance | Panel::Wallpaper) {
+        fixture_wallpaper(app);
+        if std::env::var_os("GLIDE_SETTINGS_SAMPLES").is_some() {
+            let _ = app.update(Message::Appearance(glide_settings::panels::appearance::Msg::ToggleSamples));
+        }
+        fixture_toolkits(app);
+    }
+}
+
 #[test]
 #[ignore = "writes a preview image for visual inspection"]
 fn preview_page() {
@@ -367,28 +392,7 @@ fn preview_page() {
     let slug = std::env::var("GLIDE_SETTINGS_PANEL").unwrap_or_else(|_| "home".into());
     let panel = Panel::ALL.iter().copied().find(|panel| panel.slug() == slug).expect("unknown panel slug");
     let _ = app.update(Message::PanelSelected(panel));
-    if panel == Panel::Bluetooth && std::env::var_os("GLIDE_SETTINGS_BLUETOOTH_FIXTURE").is_some() {
-        fixture_bluetooth(&mut app);
-    }
-    if panel == Panel::Vpn && std::env::var_os("GLIDE_SETTINGS_VPN_FIXTURE").is_some() {
-        fixture_vpn(&mut app);
-    }
-    if panel == Panel::Sound && std::env::var_os("GLIDE_SETTINGS_SOUND_FIXTURE").is_some() {
-        fixture_sound(&mut app);
-    }
-    if panel == Panel::Displays && std::env::var_os("GLIDE_SETTINGS_DISPLAYS_FIXTURE").is_some() {
-        fixture_displays(&mut app);
-    }
-    if panel == Panel::Home && std::env::var_os("GLIDE_SETTINGS_HOME_LOADING").is_none() {
-        let _ = app.update(Message::Home(home::Msg::Loaded(1, Box::default())));
-    }
-    if matches!(panel, Panel::Appearance | Panel::Wallpaper) {
-        fixture_wallpaper(&mut app);
-        if std::env::var_os("GLIDE_SETTINGS_SAMPLES").is_some() {
-            let _ = app.update(Message::Appearance(glide_settings::panels::appearance::Msg::ToggleSamples));
-        }
-        fixture_toolkits(&mut app);
-    }
+    fixture_panel(&mut app, panel);
     let width = std::env::var("GLIDE_SETTINGS_WIDTH").ok().and_then(|s| s.parse().ok()).unwrap_or(1280_u32);
     let height = std::env::var("GLIDE_SETTINGS_HEIGHT").ok().and_then(|s| s.parse().ok()).unwrap_or(930_u32);
     let size = Size::new(width as f32, height as f32);
