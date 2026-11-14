@@ -1556,8 +1556,11 @@ fn a_program_offers_run_and_an_unmarked_one_asks_before_it_starts() {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let root = std::env::temp_dir().join(format!("glide-files-run-{nanos}"));
     std::fs::create_dir_all(&root).expect("scratch");
-    for (name, body) in [("Game.AppImage", &b"\x7fELF\x02\x01\x01"[..]), ("job.sh", b"echo hi\n"), ("notes.txt", b"hi")]
-    {
+    let mut program = b"\x7fELF\x02\x01\x01".to_vec();
+    program.resize(16, 0);
+    program.extend([3, 0]);
+    program.resize(64, 0);
+    for (name, body) in [("Game.AppImage", &program[..]), ("job.sh", b"echo hi\n"), ("notes.txt", b"hi")] {
         std::fs::write(root.join(name), body).expect("file");
     }
     let mut app = listed_app();
@@ -1596,6 +1599,23 @@ fn a_program_offers_run_and_an_unmarked_one_asks_before_it_starts() {
 
     let _ = app.update(Message::OpenSelection);
     assert!(app.modal.is_some(), "double-clicking it asks the same question");
+    let _ = app.update(Message::ModalCancel);
+
+    let apps = root.join("share/applications");
+    std::fs::create_dir_all(&apps).expect("applications");
+    let roots = glide_files::fs::actions::Roots { data: vec![root.join("share")], taps: Vec::new() };
+    let found = glide_files::fs::actions::Extensions::load(&roots, app.lang);
+    let mime = found.target(&root.join("Game.AppImage"), false).mime;
+    let archiver = format!("[Desktop Entry]\nType=Application\nName=Archiver\nExec=true %f\nMimeType={mime};\n");
+    std::fs::write(apps.join("archiver.desktop"), archiver).expect("entry");
+    app.extensions = std::sync::Arc::new(glide_files::fs::actions::Extensions::load(&roots, app.lang));
+    let target = app.extensions.target(&root.join("Game.AppImage"), false);
+    assert!(!app.extensions.apps_for(std::slice::from_ref(&target)).is_empty(), "nothing claims {}", target.mime);
+    let _ = app.update(Message::OpenSelection);
+    assert!(
+        matches!(app.modal.as_ref().map(|modal| &modal.dialog), Some(Dialog::AllowRun { .. })),
+        "a program is run, never handed to the application that claims binary files"
+    );
     let _ = app.update(Message::ModalCancel);
 
     let _ = app.update(Message::PropertiesOf(root.join("job.sh")));

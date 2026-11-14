@@ -3116,11 +3116,11 @@ impl App {
                 unpacked.push(path);
                 continue;
             }
-            let launcher = path.extension().is_some_and(|extension| extension == "desktop");
-            let program = (app.is_none() || launcher)
-                .then(|| run::probe(&path))
-                .flatten()
-                .filter(|found| found.kind != run::Kind::Script && (found.allowed || app.is_none()));
+            let program = run::probe(&path).filter(|found| match found.kind {
+                run::Kind::Program => true,
+                run::Kind::Launcher => found.allowed || app.is_none(),
+                run::Kind::Script => false,
+            });
             if let Some(runnable) = program.filter(|_| !self.in_trash()) {
                 started.push(self.start_runnable(path, runnable, false));
                 continue;

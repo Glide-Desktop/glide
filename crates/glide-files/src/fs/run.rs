@@ -31,6 +31,11 @@ impl Runnable {
 }
 
 const ELF: &[u8] = b"\x7fELF";
+const ELF_ORDER: usize = 5;
+const ELF_BIG_ENDIAN: u8 = 2;
+const ELF_KIND: usize = 16;
+const ELF_EXECUTABLE: u16 = 2;
+const ELF_SHARED: u16 = 3;
 const HEAD: usize = 256;
 const INTERPRETERS: [(&str, &str); 10] = [
     ("sh", "sh"),
@@ -52,12 +57,25 @@ pub fn shebang(head: &[u8]) -> Option<Vec<String>> {
     (!words.is_empty()).then_some(words)
 }
 
+fn elf_program(name: &str, head: &[u8]) -> bool {
+    let (Some(order), Some(kind)) = (head.get(ELF_ORDER), head.get(ELF_KIND..ELF_KIND + 2)) else {
+        return false;
+    };
+    let kind = if *order == ELF_BIG_ENDIAN {
+        u16::from_be_bytes([kind[0], kind[1]])
+    } else {
+        u16::from_le_bytes([kind[0], kind[1]])
+    };
+    let library = name.contains(".so.") || Path::new(name).extension().is_some_and(|extension| extension == "so");
+    kind == ELF_EXECUTABLE || (kind == ELF_SHARED && !library)
+}
+
 #[must_use]
 pub fn classify(name: &str, head: &[u8], mode: u32) -> Option<Runnable> {
     let allowed = mode & 0o111 != 0;
     let extension = Path::new(name).extension().map(|ext| ext.to_string_lossy().to_lowercase());
     if head.starts_with(ELF) {
-        return Some(Runnable { kind: Kind::Program, allowed, interpreter: Vec::new() });
+        return elf_program(name, head).then_some(Runnable { kind: Kind::Program, allowed, interpreter: Vec::new() });
     }
     if extension.as_deref() == Some("desktop") {
         return Some(Runnable { kind: Kind::Launcher, allowed, interpreter: Vec::new() });

@@ -17,6 +17,13 @@ fn put(path: &Path, text: &str, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
 }
 
+fn elf(order: u8, kind: u16) -> Vec<u8> {
+    let mut head = vec![0x7f, b'E', b'L', b'F', 2, order, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    head.extend(if order == 2 { kind.to_be_bytes() } else { kind.to_le_bytes() });
+    head.resize(64, 0);
+    head
+}
+
 fn words(list: &[OsString]) -> Vec<String> {
     list.iter().map(|word| word.to_string_lossy().into_owned()).collect()
 }
@@ -34,10 +41,17 @@ fn appears(path: &Path) -> bool {
 
 #[test]
 fn programs_scripts_and_launchers_are_told_apart_by_content_then_name() {
-    let elf = classify("tool", b"\x7fELF\x02\x01", 0o755).expect("program");
-    assert_eq!((elf.kind, elf.allowed, elf.needs_permission()), (Kind::Program, true, false));
-    let download = classify("Game.AppImage", b"\x7fELF\x02\x01", 0o644).expect("program");
+    let pie = elf(1, 3);
+    let found = classify("tool", &pie, 0o755).expect("program");
+    assert_eq!((found.kind, found.allowed, found.needs_permission()), (Kind::Program, true, false));
+    let download = classify("Game.AppImage", &elf(1, 2), 0o644).expect("program");
     assert!(download.needs_permission(), "a downloaded binary must be allowed first");
+    assert!(classify("tool", &elf(2, 2), 0o755).is_some(), "a big-endian header is read in its own order");
+    assert_eq!(classify("libfoo.so.6", &pie, 0o755), None, "a shared library is not a program");
+    assert_eq!(classify("libfoo.so", &pie, 0o755), None);
+    assert_eq!(classify("main.o", &elf(1, 1), 0o644), None, "an object file is not a program");
+    assert_eq!(classify("core", &elf(1, 4), 0o644), None, "a core dump is not a program");
+    assert_eq!(classify("cut", b"\x7fELF\x02\x01", 0o755), None, "a truncated header runs nothing");
 
     let script = classify("backup", b"#!/usr/bin/env python3\nprint()", 0o644).expect("script");
     assert_eq!((script.kind, script.needs_permission()), (Kind::Script, false));
