@@ -178,14 +178,17 @@ fn spinner_svg(step: u32) -> String {
     )
 }
 
-fn breathed(frame: Rect, scale: f64) -> (Rect, Option<smithay::utils::Size<i32, Logical>>) {
+type Scaled = Option<(Rectangle<f64, Logical>, smithay::utils::Size<i32, Logical>)>;
+
+fn breathed(frame: Rect, scale: f64) -> (Rect, Scaled) {
     if scale >= 1.0 {
         return (frame, None);
     }
     let w = round_i32(f64::from(frame.w) * scale);
     let h = round_i32(f64::from(frame.h) * scale);
     let at = Rect::new(frame.x + (frame.w - w) / 2, frame.y + (frame.h - h) / 2, w, h);
-    (at, Some((w, h).into()))
+    let whole = Rectangle::from_size((f64::from(frame.w), f64::from(frame.h)).into());
+    (at, Some((whole, (w, h).into())))
 }
 
 const fn face_index(face: Option<FaceState>) -> u64 {
@@ -2323,7 +2326,7 @@ impl GreeterUi {
                 let Some(frame) = self.layer(part, &layout, painter, buffer_scale) else {
                     continue;
                 };
-                let (at, size) =
+                let (at, scaled) =
                     if part == Part::FaceCorners { breathed(frame, self.face_breath()) } else { (frame, None) };
                 let Some(layer) = self.layers.get(&(part, buffer_scale)) else {
                     continue;
@@ -2333,8 +2336,8 @@ impl GreeterUi {
                     placed(at),
                     &layer.buffer,
                     alpha,
-                    None,
-                    size,
+                    scaled.map(|(src, _)| src),
+                    scaled.map(|(_, size)| size),
                     Kind::Unspecified,
                 ) {
                     out.push(element);
@@ -3202,8 +3205,14 @@ mod tests {
         if motion::scale() > 0.0 {
             let breath = lock.face_breath();
             assert!(breath < 0.9, "half a breath is drawn smaller, got {breath}");
-            let (at, size) = breathed(frame, breath);
-            assert!(size.is_some_and(|size| size.w < frame.w));
+            let (at, scaled) = breathed(frame, breath);
+            let (src, size) = scaled.expect("a breathing glyph is scaled");
+            assert!(size.w < frame.w);
+            assert_eq!(
+                src,
+                Rectangle::from_size((f64::from(frame.w), f64::from(frame.h)).into()),
+                "the source covers the whole raster, or smithay crops to the smaller size instead of scaling"
+            );
             assert_eq!(at.x + at.w / 2, frame.x + frame.w / 2, "the corners shrink around the centre");
         }
     }
