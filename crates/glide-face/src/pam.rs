@@ -6,7 +6,7 @@ use std::path::Path;
 
 use glide_config::facekey::{PAM_SERVICES, PamService};
 
-pub const MARKER: &str = "# glide-facekey";
+pub const MARKER: &str = glide_config::facekey::PAM_MARKER;
 pub const ETC_DIR: &str = "/etc/pam.d";
 pub const VENDOR_DIR: &str = "/usr/lib/pam.d";
 

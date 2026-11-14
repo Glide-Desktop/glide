@@ -88,6 +88,7 @@ pub fn compress(escaped: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
+    Asked,
     Success,
     Failure,
     Broken(String),
@@ -213,6 +214,10 @@ fn connect(user: &str, cookie: &str, cancel: &Cancel) -> std::io::Result<Link> {
 }
 
 fn converse(link: &mut Link, password: &Zeroizing<String>) -> Report {
+    converse_with(link, &mut || Some(password.clone()))
+}
+
+fn converse_with(link: &mut Link, password: &mut dyn FnMut() -> Option<Zeroizing<String>>) -> Report {
     let mut report = Report { outcome: Outcome::Broken(String::new()), errors: Vec::new(), notes: Vec::new() };
     let mut answered = false;
     let mut received = String::new();
@@ -237,6 +242,10 @@ fn converse(link: &mut Link, password: &Zeroizing<String>) -> Report {
             }
             Some(Line::Ask { .. }) if !answered => {
                 answered = true;
+                let Some(password) = password() else {
+                    report.outcome = Outcome::Broken("cancelled before the password was typed".into());
+                    return report;
+                };
                 let mut reply = Zeroizing::new(Vec::with_capacity(password.len() + 1));
                 reply.extend_from_slice(password.as_bytes());
                 reply.push(b'\n');
@@ -307,6 +316,36 @@ pub fn authenticate(user: &str, cookie: &str, password: &Zeroizing<String>, canc
     cancel.disarm();
     finish(link);
     report
+}
+
+pub fn authenticate_ahead(
+    user: &str, cookie: &str, asked: impl FnOnce(), password: &std::sync::mpsc::Receiver<Zeroizing<String>>,
+    cancel: &Cancel,
+) -> Report {
+    let mut link = match connect(user, cookie, cancel) {
+        Ok(link) => link,
+        Err(err) => {
+            return Report {
+                outcome: Outcome::Broken(format!("could not reach polkit-agent-helper-1: {err}")),
+                errors: Vec::new(),
+                notes: Vec::new(),
+            };
+        }
+    };
+    let report = ahead(&mut link, asked, password);
+    cancel.disarm();
+    finish(link);
+    report
+}
+
+fn ahead(link: &mut Link, asked: impl FnOnce(), password: &std::sync::mpsc::Receiver<Zeroizing<String>>) -> Report {
+    let mut asked = Some(asked);
+    converse_with(link, &mut || {
+        if let Some(asked) = asked.take() {
+            asked();
+        }
+        password.recv().ok()
+    })
 }
 
 #[cfg(test)]
@@ -415,6 +454,29 @@ mod tests {
 
         let (mut link, _) = scripted("PAM_PROMPT_ECHO_OFF Password: \n");
         assert!(matches!(converse(&mut link, &password).outcome, Outcome::Broken(_)), "a closed helper is no success");
+    }
+
+    #[test]
+    fn a_conversation_started_ahead_of_the_password_lets_the_face_answer_first() {
+        let (sender, receiver) = std::sync::mpsc::channel::<Zeroizing<String>>();
+        let asked = std::cell::Cell::new(false);
+        let (mut link, written) = scripted("PAM_TEXT_INFO face\nSUCCESS\n");
+        let report = ahead(&mut link, || asked.set(true), &receiver);
+        assert_eq!(report.outcome, Outcome::Success, "pam_exec facekey passed before any question");
+        assert!(!asked.get() && written.0.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
+
+        let (mut link, written) = scripted("PAM_PROMPT_ECHO_OFF Password: \nSUCCESS\n");
+        sender.send(Zeroizing::new("typed early".into())).expect("queued");
+        let report = ahead(&mut link, || asked.set(true), &receiver);
+        assert_eq!(report.outcome, Outcome::Success);
+        assert!(asked.get(), "the first question means the face missed");
+        assert_eq!(written.0.lock().unwrap_or_else(PoisonError::into_inner).as_slice(), b"typed early\n");
+
+        drop(sender);
+        let (mut link, written) = scripted("PAM_PROMPT_ECHO_OFF Password: \nSUCCESS\n");
+        let report = ahead(&mut link, || {}, &receiver);
+        assert!(matches!(report.outcome, Outcome::Broken(_)), "a dismissed prompt ends the parked conversation");
+        assert!(written.0.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
     }
 
     #[test]

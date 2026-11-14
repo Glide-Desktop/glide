@@ -11,7 +11,29 @@ pub const ATTEMPTS: u8 = 3;
 pub const DONE_HOLD: Duration = Duration::from_millis(1600);
 const MAX_PASSWORD: usize = 512;
 
-pub use glide_topbar::polkit::{Control, Hint, Motion, Stage, View};
+pub use glide_topbar::polkit::{Control, Face, Hint, Motion, Stage, View};
+
+pub type Ahead = (u64, std::sync::mpsc::Receiver<Zeroizing<String>>, Cancel);
+
+pub enum Submission {
+    Nothing,
+    Sent,
+    Spawn(u64, Zeroizing<String>, Cancel),
+}
+
+#[cfg(test)]
+impl Submission {
+    const fn is_none(&self) -> bool {
+        matches!(self, Self::Nothing)
+    }
+
+    fn expect(self, message: &str) -> (u64, Zeroizing<String>, Cancel) {
+        match self {
+            Self::Spawn(attempt, secret, cancel) => (attempt, secret, cancel),
+            Self::Nothing | Self::Sent => panic!("{message}"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
@@ -27,6 +49,7 @@ pub enum Step {
     Nothing,
     Changed,
     Close,
+    Face,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -55,6 +78,9 @@ pub struct Prompt {
     attempt: u64,
     answer: Option<oneshot::Sender<bool>>,
     cancel: Option<Cancel>,
+    pub face_mode: bool,
+    face: Option<Face>,
+    parked: Option<std::sync::mpsc::Sender<Zeroizing<String>>>,
 }
 
 impl std::fmt::Debug for Prompt {
@@ -109,6 +135,30 @@ impl Prompt {
             attempt: 0,
             answer: Some(answer),
             cancel: None,
+            face_mode: false,
+            face: None,
+            parked: None,
+        }
+    }
+
+    pub fn begin_face(&mut self) -> Option<Ahead> {
+        if !self.face_mode || !self.editable() {
+            return None;
+        }
+        self.end_conversation();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.attempt += 1;
+        let cancel = Cancel::default();
+        self.cancel = Some(cancel.clone());
+        self.parked = Some(sender);
+        self.face = Some(Face::Looking);
+        Some((self.attempt, receiver, cancel))
+    }
+
+    fn end_conversation(&mut self) {
+        self.parked = None;
+        if let Some(cancel) = self.cancel.take() {
+            cancel.cancel();
         }
     }
 
@@ -153,34 +203,69 @@ impl Prompt {
         self.broken = false;
     }
 
-    pub fn submit(&mut self, now: Instant) -> Option<(u64, Zeroizing<String>, Cancel)> {
+    pub fn submit(&mut self, now: Instant) -> Submission {
         if !self.editable() || self.password.is_empty() {
-            return None;
+            return Submission::Nothing;
         }
         let mut secret = Zeroizing::new(String::with_capacity(MAX_PASSWORD));
         secret.push_str(&self.password);
         self.stage = Stage::Checking;
         self.checking = Some(now);
         self.open.shield = false;
+        if let Some(parked) = self.parked.take() {
+            if parked.send(secret).is_ok() {
+                return Submission::Sent;
+            }
+            return Submission::Nothing;
+        }
         self.attempt += 1;
         let cancel = Cancel::default();
         self.cancel = Some(cancel.clone());
-        Some((self.attempt, secret, cancel))
+        Submission::Spawn(self.attempt, secret, cancel)
     }
 
     pub fn report(&mut self, attempt: u64, report: &Report, now: Instant) -> bool {
-        if attempt != self.attempt || self.stage != Stage::Checking {
+        if attempt != self.attempt {
+            return false;
+        }
+        if report.outcome == Outcome::Asked {
+            let missed = self.face == Some(Face::Looking);
+            if missed {
+                self.face = Some(Face::Missed);
+            }
+            return missed;
+        }
+        let by_face = self.stage != Stage::Checking && self.face.is_some();
+        if self.stage != Stage::Checking && !by_face {
             return false;
         }
         self.cancel = None;
+        self.parked = None;
         self.checking = None;
         self.password.clear();
         self.open.reveal = false;
+        if !by_face {
+            self.face = None;
+        }
         match &report.outcome {
+            Outcome::Asked => {}
+            Outcome::Success if by_face => {
+                self.face = Some(Face::Allowed);
+                self.stage = Stage::Done;
+                self.done = Some(now);
+                self.resolve(true);
+            }
             Outcome::Success => {
                 self.stage = Stage::Done;
                 self.done = Some(now);
                 self.resolve(true);
+            }
+            Outcome::Failure | Outcome::Broken(_) if by_face => {
+                tracing::warn!(outcome = ?report.outcome, "the face check ended before asking for a password");
+                self.face = None;
+                self.face_mode = false;
+                self.broken = true;
+                self.stage = Stage::Wrong;
             }
             Outcome::Failure => {
                 self.failures = self.failures.saturating_add(1);
@@ -212,15 +297,19 @@ impl Prompt {
     }
 
     pub fn dismiss(&mut self) {
-        if let Some(cancel) = self.cancel.take() {
-            cancel.cancel();
-        }
+        self.end_conversation();
         self.resolve(false);
+    }
+
+    #[must_use]
+    pub fn wants_face(&self) -> bool {
+        self.face_mode && self.parked.is_none() && self.stage == Stage::Wrong && !self.broken
     }
 
     pub fn control(&mut self, control: Control) -> Step {
         match control {
             Control::Close | Control::Cancel | Control::Understood => Step::Close,
+            Control::Face if self.face == Some(Face::Missed) && self.editable() => Step::Face,
             Control::Reveal if self.editable() => {
                 self.open.reveal = !self.open.reveal;
                 Step::Changed
@@ -233,7 +322,7 @@ impl Prompt {
                 self.open.details = !self.open.details;
                 Step::Changed
             }
-            Control::Field | Control::Reveal | Control::Submit | Control::Details => Step::Nothing,
+            Control::Field | Control::Reveal | Control::Submit | Control::Details | Control::Face => Step::Nothing,
         }
     }
 
@@ -296,6 +385,7 @@ impl Prompt {
             hint,
             note: self.note.clone(),
             ready: self.editable() && !self.password.is_empty(),
+            face: self.face,
         }
     }
 }
@@ -374,8 +464,36 @@ impl crate::GlideState {
         if login.username == prompt.request.user {
             prompt.display = Some(login.display_name).filter(|name| !name.trim().is_empty());
         }
+        prompt.face_mode = glide_config::facekey::pam_enabled(glide_config::facekey::PamService::Polkit)
+            && glide_config::facekey::enrolled(&prompt.request.user);
         self.session.polkit.prompt = Some(prompt);
+        self.start_polkit_face();
         self.sync_polkit();
+    }
+
+    fn start_polkit_face(&mut self) {
+        let Some(reports) = self.session.polkit.reports.clone() else {
+            return;
+        };
+        let Some(prompt) = self.session.polkit.prompt.as_mut() else {
+            return;
+        };
+        let Some((attempt, password, cancel)) = prompt.begin_face() else {
+            return;
+        };
+        let (user, cookie) = (prompt.request.user.clone(), prompt.request.cookie.clone());
+        let asked = Arc::clone(&reports);
+        let spawned = std::thread::Builder::new().name("glide-polkit-face".into()).spawn(move || {
+            let notify = || asked((attempt, Report { outcome: Outcome::Asked, errors: Vec::new(), notes: Vec::new() }));
+            let report = crate::polkit_helper::authenticate_ahead(&user, &cookie, notify, &password, &cancel);
+            reports((attempt, report));
+        });
+        if let Err(err) = spawned {
+            tracing::error!(%err, "could not start the polkit face thread");
+            prompt.face_mode = false;
+            let broken = Report { outcome: Outcome::Broken("no thread".into()), errors: Vec::new(), notes: Vec::new() };
+            prompt.report(attempt, &broken, Instant::now());
+        }
     }
 
     pub fn close_polkit(&mut self) {
@@ -428,7 +546,7 @@ impl crate::GlideState {
             Input::Escape => match prompt.escape() {
                 Step::Close => return self.close_polkit(),
                 Step::Changed => true,
-                Step::Nothing => false,
+                Step::Nothing | Step::Face => false,
             },
         };
         if changed {
@@ -446,6 +564,10 @@ impl crate::GlideState {
         match prompt.control(control) {
             Step::Close => self.close_polkit(),
             Step::Changed => self.sync_polkit(),
+            Step::Face => {
+                self.start_polkit_face();
+                self.sync_polkit();
+            }
             Step::Nothing => {}
         }
     }
@@ -457,8 +579,10 @@ impl crate::GlideState {
         let Some(prompt) = self.session.polkit.prompt.as_mut() else {
             return;
         };
-        let Some((attempt, secret, cancel)) = prompt.submit(Instant::now()) else {
-            return;
+        let (attempt, secret, cancel) = match prompt.submit(Instant::now()) {
+            Submission::Nothing => return,
+            Submission::Sent => return self.sync_polkit(),
+            Submission::Spawn(attempt, secret, cancel) => (attempt, secret, cancel),
         };
         let (user, cookie) = (prompt.request.user.clone(), prompt.request.cookie.clone());
         let spawned = std::thread::Builder::new().name("glide-polkit-helper".into()).spawn(move || {
@@ -480,10 +604,14 @@ impl crate::GlideState {
         let Some(prompt) = self.session.polkit.prompt.as_mut() else {
             return;
         };
-        if prompt.report(attempt, &report, now) {
-            tracing::info!(outcome = ?report.outcome, "polkit authentication finished");
-            self.sync_polkit();
+        if !prompt.report(attempt, &report, now) {
+            return;
         }
+        tracing::info!(outcome = ?report.outcome, "polkit authentication step");
+        if prompt.wants_face() {
+            self.start_polkit_face();
+        }
+        self.sync_polkit();
     }
 
     pub fn tick_polkit(&mut self) -> bool {
@@ -654,5 +782,71 @@ mod tests {
         typed(&mut prompt, "y");
         assert_eq!(prompt.view(false).hint, Hint::Keys);
         assert_eq!(prompt.failures, 0);
+    }
+
+    fn face_prompt() -> (Prompt, oneshot::Receiver<bool>) {
+        let (sender, receiver) = oneshot::channel();
+        let mut prompt = Prompt::new(request(), sender);
+        prompt.face_mode = true;
+        (prompt, receiver)
+    }
+
+    #[test]
+    fn a_face_that_passes_before_any_question_allows_without_a_password() {
+        let (mut prompt, receiver) = face_prompt();
+        let (attempt, _password, _) = prompt.begin_face().expect("the conversation starts ahead");
+        assert_eq!(prompt.view(false).face, Some(Face::Looking));
+        assert_eq!(prompt.stage(), Stage::Ask, "the field stays usable while the camera looks");
+        assert!(prompt.report(attempt, &report(Outcome::Success), Instant::now()));
+        assert_eq!((prompt.stage(), prompt.view(false).face), (Stage::Done, Some(Face::Allowed)));
+        assert_eq!(answered(receiver), Some(true));
+    }
+
+    #[test]
+    fn a_miss_parks_the_conversation_and_the_password_goes_down_the_same_one() {
+        let (mut prompt, receiver) = face_prompt();
+        let (attempt, password, _) = prompt.begin_face().expect("started");
+        assert!(prompt.report(attempt, &report(Outcome::Asked), Instant::now()));
+        assert_eq!(prompt.view(false).face, Some(Face::Missed));
+        assert_eq!(prompt.failures, 0, "a miss is not a wrong password");
+
+        typed(&mut prompt, "hunter2");
+        assert!(matches!(prompt.submit(Instant::now()), Submission::Sent), "no second helper is started");
+        assert_eq!(password.try_recv().expect("the parked thread gets it").as_str(), "hunter2");
+        assert_eq!(prompt.stage(), Stage::Checking);
+
+        assert!(prompt.report(attempt, &report(Outcome::Failure), Instant::now()));
+        assert_eq!((prompt.stage(), prompt.failures), (Stage::Wrong, 1));
+        assert!(prompt.wants_face(), "after a wrong password the next conversation starts ahead again");
+        let (next, _password, _) = prompt.begin_face().expect("again");
+        assert!(next > attempt);
+        assert!(!prompt.report(attempt, &report(Outcome::Success), Instant::now()), "the old attempt is gone");
+        drop(receiver);
+    }
+
+    #[test]
+    fn retrying_the_face_drops_the_parked_conversation_and_a_helper_that_breaks_turns_face_off() {
+        let (mut prompt, _receiver) = face_prompt();
+        let (attempt, password, _) = prompt.begin_face().expect("started");
+        prompt.report(attempt, &report(Outcome::Asked), Instant::now());
+        assert_eq!(prompt.control(Control::Face), Step::Face);
+        let (retry, _again, _) = prompt.begin_face().expect("a fresh conversation");
+        assert!(password.recv().is_err(), "the parked thread wakes and ends its conversation");
+        assert_eq!(prompt.view(false).face, Some(Face::Looking));
+        assert_eq!(prompt.control(Control::Face), Step::Nothing, "no retry while looking");
+
+        prompt.report(retry, &report(Outcome::Broken("no helper".into())), Instant::now());
+        assert_eq!(prompt.view(false).hint, Hint::Broken);
+        assert!(!prompt.face_mode && !prompt.wants_face(), "a broken face path falls back to the password");
+        typed(&mut prompt, "x");
+        assert!(matches!(prompt.submit(Instant::now()), Submission::Spawn(..)));
+    }
+
+    #[test]
+    fn without_face_mode_nothing_starts_ahead() {
+        let (sender, _receiver) = oneshot::channel();
+        let mut prompt = Prompt::new(request(), sender);
+        assert!(prompt.begin_face().is_none());
+        assert_eq!(prompt.view(false).face, None);
     }
 }

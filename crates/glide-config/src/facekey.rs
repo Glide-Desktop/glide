@@ -30,6 +30,17 @@ pub fn binary() -> Option<PathBuf> {
 }
 
 pub const PROFILE_ROOT: &str = "/var/lib/glide-face";
+pub const PAM_MARKER: &str = "# glide-facekey";
+
+#[must_use]
+pub fn pam_enabled(service: PamService) -> bool {
+    ["/etc/pam.d", "/usr/lib/pam.d"]
+        .iter()
+        .map(|dir| Path::new(dir).join(service.file()))
+        .find(|path| path.is_file())
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|text| text.lines().any(|line| line.trim() == PAM_MARKER))
+}
 
 #[must_use]
 pub fn enrolled(user: &str) -> bool {

@@ -21,6 +21,14 @@ pub enum Control {
     Details,
     Cancel,
     Understood,
+    Face,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Face {
+    Looking,
+    Allowed,
+    Missed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -50,6 +58,7 @@ pub struct View {
     pub hint: Hint,
     pub note: Option<String>,
     pub ready: bool,
+    pub face: Option<Face>,
 }
 
 impl std::fmt::Debug for View {
@@ -61,6 +70,7 @@ impl std::fmt::Debug for View {
             .field("details", &self.details)
             .field("shield", &self.shield)
             .field("hint", &self.hint)
+            .field("face", &self.face)
             .finish_non_exhaustive()
     }
 }

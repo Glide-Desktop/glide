@@ -6,7 +6,7 @@ use super::glyphs::svg_glyph;
 use super::{LocalRect, TopbarTheme, local_rect};
 use crate::i18n::{Key, t};
 use crate::paint::{Painter, TextAlign};
-use crate::polkit::{Control, Hint, Stage, View};
+use crate::polkit::{Control, Face, Hint, Stage, View};
 use crate::popup_menu::text_px as text_w;
 use crate::raster::Canvas;
 use glide_theme::Color;
@@ -103,6 +103,8 @@ const CLIPBOARD_OFF: &str =
     "<rect x=\"6\" y=\"4.5\" width=\"12\" height=\"16\" rx=\"2\"/><path d=\"M9.5 4.5V3h5v1.5M3.5 3.5l17 17\"/>";
 const LAYERS: &str = "<path d=\"m12 3 9 5-9 5-9-5z\"/><path d=\"m3 13 9 5 9-5\"/>";
 const KEY: &str = "<circle cx=\"8\" cy=\"15\" r=\"4\"/><path d=\"m11 12 9-9M16.5 6.5l3 3\"/>";
+const FACE: &str = "<path d=\"M4 9V6a2 2 0 0 1 2-2h3M15 4h3a2 2 0 0 1 2 2v3M20 15v3a2 2 0 0 1-2 2h-3M9 20H6a2 2 0 0 1-2-2v-3M9.5 9.5v1.5M14.5 9.5v1.5M9 14.5a4 4 0 0 0 6 0\"/>";
+const FACE_CHECK: &str = "<path d=\"M5 12l4 4 10-10\"/>";
 
 fn svg(body: &str, stroke: f32) -> String {
     format!(
@@ -158,8 +160,16 @@ pub(super) struct Layout {
     pub popover: Option<LocalRect>,
 }
 
+fn by_face(view: &View) -> bool {
+    view.stage == Stage::Done && view.face == Some(Face::Allowed)
+}
+
+fn shown_stage(view: &View) -> Stage {
+    if by_face(view) { Stage::Ask } else { view.stage }
+}
+
 fn title_text(view: &View) -> (Option<&str>, String) {
-    match view.stage {
+    match shown_stage(view) {
         Stage::Done => (None, t(Key::PkAllowed).to_string()),
         Stage::Locked => (None, t(Key::PkLockedTitle).to_string()),
         _ => match view.app.as_deref() {
@@ -170,7 +180,7 @@ fn title_text(view: &View) -> (Option<&str>, String) {
 }
 
 fn body_text(view: &View) -> String {
-    match view.stage {
+    match shown_stage(view) {
         Stage::Done => t(Key::PkAllowedBody).to_string(),
         Stage::Locked => view.note.clone().unwrap_or_else(|| t(Key::PkLockedBody).to_string()),
         _ => view.message.clone(),
@@ -225,7 +235,7 @@ pub(super) fn layout(painter: &Painter, view: &View) -> Layout {
         understood: None,
         popover: None,
     };
-    match view.stage {
+    match shown_stage(view) {
         Stage::Done => {
             layout.height = head_bottom + PAD_TOP;
             return layout;
@@ -241,11 +251,11 @@ pub(super) fn layout(painter: &Painter, view: &View) -> Layout {
     }
     let field_y = head_bottom + FIELD_GAP;
     let field = local_rect(PAD_X, field_y, WIDTH - PAD_X * 2, FIELD_H);
-    let chip_w = 4 + AVATAR + 7 + text_width(painter, &view.display, &NAME) + 10;
+    let chip_w = 4 + AVATAR + 7 + text_width(painter, chip_label(view), &NAME) + 10;
     layout.chip = Some(local_rect(field.loc.x + 7, field_y + (FIELD_H - CHIP_H) / 2, chip_w, CHIP_H));
     let submit = local_rect(field.loc.x + field.size.w - 1 - 6 - GO, field_y + (FIELD_H - GO) / 2, GO, GO);
     layout.submit = Some(submit);
-    if view.stage != Stage::Checking {
+    if !matches!(view.stage, Stage::Checking | Stage::Done) {
         layout.reveal = Some(local_rect(submit.loc.x - 4 - EYE, field_y + (FIELD_H - EYE) / 2, EYE, EYE));
     }
     layout.field = Some(field);
@@ -281,8 +291,12 @@ pub(super) fn layout(painter: &Painter, view: &View) -> Layout {
 
 #[must_use]
 pub(super) fn slots(layout: &Layout, view: &View) -> Vec<(Control, LocalRect)> {
-    let mut slots = if view.stage == Stage::Done { Vec::new() } else { vec![(Control::Close, layout.close)] };
+    if view.stage == Stage::Done {
+        return Vec::new();
+    }
+    let mut slots = vec![(Control::Close, layout.close)];
     let controls = [
+        (Control::Face, layout.chip.filter(|_| view.face == Some(Face::Missed))),
         (Control::Submit, layout.submit.filter(|_| view.ready)),
         (Control::Reveal, layout.reveal),
         (Control::Shield, layout.shield),
@@ -299,7 +313,7 @@ pub(super) fn slots(layout: &Layout, view: &View) -> Vec<(Control, LocalRect)> {
 pub(super) const fn layer_radius(control: Control) -> Option<f32> {
     match control {
         Control::Field => None,
-        Control::Close | Control::Submit | Control::Shield => Some(R_ROUND),
+        Control::Close | Control::Submit | Control::Shield | Control::Face => Some(R_ROUND),
         Control::Reveal | Control::Details | Control::Cancel | Control::Understood => Some(R2),
     }
 }
@@ -316,7 +330,7 @@ fn draw_app_icon(c: &mut Canvas<'_>, ink: &Ink<'_>, view: &View, rect: LocalRect
         .icon
         .as_deref()
         .and_then(|id| c.icons.as_deref_mut().and_then(|icons| icons.load(id, side * c.scale)).map(<[u8]>::to_vec));
-    match view.stage {
+    match shown_stage(view) {
         Stage::Done => {
             let halo = local_rect(rect.loc.x - 6, rect.loc.y - 6, side + 12, side + 12);
             c.fill(halo, theme.ok.with_alpha(0.06), R_ROUND);
@@ -377,6 +391,31 @@ fn draw_close(c: &mut Canvas<'_>, ink: &Ink<'_>, layout: &Layout) {
     icon(c, CLOSE_SVG, 2.6, 11, layout.close, ink.theme.muted);
 }
 
+fn chip_label(view: &View) -> &str {
+    match view.face {
+        Some(Face::Looking) => t(Key::PkFaceLooking),
+        Some(Face::Allowed) => t(Key::PkFaceYou),
+        Some(Face::Missed) => t(Key::PkFaceChip),
+        None => &view.display,
+    }
+}
+
+fn draw_face_chip(c: &mut Canvas<'_>, ink: &Ink<'_>, view: &View, face: Face, chip: LocalRect) {
+    let theme = ink.theme;
+    let (pill, disc, glyph, text) = match face {
+        Face::Looking => (theme.active_soft, theme.active_background, theme.active_label, theme.active_soft_label),
+        Face::Allowed => (theme.ok_soft, theme.ok, theme.active_label, theme.ok),
+        Face::Missed => (theme.track_soft, theme.danger_soft, theme.danger, theme.muted),
+    };
+    c.fill(chip, pill, R_ROUND);
+    let well = local_rect(chip.loc.x + 4, chip.loc.y + (CHIP_H - AVATAR) / 2, AVATAR, AVATAR);
+    c.fill(well, disc, R_ROUND);
+    let body = if face == Face::Allowed { FACE_CHECK } else { FACE };
+    icon(c, body, 2.4, 13, well, glyph);
+    let band = (well.loc.x + AVATAR + 7, chip.loc.x + chip.size.w, chip.loc.y, chip.loc.y + CHIP_H);
+    c.text(ink.painter, band, TextAlign::Left, chip_label(view), text, &NAME);
+}
+
 fn initial(name: &str) -> String {
     name.chars().next().unwrap_or('?').to_uppercase().to_string()
 }
@@ -393,22 +432,32 @@ fn draw_field(c: &mut Canvas<'_>, ink: &Ink<'_>, view: &View, layout: &Layout) {
     };
     let theme = ink.theme;
     let wrong = view.stage == Stage::Wrong;
+    let calm = matches!(view.face, Some(Face::Looking | Face::Allowed)) && view.stage != Stage::Wrong;
     let (border, ring) = if wrong { (theme.danger, theme.danger_soft) } else { (theme.focus_line, theme.acc_ring) };
-    let halo = local_rect(field.loc.x - 3, field.loc.y - 3, field.size.w + 6, field.size.h + 6);
-    c.fill(halo, ring, R3 + 3.0);
-    c.fill(field, theme.view_bg, R3);
-    c.stroke(field, 1.0, R3, border);
+    if calm {
+        c.fill(field, theme.view_bg, R3);
+        c.stroke(field, 1.0, R3, theme.line);
+    } else {
+        let halo = local_rect(field.loc.x - 3, field.loc.y - 3, field.size.w + 6, field.size.h + 6);
+        c.fill(halo, ring, R3 + 3.0);
+        c.fill(field, theme.view_bg, R3);
+        c.stroke(field, 1.0, R3, border);
+    }
     let checking = view.stage == Stage::Checking;
     let dim = |colour: Color| if checking { colour.with_alpha(colour.0[3] * 0.75) } else { colour };
 
-    c.fill(chip, theme.track_soft, R_ROUND);
-    let avatar = local_rect(chip.loc.x + 4, chip.loc.y + (CHIP_H - AVATAR) / 2, AVATAR, AVATAR);
-    let top = theme.active_background.state_layer(theme.active_label, glide_theme::motion::ST_DRAG);
-    c.gradient(avatar, R_ROUND, top, theme.active_background);
-    c.text_in(ink.painter, avatar, TextAlign::Center, &initial(&view.display), theme.active_label, &INITIAL);
-    let name_x = avatar.loc.x + AVATAR + 7;
-    let band = (name_x, chip.loc.x + chip.size.w, chip.loc.y, chip.loc.y + CHIP_H);
-    c.text(ink.painter, band, TextAlign::Left, &view.display, dim(theme.label), &NAME);
+    if let Some(face) = view.face {
+        draw_face_chip(c, ink, view, face, chip);
+    } else {
+        c.fill(chip, theme.track_soft, R_ROUND);
+        let avatar = local_rect(chip.loc.x + 4, chip.loc.y + (CHIP_H - AVATAR) / 2, AVATAR, AVATAR);
+        let top = theme.active_background.state_layer(theme.active_label, glide_theme::motion::ST_DRAG);
+        c.gradient(avatar, R_ROUND, top, theme.active_background);
+        c.text_in(ink.painter, avatar, TextAlign::Center, &initial(&view.display), theme.active_label, &INITIAL);
+        let name_x = avatar.loc.x + AVATAR + 7;
+        let band = (name_x, chip.loc.x + chip.size.w, chip.loc.y, chip.loc.y + CHIP_H);
+        c.text(ink.painter, band, TextAlign::Left, &view.display, dim(theme.label), &NAME);
+    }
 
     let text_left = chip.loc.x + chip.size.w + 12;
     let text_right = layout.reveal.map_or(submit.loc.x, |eye| eye.loc.x) - 6;
@@ -418,12 +467,17 @@ fn draw_field(c: &mut Canvas<'_>, ink: &Ink<'_>, view: &View, layout: &Layout) {
         None => ("\u{2022}".repeat(view.bullets), &BULLETS),
     };
     if shown.is_empty() {
-        c.text(ink.painter, band, TextAlign::Left, t(Key::PkPassword), theme.faint, &FIELD);
+        let placeholder = match view.face {
+            Some(Face::Allowed) => t(Key::PkNoPassword).to_string(),
+            Some(_) => t(Key::PkPasswordFor).replace("{user}", &view.user),
+            None => t(Key::PkPassword).to_string(),
+        };
+        c.text(ink.painter, band, TextAlign::Left, &placeholder, theme.faint, &FIELD);
     } else {
         let tail = tail_that_fits(ink.painter, &shown, text_right - text_left - 4, style);
         c.text(ink.painter, band, TextAlign::Left, tail, dim(theme.label), style);
     }
-    if !checking {
+    if !checking && view.stage != Stage::Done {
         let typed = if shown.is_empty() {
             0
         } else {
@@ -437,6 +491,11 @@ fn draw_field(c: &mut Canvas<'_>, ink: &Ink<'_>, view: &View, layout: &Layout) {
     if let Some(eye) = layout.reveal {
         let body = if view.shown.is_some() { EYE_OFF } else { EYE_SVG };
         icon(c, body, 1.8, 16, eye, theme.muted);
+    }
+    if by_face(view) {
+        c.fill(submit, theme.ok, R_ROUND);
+        icon(c, FACE_CHECK, 2.4, 15, submit, theme.active_label);
+        return;
     }
     let go = if view.ready || checking { theme.active_background } else { theme.active_background.with_alpha(0.4) };
     c.fill(submit, go, R_ROUND);
@@ -463,6 +522,35 @@ fn draw_hint(c: &mut Canvas<'_>, ink: &Ink<'_>, view: &View, layout: &Layout) {
         icon(c, ALERT, 2.2, 13, local_rect(PAD_X, y, 13, HINT_H), theme.danger);
         c.text(ink.painter, band(PAD_X + 13 + 6), TextAlign::Left, text, theme.danger, &HINT);
     };
+    let keys = |c: &mut Canvas<'_>, mut x: i32| {
+        x = keycap(c, ink, x, y, "Enter") + 6;
+        let allow = t(Key::PkAllowKey);
+        c.text(ink.painter, band(x), TextAlign::Left, allow, theme.faint, &HINT);
+        x += text_width(ink.painter, allow, &HINT) + 12;
+        x = keycap(c, ink, x, y, "Esc") + 6;
+        c.text(ink.painter, band(x), TextAlign::Left, t(Key::PkCancelKey), theme.faint, &HINT);
+    };
+    match (view.face, view.stage) {
+        (Some(Face::Allowed), Stage::Done) => {
+            let style = TextStyle { weight: 600, ..HINT };
+            c.text(ink.painter, band(PAD_X), TextAlign::Left, t(Key::PkFaceAllowed), theme.ok, &style);
+            return;
+        }
+        (Some(Face::Looking), Stage::Ask) if view.hint == Hint::Keys => {
+            let text = t(Key::PkFaceHint);
+            c.text(ink.painter, band(PAD_X), TextAlign::Left, text, theme.faint, &HINT);
+            keys(c, PAD_X + text_width(ink.painter, text, &HINT) + 16);
+            return;
+        }
+        (Some(Face::Missed), Stage::Ask) if matches!(view.hint, Hint::Keys | Hint::CapsLock) => {
+            let missed = t(Key::PkFaceMissed);
+            c.text(ink.painter, band(PAD_X), TextAlign::Left, missed, theme.danger, &HINT);
+            let x = PAD_X + text_width(ink.painter, missed, &HINT) + 8;
+            c.text(ink.painter, band(x), TextAlign::Left, t(Key::PkFaceRetry), theme.faint, &HINT);
+            return;
+        }
+        _ => {}
+    }
     match &view.hint {
         Hint::Checking => c.text(ink.painter, band(PAD_X), TextAlign::Left, t(Key::PkChecking), theme.muted, &HINT),
         Hint::Wrong { left } => {
@@ -475,14 +563,7 @@ fn draw_hint(c: &mut Canvas<'_>, ink: &Ink<'_>, view: &View, layout: &Layout) {
         }
         Hint::Broken => warn(c, t(Key::PkBroken)),
         Hint::CapsLock => warn(c, t(Key::PkCapsLock)),
-        Hint::Keys => {
-            let mut x = keycap(c, ink, PAD_X, y, "Enter") + 6;
-            let allow = t(Key::PkAllowKey);
-            c.text(ink.painter, band(x), TextAlign::Left, allow, theme.faint, &HINT);
-            x += text_width(ink.painter, allow, &HINT) + 12;
-            x = keycap(c, ink, x, y, "Esc") + 6;
-            c.text(ink.painter, band(x), TextAlign::Left, t(Key::PkCancelKey), theme.faint, &HINT);
-        }
+        Hint::Keys => keys(c, PAD_X),
     }
 }
 
@@ -697,7 +778,26 @@ mod tests {
             hint: Hint::Keys,
             note: None,
             ready: false,
+            face: None,
         }
+    }
+
+    #[test]
+    fn a_face_check_swaps_the_user_chip_and_only_a_miss_makes_it_a_button() {
+        let painter = painter();
+        let looking = View { face: Some(Face::Looking), ..view(Stage::Ask) };
+        let laid = layout(&painter, &looking);
+        assert!(laid.field.is_some());
+        assert!(!slots(&laid, &looking).iter().any(|(control, _)| *control == Control::Face));
+        let missed = View { face: Some(Face::Missed), ..view(Stage::Ask) };
+        let laid = layout(&painter, &missed);
+        let chip = laid.chip.expect("chip");
+        assert!(slots(&laid, &missed).contains(&(Control::Face, chip)), "Face retries after a miss");
+        let allowed = View { face: Some(Face::Allowed), ..view(Stage::Done) };
+        let laid = layout(&painter, &allowed);
+        assert!(laid.field.is_some(), "a face pass keeps the field, as the board shows");
+        assert!(slots(&laid, &allowed).is_empty() && laid.reveal.is_none());
+        assert!(layout(&painter, &view(Stage::Done)).field.is_none(), "a password pass still shows Allowed alone");
     }
 
     fn painter() -> Painter {
@@ -769,6 +869,8 @@ mod tests {
             CLIPBOARD_OFF,
             LAYERS,
             KEY,
+            FACE,
+            FACE_CHECK,
         ] {
             assert!(crate::paint::render_svg(svg(body, 2.0).as_bytes(), 24).is_some(), "{body}");
         }
@@ -799,6 +901,9 @@ mod tests {
                 ("locked", view(Stage::Locked)),
                 ("done", view(Stage::Done)),
                 ("unknown", View { app: None, ..view(Stage::Ask) }),
+                ("face-looking", View { face: Some(Face::Looking), ..view(Stage::Ask) }),
+                ("face-allowed", View { face: Some(Face::Allowed), ..view(Stage::Done) }),
+                ("face-missed", View { face: Some(Face::Missed), ..view(Stage::Ask) }),
             ];
             for (name, case) in cases {
                 let layout = layout(&painter, &case);

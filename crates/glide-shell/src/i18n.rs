@@ -56,6 +56,15 @@ glide_app::catalogue! {
     PkWants => "wants administrator rights", "просить права адміністратора";
     PkNeedsRights => "Administrator rights are needed", "Потрібні права адміністратора";
     PkPassword => "Password", "Пароль";
+    PkPasswordFor => "Password for {user}", "Пароль для {user}";
+    PkNoPassword => "No password needed", "Пароль не потрібен";
+    PkFaceLooking => "Looking…", "Впізнаю…";
+    PkFaceYou => "It's you", "Це ви";
+    PkFaceChip => "Face", "Обличчя";
+    PkFaceHint => "Look at the camera or type your password", "Дивіться в камеру або введіть пароль";
+    PkFaceAllowed => "Allowed by your face", "Дозволено обличчям";
+    PkFaceMissed => "Not recognised, type your password", "Не впізнано, введіть пароль";
+    PkFaceRetry => "or click Face to try again", "або натисніть «Обличчя», щоб спробувати ще раз";
     PkAllowKey => "allow", "дозволити";
     PkCancelKey => "cancel", "скасувати";
     PkChecking => "Checking the password…", "Перевірка пароля…";
