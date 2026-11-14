@@ -9,6 +9,7 @@ members = [
     "crates/glide-compositor",
     "crates/glide-config",
     "crates/glide-dock",
+    "crates/glide-face",
     "crates/glide-geom",
     "crates/glide-gestures",
     "crates/glide-greeter",

@@ -39,5 +39,11 @@ test_*.py
 *.orig
 *.rej
 
+# FaceKey models and face photos stay out of history: licences are unverified
+# and the fixtures show a real face.
+crates/glide-face/models/*.onnx
+crates/glide-face/tests/fixtures/
+crates/glide-face/lib/
+
 # Golden-image test scratch output: the failing image, not the reference.
 *.actual.png

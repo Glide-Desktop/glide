@@ -1,0 +1,9 @@
+{
+ "aad": "glide-face:profile:v3:uid=1000:user=alice",
+ "ciphertext": "303132333435363738396162636465666e6f6e63652d31326279746515158d6e8db4a35e0eee8277adb1cc05143dc53ad583a463931a56d00f07c0c3d0",
+ "deriveKey": "2778db44ee670b8c759d1987ab9457df81d4b977b8a0c4a2c6c1afe2ea59f940",
+ "hostBound": "c1fe9ac56ee880f21b1d30ec0ca5938287f0fedaa921ca412686fdca702f4008",
+ "machineId": "0ce95dcae10c4a6f9190f2ab87edf36a",
+ "profileJSON": "{\"version\":3,\"userId\":1000,\"username\":\"alice\",\"modelName\":\"\",\"createdAt\":\"0001-01-01T00:00:00Z\",\"updatedAt\":\"0001-01-01T00:00:00Z\",\"embedding\":[0,0.01,0.02],\"numSamples\":5,\"templateHash\":\"\"}",
+ "templateHash": "29a01374ba7c427e"
+}
