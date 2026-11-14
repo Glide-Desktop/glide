@@ -350,7 +350,95 @@ fn check_home_pixels(rgba: &[u8], width: u32) {
     }
 }
 
+fn fixture_facekey(app: &mut App, state: &str) {
+    use glide_config::facekey::{Attempt, Camera, Event, Reason, Source, Status};
+    use glide_settings::panels::facekey::Msg;
+    use glide_settings::services::facekey::{Snapshot, Update};
+
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let enrolled = state != "empty";
+    let snapshot = Snapshot {
+        installed: state != "missing",
+        status: Some(Status {
+            enrolled,
+            user: "artem".into(),
+            compatible: Some(state != "stale"),
+            created_at: Some("2026-11-12T21:40:00+02:00".into()),
+            ..Status::default()
+        }),
+        cameras: vec![Camera {
+            path: "/dev/video0".into(),
+            name: if state == "camera" { "OBS Virtual Camera".into() } else { "Integrated Camera".into() },
+            trusted: state != "camera",
+            refusal: None,
+        }],
+        attempts: vec![
+            Attempt { at: now - 3600, source: Source::Lock, success: true, reason: Reason::Passed },
+            Attempt { at: now - 90_000, source: Source::Polkit, success: false, reason: Reason::TooDark },
+            Attempt { at: now - 400_000, source: Source::Lock, success: false, reason: Reason::Spoof },
+        ],
+        pam: [("polkit", Some(true)), ("sudo", Some(false)), ("login", Some(state == "login"))]
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect(),
+    };
+    let _ = app.update(Message::FaceKey(Msg::Loaded(Box::new(snapshot))));
+    let send = |app: &mut App, event: Event| {
+        let _ = app.update(Message::FaceKey(Msg::Update(Update::Event(event))));
+    };
+    let frame = || {
+        let side = 256_u32;
+        let pixels = (0..side * side)
+            .flat_map(|i| {
+                let (x, y) = ((i % side) as f32 / side as f32 - 0.5, (i / side) as f32 / side as f32 - 0.48);
+                let face = (x * x / 0.09 + y * y / 0.15) < 1.0;
+                if face { [185, 150, 130, 255] } else { [52, 48, 60, 255] }
+            })
+            .collect::<Vec<u8>>();
+        Update::Frame(glide_sdk::iced::widget::image::Handle::from_rgba(side, side, pixels))
+    };
+    if let Some(step) = state.strip_prefix("enroll-") {
+        let _ = app.update(Message::FaceKey(Msg::BeginCapture));
+        match step {
+            "password" | "intro" => {}
+            "done" => send(app, Event::Finished { success: true, reason: Reason::Passed }),
+            "failed" => {
+                send(app, Event::Enroll { step: 2, hold: 1, required: 4, face: true, hint: None });
+                let _ = app.update(Message::FaceKey(Msg::Update(frame())));
+                send(app, Event::Finished { success: false, reason: Reason::OtherPerson });
+            }
+            step => {
+                let step: u8 = step.parse().expect("enroll step");
+                send(app, Event::Started { camera: "/dev/video0".into() });
+                let _ = app.update(Message::FaceKey(Msg::Update(frame())));
+                send(app, Event::Enroll { step, hold: 2, required: 4, face: true, hint: None });
+            }
+        }
+    }
+    if state == "enroll-intro" {
+        let _ = app.update(Message::FaceKey(Msg::CloseSheet));
+        let _ = app.update(Message::FaceKey(Msg::OpenEnroll));
+    }
+    if let Some(result) = state.strip_prefix("test-") {
+        let _ = app.update(Message::FaceKey(Msg::OpenTest));
+        let reason = match result {
+            "running" => None,
+            "pass" => Some(Reason::Passed),
+            "dark" => Some(Reason::TooDark),
+            "spoof" => Some(Reason::Spoof),
+            "mismatch" => Some(Reason::Mismatch),
+            _ => panic!("unknown test result"),
+        };
+        if let Some(reason) = reason {
+            send(app, Event::Finished { success: reason == Reason::Passed, reason });
+        }
+    }
+}
+
 fn fixture_panel(app: &mut App, panel: Panel) {
+    if panel == Panel::FaceKey {
+        fixture_facekey(app, &std::env::var("GLIDE_SETTINGS_FACEKEY").unwrap_or_else(|_| "enrolled".into()));
+    }
     if panel == Panel::Bluetooth && std::env::var_os("GLIDE_SETTINGS_BLUETOOTH_FIXTURE").is_some() {
         fixture_bluetooth(app);
     }

@@ -205,6 +205,7 @@ glide_app::catalogue! {
     SettingsApps => "Apps", "Програми за замовчуванням";
     SettingsAbout => "About", "Про систему";
     SettingsLockScreen => "Lock Screen", "Екран блокування";
+    SettingsFaceKey => "FaceKey", "FaceKey";
     SettingsScreenShare => "Screen Sharing", "Трансляція екрана";
     SettingsMiracast => "Wireless Display", "Бездротовий дисплей";
     SettingsPasswords => "Passwords & Autofill", "Паролі й автозаповнення";

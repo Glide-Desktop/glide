@@ -210,6 +210,7 @@ pub enum SettingsPanel {
     Gestures,
     Accessibility,
     LockScreen,
+    FaceKey,
     Privacy,
     Passwords,
     Users,
@@ -228,7 +229,7 @@ fn netbird_installed() -> bool {
 }
 
 impl SettingsPanel {
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 35] = [
         Self::Network,
         Self::Bluetooth,
         Self::Vpn,
@@ -253,6 +254,7 @@ impl SettingsPanel {
         Self::Gestures,
         Self::Accessibility,
         Self::LockScreen,
+        Self::FaceKey,
         Self::Privacy,
         Self::Passwords,
         Self::Users,
@@ -292,6 +294,7 @@ impl SettingsPanel {
             Self::Gestures => "gestures",
             Self::Accessibility => "accessibility",
             Self::LockScreen => "lock-screen",
+            Self::FaceKey => "facekey",
             Self::Privacy => "privacy",
             Self::Passwords => "passwords",
             Self::Users => "users",
@@ -332,6 +335,7 @@ impl SettingsPanel {
             Self::Gestures => Key::SettingsGestures,
             Self::Accessibility => Key::SettingsAccessibility,
             Self::LockScreen => Key::SettingsLockScreen,
+            Self::FaceKey => Key::SettingsFaceKey,
             Self::Privacy => Key::SettingsPrivacy,
             Self::Passwords => Key::SettingsPasswords,
             Self::Users => Key::SettingsUsers,
@@ -397,6 +401,7 @@ impl SettingsPanel {
             Self::LockScreen => {
                 &["lock screen", "screen lock", "lock", "blank", "idle", "екран блокування", "блокування", "замок"]
             }
+            Self::FaceKey => &["face", "face unlock", "facekey", "обличчя", "розблокування обличчям"],
             Self::Privacy => &["privacy", "security", "camera", "clipboard", "конфіденційність", "безпека"],
             Self::Passwords => &["passwords", "autofill", "keychain", "паролі", "автозаповнення"],
             Self::Users => &["users", "account", "avatar", "користувачі", "обліковий запис"],
@@ -974,6 +979,7 @@ mod tests {
                 "gestures",
                 "accessibility",
                 "lock-screen",
+                "facekey",
                 "privacy",
                 "passwords",
                 "users",

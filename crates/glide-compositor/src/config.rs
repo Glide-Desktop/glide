@@ -19,6 +19,7 @@ pub struct Config {
     pub workspaces: WorkspaceConfig,
     pub windows: WindowsConfig,
     pub launcher: LauncherConfig,
+    pub facekey: glide_config::facekey::Config,
     pub cast: CastConfig,
     pub keybinds: Vec<KeybindConfig>,
     pub decorations: DecorationTheme,

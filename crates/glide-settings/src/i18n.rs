@@ -19,6 +19,8 @@ catalogue! {
     AboutHome => "This computer at a glance, and what needs attention", "Стан комп’ютера одним поглядом і те, що потребує уваги";
     PanelLockScreen => "Lock Screen", "Екран блокування";
     AboutLockScreen => "When the session locks and what the lock screen shows", "Коли сеанс блокується і що видно на заблокованому екрані";
+    PanelFaceKey => "FaceKey", "FaceKey";
+    AboutFaceKey => "The computer recognises you through the camera, so you don’t need to type the password", "Комп’ютер впізнає вас через камеру, і пароль вводити не потрібно";
     PanelScreenShare => "Screen Sharing", "Трансляція екрана";
     AboutScreenShare => "Who can see your screen, and how apps ask for it", "Хто бачить ваш екран і як програми про це просять";
     PanelMiracast => "Wireless Display", "Бездротовий дисплей";

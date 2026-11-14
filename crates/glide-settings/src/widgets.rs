@@ -190,6 +190,13 @@ pub fn banner<'a, M: Clone + 'a>(
 }
 
 #[must_use]
+pub fn titled_banner<'a, M: Clone + 'a>(
+    t: ThemeState, tone: Tone, glyph: Icon, title: &str, message: &str, action: Option<Element<'a, M>>,
+) -> Element<'a, M> {
+    sdk::noted_banner(&paint(&t), tone, glyph, title, message, action.into_iter().collect())
+}
+
+#[must_use]
 pub fn empty_state<'a, M: 'a>(
     t: ThemeState, glyph: Icon, heading: impl text::IntoFragment<'a>, description: impl text::IntoFragment<'a>,
 ) -> Element<'a, M> {

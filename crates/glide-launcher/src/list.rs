@@ -320,6 +320,7 @@ fn paint_glyph(buf: &mut [u8], painter: &crate::paint::Painter, glyph: RowGlyph,
             | SettingsPanel::Netbird
             | SettingsPanel::Privacy
             | SettingsPanel::LockScreen
+            | SettingsPanel::FaceKey
             | SettingsPanel::Passwords,
         ) => p::draw_lock_glyph_over,
         RowGlyph::Command(SystemCommand::Restart | SystemCommand::ShutDown)

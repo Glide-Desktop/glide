@@ -93,8 +93,9 @@ pub fn preview(image: &RgbaImage, side: usize) -> Option<Event> {
 pub fn emit(event: &Event) {
     if let Ok(line) = serde_json::to_string(event) {
         let mut out = std::io::stdout().lock();
-        let _ = writeln!(out, "{line}");
-        let _ = out.flush();
+        if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+            std::process::exit(1);
+        }
     }
 }
 

@@ -7,9 +7,9 @@ use crate::i18n::{Key as K, Lang};
 use crate::icons::Icon;
 use crate::panels::{
     Category, Ctx, PageEvent, Pane, Panel, about, accessibility, appearance, apps, bluetooth, date_time, desktop,
-    displays, gestures, home, keyboard, lock_screen, miracast, mouse, multitasking, netbird, network, night_light,
-    notifications, passwords, power, printers, privacy, region, screen_share, search, shortcuts, sound, startup,
-    storage, topbar, users, vpn, wallpaper, windows, with_panels,
+    displays, facekey, gestures, home, keyboard, lock_screen, miracast, mouse, multitasking, netbird, network,
+    night_light, notifications, passwords, power, printers, privacy, region, screen_share, search, shortcuts, sound,
+    startup, storage, topbar, users, vpn, wallpaper, windows, with_panels,
 };
 use crate::services::config::ConfigFault;
 use crate::services::config::ConfigStore;
@@ -87,6 +87,12 @@ macro_rules! declare_pages {
             fn view_panel(&self, panel: Panel, c: Ctx) -> Element<'_, Message> {
                 match panel {
                     $(Panel::$variant => Pane::view(&self.pages.$module, c, &self.config).map(Message::$variant),)*
+                }
+            }
+
+            fn view_sheet(&self, panel: Panel, c: Ctx) -> Option<Element<'_, Message>> {
+                match panel {
+                    $(Panel::$variant => Pane::sheet(&self.pages.$module, c, &self.config).map(|sheet| sheet.map(Message::$variant)),)*
                 }
             }
 
@@ -507,7 +513,11 @@ impl App {
             glide_sdk::widget::vertical_separator(&paint),
             self.view_content(),
         ];
-        glide_sdk::widget::pane(t.win_bg(), 0.0, body).into()
+        let page: Element<'_, Message> = glide_sdk::widget::pane(t.win_bg(), 0.0, body).into();
+        match self.view_sheet(self.active_panel, self.ctx()) {
+            Some(sheet) => iced::widget::stack![page, glide_sdk::overlay::modal(&paint, 1.0, sheet, None, 0.0)].into(),
+            None => page,
+        }
     }
 
     fn view_content(&self) -> Element<'_, Message> {

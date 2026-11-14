@@ -117,6 +117,8 @@ pub enum Icon {
     Home,
     Cast,
     Tv,
+    Face,
+    SignIn,
 }
 
 impl Icon {
@@ -154,6 +156,10 @@ impl Icon {
                 glyph!("<circle cx='12' cy='12' r='9'/><path d='M12 11v5.5M12 7.6h.01'/>")
             }
             Self::Check => glyph!("<path d='M5 12.5l4.5 4.5L19 7.5'/>"),
+            Self::Face => glyph!(
+                "<path d='M4 9V6a2 2 0 0 1 2-2h3M15 4h3a2 2 0 0 1 2 2v3M20 15v3a2 2 0 0 1-2 2h-3M9 20H6a2 2 0 0 1-2-2v-3'/><path d='M9.5 9.5v1.5M14.5 9.5v1.5M9 14.5a4 4 0 0 0 6 0'/>"
+            ),
+            Self::SignIn => glyph!("<path d='M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3'/>"),
             Self::Lock => {
                 glyph!("<rect x='5' y='11' width='14' height='10' rx='2'/><path d='M8 11V7.5a4 4 0 0 1 8 0V11'/>")
             }

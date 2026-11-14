@@ -20,6 +20,7 @@ mod panes;
 pub mod player;
 mod pointer;
 mod popover;
+pub mod scan;
 mod secrets;
 mod selection;
 mod strip;

@@ -26,7 +26,15 @@ macro_rules! fatal {
 }
 
 fn main() -> ExitCode {
-    let opts = match cli::parse(std::env::args().skip(1)) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let opts = match cli::parse(args.clone()) {
+        Parsed::Run(o) if std::env::var_os("PKEXEC_UID").is_some_and(|uid| !uid.is_empty()) => {
+            if let Err(message) = cli::admitted_under_pkexec(&args, &o) {
+                eprintln!("{message}");
+                return ExitCode::from(2);
+            }
+            o
+        }
         Parsed::Run(o) => o,
         Parsed::Help => {
             print!("{}", cli::usage());
@@ -309,11 +317,15 @@ fn verification(pipe: &Pipeline, store: &Store, opts: &Options, source: Option<S
         }
     };
     let mut sess = VerificationSession::new(profile);
+    let mut last_preview = None;
     while !sess.is_done {
         match cam.wait_frame(Duration::from_millis(100)) {
             Ok(frame) => {
                 if let Err(e) = sess.process_frame(&frame.image, pipe) {
                     eprintln!("[WARN] Frame error: {e}");
+                }
+                if opts.stream && source == Some(Source::Test) {
+                    stream_preview(&frame.image, &mut last_preview);
                 }
                 if opts.stream {
                     let face = sess.last_evaluation.as_ref().is_some_and(|eval| eval.face_found);
@@ -412,6 +424,10 @@ fn stream_enrollment(sess: &EnrollmentState, image: &RgbaImage, last_preview: &m
         face: eval.is_some_and(|eval| eval.face_found),
         hint,
     });
+    stream_preview(image, last_preview);
+}
+
+fn stream_preview(image: &RgbaImage, last_preview: &mut Option<Instant>) {
     if last_preview.is_none_or(|at| at.elapsed() >= PREVIEW_EVERY)
         && let Some(frame) = protocol::preview(image, PREVIEW_SIDE)
     {

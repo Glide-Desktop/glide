@@ -7,6 +7,7 @@ pub mod common;
 pub mod date_time;
 pub mod desktop;
 pub mod displays;
+pub mod facekey;
 pub mod gestures;
 pub mod home;
 pub mod keyboard;
@@ -94,6 +95,10 @@ pub trait Pane: Default {
     fn subscription(&self) -> Subscription<Self::Msg> {
         Subscription::none()
     }
+
+    fn sheet<'a>(&'a self, _c: Ctx, _config: &'a ConfigStore) -> Option<Element<'a, Self::Msg>> {
+        None
+    }
 }
 
 macro_rules! with_panels {
@@ -123,6 +128,7 @@ macro_rules! with_panels {
             Gestures => gestures,
             Accessibility => accessibility,
             LockScreen => lock_screen,
+            FaceKey => facekey,
             Privacy => privacy,
             Passwords => passwords,
             Users => users,
@@ -235,6 +241,7 @@ panel_meta! {
     Gestures: PanelGestures, AboutGestures, "gestures", Gesture, Terracotta 2;
     Accessibility: PanelAccessibility, AboutAccessibility, "accessibility", Accessibility, Malachite 2;
     LockScreen: PanelLockScreen, AboutLockScreen, "lock-screen", Lock, Cinnabar 2;
+    FaceKey: PanelFaceKey, AboutFaceKey, "facekey", Face, Malachite 5;
     Privacy: PanelPrivacy, AboutPrivacy, "privacy", Hand, Amethyst 2;
     Passwords: PanelPasswords, AboutPasswords, "passwords", Key, Amber 4;
     Users: PanelUsers, AboutUsers, "users", Users, Terracotta 4;
@@ -269,6 +276,7 @@ pub enum Category {
     Apps,
     Startup,
     LockScreen,
+    FaceKey,
     Privacy,
     Passwords,
     Accessibility,
@@ -306,6 +314,7 @@ impl Category {
         Self::Apps,
         Self::Startup,
         Self::LockScreen,
+        Self::FaceKey,
         Self::Privacy,
         Self::Passwords,
         Self::Accessibility,
@@ -329,7 +338,14 @@ impl Category {
         Group { title: Some(Key::GroupApps), categories: &[Self::Search, Self::Apps, Self::Startup] },
         Group {
             title: Some(Key::GroupPeople),
-            categories: &[Self::LockScreen, Self::Privacy, Self::Passwords, Self::Accessibility, Self::Users],
+            categories: &[
+                Self::LockScreen,
+                Self::FaceKey,
+                Self::Privacy,
+                Self::Passwords,
+                Self::Accessibility,
+                Self::Users,
+            ],
         },
         Group {
             title: Some(Key::GroupSystem),
@@ -356,6 +372,7 @@ impl Category {
             Self::Keyboard => &[Panel::Keyboard, Panel::Shortcuts],
             Self::Mouse => &[Panel::Mouse, Panel::Gestures],
             Self::LockScreen => &[Panel::LockScreen],
+            Self::FaceKey => &[Panel::FaceKey],
             Self::Search => &[Panel::Search],
             Self::Apps => &[Panel::Apps],
             Self::Startup => &[Panel::Startup],
@@ -494,6 +511,7 @@ impl Panel {
             "language" => Some(Self::Region),
             "a11y" => Some(Self::Accessibility),
             "lock" | "screen-lock" | "lockscreen" => Some(Self::LockScreen),
+            "face" | "face-unlock" | "faceid" => Some(Self::FaceKey),
             "security" => Some(Self::Privacy),
             "autostart" => Some(Self::Startup),
             "disk" => Some(Self::Storage),
@@ -592,6 +610,8 @@ category_meta! {
         tile_svg!("2.2", "stroke-linejoin='round'", "<path d='M5 15c-1 1-1 4-1 4s3 0 4-1M9 15l-3-3c2-5 7-9 12-9 0 5-4 10-9 12z'/>");
     LockScreen: "Lock Screen", "Екран блокування", "When the session locks and what the lock screen shows.", "Коли сеанс блокується і що видно на заблокованому екрані.", Purple 5 false,
         tile_svg!("2.2", "", "<rect x='5' y='11' width='14' height='10' rx='2'/><path d='M8 11V7a4 4 0 0 1 8 0v4'/>");
+    FaceKey: "FaceKey", "FaceKey", "The computer recognises you through the camera, so you don’t need to type the password.", "Комп’ютер впізнає вас через камеру, і пароль вводити не потрібно.", Teal 5 false,
+        tile_svg!("2.2", "stroke-linecap='round' stroke-linejoin='round'", "<path d='M4 9V6a2 2 0 0 1 2-2h3M15 4h3a2 2 0 0 1 2 2v3M20 15v3a2 2 0 0 1-2 2h-3M9 20H6a2 2 0 0 1-2-2v-3'/><path d='M9.5 9.5v1.5M14.5 9.5v1.5M9 14.5a4 4 0 0 0 6 0'/>");
     Privacy: "Privacy", "Конфіденційність", "What apps see and what stays on disk after you.", "Що програми бачать і що лишається на диску після вас.", Purple 1 true,
         tile_svg!("2.2", "", "<path d='M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z'/><circle cx='12' cy='12' r='3'/>");
     Passwords: "Passwords & Autofill", "Паролі й автозаповнення", "How Glide offers saved passwords and codes and how it protects the vaults.", "Як Glide пропонує збережені паролі й коди та як захищає сховища.", Amber 4 false,

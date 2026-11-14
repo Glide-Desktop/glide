@@ -2639,6 +2639,7 @@ dependencies = [
 name = "glide-settings"
 version = "0.1.3"
 dependencies = [
+ "base64 0.22.1",
  "glide-config",
  "glide-ipc",
  "glide-netbird",

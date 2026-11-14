@@ -6,6 +6,7 @@ pub mod bluetooth;
 pub mod config;
 pub mod display;
 pub mod dock;
+pub mod facekey;
 pub mod gsettings;
 pub mod history;
 pub mod input;

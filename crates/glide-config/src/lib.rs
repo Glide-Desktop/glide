@@ -128,7 +128,11 @@ pub struct LocalTime {
 
 #[must_use]
 pub fn local_time() -> Option<LocalTime> {
-    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    local_time_at(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs())
+}
+
+#[must_use]
+pub fn local_time_at(seconds: u64) -> Option<LocalTime> {
     refresh_time_zone(seconds);
     let seconds = libc::time_t::try_from(seconds).ok()?;
     let mut value = std::mem::MaybeUninit::<libc::tm>::uninit();
