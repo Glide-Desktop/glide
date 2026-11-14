@@ -35,6 +35,7 @@ pub struct Settings {
     pub fonts: Vec<Cow<'static, [u8]>>,
     pub chrome: Chrome,
     pub single_instance: Option<String>,
+    pub path_arguments: bool,
 }
 
 impl Settings {
@@ -47,12 +48,19 @@ impl Settings {
             fonts: Vec::new(),
             chrome: Chrome::Standard,
             single_instance: None,
+            path_arguments: false,
         }
     }
 
     #[must_use]
     pub fn single_instance(mut self, bus_name: impl Into<String>) -> Self {
         self.single_instance = Some(bus_name.into());
+        self
+    }
+
+    #[must_use]
+    pub fn path_arguments(mut self) -> Self {
+        self.path_arguments = true;
         self
     }
 
@@ -770,10 +778,26 @@ fn forwardable_args<I: IntoIterator<Item = OsString>>(args: I) -> Option<Vec<Str
     args.into_iter().map(|arg| arg.into_string().ok()).collect()
 }
 
+#[must_use]
+fn rooted_arg(arg: String, folder: &std::path::Path) -> String {
+    if arg.starts_with('-') || arg.contains("://") || std::path::Path::new(&arg).is_absolute() {
+        return arg;
+    }
+    folder.join(&arg).into_os_string().into_string().unwrap_or(arg)
+}
+
 pub fn run<A: App>(settings: Settings) -> iced::Result {
+    let folder = std::env::current_dir().ok().filter(|_| settings.path_arguments);
     let single = match settings.single_instance.as_deref() {
         Some(name) => match forwardable_args(std::env::args_os().skip(1)) {
-            Some(args) => match crate::instance::claim(name, &args, &crate::instance::launch_token()) {
+            Some(args) => match crate::instance::claim(
+                name,
+                &match &folder {
+                    Some(folder) => args.into_iter().map(|arg| rooted_arg(arg, folder)).collect::<Vec<_>>(),
+                    None => args,
+                },
+                &crate::instance::launch_token(),
+            ) {
                 crate::instance::Claim::Forwarded => return Ok(()),
                 crate::instance::Claim::First => true,
                 crate::instance::Claim::Alone => false,
@@ -1122,5 +1146,14 @@ mod tests {
         assert_eq!(forwardable_args(Vec::new()), Some(Vec::new()));
         let odd: OsString = std::os::unix::ffi::OsStringExt::from_vec(b"caf\xe9".to_vec());
         assert_eq!(forwardable_args([text("power"), odd]), None);
+    }
+
+    #[test]
+    fn path_arguments_are_forwarded_from_the_folder_the_command_ran_in() {
+        let folder = std::path::Path::new("/home/user/notes");
+        assert_eq!(rooted_arg("todo.md".into(), folder), "/home/user/notes/todo.md");
+        assert_eq!(rooted_arg("/etc/fstab".into(), folder), "/etc/fstab");
+        assert_eq!(rooted_arg("--new-window".into(), folder), "--new-window");
+        assert_eq!(rooted_arg("file:///tmp/a.txt".into(), folder), "file:///tmp/a.txt");
     }
 }

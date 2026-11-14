@@ -114,7 +114,7 @@ pub use selection::{
     icon_segmented_width, page_dots, radio_group, segmented, segmented_fill, segmented_spread, sidebar_list, swatch,
     swatches, tabs, track,
 };
-pub use strip::{Mark, Tab, TabStrip, tab_strip};
+pub use strip::{Mark, Tab, TabStrip, tab_strip, tabs_fit};
 
 type Measured = (String, u32, u16, u32, u64, u32, bool);
 

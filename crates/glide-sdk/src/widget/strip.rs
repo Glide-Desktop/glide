@@ -30,6 +30,11 @@ const CLOSE: f32 = 22.0;
 const SLOP: f32 = 6.0;
 const ARRIVE: f32 = 0.8;
 const MIN_SCALE: f32 = 0.001;
+const NARROWEST: f32 = 128.0;
+const FADE: f32 = 24.0;
+const EDGE: f32 = 32.0;
+const NOTCH: f32 = 64.0;
+const CARRY: f32 = 720.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mark {
@@ -83,9 +88,12 @@ pub struct TabStrip<'a, M> {
     hovered: Option<usize>,
     height: f32,
     widest: f32,
+    narrowest: f32,
     bare: bool,
+    ground: Color,
     select: Option<Pick<'a, M>>,
     close: Option<(Pick<'a, M>, &'a str)>,
+    menu: Option<Pick<'a, M>>,
     hover: Option<Box<dyn Fn(Option<usize>) -> M + 'a>>,
     reorder: Option<Reorder<'a, M>>,
 }
@@ -99,12 +107,20 @@ pub fn tab_strip<'a, M>(paint: &Paint, tabs: Vec<Tab<'a>>, active: usize) -> Tab
         hovered: None,
         height: 36.0,
         widest: f32::INFINITY,
+        narrowest: NARROWEST,
         bare: false,
+        ground: paint.bar_bg(),
         select: None,
         close: None,
+        menu: None,
         hover: None,
         reorder: None,
     }
+}
+
+#[must_use]
+pub fn tabs_fit(width: f32, count: usize) -> bool {
+    run(count, NARROWEST) <= width
 }
 
 impl<'a, M> TabStrip<'a, M> {
@@ -117,6 +133,24 @@ impl<'a, M> TabStrip<'a, M> {
     #[must_use]
     pub fn widest(mut self, width: f32) -> Self {
         self.widest = width;
+        self
+    }
+
+    #[must_use]
+    pub fn narrowest(mut self, width: f32) -> Self {
+        self.narrowest = width.max(CLOSE + 2.0 * SP1);
+        self
+    }
+
+    #[must_use]
+    pub fn ground(mut self, color: Color) -> Self {
+        self.ground = color;
+        self
+    }
+
+    #[must_use]
+    pub fn on_menu(mut self, menu: impl Fn(usize) -> M + 'a) -> Self {
+        self.menu = Some(Box::new(menu));
         self
     }
 
@@ -191,8 +225,9 @@ fn tab_face<'a, M: Clone + 'a>(strip: &TabStrip<'a, M>, index: usize, tab: Tab<'
         }
         None => Space::new().width(CLOSE).height(CLOSE).into(),
     };
+    let room = Padding { left: CLOSE + SP1 + 2.0, right: SP3, ..Padding::ZERO };
     let mut inner = stack![
-        container(label).center_x(Fill).center_y(Fill).padding(Padding::from([0.0, CLOSE + SP1 + 2.0])).clip(true),
+        container(label).center_x(Fill).center_y(Fill).padding(room).clip(true),
         container(close).padding(Padding::from([0.0, SP1])).height(Fill).align_y(Alignment::Center),
     ];
     if let Some((_, strong)) = tint {
@@ -227,6 +262,9 @@ fn tab_face<'a, M: Clone + 'a>(strip: &TabStrip<'a, M>, index: usize, tab: Tab<'
     if let Some((close, _)) = &strip.close {
         area = area.on_middle_press(close(index));
     }
+    if let Some(menu) = &strip.menu {
+        area = area.on_right_press(menu(index));
+    }
     animate(1.0, Speed::SLIDE, |_| area).from(0.0).scale(|value| ARRIVE + (1.0 - ARRIVE) * value).into()
 }
 
@@ -254,6 +292,8 @@ impl<'a, M: Clone + 'a> From<TabStrip<'a, M>> for Element<'a, M> {
             active,
             height: strip.height,
             widest: strip.widest,
+            narrowest: strip.narrowest,
+            ground: strip.ground,
             select: strip.select,
             reorder: strip.reorder,
         });
@@ -275,8 +315,34 @@ fn tab_width(width: f32, count: usize, widest: f32) -> f32 {
 }
 
 #[must_use]
+fn tab_size(width: f32, count: usize, widest: f32, narrowest: f32) -> f32 {
+    tab_width(width, count, widest).max(narrowest.min(widest))
+}
+
+#[must_use]
+fn run(count: usize, tab: f32) -> f32 {
+    if count == 0 {
+        return 0.0;
+    }
+    let count = count as f32;
+    2.0 * PAD + count * tab + (count - 1.0) * GAP
+}
+
+#[must_use]
+fn overflow(width: f32, count: usize, tab: f32) -> f32 {
+    (run(count, tab) - width).max(0.0)
+}
+
+#[must_use]
 fn slot_x(index: usize, tab: f32) -> f32 {
     PAD + index as f32 * (tab + GAP)
+}
+
+fn within(cursor: mouse::Cursor, bounds: Rectangle, scroll: f32, loose: bool) -> mouse::Cursor {
+    if !loose {
+        return cursor;
+    }
+    if cursor.is_over(bounds) { cursor + Vector::new(scroll, 0.0) } else { mouse::Cursor::Unavailable }
 }
 
 #[must_use]
@@ -295,8 +361,8 @@ struct Press {
 }
 
 impl Press {
-    fn left(&self, tab: f32, count: usize) -> f32 {
-        (self.cursor - self.grab).clamp(PAD, slot_x(count.saturating_sub(1), tab).max(PAD))
+    fn left(&self, tab: f32, count: usize, scroll: f32) -> f32 {
+        (self.cursor + scroll - self.grab).clamp(PAD, slot_x(count.saturating_sub(1), tab).max(PAD))
     }
 }
 
@@ -326,9 +392,56 @@ struct State {
     laid: Option<f32>,
     width: f32,
     press: Option<Press>,
+    scroll: Option<Motion>,
+    shown: Option<(u64, usize)>,
+    carried: Option<std::time::Instant>,
 }
 
 impl State {
+    fn scrolled(&self) -> f32 {
+        self.scroll.map_or(0.0, |scroll| scroll.value(Speed::SLIDE))
+    }
+
+    fn aim(&self) -> f32 {
+        self.scroll.map_or(0.0, |scroll| scroll.target())
+    }
+
+    fn scroll_to(&mut self, target: f32, limit: f32, glide: bool) -> bool {
+        let target = target.clamp(0.0, limit.max(0.0));
+        let Some(scroll) = &mut self.scroll else {
+            self.scroll = Some(Motion::at(target));
+            return target > 0.0;
+        };
+        if glide {
+            return scroll.to(target, Speed::SLIDE);
+        }
+        let moved = (scroll.value(Speed::SLIDE) - target).abs() > 0.01;
+        scroll.jump(target);
+        moved
+    }
+
+    fn reveal(&mut self, active: Option<(u64, usize)>, tab: f32, width: f32, limit: f32) -> bool {
+        let aim = self.aim();
+        let mut wanted = aim;
+        if self.shown != active {
+            self.shown = active;
+            if let Some((_, index)) = active {
+                let left = slot_x(index, tab) - PAD;
+                let right = slot_x(index, tab) + tab + PAD;
+                if left < wanted {
+                    wanted = left;
+                } else if right > wanted + width {
+                    wanted = right - width;
+                }
+            }
+        }
+        let wanted = wanted.clamp(0.0, limit.max(0.0));
+        if self.scroll.is_some() && (wanted - aim).abs() < 0.01 {
+            return false;
+        }
+        self.scroll_to(wanted, limit, true)
+    }
+
     fn shown_tab(&mut self, target: f32, width: f32) -> f32 {
         let resized = self.laid.is_some_and(|laid| (laid - width).abs() > 0.5);
         self.laid = Some(width);
@@ -369,6 +482,7 @@ impl State {
     fn moving(&self) -> bool {
         self.animating()
             || !self.ghosts.is_empty()
+            || self.scroll.is_some_and(|scroll| scroll.animating(Speed::SLIDE))
             || self.tab.is_some_and(|tab| tab.animating(Speed::SLIDE))
             || self.selected.values().any(|lit| lit.animating(Speed::COLOR))
     }
@@ -381,11 +495,12 @@ impl State {
         let resized = (self.width - width).abs() > 0.5;
         self.width = width;
         let lifted = self.lifted();
+        let scroll = self.scrolled();
         let mut started = false;
         for (id, x) in ids.iter().zip(slots) {
             let slide = self.slides.entry(*id).or_insert_with(|| Motion::at(*x));
             match lifted {
-                Some(press) if press.id == *id => slide.jump(press.left(tab, ids.len())),
+                Some(press) if press.id == *id => slide.jump(press.left(tab, ids.len(), scroll)),
                 _ if resized => slide.jump(*x),
                 _ => started |= slide.to(*x, Speed::SLIDE),
             }
@@ -411,13 +526,46 @@ struct Strip<'a, M> {
     active: Option<u64>,
     height: f32,
     widest: f32,
+    narrowest: f32,
+    ground: Color,
     select: Option<Pick<'a, M>>,
     reorder: Option<Reorder<'a, M>>,
 }
 
 impl<M> Strip<'_, M> {
     fn tab(&self, layout: Layout<'_>) -> f32 {
-        tab_width(layout.bounds().width, self.ids.len(), self.widest)
+        tab_size(layout.bounds().width, self.ids.len(), self.widest, self.narrowest)
+    }
+
+    fn carry(&self, press: &mut Press, tab: f32, scroll: f32, shell: &mut Shell<'_, M>) {
+        let count = self.ids.len();
+        let target = slot_at(press.left(tab, count, scroll), tab, count);
+        if target != press.at
+            && let Some(reorder) = &self.reorder
+        {
+            shell.publish(reorder(press.at, target));
+            press.at = target;
+        }
+    }
+
+    fn fades(&self, renderer: &mut Renderer, bounds: Rectangle, scroll: f32, limit: f32) {
+        let ground = self.ground.scale_alpha(self.paint.alpha);
+        let mut edge = |x: f32, hidden: f32, leading: bool| {
+            let strength = (hidden / FADE).clamp(0.0, 1.0);
+            if strength <= 0.0 {
+                return;
+            }
+            let (from, to) = if leading { (strength, 0.0) } else { (0.0, strength) };
+            let gradient = iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2))
+                .add_stop(0.0, ground.scale_alpha(from))
+                .add_stop(1.0, ground.scale_alpha(to));
+            renderer.fill_quad(
+                Quad { bounds: Rectangle { x, width: FADE, ..bounds }, ..Quad::default() },
+                iced::Background::Gradient(iced::Gradient::Linear(gradient)),
+            );
+        };
+        edge(bounds.x, scroll, true);
+        edge(bounds.x + bounds.width - FADE, limit - scroll, false);
     }
 
     fn pill(&self, renderer: &mut Renderer, bounds: Rectangle, fill: Color, level: f32, elevation: Level) {
@@ -484,6 +632,41 @@ impl<M> Strip<'_, M> {
         });
     }
 
+    #[allow(clippy::too_many_arguments)] // Widget::draw's own arguments plus the layer the lifted tab is clipped to
+    fn paint_tabs(
+        &self, tree: &Tree, renderer: &mut Renderer, theme: &Theme, style: &renderer::Style, layout: Layout<'_>,
+        cursor: mouse::Cursor, viewport: &Rectangle, lifted_clip: Rectangle,
+    ) {
+        let state = tree.state.downcast_ref::<State>();
+        let origin = layout.bounds().x;
+        let lifted = state.lifted().map(|press| press.id);
+        let mut top = None;
+        for ghost in &state.ghosts {
+            self.ghost(renderer, ghost, layout.bounds().position());
+        }
+        for ((((face, tree), layout), id), look) in
+            self.faces.iter().zip(&tree.children).zip(layout.children()).zip(&self.ids).zip(&self.looks)
+        {
+            let offset = state.offset(*id, layout.bounds().x - origin);
+            if lifted == Some(*id) {
+                top = Some((face, tree, layout, offset, look.fill));
+                continue;
+            }
+            let lit = state.selected.get(id).map_or(0.0, |lit| lit.value(Speed::COLOR));
+            renderer.with_translation(Vector::new(offset, 0.0), |renderer| {
+                self.pill(renderer, layout.bounds(), look.fill, lit, Level::El1);
+                face.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
+            });
+        }
+        let Some((face, tree, layout, offset, fill)) = top else { return };
+        renderer.with_layer(lifted_clip, |renderer| {
+            renderer.with_translation(Vector::new(offset, 0.0), |renderer| {
+                self.pill(renderer, layout.bounds(), fill, 1.0, Level::El2);
+                face.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
+            });
+        });
+    }
+
     fn slots(layout: Layout<'_>) -> Vec<f32> {
         let origin = layout.bounds().x;
         layout.children().map(|child| child.bounds().x - origin).collect()
@@ -541,7 +724,7 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
         let count = self.faces.len();
         let width = limits.max().width;
         let width = if width.is_finite() { width } else { 2.0 * PAD + count as f32 * self.widest.min(200.0) };
-        let target = tab_width(width, count, self.widest);
+        let target = tab_size(width, count, self.widest, self.narrowest);
         let tab = tree.state.downcast_mut::<State>().shown_tab(target, width);
         let inner = (self.height - 2.0 * SP1).max(0.0);
         let fixed = layout::Limits::new(Size::new(tab, inner), Size::new(tab, inner));
@@ -568,28 +751,35 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
         clipboard: &mut dyn Clipboard, shell: &mut Shell<'_, M>, viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<State>();
-        let inner = if state.lifted().is_some() { mouse::Cursor::Unavailable } else { cursor };
-        for ((face, tree), layout) in self.faces.iter_mut().zip(&mut tree.children).zip(layout.children()) {
-            face.as_widget_mut().update(tree, event, layout, inner, renderer, clipboard, shell, viewport);
-        }
         let bounds = layout.bounds();
         let tab = self.tab(layout);
         let count = self.ids.len();
+        let limit = overflow(bounds.width, count, tab);
+        let scroll = state.scrolled();
+        let loose = limit > 0.0 || scroll > 0.0;
+        let inner =
+            if state.lifted().is_some() { mouse::Cursor::Unavailable } else { within(cursor, bounds, scroll, loose) };
+        let view = if loose { Rectangle { x: bounds.x + scroll, ..bounds } } else { *viewport };
+        for ((face, tree), layout) in self.faces.iter_mut().zip(&mut tree.children).zip(layout.children()) {
+            face.as_widget_mut().update(tree, event, layout, inner, renderer, clipboard, shell, &view);
+        }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) if !shell.is_event_captured() => {
                 let pressed = cursor.position_over(bounds).and_then(|position| {
-                    layout.children().position(|child| child.bounds().contains(position)).map(|at| (at, position.x))
+                    let inside = Point::new(position.x + scroll, position.y);
+                    layout.children().position(|child| child.bounds().contains(inside)).map(|at| (at, position.x))
                 });
                 if let Some((at, x)) = pressed {
                     let x = x - bounds.x;
                     state.press = Some(Press {
                         id: self.ids[at],
                         at,
-                        origin: x,
-                        grab: x - slot_x(at, tab),
+                        origin: x + scroll,
+                        grab: x + scroll - slot_x(at, tab),
                         cursor: x,
                         moved: false,
                     });
+                    state.shown = None;
                     if let Some(select) = &self.select {
                         shell.publish(select(at));
                     }
@@ -597,35 +787,66 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                if let Some(press) = &mut state.press {
+                if let Some(mut press) = state.press {
                     press.cursor = position.x - bounds.x;
-                    press.moved |= (press.cursor - press.origin).abs() >= SLOP;
+                    press.moved |= (press.cursor + scroll - press.origin).abs() >= SLOP;
                     if press.moved {
-                        let target = slot_at(press.left(tab, count), tab, count);
-                        if target != press.at
-                            && let Some(reorder) = &self.reorder
-                        {
-                            shell.publish(reorder(press.at, target));
-                            press.at = target;
-                        }
+                        self.carry(&mut press, tab, scroll, shell);
                         shell.request_redraw();
                     }
+                    state.press = Some(press);
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left) | mouse::Event::CursorLeft)
                 if state.press.take().is_some_and(|press| press.moved) =>
             {
+                state.carried = None;
                 shell.request_redraw();
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { delta })
+                if limit > 0.0 && !shell.is_event_captured() && cursor.is_over(bounds) =>
+            {
+                let (by, glide) = match *delta {
+                    mouse::ScrollDelta::Lines { x, y } => (-(if x.abs() > y.abs() { x } else { y }) * NOTCH, true),
+                    mouse::ScrollDelta::Pixels { x, y } => (-(if x.abs() > y.abs() { x } else { y }), false),
+                };
+                if state.scroll_to(state.aim() + by, limit, glide) {
+                    shell.request_redraw();
+                }
+                shell.capture_event();
+            }
+            Event::Window(window::Event::RedrawRequested(now)) => {
+                let pull = state.lifted().filter(|_| limit > 0.0).map_or(0.0, |press| {
+                    if press.cursor < EDGE {
+                        press.cursor - EDGE
+                    } else if press.cursor > bounds.width - EDGE {
+                        press.cursor - (bounds.width - EDGE)
+                    } else {
+                        0.0
+                    }
+                });
+                if pull == 0.0 {
+                    state.carried = None;
+                } else if let Some(mut press) = state.lifted() {
+                    let elapsed = state.carried.map_or(0.0, |last| now.duration_since(last).as_secs_f32().min(0.05));
+                    state.carried = Some(*now);
+                    state.scroll_to(state.aim() + (pull / EDGE).clamp(-1.0, 1.0) * CARRY * elapsed, limit, false);
+                    self.carry(&mut press, tab, state.scrolled(), shell);
+                    state.press = Some(press);
+                    shell.request_redraw();
+                }
             }
             _ => {}
         }
         let started = state.settle(&self.ids, &Self::slots(layout), bounds.width, tab);
         let selecting = state.track(self.active);
+        let active = self.active.and_then(|id| self.ids.iter().position(|known| *known == id).map(|at| (id, at)));
+        let revealing = state.lifted().is_none() && state.reveal(active, tab, bounds.width, limit);
         let redraw = matches!(event, Event::Window(window::Event::RedrawRequested(_)));
         if state.tab.is_some_and(|tab| tab.animating(Speed::SLIDE)) && redraw {
             shell.invalidate_layout();
         }
-        if started || selecting || (state.moving() && redraw) {
+        if started || selecting || revealing || (state.moving() && redraw) {
             shell.request_redraw();
         }
     }
@@ -635,41 +856,34 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
         cursor: mouse::Cursor, viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State>();
-        let origin = layout.bounds().x;
-        let lifted = state.lifted().map(|press| press.id);
-        let mut top = None;
-        for ghost in &state.ghosts {
-            self.ghost(renderer, ghost, layout.bounds().position());
+        let bounds = layout.bounds();
+        let scroll = state.scrolled();
+        let limit = overflow(bounds.width, self.ids.len(), self.tab(layout));
+        if limit <= 0.0 && scroll <= 0.0 {
+            self.paint_tabs(tree, renderer, theme, style, layout, cursor, viewport, *viewport);
+            return;
         }
-        for ((((face, tree), layout), id), look) in
-            self.faces.iter().zip(&tree.children).zip(layout.children()).zip(&self.ids).zip(&self.looks)
-        {
-            let offset = state.offset(*id, layout.bounds().x - origin);
-            if lifted == Some(*id) {
-                top = Some((face, tree, layout, offset, look.fill));
-                continue;
-            }
-            let lit = state.selected.get(id).map_or(0.0, |lit| lit.value(Speed::COLOR));
-            renderer.with_translation(Vector::new(offset, 0.0), |renderer| {
-                self.pill(renderer, layout.bounds(), look.fill, lit, Level::El1);
-                face.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
-            });
-        }
-        let Some((face, tree, layout, offset, fill)) = top else { return };
-        renderer.with_layer(*viewport, |renderer| {
-            renderer.with_translation(Vector::new(offset, 0.0), |renderer| {
-                self.pill(renderer, layout.bounds(), fill, 1.0, Level::El2);
-                face.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
+        let inner = within(cursor, bounds, scroll, true);
+        let clip = Rectangle { x: bounds.x + scroll, ..bounds };
+        renderer.with_layer(bounds, |renderer| {
+            renderer.with_translation(Vector::new(-scroll, 0.0), |renderer| {
+                self.paint_tabs(tree, renderer, theme, style, layout, inner, &clip, clip);
             });
         });
+        renderer.with_layer(bounds, |renderer| self.fades(renderer, bounds, scroll, limit));
     }
 
     fn mouse_interaction(
         &self, tree: &Tree, layout: Layout<'_>, cursor: mouse::Cursor, viewport: &Rectangle, renderer: &Renderer,
     ) -> mouse::Interaction {
-        if tree.state.downcast_ref::<State>().lifted().is_some() {
+        let state = tree.state.downcast_ref::<State>();
+        if state.lifted().is_some() {
             return mouse::Interaction::Grabbing;
         }
+        let bounds = layout.bounds();
+        let scroll = state.scrolled();
+        let loose = scroll > 0.0 || overflow(bounds.width, self.ids.len(), self.tab(layout)) > 0.0;
+        let cursor = within(cursor, bounds, scroll, loose);
         self.faces
             .iter()
             .zip(&tree.children)
@@ -683,6 +897,8 @@ impl<M> Widget<M, Theme, Renderer> for Strip<'_, M> {
         &'b mut self, tree: &'b mut Tree, layout: Layout<'b>, renderer: &Renderer, viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, M, Theme, Renderer>> {
+        let scroll = tree.state.downcast_ref::<State>().scrolled();
+        let translation = translation - Vector::new(scroll, 0.0);
         overlay::from_children(&mut self.faces, tree, layout, renderer, viewport, translation)
     }
 }
@@ -695,12 +911,16 @@ mod tests {
     enum Sent {
         Select(usize),
         Reorder(usize, usize),
+        Close(usize),
+        Menu(usize),
         Hover,
     }
 
     struct Bench {
         paint: Paint,
         order: Vec<u64>,
+        active: usize,
+        closable: bool,
         tree: Tree,
     }
 
@@ -709,23 +929,27 @@ mod tests {
 
         fn new(order: Vec<u64>) -> Self {
             let paint = Paint::new(glide_theme::Appearance::Dark, glide_theme::Accent::Blue);
-            let tree = Tree::new(Self::strip(&paint, &order));
-            Self { paint, order, tree }
+            let mut bench = Self { paint, order, active: 0, closable: false, tree: Tree::empty() };
+            bench.tree = Tree::new(bench.strip());
+            bench
         }
 
-        fn strip(paint: &Paint, order: &[u64]) -> Element<'static, Sent> {
-            let tabs = order.iter().map(|id| Tab::new(*id, format!("tab {id}"))).collect();
-            tab_strip(paint, tabs, 0)
+        fn strip(&self) -> Element<'static, Sent> {
+            let tabs = self.order.iter().map(|id| Tab::new(*id, format!("tab {id}"))).collect();
+            let mut strip = tab_strip(&self.paint, tabs, self.active)
                 .on_select(Sent::Select)
                 .on_reorder(Sent::Reorder)
                 .hovered(None, |_| Sent::Hover)
-                .bare()
-                .into()
+                .bare();
+            if self.closable {
+                strip = strip.on_close(Sent::Close, "close").on_menu(Sent::Menu);
+            }
+            strip.into()
         }
 
         fn send(&mut self, event: &Event, x: f32) -> Vec<Sent> {
             let renderer = Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
-            let mut element = Self::strip(&self.paint, &self.order);
+            let mut element = self.strip();
             self.tree.diff(&element);
             let limits = layout::Limits::new(Size::ZERO, Self::SIZE);
             let node = element.as_widget_mut().layout(&mut self.tree, &renderer, &limits);
@@ -754,7 +978,7 @@ mod tests {
         fn draw(&mut self, x: f32) {
             let mut renderer =
                 Renderer::Secondary(iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(14.0)));
-            let mut element = Self::strip(&self.paint, &self.order);
+            let mut element = self.strip();
             self.tree.diff(&element);
             let limits = layout::Limits::new(Size::ZERO, Self::SIZE);
             let node = element.as_widget_mut().layout(&mut self.tree, &renderer, &limits);
@@ -830,10 +1054,83 @@ mod tests {
     #[test]
     fn a_dragged_tab_follows_the_pointer_but_stays_inside_the_strip() {
         let tab = 100.0;
-        assert!((press(1, tab, 300.0).left(tab, 4) - 290.0).abs() < 0.01);
-        assert_eq!(press(0, tab, -400.0).left(tab, 4), PAD);
-        assert_eq!(press(0, tab, 9000.0).left(tab, 4), slot_x(3, tab));
-        assert_eq!(press(0, tab, 300.0).left(tab, 1), PAD);
+        assert!((press(1, tab, 300.0).left(tab, 4, 0.0) - 290.0).abs() < 0.01);
+        assert_eq!(press(0, tab, -400.0).left(tab, 4, 0.0), PAD);
+        assert_eq!(press(0, tab, 9000.0).left(tab, 4, 0.0), slot_x(3, tab));
+        assert_eq!(press(0, tab, 300.0).left(tab, 1, 0.0), PAD);
+        assert!((press(1, tab, 300.0).left(tab, 9, 250.0) - 540.0).abs() < 0.01, "a scrolled strip adds its offset");
+    }
+
+    #[test]
+    fn tabs_stop_shrinking_at_the_narrowest_and_the_strip_scrolls_instead() {
+        assert!((tab_size(600.0, 3, f32::INFINITY, NARROWEST) - tab_width(600.0, 3, f32::INFINITY)).abs() < 0.01);
+        assert_eq!(tab_size(600.0, 40, f32::INFINITY, NARROWEST), NARROWEST);
+        assert_eq!(tab_size(600.0, 40, 80.0, NARROWEST), 80.0, "the widest still wins over the narrowest");
+        assert_eq!(overflow(600.0, 3, 190.0), 0.0);
+        assert!((overflow(600.0, 40, NARROWEST) - (run(40, NARROWEST) - 600.0)).abs() < 0.01);
+        assert!(tabs_fit(600.0, 4) && !tabs_fit(600.0, 5));
+        assert_eq!(run(0, NARROWEST), 0.0);
+    }
+
+    fn redraw() -> Event {
+        Event::Window(window::Event::RedrawRequested(std::time::Instant::now()))
+    }
+
+    #[test]
+    fn a_crowded_strip_opens_on_the_active_tab_and_the_wheel_scrolls_it_within_its_run() {
+        let mut bench = Bench::new((1..=40).collect());
+        bench.active = 30;
+        bench.send(&redraw(), 300.0);
+        let limit = overflow(Bench::SIZE.width, 40, NARROWEST);
+        let scroll = bench.state().scrolled();
+        let left = slot_x(30, NARROWEST);
+        assert!(scroll <= left && left + NARROWEST <= scroll + Bench::SIZE.width, "tab 30 is in view at {scroll}");
+        let wheel =
+            |y: f32| Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Pixels { x: 0.0, y } });
+        bench.send(&wheel(-100_000.0), 300.0);
+        assert!((bench.state().scrolled() - limit).abs() < 0.01, "the wheel stops at the last tab");
+        bench.send(&wheel(100_000.0), 300.0);
+        assert_eq!(bench.state().scrolled(), 0.0, "and at the first");
+        bench.send(&wheel(-150.0), 300.0);
+        assert!((bench.state().scrolled() - 150.0).abs() < 0.01);
+        let pressed = bench.send(&Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)), 20.0);
+        assert_eq!(pressed, vec![Sent::Select(1)], "a press lands on the tab that is drawn under it");
+        bench.send(&Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)), 20.0);
+        bench.draw(20.0);
+        bench.active = 0;
+        bench.send(&redraw(), 300.0);
+        assert_eq!(bench.state().aim(), 0.0, "selecting a hidden tab brings it into view");
+        bench.active = 30;
+        bench.send(&redraw(), 300.0);
+        bench.order.drain(..10);
+        bench.active = 20;
+        bench.send(&redraw(), 300.0);
+        let (aim, left) = (bench.state().aim(), slot_x(20, NARROWEST));
+        assert!(aim <= left && left + NARROWEST <= aim + Bench::SIZE.width, "tabs closed before it: {aim}");
+    }
+
+    #[test]
+    fn a_strip_that_fits_ignores_the_wheel() {
+        let mut bench = Bench::new(vec![1, 2, 3]);
+        let wheel = Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Lines { x: 0.0, y: -3.0 } });
+        bench.send(&wheel, 300.0);
+        assert_eq!(bench.state().scrolled(), 0.0);
+    }
+
+    #[test]
+    fn the_close_button_of_a_crowded_strip_closes_its_tab_without_selecting_it() {
+        let mut bench = Bench::new((1..=40).collect());
+        bench.closable = true;
+        bench.active = 2;
+        bench.send(&redraw(), 300.0);
+        let on_close = slot_x(2, NARROWEST) - bench.state().scrolled() + SP1 + CLOSE / 2.0;
+        bench.moved(on_close);
+        let pressed = bench.send(&Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)), on_close);
+        assert!(pressed.is_empty(), "the button takes the press: {pressed:?}");
+        let released = bench.send(&Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)), on_close);
+        assert_eq!(released, vec![Sent::Close(2)]);
+        let menu = bench.send(&Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)), on_close + 40.0);
+        assert_eq!(menu, vec![Sent::Menu(2)]);
     }
 
     #[test]
