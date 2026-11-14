@@ -6,7 +6,7 @@
 #   --prefix DIR   install prefix (default /usr/local)
 #   --destdir DIR  stage into DIR instead of / (for distribution packages)
 #   --from DIR     directory holding the glide, glidectl, glide-settings,
-#                  glide-files, glide-terminal, glide-text, glide-passwords, glide-photos, glide-folio, glide-clips, glide-catalog, glide-portal and glide-keychain binaries (default: bin/ of a
+#                  glide-files, glide-terminal, glide-text, glide-passwords, glide-photos, glide-folio, glide-clips, glide-catalog, glide-portal, glide-keychain and facekey binaries (default: bin/ of a
 #                  release tarball, else target/release of the source tree)
 #   --dm           install and configure glide-dm (via greetd) as system display manager
 #   --pam          add pam_glide_keychain to /etc/pam.d/greetd and /etc/pam.d/passwd,
@@ -57,6 +57,9 @@ INTERFACEDIR=/usr/share/dbus-1/interfaces
 SEARCHDIR=/usr/share/gnome-shell/search-providers
 AUTOSTARTDIR=/etc/xdg/autostart
 PAMDIR=/etc/pam.d
+POLKITDIR=/usr/share/polkit-1/actions
+FACEDIR=/usr/share/glide/face
+FACE_MODELS="face_detection_yunet_2023mar.onnx ghostfacenet_v1_w1.3_s1_ms1mv3.onnx MiniFASNetV2.onnx 2d106det.onnx"
 PAM_MODULE=pam_glide_keychain.so
 PAM_DIRS="/usr/lib/security /usr/lib64/security /lib/security /lib64/security"
 for triplet in x86_64-linux-gnu aarch64-linux-gnu arm-linux-gnueabihf riscv64-linux-gnu powerpc64le-linux-gnu \
@@ -103,8 +106,12 @@ else
     UNITDIR="$PREFIX/lib/systemd/user"
 fi
 
-BINARIES="glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed"
-FILES="$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-photos $BINDIR/glide-folio $BINDIR/glide-clips $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-phone $BINDIR/glide-session $BINDIR/glide-lock
+BINARIES="glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed facekey"
+FACE_FILES=""
+for model in $FACE_MODELS; do
+    FACE_FILES="$FACE_FILES $FACEDIR/$model"
+done
+FILES="$BINDIR/facekey $POLKITDIR/org.glide.facekey.policy$FACE_FILES $BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-photos $BINDIR/glide-folio $BINDIR/glide-clips $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-phone $BINDIR/glide-session $BINDIR/glide-lock
 $BINDIR/glide-welcome $BINDIR/glide-xembed $APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-passwords.desktop $APPDIR/glide-photos.desktop $APPDIR/glide-folio.desktop $APPDIR/glide-clips.desktop $APPDIR/glide-catalog.desktop $APPDIR/glide-phone.desktop $APPDIR/glide-welcome.desktop $AUTOSTARTDIR/glide-phone.desktop $ICONDIR/glide-folio.svg $ICONDIR/glide-phone.svg $ICONDIR/glide-welcome.svg $ICONDIR/org.kde.kdeconnect.svg $SOUNDDIR/terminal-bell.mp3 $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
 $PORTALDIR/portals/glide.portal $DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service
 $DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service $DBUSDIR/org.glide.Phone.service
@@ -147,6 +154,11 @@ fi
 
 if [ "$UNINSTALL" -eq 1 ]; then
     pam_lines remove
+    if [ -z "$DESTDIR" ] && [ -x "$BINDIR/facekey" ]; then
+        for service in polkit sudo login; do
+            "$BINDIR/facekey" -pam-disable "$service" >/dev/null 2>&1 || true
+        done
+    fi
     for f in $FILES; do
         if [ -e "$DESTDIR$f" ]; then
             rm -f "$DESTDIR$f"
@@ -219,6 +231,17 @@ done
 install -Dm644 "$ROOT/data/glide-phone-autostart.desktop" "$DESTDIR$AUTOSTARTDIR/glide-phone.desktop"
 for name in org.glide.Shell1.xml; do
     install -Dm644 "$ROOT/data/dbus/$name" "$DESTDIR$INTERFACEDIR/$name"
+done
+install -d "$DESTDIR$POLKITDIR"
+sed "s|/usr/local/bin/facekey|$BINDIR/facekey|" "$ROOT/data/polkit/org.glide.facekey.policy" > "$DESTDIR$POLKITDIR/org.glide.facekey.policy"
+chmod 644 "$DESTDIR$POLKITDIR/org.glide.facekey.policy"
+face_missing=""
+for model in $FACE_MODELS; do
+    if [ -f "$ROOT/crates/glide-face/models/$model" ]; then
+        install -Dm644 "$ROOT/crates/glide-face/models/$model" "$DESTDIR$FACEDIR/$model"
+    else
+        face_missing="$face_missing $model"
+    fi
 done
 install -Dm644 "$ROOT/data/pam.d/glide-lock" "$DESTDIR$PAMDIR/glide-lock"
 install -Dm755 "$FROM/libpam_glide_keychain.so" "$DESTDIR$PAM_MODULEDIR/$PAM_MODULE"
@@ -357,6 +380,21 @@ if [ -n "$missing" ]; then
     echo "  xdg-open (xdg-utils)   opening links and files from the shell and the apps"
     echo "  gsettings (glib2, gsettings-desktop-schemas, dconf)   theme, fonts and cursor for GTK apps"
     echo "  pkexec (polkit)   administrator actions in Settings"
+fi
+onnx=0
+for lib in /usr/lib/glide/face/libonnxruntime.so /usr/lib/libonnxruntime.so /usr/lib64/libonnxruntime.so /usr/local/lib/libonnxruntime.so; do
+    [ -e "$lib" ] && onnx=1
+done
+if [ -n "$face_missing" ] || [ "$onnx" -eq 0 ]; then
+    echo
+    echo "FaceKey (face recognition) will report itself as not installed:"
+    if [ -n "$face_missing" ]; then
+        echo "  models not found in crates/glide-face/models:$face_missing"
+        echo "  copy them there and run this script again; they go to $FACEDIR"
+    fi
+    if [ "$onnx" -eq 0 ]; then
+        echo "  libonnxruntime.so (ONNX Runtime 1.20); on Arch: pacman -S onnxruntime-cpu"
+    fi
 fi
 if [ -n "$themes" ]; then
     echo

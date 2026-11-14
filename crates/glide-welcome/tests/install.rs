@@ -33,6 +33,7 @@ fn installer_stages_the_welcome_binary_desktop_entry_and_icon() {
         "glide-keychain",
         "glide-phone",
         "glide-xembed",
+        "facekey",
         "libpam_glide_keychain.so",
     ] {
         std::fs::write(binaries.join(name), b"fixture").expect("create binary fixture");
@@ -62,4 +63,10 @@ fn installer_stages_the_welcome_binary_desktop_entry_and_icon() {
     assert!(folio_desktop.lines().any(|line| line == "Icon=glide-folio"));
     let folio_icon = destination.join("usr/share/icons/hicolor/scalable/apps/glide-folio.svg");
     assert_eq!(std::fs::read(folio_icon).unwrap(), std::fs::read(root.join("data/glide-folio.svg")).unwrap());
+
+    let policy = destination.join("usr/share/polkit-1/actions/org.glide.facekey.policy");
+    let policy = std::fs::read_to_string(policy).expect("the FaceKey polkit policy is installed");
+    assert!(policy.contains(">/opt/glide-test/bin/facekey<"), "pkexec matches the installed path");
+    assert!(!policy.contains("/usr/local/bin/facekey"));
+    assert!(destination.join("opt/glide-test/bin/facekey").exists());
 }

@@ -30,7 +30,7 @@ STAGE="$REPO/dist/$NAME"
 
 rm -rf "$STAGE"
 install -d "$STAGE/bin" "$STAGE/data" "$STAGE/scripts"
-for bin in glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed; do
+for bin in glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed facekey; do
     install -m755 "$REPO/target/release/$bin" "$STAGE/bin/$bin"
 done
 install -m755 "$REPO/target/release/libpam_glide_keychain.so" "$STAGE/bin/libpam_glide_keychain.so"
@@ -38,6 +38,7 @@ for f in glide-session glide-lock glide.desktop glide.service glide-shutdown.tar
     cp -p "$REPO/data/$f" "$STAGE/data/$f"
 done
 install -Dm644 "$REPO/data/pam.d/glide-lock" "$STAGE/data/pam.d/glide-lock"
+install -Dm644 "$REPO/data/polkit/org.glide.facekey.policy" "$STAGE/data/polkit/org.glide.facekey.policy"
 install -Dm644 "$REPO/data/dbus/org.glide.Shell1.xml" "$STAGE/data/dbus/org.glide.Shell1.xml"
 install -Dm644 "$REPO/data/sounds/terminal-bell.mp3" "$STAGE/data/sounds/terminal-bell.mp3"
 install -m755 "$REPO/scripts/install.sh" "$STAGE/scripts/install.sh"

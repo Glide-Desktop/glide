@@ -156,6 +156,45 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Parsed {
     Parsed::Run(o)
 }
 
+pub fn admitted_under_pkexec(args: &[String], o: &Options) -> Result<(), String> {
+    let first = args.first().map(String::as_str).unwrap_or_default();
+    let mode = first.trim_start_matches('-').split('=').next().unwrap_or_default();
+    let mut allowed = Options::default();
+    let chosen = match mode {
+        "enroll" => {
+            allowed.enroll = true;
+            allowed.stream = o.stream;
+            allowed.camera.clone_from(&o.camera);
+            o.camera.is_empty() || is_video_device(&o.camera)
+        }
+        "delete-profile" => {
+            allowed.delete_profile = true;
+            true
+        }
+        "pam-enable" => {
+            allowed.pam_enable.clone_from(&o.pam_enable);
+            !o.pam_enable.is_empty()
+        }
+        "pam-disable" => {
+            allowed.pam_disable.clone_from(&o.pam_disable);
+            !o.pam_disable.is_empty()
+        }
+        _ => false,
+    };
+    if chosen && allowed == *o {
+        Ok(())
+    } else {
+        Err(format!(
+            "under pkexec the first flag must be -enroll, -delete-profile, -pam-enable or -pam-disable, \
+             with nothing else but -stream and -camera /dev/videoN after -enroll (got {first:?})"
+        ))
+    }
+}
+
+fn is_video_device(path: &str) -> bool {
+    path.strip_prefix("/dev/video").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +220,33 @@ mod tests {
         assert_eq!(p(&["-help"]), Parsed::Help);
         assert!(matches!(p(&["-nope"]), Parsed::Error(_)));
         assert!(matches!(p(&["-image"]), Parsed::Error(_)));
+    }
+
+    fn admitted(args: &[&str]) -> bool {
+        let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+        let Parsed::Run(o) = parse(args.clone()) else { return false };
+        admitted_under_pkexec(&args, &o).is_ok()
+    }
+
+    #[test]
+    fn pkexec_runs_exactly_the_action_polkit_named() {
+        assert!(admitted(&["-enroll", "-stream"]));
+        assert!(admitted(&["-enroll", "-stream", "-camera", "/dev/video2"]));
+        assert!(admitted(&["-delete-profile"]));
+        assert!(admitted(&["-pam-enable", "sudo"]));
+        assert!(admitted(&["-pam-disable", "polkit"]));
+
+        assert!(!admitted(&["-enroll", "-pam-enable", "sudo"]), "a self-auth action must not carry an admin one");
+        assert!(!admitted(&["-enroll", "-delete-profile"]));
+        assert!(!admitted(&["-delete-profile", "-pam-disable", "sudo"]));
+        assert!(!admitted(&["-enroll", "-image", "/etc/shadow", "-out", "/etc/x.png"]));
+        assert!(!admitted(&["-enroll", "-report", "/etc/x"]));
+        assert!(!admitted(&["-enroll", "-user", "root"]));
+        assert!(!admitted(&["-enroll", "-camera", "/dev/sda"]));
+        assert!(!admitted(&["-enroll", "-camera", "/dev/video0/../sda"]));
+        assert!(!admitted(&["-stream", "-enroll"]), "polkit matches argv1, so the mode comes first");
+        assert!(!admitted(&["-enroll=false", "-pam-enable", "sudo"]));
+        assert!(!admitted(&["-verify"]));
+        assert!(!admitted(&[]));
     }
 }

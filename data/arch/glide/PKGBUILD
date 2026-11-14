@@ -44,6 +44,7 @@ depends=(
 makedepends=(cargo git pkgconf)
 optdepends=(
     'rtkit: realtime priority for PipeWire; without it sound crackles under load'
+    'onnxruntime-cpu: FaceKey face recognition (the models are not packaged and go to /usr/share/glide/face)'
     'brightnessctl: brightness and keyboard backlight keys'
     'networkmanager: Wi-Fi, VPN, hotspot and screen mirroring in quick settings and Settings'
     'networkmanager-openvpn: importing OpenVPN connections in Settings'
