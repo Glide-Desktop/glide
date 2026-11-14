@@ -613,6 +613,11 @@ fn draw_footer(c: &mut Canvas<'_>, ink: &Ink<'_>, view: &View, layout: &Layout) 
     icon(c, SHIELD_CHECK, 2.2, 13, local_rect(shield.loc.x + 8, shield.loc.y, 13, SHIELD_H), theme.ok);
     let band = (shield.loc.x + 8 + 13 + 6, shield.loc.x + shield.size.w, shield.loc.y, shield.loc.y + SHIELD_H);
     c.text(ink.painter, band, TextAlign::Left, t(Key::PkProtected), theme.ok, &SHIELD);
+    if view.face.is_some() {
+        let band = (shield.loc.x + shield.size.w + 12, toggle.loc.x - 8, shield.loc.y, shield.loc.y + SHIELD_H);
+        let style = TextStyle { size_px: 12.0, ..HINT };
+        c.text(ink.painter, band, TextAlign::Left, t(Key::PkFaceNoPhotos), theme.faint, &style);
+    }
 
     let chevron = if view.details { CHEVRON_DOWN } else { CHEVRON_RIGHT };
     icon(c, chevron, 2.4, 12, local_rect(toggle.loc.x + 6, toggle.loc.y, 12, DETAILS_H), theme.muted);

@@ -64,6 +64,7 @@ glide_app::catalogue! {
     PkFaceHint => "Look at the camera or type your password", "Дивіться в камеру або введіть пароль";
     PkFaceAllowed => "Allowed by your face", "Дозволено обличчям";
     PkFaceMissed => "Not recognised, type your password", "Не впізнано, введіть пароль";
+    PkFaceNoPhotos => "Camera pictures are not kept", "Фото з камери не зберігаються";
     PkFaceRetry => "or click Face to try again", "або натисніть «Обличчя», щоб спробувати ще раз";
     PkAllowKey => "allow", "дозволити";
     PkCancelKey => "cancel", "скасувати";
