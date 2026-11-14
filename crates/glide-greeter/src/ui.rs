@@ -83,6 +83,13 @@ const FAILLOCK_CONF: &str = "/etc/security/faillock.conf";
 const MAX_CONVERSATION_NOTICES: usize = 8;
 const CARET_LEAD: i32 = 3;
 const SCENE_TRAVEL: f64 = 24.0;
+const FACE_SIDE: i32 = 44;
+const FACE_GLYPH: i32 = 36;
+const FACE_GAP: i32 = 12;
+const FACE_BREATH: Duration = Duration::from_millis(1200);
+const FACE_BREATH_SCALE: f64 = 0.86;
+const FACE_SHAKE: Duration = Duration::from_millis(420);
+const FACE_SHAKE_KEYS: [(f64, f64); 6] = [(0.0, 0.0), (0.2, -7.0), (0.4, 6.0), (0.6, -4.0), (0.8, 3.0), (1.0, 0.0)];
 const MENU_TRAVEL: f64 = 6.0;
 
 const fn style(size_px: f32, line_height_px: f32, weight: u16, tracking_em: f32) -> TextStyle {
@@ -147,6 +154,11 @@ mod icon {
     pub const PAUSE: &str = r#"<path d="M5 3h2v10H5zM9 3h2v10H9z"/>"#;
     pub const PREVIOUS: &str = r#"<path d="M5 3h1.5v10H5zM12 3v10l-6-5z"/>"#;
     pub const NEXT: &str = r#"<path d="M11 3h-1.5v10H11zM4 3v10l6-5z"/>"#;
+    pub const FACE_CORNERS: &str =
+        r#"<path d="M4 9V6a2 2 0 0 1 2-2h3M15 4h3a2 2 0 0 1 2 2v3M20 15v3a2 2 0 0 1-2 2h-3M9 20H6a2 2 0 0 1-2-2v-3"/>"#;
+    pub const FACE_SMILE: &str = r#"<path d="M9.5 9.5v1.5M14.5 9.5v1.5M9 14.5a4 4 0 0 0 6 0"/>"#;
+    pub const FACE_FROWN: &str = r#"<path d="M9.5 9.5v1.5M14.5 9.5v1.5M9 16a4 4 0 0 1 6 0"/>"#;
+    pub const FACE_CHECK: &str = r#"<path d="M8 12.5l3 3 5-6"/>"#;
 }
 
 fn battery_svg(pct: u8) -> String {
@@ -164,6 +176,26 @@ fn spinner_svg(step: u32) -> String {
             r#"<circle cx="12" cy="12" r="9" stroke-opacity="0.3"/><path d="M12 3a9 9 0 0 1 9 9" transform="rotate({degrees} 12 12)"/>"#
         ),
     )
+}
+
+fn breathed(frame: Rect, scale: f64) -> (Rect, Option<smithay::utils::Size<i32, Logical>>) {
+    if scale >= 1.0 {
+        return (frame, None);
+    }
+    let w = round_i32(f64::from(frame.w) * scale);
+    let h = round_i32(f64::from(frame.h) * scale);
+    let at = Rect::new(frame.x + (frame.w - w) / 2, frame.y + (frame.h - h) / 2, w, h);
+    (at, Some((w, h).into()))
+}
+
+const fn face_index(face: Option<FaceState>) -> u64 {
+    match face {
+        None => 0,
+        Some(FaceState::Looking) => 1,
+        Some(FaceState::Recognised) => 2,
+        Some(FaceState::Rejected) => 3,
+        Some(FaceState::CameraBusy) => 4,
+    }
 }
 
 fn round_i32(value: f64) -> i32 {
@@ -298,6 +330,15 @@ pub enum GreeterHit {
     Menu,
     Status,
     Media(MediaButton),
+    Face,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceState {
+    Looking,
+    Recognised,
+    Rejected,
+    CameraBusy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -353,12 +394,14 @@ enum Part {
     Media,
     Notices,
     Toast,
+    FaceCorners,
+    FaceMark,
 }
 
 impl Part {
     fn owning(hit: GreeterHit) -> Option<Self> {
         Some(match hit {
-            GreeterHit::None => return None,
+            GreeterHit::None | GreeterHit::Face => return None,
             GreeterHit::UserAvatar => Self::Avatar,
             GreeterHit::User(_) => Self::Users,
             GreeterHit::PasswordField | GreeterHit::Submit => Self::Field,
@@ -399,6 +442,9 @@ struct Palette {
     wrong_line: Color,
     wrong_text: Color,
     caps_text: Color,
+    face_ok: Color,
+    face_ok_text: Color,
+    face_bad: Color,
     revision: u64,
 }
 
@@ -434,6 +480,9 @@ impl Palette {
             wrong_line: Color::from_rgb8(255, 140, 128, 0.7),
             wrong_text: Color::from_rgb8(255, 154, 144, 1.0),
             caps_text: Color::from_rgb8(240, 199, 106, 1.0),
+            face_ok: Color::from_rgb8(98, 214, 155, 1.0),
+            face_ok_text: Color::from_rgb8(155, 229, 191, 1.0),
+            face_bad: Color::from_rgb8(240, 121, 111, 1.0),
             revision: 0,
         };
         palette.revision =
@@ -493,6 +542,7 @@ pub struct Layout {
     pub field_frame: Rect,
     pub submit: Rect,
     pub hint: Rect,
+    pub face: Rect,
     pub users: Vec<(usize, Rect)>,
     pub users_frame: Rect,
     pub menu: Rect,
@@ -548,6 +598,9 @@ pub struct GreeterUi {
     status: GreeterStatus,
     media: Option<LockMedia>,
     notices: LockNotices,
+    face: Option<FaceState>,
+    face_slot: bool,
+    face_at: Instant,
     time: String,
     date: String,
     leaving: Option<Instant>,
@@ -675,6 +728,9 @@ impl GreeterUi {
             status: GreeterStatus::default(),
             media: None,
             notices: LockNotices::default(),
+            face: None,
+            face_slot: false,
+            face_at: clock::now(),
             time: String::new(),
             date: String::new(),
             leaving: None,
@@ -998,6 +1054,89 @@ impl GreeterUi {
         if self.notices != notices {
             self.notices = notices;
             self.dirty = true;
+        }
+    }
+
+    pub fn reserve_face(&mut self, on: bool) {
+        if self.is_lock() && self.face_slot != on {
+            self.face_slot = on;
+            self.dirty = true;
+        }
+    }
+
+    pub fn set_face(&mut self, state: Option<FaceState>) {
+        if !self.is_lock() || self.face == state {
+            return;
+        }
+        self.face = state;
+        self.face_at = clock::now();
+        self.dirty = true;
+    }
+
+    #[must_use]
+    pub const fn face(&self) -> Option<FaceState> {
+        self.face
+    }
+
+    #[must_use]
+    pub fn face_allowed(&self) -> bool {
+        self.is_lock() && self.leaving.is_none() && self.locked_out().is_none() && self.auth != AuthState::Success
+    }
+
+    fn face_shown(&self) -> bool {
+        self.is_lock()
+            && match self.face {
+                Some(FaceState::CameraBusy) => false,
+                Some(_) => true,
+                None => self.face_slot,
+            }
+    }
+
+    fn face_clickable(&self) -> bool {
+        self.face_shown() && matches!(self.face, None | Some(FaceState::Rejected)) && self.face_allowed()
+    }
+
+    fn face_breath(&self) -> f64 {
+        if self.face != Some(FaceState::Looking) || motion::scale() <= 0.0 {
+            return 1.0;
+        }
+        let period = FACE_BREATH.as_secs_f64() / f64::from(motion::scale());
+        let phase = (clock::since(self.face_at).as_secs_f64() / period).fract();
+        let wave = 0.5 - 0.5 * (phase * std::f64::consts::TAU).cos();
+        1.0 - (1.0 - FACE_BREATH_SCALE) * wave
+    }
+
+    fn face_shake(&self) -> f64 {
+        if self.face != Some(FaceState::Rejected) {
+            return 0.0;
+        }
+        let duration = FACE_SHAKE.mul_f32(motion::scale());
+        let elapsed = clock::since(self.face_at);
+        if duration.is_zero() || elapsed >= duration {
+            return 0.0;
+        }
+        let progress = elapsed.as_secs_f64() / duration.as_secs_f64();
+        let keys = &FACE_SHAKE_KEYS;
+        let segment = keys.windows(2).find(|pair| progress <= pair[1].0).unwrap_or(&keys[4..6]);
+        let (from, to) = (segment[0], segment[1]);
+        let local = ease_out((progress - from.0) / (to.0 - from.0));
+        from.1 + (to.1 - from.1) * local
+    }
+
+    fn face_colour(&self) -> Color {
+        match self.face {
+            Some(FaceState::Recognised) => self.palette.face_ok,
+            Some(FaceState::Rejected) => self.palette.face_bad,
+            Some(FaceState::Looking | FaceState::CameraBusy) => self.palette.white,
+            None => self.palette.white.with_alpha(0.62),
+        }
+    }
+
+    fn face_inner(&self) -> &'static str {
+        match self.face {
+            Some(FaceState::Recognised) => icon::FACE_CHECK,
+            Some(FaceState::Rejected) => icon::FACE_FROWN,
+            _ => icon::FACE_SMILE,
         }
     }
 
@@ -1325,6 +1464,8 @@ impl GreeterUi {
             || self.busy()
             || self.leaving.is_some()
             || self.arrive_progress() < 1.0
+            || (self.face_shown() && self.face == Some(FaceState::Looking) && motion::scale() > 0.0)
+            || self.face_shake() != 0.0
     }
 
     pub fn tick(&mut self) -> bool {
@@ -1403,6 +1544,9 @@ impl GreeterUi {
         if layout.submit.contains(x, y) {
             return GreeterHit::Submit;
         }
+        if self.face_clickable() && layout.face.contains(x, y) {
+            return GreeterHit::Face;
+        }
         if layout.field.contains(x, y) {
             return GreeterHit::PasswordField;
         }
@@ -1473,7 +1617,8 @@ impl GreeterUi {
         let (avatar, name, gap_name, gap_field) =
             if self.is_lock() { (AVATAR_LOCK, NAME_LOCK, 12, 18) } else { (AVATAR_LOGIN, NAME_LOGIN, 16, 22) };
         let users = if others { 22 + CHIP_H } else { 0 };
-        avatar + gap_name + name + gap_field + FIELD_H + 12 + HINT_H + users
+        let face = if self.face_shown() { FACE_SIDE + FACE_GAP } else { 0 };
+        avatar + gap_name + name + gap_field + FIELD_H + 12 + face + HINT_H + users
     }
 
     fn other_users(&self) -> Vec<usize> {
@@ -1528,7 +1673,12 @@ impl GreeterUi {
         layout.field = Rect::new(centre - FIELD_W / 2, layout.name.bottom() + gap_field, FIELD_W, FIELD_H);
         layout.field_frame = Rect::new(centre - BLOCK_W / 2, layout.field.y - 8, BLOCK_W, FIELD_H + 16);
         layout.submit = Rect::new(layout.field.right() - 5 - GO, layout.field.y + (FIELD_H - GO) / 2, GO, GO);
-        layout.hint = Rect::new(centre - BLOCK_W / 2, layout.field.bottom() + 12, BLOCK_W, HINT_H);
+        let mut hint_y = layout.field.bottom() + 12;
+        if self.face_shown() {
+            layout.face = Rect::new(centre - FACE_SIDE / 2, hint_y, FACE_SIDE, FACE_SIDE);
+            hint_y = layout.face.bottom() + FACE_GAP;
+        }
+        layout.hint = Rect::new(centre - BLOCK_W / 2, hint_y, BLOCK_W, HINT_H);
         if self.auth == AuthState::Success {
             let total = BUSY_SPINNER + BUSY_GAP + text_w(painter, &self.busy_label(), &BUSY_STYLE);
             let field = layout.field;
@@ -1595,6 +1745,9 @@ impl GreeterUi {
         if self.caps_lock && self.editable() {
             return (t(Key::CapsLockOn).to_string(), Tone::Info);
         }
+        if let Some((key, _)) = self.face_hint() {
+            return (t(key).to_string(), Tone::Info);
+        }
         let key = match (self.auth, self.is_lock()) {
             (AuthState::Authenticating, _) => Key::GreeterChecking,
             (AuthState::Success, _) => return (String::new(), Tone::Info),
@@ -1602,6 +1755,19 @@ impl GreeterUi {
             (AuthState::Idle | AuthState::Error, true) => Key::LockHint,
         };
         (t(key).to_string(), Tone::Info)
+    }
+
+    fn face_hint(&self) -> Option<(Key, Color)> {
+        if !self.is_lock() || self.auth == AuthState::Authenticating {
+            return None;
+        }
+        let white = self.palette.white;
+        Some(match self.face? {
+            FaceState::Looking => (Key::LockFaceLooking, white.with_alpha(0.75)),
+            FaceState::Recognised => (Key::LockFaceRecognised, self.palette.face_ok_text),
+            FaceState::Rejected => (Key::LockFaceRejected, white.with_alpha(0.85)),
+            FaceState::CameraBusy => (Key::LockFaceBusy, white.with_alpha(0.7)),
+        })
     }
 
     fn busy_label(&self) -> String {
@@ -1643,8 +1809,10 @@ impl GreeterUi {
             }
             Part::Hint => {
                 let (text, tone) = self.hint();
-                base.str(&text).bool(tone == Tone::Error).bool(self.caps_lock)
+                base.str(&text).bool(tone == Tone::Error).bool(self.caps_lock).u64(face_index(self.face))
             }
+            Part::FaceCorners => base.color(self.face_colour()),
+            Part::FaceMark => base.color(self.face_colour()).str(self.face_inner()),
             Part::Users => {
                 let mut key = hovered;
                 for (index, _) in self.layout.as_ref().map(|l| l.users.as_slice()).unwrap_or_default() {
@@ -1699,6 +1867,7 @@ impl GreeterUi {
             Part::Media => layout.media.inflate(24),
             Part::Notices => layout.notices.inflate(24),
             Part::Toast => layout.toast.inflate(24),
+            Part::FaceCorners | Part::FaceMark => layout.face,
         }
     }
 
@@ -1737,7 +1906,9 @@ impl GreeterUi {
             Part::Field => self.draw_field(layout, frame, canvas),
             Part::Hint => {
                 let (text, tone) = self.hint();
+                let face = self.face_hint().filter(|(key, _)| t(*key) == text).map(|(_, colour)| colour);
                 let colour = match tone {
+                    Tone::Info if face.is_some() => face.unwrap_or(p.muted),
                     Tone::Error => p.wrong_text,
                     Tone::Info if self.caps_lock && self.editable() && self.message.is_none() => p.caps_text,
                     Tone::Info if self.auth == AuthState::Authenticating => p.text.with_alpha(0.75),
@@ -1750,6 +1921,11 @@ impl GreeterUi {
             Part::Media => self.draw_media(layout, frame, canvas),
             Part::Notices => self.draw_notices(layout, frame, canvas),
             Part::Toast => self.draw_toast(layout, frame, canvas),
+            Part::FaceCorners | Part::FaceMark => {
+                let body = if part == Part::FaceCorners { icon::FACE_CORNERS } else { self.face_inner() };
+                let (x, y) = local(layout.face).centre_square(FACE_GLYPH);
+                canvas.icon(&svg(1.7, body), x, y, FACE_GLYPH, self.face_colour());
+            }
         }
     }
 
@@ -2054,6 +2230,11 @@ impl GreeterUi {
         parts.push((Part::Nav, (0.0, up), ui));
         parts.push((Part::Users, (0.0, down), if self.busy() { 0.0 } else { ui }));
         parts.push((Part::Hint, (0.0, down), ui));
+        if self.face_shown() {
+            let shake = self.face_shake();
+            parts.push((Part::FaceMark, (shake, down), ui));
+            parts.push((Part::FaceCorners, (shake, down), ui));
+        }
         parts.push((Part::Field, (self.shake_offset(), down), ui));
         parts.push((Part::Name, (0.0, down), ui));
         parts.push((Part::Avatar, (0.0, down), ui));
@@ -2142,16 +2323,18 @@ impl GreeterUi {
                 let Some(frame) = self.layer(part, &layout, painter, buffer_scale) else {
                     continue;
                 };
+                let (at, size) =
+                    if part == Part::FaceCorners { breathed(frame, self.face_breath()) } else { (frame, None) };
                 let Some(layer) = self.layers.get(&(part, buffer_scale)) else {
                     continue;
                 };
                 if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
-                    placed(frame),
+                    placed(at),
                     &layer.buffer,
                     alpha,
                     None,
-                    None,
+                    size,
                     Kind::Unspecified,
                 ) {
                     out.push(element);
@@ -2971,6 +3154,83 @@ mod tests {
     }
 
     #[test]
+    fn the_face_glyph_sits_between_the_field_and_the_hint_on_the_lock_screen_only() {
+        let painter = Painter::new(14.0, None);
+        let area = Rectangle::from_size((1280, 800).into());
+        let mut login = GreeterUi::new(users(), Vec::new(), Accent::Blue);
+        login.reserve_face(true);
+        login.set_face(Some(FaceState::Looking));
+        assert_eq!(login.face(), None, "the login screen never shows face unlock");
+        assert_eq!(login.compute_layout(&painter, area).face, Rect::default());
+
+        let mut lock = GreeterUi::lock(users()[0].clone(), Accent::Blue);
+        let plain = lock.compute_layout(&painter, area);
+        lock.reserve_face(true);
+        let layout = lock.compute_layout(&painter, area);
+        assert_eq!(layout.face.y, layout.field.bottom() + FACE_GAP);
+        assert_eq!(layout.hint.y, layout.face.bottom() + FACE_GAP);
+        assert!(layout.field.y < plain.field.y, "the block stays centred with the glyph in it");
+        lock.layout = Some(layout.clone());
+        let centre = Point::from((f64::from(layout.face.x + 22), f64::from(layout.face.y + 22)));
+        assert_eq!(lock.hit_test(centre), GreeterHit::Face, "an idle glyph starts a look");
+
+        lock.set_face(Some(FaceState::Looking));
+        assert_eq!(lock.hint().0, t(Key::LockFaceLooking));
+        assert_eq!(lock.hit_test(centre), GreeterHit::None, "no second run while one looks");
+        lock.set_face(Some(FaceState::Rejected));
+        assert_eq!(lock.hit_test(centre), GreeterHit::Face, "clicking the glyph tries again");
+
+        lock.set_face(Some(FaceState::CameraBusy));
+        assert_eq!(lock.compute_layout(&painter, area).face, Rect::default(), "a busy camera hides the glyph");
+        assert_eq!(lock.hint().0, t(Key::LockFaceBusy));
+
+        lock.set_caps_lock(true);
+        assert_eq!(lock.hint().0, t(Key::CapsLockOn), "Caps Lock outranks the face line");
+    }
+
+    #[test]
+    fn the_glyph_breathes_by_scaling_its_corners_not_by_redrawing_them() {
+        let painter = Painter::new(14.0, None);
+        let mut lock = GreeterUi::lock(users()[0].clone(), Accent::Blue);
+        lock.reserve_face(true);
+        lock.set_face(Some(FaceState::Looking));
+        let layout = lock.compute_layout(&painter, Rectangle::from_size((1280, 800).into()));
+        let frame = GreeterUi::frame_of(Part::FaceCorners, &layout);
+        let key = lock.part_key(Part::FaceCorners, frame, 0);
+        lock.face_at = clock::now().checked_sub(FACE_BREATH / 2).expect("a past instant");
+        assert_eq!(lock.part_key(Part::FaceCorners, frame, 0), key);
+        if motion::scale() > 0.0 {
+            let breath = lock.face_breath();
+            assert!(breath < 0.9, "half a breath is drawn smaller, got {breath}");
+            let (at, size) = breathed(frame, breath);
+            assert!(size.is_some_and(|size| size.w < frame.w));
+            assert_eq!(at.x + at.w / 2, frame.x + frame.w / 2, "the corners shrink around the centre");
+        }
+    }
+
+    fn face_cases(lock: impl Fn() -> GreeterUi) -> Vec<(&'static str, GreeterUi)> {
+        [
+            ("lock-face-idle", None),
+            ("lock-face-looking", Some(FaceState::Looking)),
+            ("lock-face-recognised", Some(FaceState::Recognised)),
+            ("lock-face-rejected", Some(FaceState::Rejected)),
+            ("lock-face-busy", Some(FaceState::CameraBusy)),
+        ]
+        .into_iter()
+        .map(|(name, face)| {
+            let mut ui = lock();
+            ui.set_media(None);
+            ui.set_notices(LockNotices::default());
+            ui.time = "15:24".into();
+            ui.date = "СУБОТА, 14 ЛИСТОПАДА".into();
+            ui.reserve_face(true);
+            ui.set_face(face);
+            (name, ui)
+        })
+        .collect()
+    }
+
+    #[test]
     #[ignore = "writes preview PNGs to $GLIDE_GREETER_PREVIEW"]
     fn preview() {
         let Some(dir) = std::env::var_os("GLIDE_GREETER_PREVIEW") else {
@@ -3053,6 +3313,7 @@ mod tests {
         let mut caps = lock();
         caps.set_caps_lock(true);
         cases.push(("lock-caps", caps));
+        cases.extend(face_cases(lock));
         for (name, mut ui) in cases {
             let pixels = compose(&mut ui, &painter, size, 1);
             let image = glide_shell::image::Image::from_bgra(1280, 800, pixels).expect("image");

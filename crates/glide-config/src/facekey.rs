@@ -29,6 +29,17 @@ pub fn binary() -> Option<PathBuf> {
     sibling.or_else(|| SYSTEM_BINARIES.iter().map(PathBuf::from).find(|path| path.is_file()))
 }
 
+pub const PROFILE_ROOT: &str = "/var/lib/glide-face";
+
+#[must_use]
+pub fn enrolled(user: &str) -> bool {
+    if user.is_empty() || user == "." || user == ".." || user.contains(['/', '\0']) {
+        return false;
+    }
+    std::fs::symlink_metadata(std::path::Path::new(PROFILE_ROOT).join(user).join("profile.dat"))
+        .is_ok_and(|meta| meta.file_type().is_file() && meta.len() > 0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Source {

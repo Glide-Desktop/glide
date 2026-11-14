@@ -387,6 +387,7 @@ impl WakeTimer {
 
 #[derive(Default)]
 pub struct SessionServices {
+    pub face_unlock: crate::face_unlock::FaceUnlock,
     pub presenter: Option<((f64, f64), std::time::Instant, smithay::output::Output)>,
     pub wake_timer: WakeTimer,
     pub launcher_catalogue: Option<Arc<crate::launcher::catalogue::Catalogue>>,
@@ -4035,7 +4036,12 @@ impl GlideState {
             self.session.shot_preview = None;
         }
 
+        let face = self.session.face_unlock.config.lock_screen
+            && glide_config::facekey::binary().is_some()
+            && glide_config::facekey::enrolled(&user.username);
+        self.session.face_unlock.begin_lock(std::time::Instant::now());
         let mut ui = crate::greeter::GreeterUi::lock(user, self.shell_palette.1);
+        ui.reserve_face(face);
         ui.set_status(self.lock_status());
         self.greeter = Some(ui);
         self.sync_greeter_layout();
@@ -4058,7 +4064,89 @@ impl GlideState {
         self.queue_redraw();
     }
 
+    pub fn wake_face_unlock(&mut self, trigger: crate::face_unlock::Trigger) {
+        let allowed = self.greeter.as_ref().is_some_and(crate::greeter::GreeterUi::face_allowed);
+        if !allowed
+            || !self.session.face_unlock.config.lock_screen
+            || !self.session.face_unlock.wants_start(std::time::Instant::now(), trigger)
+        {
+            return;
+        }
+        let Some(binary) = glide_config::facekey::binary() else {
+            return;
+        };
+        let Some(sender) = self.face_sender() else {
+            return;
+        };
+        match self.session.face_unlock.start(&binary, move |message| {
+            let _ = sender.send(message);
+        }) {
+            Ok(()) => tracing::info!(?trigger, "face unlock is looking"),
+            Err(err) => tracing::warn!("face unlock could not start {}: {err}", binary.display()),
+        }
+    }
+
+    fn face_sender(&mut self) -> Option<smithay::reexports::calloop::channel::Sender<crate::face_unlock::Message>> {
+        use smithay::reexports::calloop::channel;
+        if self.session.face_unlock.sender.is_none() {
+            let (sender, receiver) = channel::channel::<crate::face_unlock::Message>();
+            let inserted = self.loop_handle.insert_source(receiver, |event, (), state| {
+                if let channel::Event::Msg(message) = event {
+                    state.handle_face_message(&message);
+                }
+            });
+            if let Err(err) = inserted {
+                tracing::error!("failed to watch face unlock: {err}");
+                return None;
+            }
+            self.session.face_unlock.sender = Some(sender);
+        }
+        self.session.face_unlock.sender.clone()
+    }
+
+    fn handle_face_message(&mut self, message: &crate::face_unlock::Message) {
+        use crate::face_unlock::Outcome;
+        match self.session.face_unlock.receive(message) {
+            Outcome::Nothing => return,
+            Outcome::Show(face) => {
+                if let Some(greeter) = self.greeter.as_mut().filter(|greeter| greeter.is_lock()) {
+                    greeter.set_face(face);
+                    if face.is_none() {
+                        greeter.reserve_face(false);
+                    }
+                }
+            }
+            Outcome::Unlock => {
+                let Some(greeter) = self.greeter.as_mut().filter(|greeter| greeter.is_lock() && greeter.face_allowed())
+                else {
+                    tracing::info!("a face pass arrived after the lock screen stopped accepting one");
+                    return;
+                };
+                tracing::info!("screen unlocked by face");
+                greeter.set_face(Some(crate::greeter::FaceState::Recognised));
+                self.unlock_screen();
+            }
+        }
+        self.queue_redraw();
+    }
+
+    pub fn stop_face_unlock(&mut self, screen_off: bool) {
+        if screen_off {
+            self.session.face_unlock.screen_off();
+        } else if self.session.face_unlock.running() {
+            self.session.face_unlock.stop();
+        } else {
+            return;
+        }
+        if let Some(greeter) =
+            self.greeter.as_mut().filter(|greeter| greeter.face() != Some(crate::greeter::FaceState::Recognised))
+        {
+            greeter.set_face(None);
+        }
+    }
+
     pub fn unlock_screen(&mut self) {
+        self.session.face_unlock.end_lock();
         if let Some(greeter) = self.greeter.as_mut().filter(|greeter| greeter.is_lock()) {
             greeter.set_auth_success();
             greeter.leave();
@@ -4413,6 +4501,7 @@ impl GlideState {
                 tracing::info!("screen unlocked");
                 greeter.set_auth_success();
                 greeter.leave();
+                self.session.face_unlock.end_lock();
                 if let Some(password) = password {
                     let password = glide_ipc::keychain::Hidden::new(password.as_str().to_owned());
                     self.keychain(glide_ipc::keychain::Request::LoginPassword { password }, |_, response| {
@@ -4455,6 +4544,7 @@ impl GlideState {
         if !sent {
             greeter.set_auth_error(t(Key::LockUnavailable).to_string(), false);
         }
+        self.stop_face_unlock(false);
         self.queue_redraw();
     }
 
@@ -4500,6 +4590,7 @@ impl GlideState {
     }
 
     fn finish_unlock(&mut self) {
+        self.session.face_unlock.end_lock();
         self.greeter = None;
         self.apply_keyboard_focus();
         self.reconcile_space();

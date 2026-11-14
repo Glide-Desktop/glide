@@ -6,6 +6,7 @@ mod battery_alert;
 mod bluetooth_agent;
 mod dock_glue;
 mod drag_assist;
+mod face_unlock;
 mod handlers;
 mod launcher_entry;
 
@@ -457,7 +458,11 @@ fn init_logind(event_loop: &mut EventLoop<'static, GlideState>, state: &mut Glid
     };
     state.session.logind = Some(handle);
     watch(event_loop, receiver, "the logind channel", |state, event| match event {
-        logind::LoginEvent::Lock | logind::LoginEvent::Sleep => state.lock_screen(),
+        logind::LoginEvent::Lock => state.lock_screen(),
+        logind::LoginEvent::Sleep => {
+            state.stop_face_unlock(true);
+            state.lock_screen();
+        }
         logind::LoginEvent::Unlock => state.unlock_screen(),
         logind::LoginEvent::Wake => state.release_held_keys("woke from sleep"),
     });

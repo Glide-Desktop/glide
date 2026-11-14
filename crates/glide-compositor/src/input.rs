@@ -853,6 +853,11 @@ impl GlideState {
         if waking {
             self.set_outputs_blanked(false);
         }
+        if waking {
+            self.wake_face_unlock(crate::face_unlock::Trigger::Wake);
+        } else if crate::handlers::xdg_activation::user_pressed(&event) {
+            self.wake_face_unlock(crate::face_unlock::Trigger::Press);
+        }
         let swallowed = match &event {
             InputEvent::PointerButton { event, .. } => {
                 let button = Contact::Button(event.button_code());
@@ -2900,6 +2905,7 @@ impl GlideState {
                 };
                 self.run_media_command(command);
             }
+            GreeterHit::Face => self.wake_face_unlock(crate::face_unlock::Trigger::Retry),
             GreeterHit::Menu | GreeterHit::Status => {}
             GreeterHit::PasswordField | GreeterHit::None => {
                 greeter.close_menus();

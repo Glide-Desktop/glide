@@ -462,7 +462,10 @@ glide_app::catalogue! {
     GreeterAskShutDown => "Shut down the computer?", "Вимкнути комп\u{2019}ютер?";
     GreeterConfirmSleep => "Sleep", "Сон";
     LockHint => "Type your password to unlock", "Введіть пароль, щоб розблокувати";
-    CapsLockOn => "Caps Lock is on", "Увімкнено Caps Lock";
+    LockFaceLooking => "Look at the camera or type your password", "Дивіться в камеру або введіть пароль";
+    LockFaceRecognised => "Unlocked", "Відкрито";
+    LockFaceRejected => "Not recognised. Type your password or click the icon to try again", "Не впізнано. Введіть пароль або натисніть на значок, щоб спробувати ще раз";
+    LockFaceBusy => "The camera is busy with another app, type your password", "Камера зайнята іншою програмою, введіть пароль";    CapsLockOn => "Caps Lock is on", "Увімкнено Caps Lock";
     CapsLockOff => "Caps Lock is off", "Вимкнено Caps Lock";
     RemovableSummary => "{device} connected", "Під\u{2019}єднано {device}";
     RemovableDrive => "A drive", "Накопичувач";

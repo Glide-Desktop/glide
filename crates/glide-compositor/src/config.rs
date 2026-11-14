@@ -1371,6 +1371,7 @@ impl Config {
         }
         state.session.appearance_schedule = self.topbar.appearance_schedule;
         state.session.headset.pause_on_unplug = self.general.pause_media_on_disconnect;
+        state.session.face_unlock.config = self.facekey.clone();
         state.motion = crate::state::MotionPolicy {
             configured_scale: self.animations.motion_scale(),
             respect_system: self.animations.respect_system,

@@ -1400,6 +1400,9 @@ impl GlideState {
             return;
         }
         self.outputs_blanked = blanked;
+        if blanked {
+            self.stop_face_unlock(true);
+        }
         self.protocols.wlr_output_power_state.broadcast_mode(blanked);
 
         let Some(device) = self.backend_data.device.as_mut() else {
