@@ -71,6 +71,7 @@ pub fn view<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, 
         Page::Cards => cards(catalog, shell),
         Page::Insight => insight(catalog, shell),
         Page::Gallery => gallery(catalog, shell),
+        Page::Face => face(shell),
         Page::Secrets => secrets(catalog, shell),
         Page::Overlays => overlays(shell),
         Page::Type => typography(shell),
@@ -1211,6 +1212,87 @@ fn gallery_covers<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Elemen
         cover(&[0, 1, 2, 3], 138.0, shell.t("Родина", "Family"), shell.t("1 204 фото", "1,204 photos"), false),
         cover(&[1], 260.0, "2026", shell.t("4 210 фото", "4,210 photos"), true),
     ])
+}
+
+fn face(shell: &Shell<Message>) -> Element<'_, Message> {
+    use glide_sdk::widget::scan::{self, Cue, Mood, Step, StepMark, StepState, Tick};
+    let paint = shell.paint();
+    let moods = [
+        (Mood::Idle, shell.t("Спокій", "Idle")),
+        (Mood::Ready, shell.t("Готово", "Ready")),
+        (Mood::Scanning, shell.t("Дивиться", "Scanning")),
+        (Mood::Recognised, shell.t("Впізнано", "Recognised")),
+        (Mood::Rejected, shell.t("Не впізнано", "Rejected")),
+    ];
+    let tiles = wrap(
+        moods
+            .into_iter()
+            .map(|(mood, label)| {
+                column![scan::face_tile(paint, 72.0, mood), caption(shell, label)]
+                    .spacing(SP2)
+                    .align_x(Alignment::Center)
+                    .into()
+            })
+            .collect(),
+    );
+    let ticks = scan::ring_ticks(|degrees| {
+        if degrees < 180.0 {
+            Tick::Done
+        } else if degrees < 245.0 {
+            Tick::Active
+        } else {
+            Tick::Idle
+        }
+    });
+    let ring = container(scan::scan(
+        paint,
+        scan::Scan { ticks, frame: None, dimmed: false, cue: Some(Cue::Left), done: false },
+    ))
+    .center_x(Fill);
+    let marks = [
+        (StepMark::Front, shell.t("Прямо", "Straight"), StepState::Done),
+        (StepMark::Left, shell.t("Ліворуч", "Left"), StepState::Done),
+        (StepMark::Right, shell.t("Праворуч", "Right"), StepState::Current),
+        (StepMark::Tilt, shell.t("Нахил", "Tilt"), StepState::Pending),
+        (StepMark::Front, shell.t("Ще раз прямо", "Straight again"), StepState::Pending),
+    ];
+    let trail = scan::step_trail(
+        paint,
+        marks.into_iter().map(|(mark, label, state)| Step { mark, label: label.to_string(), state }).collect(),
+    );
+    let progress = column![trail, scan::hold_bar(paint, 0.6)].spacing(SP4).align_x(Alignment::Center);
+    let sheet = stage(
+        scan::sheet_card(
+            paint,
+            360.0,
+            column![
+                scan::face_tile(paint, 96.0, Mood::Recognised),
+                text(shell.t("Обличчя додано", "Face added"), TextStyle::T2),
+                text(
+                    shell.t("Тепер воно відкриває екран блокування.", "It now opens the lock screen."),
+                    TextStyle::BODY
+                )
+                .color(paint.fg_2()),
+            ]
+            .spacing(SP3)
+            .align_x(Alignment::Center),
+        ),
+        320.0,
+    );
+    page(
+        shell,
+        Page::Face,
+        shell.t(
+            "Віджети розпізнавання обличчя: плитка з обличчям, кільце з поділками навколо камери з підказкою напрямку, сліди кроків, шкала втримання і картка аркуша. Ними зібрано FaceKey у Налаштуваннях.",
+            "Face recognition widgets: the face tile, the ring of ticks around the camera with a direction cue, the step trail, the hold bar and the sheet card. FaceKey in Settings is built from them.",
+        ),
+        vec![
+            demo(shell, "face_tile · face_mark", tiles),
+            demo(shell, "scan · ring_ticks", ring),
+            demo(shell, "step_trail · hold_bar", progress),
+            demo(shell, "sheet_card", sheet),
+        ],
+    )
 }
 
 fn gallery<'a>(catalog: &'a Catalog, shell: &'a Shell<Message>) -> Element<'a, Message> {

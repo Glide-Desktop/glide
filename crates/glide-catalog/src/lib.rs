@@ -21,6 +21,7 @@ pub enum Page {
     Cards,
     Insight,
     Gallery,
+    Face,
     Secrets,
     Overlays,
     Type,
@@ -30,7 +31,7 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Overview,
         Self::Buttons,
         Self::Inputs,
@@ -40,6 +41,7 @@ impl Page {
         Self::Cards,
         Self::Insight,
         Self::Gallery,
+        Self::Face,
         Self::Secrets,
         Self::Overlays,
         Self::Type,
@@ -60,6 +62,7 @@ impl Page {
             Self::Cards => ("Картки й списки", "Cards and lists"),
             Self::Insight => ("Стан і огляди", "Status and summaries"),
             Self::Gallery => ("Галерея", "Gallery"),
+            Self::Face => ("Обличчя", "Face scan"),
             Self::Secrets => ("Секрети", "Secrets"),
             Self::Overlays => ("Оверлеї", "Overlays"),
             Self::Type => ("Типографіка й кольори", "Type and colour"),
@@ -81,6 +84,7 @@ impl Page {
             Self::Feedback => Icon::Refresh,
             Self::Insight => Icon::Warning,
             Self::Gallery => Icon::Inspector,
+            Self::Face => Icon::Eye,
             Self::Layout => Icon::Folder,
             Self::Cards => Icon::Copy,
             Self::Overlays => Icon::More,
