@@ -16,6 +16,7 @@ use crate::dnd;
 use crate::fs::archive::{self, Format};
 use crate::fs::jobs::{Answer, Choice, Meter, Op, Progress, Question, Report, Sink};
 use crate::fs::rename::{self, Rule};
+use crate::fs::run::{self, Runnable};
 use crate::fs::tags;
 use crate::fs::{
     ClipboardAction, DiskError, Disks, Extensions, FileClipboard, FileEntry, MountMode, Mounted, Offer, Place, Roots,
@@ -85,6 +86,7 @@ pub enum Dialog {
     Compress { paths: Vec<PathBuf>, format: Format },
     BatchRename { items: Vec<(PathBuf, bool)>, replace: bool, with: String },
     SelectPattern,
+    AllowRun { path: PathBuf, terminal: bool },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,7 +102,12 @@ impl Modal {
     #[must_use]
     pub fn actions(&self) -> Vec<Message> {
         match &self.dialog {
-            Dialog::Delete(_) | Dialog::EmptyTrash | Dialog::Quit | Dialog::Repair(_) | Dialog::Replace(_) => {
+            Dialog::Delete(_)
+            | Dialog::EmptyTrash
+            | Dialog::Quit
+            | Dialog::Repair(_)
+            | Dialog::Replace(_)
+            | Dialog::AllowRun { .. } => {
                 vec![Message::ModalCancel, Message::ModalSubmit]
             }
             Dialog::Conflict { question, .. } => {
@@ -176,6 +183,7 @@ pub struct Menu {
     pub at: Point,
     pub offers: Vec<Offer>,
     pub open_with: bool,
+    pub runnable: Option<Runnable>,
     pub highlight: Option<usize>,
     pub child: Option<(usize, Box<Menu>)>,
 }
@@ -183,7 +191,7 @@ pub struct Menu {
 impl Menu {
     #[must_use]
     pub fn new(kind: MenuKind, at: Point) -> Self {
-        Self { kind, at, offers: Vec::new(), open_with: false, highlight: None, child: None }
+        Self { kind, at, offers: Vec::new(), open_with: false, runnable: None, highlight: None, child: None }
     }
 
     #[must_use]
@@ -535,6 +543,8 @@ pub enum Message {
     RenameWith(String),
     InvertSelection,
     SelectPattern,
+    Run(bool),
+    Executable,
 }
 
 pub(crate) type ThumbKey = (PathBuf, Option<SystemTime>);
@@ -573,6 +583,8 @@ impl Message {
                 | Self::Properties
                 | Self::PropertiesOf(_)
                 | Self::Permission(_)
+                | Self::Executable
+                | Self::Run(_)
                 | Self::Terminal
                 | Self::TerminalAt(_)
                 | Self::NewWindow(_)
@@ -646,6 +658,7 @@ impl Message {
                 | Self::Compress
                 | Self::InvertSelection
                 | Self::SelectPattern
+                | Self::Run(_)
                 | Self::NewTab(_)
                 | Self::SelectTab(_)
                 | Self::CloseTab(_)
@@ -700,6 +713,7 @@ impl Message {
                 | Self::Thumb(..)
                 | Self::FolderSize(..)
                 | Self::Permission(_)
+                | Self::Executable
                 | Self::PropertiesTab(_)
                 | Self::VolumesChanged
                 | Self::PickApp(_)
@@ -1561,7 +1575,8 @@ impl App {
                     if kind == MenuKind::Background {
                         self.selection.clear();
                     }
-                    let (offers, open_with) = if kind == MenuKind::Selection && !self.in_trash() {
+                    let chosen = kind == MenuKind::Selection && !self.in_trash();
+                    let (offers, open_with) = if chosen {
                         let targets = self.targets();
                         let open_with = !targets.is_empty();
                         let mut offers = self.extensions.offers(&targets);
@@ -1570,8 +1585,13 @@ impl App {
                     } else {
                         (Vec::new(), false)
                     };
+                    let picked: Vec<&FileEntry> = self.selected_entries().filter(|_| chosen).take(2).collect();
+                    let runnable = match picked.as_slice() {
+                        [only] if !only.is_dir => run::probe(&only.path),
+                        _ => None,
+                    };
                     self.menu_at = at;
-                    self.menu = Some(Menu { offers, open_with, ..Menu::new(kind, at) });
+                    self.menu = Some(Menu { offers, open_with, runnable, ..Menu::new(kind, at) });
                 }
             }
             Message::RunAction(offer) => return self.run_action(*offer),
@@ -1615,6 +1635,13 @@ impl App {
                 }
             }
             Message::Permission(bit) => self.toggle_permission(bit),
+            Message::Executable => {
+                if let Some(mode) = self.properties_mut().map(|properties| properties.entry.mode) {
+                    let granted = if mode & 0o111 == 0 { (mode & 0o444) >> 2 | 0o100 } else { 0 };
+                    self.toggle_permission((mode & 0o111) ^ granted);
+                }
+            }
+            Message::Run(terminal) if !self.in_trash() => return self.run_selected(terminal),
             Message::PropertiesTab(tab) => {
                 if let Some(Modal { dialog: Dialog::Properties(properties), .. }) = &mut self.modal {
                     properties.tab = tab;
@@ -2254,6 +2281,7 @@ impl App {
             | Message::Extract
             | Message::Compress
             | Message::SelectPattern
+            | Message::Run(_)
             | Message::TypeToSearch(_)
             | Message::SearchResults(..)
             | Message::NoticeExpired(_)
@@ -3080,11 +3108,21 @@ impl App {
         let lang = self.lang;
         let mut groups: Vec<(Option<Run>, Vec<Target>)> = Vec::new();
         let mut unpacked: Vec<PathBuf> = Vec::new();
+        let mut started: Vec<Task<Message>> = Vec::new();
         for path in paths.into_iter().take(OPEN_LIMIT) {
             let target = self.extensions.target(&path, false);
             let app = self.extensions.apps_for(std::slice::from_ref(&target)).first().map(|app| app.run());
             if app.is_none() && archive::available() && archive::is_archive(&path) && !self.in_trash() {
                 unpacked.push(path);
+                continue;
+            }
+            let launcher = path.extension().is_some_and(|extension| extension == "desktop");
+            let program = (app.is_none() || launcher)
+                .then(|| run::probe(&path))
+                .flatten()
+                .filter(|found| found.kind != run::Kind::Script && (found.allowed || app.is_none()));
+            if let Some(runnable) = program.filter(|_| !self.in_trash()) {
+                started.push(self.start_runnable(path, runnable, false));
                 continue;
             }
             match groups.iter_mut().find(|(run, _)| run.is_some() && *run == app) {
@@ -3097,6 +3135,7 @@ impl App {
             .into_iter()
             .map(|(dir, archives)| self.spawn_job(Op::Extract, archives, dir, false))
             .collect();
+        tasks.extend(started);
         tasks.extend(groups.into_iter().map(|(app, targets)| {
             let cwd = cwd.clone();
             run(move || {
@@ -4428,6 +4467,7 @@ impl App {
                 return if self.jobs.is_empty() { quit() } else { Task::none() };
             }
             Dialog::Repair(object) => return self.disk_job(object, DiskAction::Repair),
+            Dialog::AllowRun { path, terminal } => return self.allow_and_run(path.clone(), *terminal),
             Dialog::Replace(target) => {
                 if let Some(chooser) = self.chooser.as_mut() {
                     chooser.confirm = Some(target.clone());
@@ -4458,6 +4498,47 @@ impl App {
                 operation::focus(MODAL_ID)
             }
         }
+    }
+
+    fn run_selected(&mut self, terminal: bool) -> Task<Message> {
+        let picked: Vec<PathBuf> =
+            self.selected_entries().filter(|entry| !entry.is_dir).map(|entry| entry.path.clone()).take(2).collect();
+        let Ok([path]) = <[PathBuf; 1]>::try_from(picked) else {
+            return Task::none();
+        };
+        match run::probe(&path) {
+            Some(runnable) => self.start_runnable(path, runnable, terminal),
+            None => Task::none(),
+        }
+    }
+
+    fn start_runnable(&mut self, path: PathBuf, runnable: Runnable, terminal: bool) -> Task<Message> {
+        let terminal = terminal && runnable.runs_in_terminal();
+        if runnable.needs_permission() {
+            return self.prompt(Dialog::AllowRun { path, terminal }, String::new(), None);
+        }
+        self.launch_runnable(path, runnable, terminal)
+    }
+
+    fn allow_and_run(&mut self, path: PathBuf, terminal: bool) -> Task<Message> {
+        if let Err(err) = run::allow(&path) {
+            return self.notify(i18n::io_error(&err, self.lang), None);
+        }
+        let refresh = self.refresh_listing();
+        match run::probe(&path) {
+            Some(runnable) => Task::batch([refresh, self.launch_runnable(path, runnable, terminal)]),
+            None => refresh,
+        }
+    }
+
+    fn launch_runnable(&self, path: PathBuf, runnable: Runnable, terminal: bool) -> Task<Message> {
+        let lang = self.lang;
+        run(move || Outcome {
+            text: run::run(&path, &runnable, terminal, Key::RunEnded.text(lang))
+                .err()
+                .map(|_| format!("{} «{}»", Key::CantRun.text(lang), file_name(&path))),
+            ..Outcome::default()
+        })
     }
 
     fn submit_compress(&mut self, modal: Modal) -> Task<Message> {

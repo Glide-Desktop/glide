@@ -94,6 +94,12 @@ pub fn entries(app: &App, menu: &Menu) -> Vec<Entry> {
         ],
         MenuKind::Selection => {
             let mut entries = vec![item(Key::Open, Message::OpenSelection, Icon::Open).shortcut("Enter")];
+            if let Some(runnable) = &menu.runnable {
+                entries.push(item(Key::Run, Message::Run(false), Icon::Play));
+                if runnable.runs_in_terminal() {
+                    entries.push(item(Key::RunInTerminal, Message::Run(true), Icon::Terminal));
+                }
+            }
             if menu.open_with {
                 entries.push(item(Key::OpenWith, Message::SubMenu(MenuKind::OpenWith), Icon::Apps).cascades());
             }

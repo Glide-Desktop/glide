@@ -1549,6 +1549,65 @@ fn a_tab_keeps_its_own_history() {
     assert_eq!(app.current, first);
 }
 
+#[test]
+fn a_program_offers_run_and_an_unmarked_one_asks_before_it_starts() {
+    use glide_files::app::Dialog;
+    use std::os::unix::fs::PermissionsExt;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let root = std::env::temp_dir().join(format!("glide-files-run-{nanos}"));
+    std::fs::create_dir_all(&root).expect("scratch");
+    for (name, body) in [("Game.AppImage", &b"\x7fELF\x02\x01\x01"[..]), ("job.sh", b"echo hi\n"), ("notes.txt", b"hi")]
+    {
+        std::fs::write(root.join(name), body).expect("file");
+    }
+    let mut app = listed_app();
+    app.current.clone_from(&root);
+    app.entries = glide_files::fs::read_directory(&root, false, app.sort).expect("listing");
+    let labels = |app: &glide_files::App| -> Vec<String> {
+        let menu = app.menu.as_ref().expect("menu");
+        menu::entries(app, menu)
+            .iter()
+            .filter_map(|entry| match entry {
+                glide_sdk::menu::Item::Action { label, .. } => Some(label.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let (run, in_terminal) = (Key::Run.text(app.lang), Key::RunInTerminal.text(app.lang));
+
+    app.selection = [root.join("notes.txt")].into_iter().collect();
+    let _ = app.update(Message::KeyMenu);
+    assert!(!labels(&app).iter().any(|label| label == run), "a text file is not a program");
+
+    app.selection = [root.join("job.sh")].into_iter().collect();
+    let _ = app.update(Message::KeyMenu);
+    let shown = labels(&app);
+    assert!(shown.iter().any(|label| label == run) && shown.iter().any(|label| label == in_terminal));
+
+    app.selection = [root.join("Game.AppImage")].into_iter().collect();
+    let _ = app.update(Message::Run(false));
+    assert!(
+        matches!(app.modal.as_ref().map(|modal| &modal.dialog), Some(Dialog::AllowRun { terminal: false, .. })),
+        "a binary without the executable bit asks first"
+    );
+    let _ = app.update(Message::ModalCancel);
+    let mode = std::fs::metadata(root.join("Game.AppImage")).expect("meta").permissions().mode();
+    assert_eq!(mode & 0o111, 0, "cancelling changes nothing");
+
+    let _ = app.update(Message::OpenSelection);
+    assert!(app.modal.is_some(), "double-clicking it asks the same question");
+    let _ = app.update(Message::ModalCancel);
+
+    let _ = app.update(Message::PropertiesOf(root.join("job.sh")));
+    let _ = app.update(Message::Executable);
+    let mode = std::fs::metadata(root.join("job.sh")).expect("meta").permissions().mode();
+    assert_eq!(mode & 0o111, 0o111, "Properties can mark a file as a program");
+    let _ = app.update(Message::Executable);
+    let mode = std::fs::metadata(root.join("job.sh")).expect("meta").permissions().mode();
+    assert_eq!(mode & 0o111, 0, "and take the mark back");
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn select(app: &mut glide_files::App, picked: &[usize]) {
     app.selection = picked.iter().map(|&index| path(index)).collect();
 }

@@ -8,6 +8,7 @@ pub mod mtp;
 pub mod operations;
 pub mod places;
 pub mod rename;
+pub mod run;
 pub mod tags;
 pub mod thumbs;
 pub mod trash;

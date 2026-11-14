@@ -282,6 +282,13 @@ glide_sdk::catalogue! {
     ChooserReplaceTitle => "Replace the file?", "Замінити файл?";
     ChooserReplacePrompt => "A file with this name already exists in this folder. Replacing it overwrites its contents.", "У цій папці вже є файл із такою назвою. Заміна перезапише його вміст.";
     ChooserFileType => "File type", "Тип файлів";
+    Run => "Run", "Запустити";
+    RunInTerminal => "Run in Terminal", "Запустити в терміналі";
+    RunEnded => "Finished · Enter closes this · exit code", "Завершено · Enter закриє вікно · код виходу";
+    AllowRunTitle => "Allow this file to run?", "Дозволити запуск цього файлу?";
+    AllowRunPrompt => "It is not marked as a program yet. Run only what you trust: a program can do anything you can.", "Його ще не позначено як програму. Запускайте лише те, чому довіряєте: програма може все, що можете ви.";
+    AllowRunConfirm => "Allow and Run", "Дозволити й запустити";
+    AllowExecuting => "Allow running as a program", "Дозволити запуск як програми";
     NewTab => "New Tab", "Нова вкладка";
     NewWindow => "New Window", "Нове вікно";
     OpenInNewTab => "Open in New Tab", "Відкрити в новій вкладці";

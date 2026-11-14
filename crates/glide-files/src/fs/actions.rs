@@ -164,6 +164,16 @@ fn desktop_apps(roots: &Roots, lang: Lang) -> Vec<DesktopApp> {
     apps
 }
 
+pub(crate) fn launch_desktop_file(file: &Path, cwd: &Path) -> io::Result<()> {
+    let groups = parse_ini(&std::fs::read_to_string(file)?);
+    let entry = groups.get("Desktop Entry").ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "no entry"))?;
+    let exec = entry.get("Exec").ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "no Exec"))?;
+    let line = exec_line(exec, flag(entry, "Terminal") == Some(true), &glide_config::terminal::current);
+    let name = entry.get("Name").cloned().unwrap_or_default();
+    let icon = entry.get("Icon").filter(|icon| !icon.trim().is_empty()).cloned();
+    Run::Exec { line, desktop: file.to_path_buf(), codes: Codes::Entry { name, icon } }.launch(&[], cwd)
+}
+
 pub(crate) fn set_default_app(mime: &str, app: &str) -> io::Result<()> {
     let file = glide_config::config_home()
         .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "no config directory"))?

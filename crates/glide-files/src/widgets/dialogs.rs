@@ -84,6 +84,20 @@ pub fn view<'a>(app: &'a App, modal_state: &'a Modal, progress: f32) -> Element<
         }
         Dialog::Compress { format, .. } => compress(app, &paint, modal_state, *format),
         Dialog::BatchRename { replace, with, .. } => batch_rename(app, &paint, modal_state, *replace, with),
+        Dialog::AllowRun { path, .. } => {
+            let mut parts = confirm(
+                app,
+                &paint,
+                (Key::AllowRunTitle, Key::AllowRunPrompt),
+                Some(subject(app, std::slice::from_ref(path))),
+                Key::AllowRunConfirm,
+                focus,
+            );
+            if let Some(allow) = parts.choices.last_mut() {
+                allow.1 = Tone::Accent;
+            }
+            parts
+        }
         Dialog::SelectPattern => {
             input(app, &paint, modal_state, (Key::SelectMatchingTitle, Key::SelectMatchingPrompt), Key::SelectConfirm)
         }
@@ -449,12 +463,18 @@ fn details<'a>(app: &'a App, paint: &glide_sdk::Paint, properties: &'a Propertie
     );
     let page: Element<'a, Message> = match tab {
         PropertiesTab::General => facts(paint, rows, LABEL_WIDTH),
-        PropertiesTab::Permissions => column![
-            permissions(app, paint, properties),
-            text(permissions_string(entry.mode), TextStyle::NUM).color(paint.fg_2()),
-        ]
-        .spacing(theme::SP3)
-        .into(),
+        PropertiesTab::Permissions => {
+            let mut page = column![
+                permissions(app, paint, properties),
+                text(permissions_string(entry.mode), TextStyle::NUM).color(paint.fg_2()),
+            ]
+            .spacing(theme::SP3);
+            if !entry.is_dir {
+                let label = Key::AllowExecuting.text(lang);
+                page = page.push(super::check(&app.theme, label, entry.mode & 0o111 != 0, Message::Executable));
+            }
+            page.into()
+        }
     };
     let page = glide_sdk::widget::swapped(tab as u8, None, page);
     let mut body = column![heading, tabs, page].spacing(theme::SP4);
