@@ -3,7 +3,7 @@ use glide_sdk::theme::TextStyle;
 use glide_sdk::widget::scan::{self, Cue, Mood, Step, StepMark, StepState, Tick};
 use glide_sdk::widget::{self as sdk};
 use iced::widget::{Column, column, container, image, row};
-use iced::{Alignment, Element, Fill, Length, Subscription, Task};
+use iced::{Alignment, Element, Fill, Subscription, Task};
 
 use super::common::{gated, toggle};
 use super::{Ctx, Pane};
@@ -742,12 +742,16 @@ fn hero<'a>(c: &Ctx, snapshot: &Snapshot, stale: bool, camera_bad: bool) -> Elem
         labels = labels.push(sdk::text(added, TextStyle::CAP).color(paint.fg_3()));
     }
     let mood = if stale || camera_bad { Mood::Idle } else { Mood::Ready };
+    let widest = [c.t(T::Check), c.t(T::AddAgain)]
+        .iter()
+        .map(|label| sdk::measure(label, TextStyle { size_px: 13.5, weight: 500, ..TextStyle::MENU_ITEM }))
+        .fold(0.0_f32, f32::max);
     let buttons = column![
-        widgets::tonal(t, c.t(T::Check), (!stale).then_some(Msg::OpenTest)),
-        widgets::secondary(t, c.t(T::AddAgain), Some(Msg::OpenEnroll)),
+        sdk::full_button(&paint, c.t(T::Check), sdk::Tone::Tonal, (!stale).then_some(Msg::OpenTest)),
+        sdk::full_button(&paint, c.t(T::AddAgain), sdk::Tone::Neutral, Some(Msg::OpenEnroll)),
     ]
     .spacing(8)
-    .width(Length::Shrink);
+    .width(widest.ceil() + 2.0 * glide_sdk::theme::SP4 + 2.0);
     sdk::card(
         &paint,
         row![scan::face_tile(&paint, 104.0, mood), labels, buttons].spacing(18).align_y(Alignment::Center),
