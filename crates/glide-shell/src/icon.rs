@@ -993,7 +993,8 @@ fn parse_index_theme(contents: &str) -> (Vec<ThemeDir>, Vec<String>) {
     (dirs, parents)
 }
 
-fn cache_name(icon: &str) -> String {
+#[must_use]
+pub fn cache_name(icon: &str) -> String {
     let normalized = normalize_icon_name(icon);
     let path = Path::new(&normalized);
     if !path.is_absolute() {

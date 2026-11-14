@@ -1,4 +1,5 @@
 pub mod calc;
+pub mod catalogue;
 pub mod history;
 mod list;
 pub mod providers;
@@ -443,6 +444,13 @@ fn chip_step_progress(step: u8) -> f32 {
     f32::from(step) / f32::from(CHIP_STEPS)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum StoredIcon<'a> {
+    Ready(&'a [u8]),
+    Missing,
+    Unknown,
+}
+
 type ScaledBuffers = std::collections::HashMap<i32, MemoryRenderBuffer>;
 type CaptionBuffers = std::collections::HashMap<(i32, CaptionState), MemoryRenderBuffer>;
 type ChipBuffers = std::collections::HashMap<(usize, u8, i32), MemoryRenderBuffer>;
@@ -588,7 +596,8 @@ pub struct Launcher {
 
     scrim: SolidColorBuffer,
     tiles: Vec<ScaledBuffers>,
-    icon_missing: Vec<bool>,
+    icons: Vec<Option<catalogue::IconPixels>>,
+    icon_scale: i32,
     captions: Vec<CaptionBuffers>,
     cell_layer: ScaledBuffers,
     focus_ring: ScaledBuffers,
@@ -717,7 +726,8 @@ impl Launcher {
             clear_hover: glide_ui::Tween::at(0.0),
             scrim: SolidColorBuffer::default(),
             tiles: vec![std::collections::HashMap::new(); count],
-            icon_missing: vec![false; count],
+            icons: Vec::new(),
+            icon_scale: 1,
             captions: vec![CaptionBuffers::new(); count],
             cell_layer: std::collections::HashMap::new(),
             focus_ring: ScaledBuffers::new(),
@@ -986,6 +996,14 @@ impl Launcher {
                 app: self.apps.iter().position(|app| app.id.eq_ignore_ascii_case(&found.desktop_id)),
             })
             .collect()
+    }
+
+    fn stored_icon(&self, index: usize, output_scale: i32) -> StoredIcon<'_> {
+        match self.icons.get(index) {
+            Some(None) => StoredIcon::Missing,
+            Some(Some(pixels)) if self.icon_scale == output_scale.max(1) => StoredIcon::Ready(pixels),
+            _ => StoredIcon::Unknown,
+        }
     }
 
     pub fn record_launch(&mut self, app_id: &str) -> history::LaunchHistory {
@@ -1356,16 +1374,17 @@ impl Launcher {
         &self.apps
     }
 
-    pub fn set_apps(&mut self, apps: Vec<DesktopApp>, pixels: &[Option<Vec<u8>>], scale: i32) {
-        let scale = scale.max(1);
+    pub fn set_catalogue(&mut self, catalogue: &catalogue::Catalogue) {
+        self.set_history(catalogue.history.clone());
+        self.set_recent(catalogue.recent.clone());
+        self.set_apps(catalogue.apps.clone(), catalogue.icons.clone(), catalogue.scale);
+    }
+
+    pub fn set_apps(&mut self, apps: Vec<DesktopApp>, icons: Vec<Option<catalogue::IconPixels>>, scale: i32) {
         let kept = self.keep_selection();
-        self.tiles = pixels
-            .iter()
-            .map(|pixels| {
-                pixels.iter().map(|pixels| (scale, buffer_from(pixels, ICON_SIZE, ICON_SIZE, scale))).collect()
-            })
-            .collect();
-        self.icon_missing = pixels.iter().map(Option::is_none).collect();
+        self.tiles = vec![ScaledBuffers::new(); apps.len()];
+        self.icons = icons;
+        self.icon_scale = scale.max(1);
         self.captions = vec![CaptionBuffers::new(); apps.len()];
         self.apps = apps;
         self.hover_layers.clear();
@@ -2056,16 +2075,14 @@ fn ensure_tile(
     if launcher.tiles.get(index).is_none_or(|cache| cache.contains_key(&output_scale)) {
         return;
     }
-    let known_missing = launcher.icon_missing.get(index).copied().unwrap_or(false);
-    let pixels = if known_missing {
-        None
-    } else {
-        icons.load_named(&app.icon, ICON_SIZE * output_scale.max(1)).map(<[u8]>::to_vec)
+    let buffer = match launcher.stored_icon(index, output_scale) {
+        StoredIcon::Ready(pixels) => Some(buffer_from(pixels, ICON_SIZE, ICON_SIZE, output_scale)),
+        StoredIcon::Missing => None,
+        StoredIcon::Unknown => icons
+            .load_named(&app.icon, ICON_SIZE * output_scale.max(1))
+            .map(|pixels| buffer_from(pixels, ICON_SIZE, ICON_SIZE, output_scale)),
     };
-    let buffer = match pixels {
-        Some(pixels) => Some(buffer_from(&pixels, ICON_SIZE, ICON_SIZE, output_scale)),
-        None => draw_fallback_icon(painter, theme, &app.name, output_scale),
-    };
+    let buffer = buffer.or_else(|| draw_fallback_icon(painter, theme, &app.name, output_scale));
     if let Some(buffer) = buffer {
         launcher.tiles[index].insert(output_scale, buffer);
     }
@@ -3065,13 +3082,31 @@ mod tests {
         open(&mut launcher);
         let reloaded = vec![app("c", "Gamma", AppCategory::Office), app("a", "Alpha", AppCategory::Office)];
         let pixels = vec![None; reloaded.len()];
-        launcher.set_apps(reloaded, &pixels, 1);
+        launcher.set_apps(reloaded, pixels, 1);
         assert_eq!(launcher.menu_result(), None, "the late app scan renumbers the results");
 
         let mut launcher = Launcher::new(apps(4), area());
         assert!(launcher.open_menu(1, area(), false));
         launcher.begin_run_mode();
         assert_eq!(launcher.menu_result(), None);
+    }
+
+    #[test]
+    fn a_launcher_opened_from_a_catalogue_draws_its_icons_without_the_loader() {
+        let catalogue = catalogue::Catalogue::assemble(apps(2), 2, None, |_| None);
+        let mut launcher = Launcher::new(Vec::new(), area());
+        assert_eq!(launcher.stored_icon(0, 2), StoredIcon::Unknown);
+
+        launcher.set_catalogue(&catalogue);
+        assert_eq!(launcher.apps().len(), 2);
+        assert_eq!(launcher.stored_icon(0, 2), StoredIcon::Missing, "a missing icon is not looked up while drawing");
+        assert_eq!(launcher.stored_icon(0, 1), StoredIcon::Missing);
+
+        let pixels: catalogue::IconPixels = std::sync::Arc::from(vec![1_u8, 2, 3, 4]);
+        launcher.set_apps(apps(2), vec![Some(pixels), None], 2);
+        assert_eq!(launcher.stored_icon(0, 2), StoredIcon::Ready(&[1, 2, 3, 4]));
+        assert_eq!(launcher.stored_icon(0, 1), StoredIcon::Unknown, "another output scale goes to the loader");
+        assert_eq!(launcher.stored_icon(1, 2), StoredIcon::Missing);
     }
 
     #[test]

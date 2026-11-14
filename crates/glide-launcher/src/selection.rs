@@ -221,7 +221,7 @@ mod tests {
 
         let reordered = apps(&["Firewall", "Firebird", "Firefox", "Fire", "Fireplace"]);
         let pixels = vec![None; reordered.len()];
-        launcher.set_apps(reordered, &pixels, 1);
+        launcher.set_apps(reordered, pixels, 1);
 
         assert_eq!(selected_app_id(&launcher), chosen);
     }

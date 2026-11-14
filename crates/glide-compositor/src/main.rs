@@ -471,6 +471,7 @@ fn init_topbar_clock(event_loop: &mut EventLoop<'static, GlideState>, state: &mu
 
     state.refresh_topbar();
     state.sync_topbar_layout();
+    state.keep_launcher_catalogue();
 
     event_loop
         .handle()
@@ -485,6 +486,10 @@ fn init_topbar_clock(event_loop: &mut EventLoop<'static, GlideState>, state: &mu
             let netbird = state.tick_netbird();
             let dock_icons = state.dock.icons.expire_missing();
             let shell_icons = state.launcher_icons.expire_missing();
+            if shell_icons {
+                state.forget_launcher_catalogue();
+            }
+            state.keep_launcher_catalogue();
             state.tick_keychain_idle(std::time::Instant::now());
             if clock || expired || night || appearance || plates || power || netbird || dock_icons || shell_icons {
                 state.queue_redraw();

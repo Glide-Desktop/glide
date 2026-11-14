@@ -52,8 +52,9 @@ impl GlideState {
 
     fn launch_command(&mut self, app_id: &str, name: &str, command: &str) {
         self.launch_app(app_id, name, command);
-        if let Some(launcher) = self.launcher.as_mut() {
-            launcher.record_launch(app_id).save_in_background();
+        if let Some(history) = self.launcher.as_mut().map(|launcher| launcher.record_launch(app_id)) {
+            self.note_launch_in_catalogue(&history);
+            history.save_in_background();
         }
     }
 

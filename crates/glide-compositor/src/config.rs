@@ -711,6 +711,7 @@ pub struct AppliedConfig {
 fn reload_launcher_icons(state: &mut GlideState, theme: Option<&str>) {
     if state.applied_config.icon_theme_changed(theme) {
         state.launcher_icons = crate::icon::IconLoader::new(theme.map(str::to_owned));
+        state.forget_launcher_catalogue();
     }
 }
 

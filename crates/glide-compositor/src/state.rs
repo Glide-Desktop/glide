@@ -389,6 +389,9 @@ impl WakeTimer {
 pub struct SessionServices {
     pub presenter: Option<((f64, f64), std::time::Instant, smithay::output::Output)>,
     pub wake_timer: WakeTimer,
+    pub launcher_catalogue: Option<Arc<crate::launcher::catalogue::Catalogue>>,
+    pub launcher_epoch: u64,
+    pub launcher_loads: u32,
     pub logind: Option<crate::logind::Handle>,
     pub screensaver: Option<crate::screensaver::Handle>,
     pub shell_bus: Option<crate::shell_bus::Handle>,
@@ -2542,13 +2545,7 @@ impl GlideState {
 
     pub fn begin_interactive_launcher(&mut self, progress: f64) {
         if self.launcher.is_none() {
-            let area = self.launcher_area();
-            let mut launcher = crate::launcher::Launcher::new(Vec::new(), area)
-                .with_scene(self.overview_theme.duration())
-                .with_options(self.launcher_options.clone());
-            launcher.set_windows(self.open_windows_for_search());
-            launcher.set_providers(self.search_providers());
-            self.launcher = Some(launcher);
+            self.launcher = Some(self.fresh_launcher());
             self.spawn_launcher_loader();
             self.arm_launcher_caret();
         }
@@ -2568,12 +2565,7 @@ impl GlideState {
             Some(launcher) if !launcher.is_closing() => launcher.begin_close(),
             Some(launcher) => launcher.reopen(),
             None => {
-                let area = self.launcher_area();
-                let mut launcher = crate::launcher::Launcher::new(Vec::new(), area)
-                    .with_scene(self.overview_theme.duration())
-                    .with_options(self.launcher_options.clone());
-                launcher.set_windows(self.open_windows_for_search());
-                launcher.set_providers(self.search_providers());
+                let mut launcher = self.fresh_launcher();
                 if over_overview {
                     launcher.take_over_overview();
                 }
@@ -2585,37 +2577,95 @@ impl GlideState {
         self.queue_redraw();
     }
 
-    fn spawn_launcher_loader(&mut self) {
-        let icon_theme = self.dock.icon_theme();
-        let output_scale = self.space.outputs().next().map_or(1, |output| output.current_scale().integer_scale());
-
-        let (sender, receiver) = smithay::reexports::calloop::channel::channel();
-        std::thread::spawn(move || {
-            let apps = crate::icon::list_applications();
-            let history = crate::launcher::history::LaunchHistory::load();
-            let mut loader = crate::icon::IconLoader::new(icon_theme);
-            let side = crate::launcher::icon_side() * output_scale.max(1);
-            let pixels: Vec<Option<Vec<u8>>> =
-                apps.iter().map(|app| loader.load_named(&app.icon, side).map(<[u8]>::to_vec)).collect();
-            let recent = crate::launcher::recent::load();
-            let _ = sender.send((apps, pixels, output_scale, history, recent));
-        });
-
-        let result = self.loop_handle.insert_source(receiver, |event, (), state| {
-            if let smithay::reexports::calloop::channel::Event::Msg((apps, pixels, scale, history, recent)) = event {
-                tracing::info!(count = apps.len(), recent = recent.len(), "launcher apps loaded");
-                state.app_directory.rebuild(apps.clone());
-                if let Some(launcher) = state.launcher.as_mut() {
-                    launcher.set_history(history);
-                    launcher.set_recent(recent);
-                    launcher.set_apps(apps, &pixels, scale);
-                }
-                state.queue_redraw();
-            }
-        });
-        if let Err(err) = result {
-            tracing::error!(?err, "failed to register the launcher loader");
+    fn fresh_launcher(&mut self) -> crate::launcher::Launcher {
+        let area = self.launcher_area();
+        let mut launcher = crate::launcher::Launcher::new(Vec::new(), area)
+            .with_scene(self.overview_theme.duration())
+            .with_options(self.launcher_options.clone());
+        launcher.set_windows(self.open_windows_for_search());
+        launcher.set_providers(self.search_providers());
+        if let Some(catalogue) = self.session.launcher_catalogue.as_deref() {
+            launcher.set_catalogue(catalogue);
         }
+        launcher
+    }
+
+    fn launcher_icon_scale(&self) -> Option<i32> {
+        self.space.outputs().next().map(|output| output.current_scale().integer_scale().max(1))
+    }
+
+    pub fn forget_launcher_catalogue(&mut self) {
+        self.session.launcher_epoch = self.session.launcher_epoch.wrapping_add(1);
+        self.session.launcher_catalogue = None;
+    }
+
+    pub fn keep_launcher_catalogue(&mut self) {
+        if self.session.launcher_loads > 0 {
+            return;
+        }
+        let stale = match (self.session.launcher_catalogue.as_deref(), self.launcher_icon_scale()) {
+            (None, _) => true,
+            (Some(catalogue), Some(scale)) => catalogue.scale != scale,
+            (Some(_), None) => false,
+        };
+        if stale {
+            self.spawn_launcher_loader();
+        }
+    }
+
+    pub fn note_launch_in_catalogue(&mut self, history: &crate::launcher::history::LaunchHistory) {
+        if let Some(catalogue) = self.session.launcher_catalogue.as_mut() {
+            std::sync::Arc::make_mut(catalogue).history = history.clone();
+        }
+    }
+
+    fn spawn_launcher_loader(&mut self) {
+        use smithay::reexports::calloop::channel::{Event, channel};
+
+        let icon_theme = self.dock.icon_theme();
+        let scale = self.launcher_icon_scale().unwrap_or(1);
+        let epoch = self.session.launcher_epoch;
+        let previous = self.session.launcher_catalogue.clone();
+
+        let (sender, receiver) = channel();
+        let registered = self.loop_handle.insert_source(receiver, |event, (), state| match event {
+            Event::Msg((epoch, catalogue)) => state.launcher_catalogue_loaded(epoch, catalogue),
+            Event::Closed => state.session.launcher_loads = state.session.launcher_loads.saturating_sub(1),
+        });
+        if let Err(err) = registered {
+            tracing::error!(?err, "failed to register the launcher loader");
+            return;
+        }
+        let spawned = std::thread::Builder::new().name("glide-launcher-apps".into()).spawn(move || {
+            let catalogue = crate::launcher::catalogue::Catalogue::load(icon_theme, scale, previous.as_deref());
+            let _ = sender.send((epoch, catalogue));
+        });
+        self.session.launcher_loads += 1;
+        if let Err(err) = spawned {
+            tracing::error!(?err, "failed to start the launcher loader");
+        }
+    }
+
+    fn launcher_catalogue_loaded(&mut self, epoch: u64, catalogue: crate::launcher::catalogue::Catalogue) {
+        if epoch != self.session.launcher_epoch {
+            if self.launcher.is_some() {
+                self.spawn_launcher_loader();
+            }
+            return;
+        }
+        tracing::info!(count = catalogue.apps.len(), recent = catalogue.recent.len(), "launcher apps loaded");
+        self.app_directory.rebuild(catalogue.apps.clone());
+        let shown =
+            self.session.launcher_catalogue.as_deref().is_some_and(|shown| shown.shows_the_same_grid(&catalogue));
+        if let Some(launcher) = self.launcher.as_mut() {
+            if shown {
+                launcher.set_recent(catalogue.recent.clone());
+            } else {
+                launcher.set_catalogue(&catalogue);
+            }
+            self.queue_redraw();
+        }
+        self.session.launcher_catalogue = Some(std::sync::Arc::new(catalogue));
     }
 
     pub fn tick_launcher(&mut self) -> bool {
