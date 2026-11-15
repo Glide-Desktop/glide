@@ -176,6 +176,7 @@ pub struct Status {
     pub updated_at: Option<String>,
     pub num_samples: Option<i32>,
     pub error: Option<String>,
+    pub missing: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

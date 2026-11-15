@@ -30,6 +30,11 @@ impl Snapshot {
     }
 
     #[must_use]
+    pub fn missing(&self) -> Option<&str> {
+        self.status.as_ref().and_then(|status| status.missing.as_deref())
+    }
+
+    #[must_use]
     pub fn stale(&self) -> bool {
         self.status.as_ref().is_some_and(|status| status.enrolled && status.compatible == Some(false))
     }
@@ -179,5 +184,15 @@ mod tests {
             ..Snapshot::default()
         };
         assert!(snapshot.enrolled() && snapshot.stale());
+    }
+
+    #[test]
+    fn a_status_from_facekey_names_the_part_it_lacks() {
+        let json = r#"{"enrolled":true,"user":"artem","path":"/var/lib/glide-face/artem/profile.dat","missing":"onnxruntime"}"#;
+        let status: Status = serde_json::from_str(json).expect("facekey -status parses");
+        let snapshot = Snapshot { installed: true, status: Some(status), ..Snapshot::default() };
+        assert_eq!(snapshot.missing(), Some("onnxruntime"), "the panel explains instead of opening a black camera");
+        let ready: Status = serde_json::from_str(r#"{"enrolled":true,"user":"artem"}"#).expect("parses");
+        assert_eq!(Snapshot { status: Some(ready), ..Snapshot::default() }.missing(), None);
     }
 }

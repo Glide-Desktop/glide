@@ -18,6 +18,9 @@ mod tr {
     crate::i18n::catalogue! {
         NotInstalled => "FaceKey is not installed", "FaceKey не встановлено";
         NotInstalledHint => "Install the facekey package to unlock with your face.", "Установіть пакет facekey, щоб розблоковувати комп’ютер обличчям.";
+        NotReady => "FaceKey is missing a part", "FaceKey бракує частини";
+        MissingRuntime => "The recognition engine (ONNX Runtime) is not installed. Install the onnxruntime-cpu package or run scripts/install.sh again.", "Не встановлено рушій розпізнавання (ONNX Runtime). Установіть пакет onnxruntime-cpu або запустіть scripts/install.sh ще раз.";
+        MissingModels => "The recognition models are not in /usr/share/glide/face. Run scripts/install.sh again.", "Моделей розпізнавання немає в /usr/share/glide/face. Запустіть scripts/install.sh ще раз.";
         StaleTitle => "Add your face again", "Додайте обличчя ще раз";
         StaleText => "FaceKey was updated and the old face no longer fits. Use the password for now.", "FaceKey оновився, і старе обличчя більше не підходить. Поки що входьте паролем.";
         CameraBadTitle => "This camera won’t do", "Ця камера не підійде";
@@ -568,6 +571,10 @@ impl Pane for Page {
         };
         if !snapshot.installed {
             return widgets::empty_state(t, Icon::Face, c.t(T::NotInstalled), c.t(T::NotInstalledHint));
+        }
+        if let Some(missing) = snapshot.missing() {
+            let hint = if missing == "models" { T::MissingModels } else { T::MissingRuntime };
+            return widgets::empty_state(t, Icon::Face, c.t(T::NotReady), c.t(hint));
         }
         let mut page = Column::new().spacing(theme::SECTION_GAP);
         if let Some(error) = &self.error {

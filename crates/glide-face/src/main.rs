@@ -165,6 +165,11 @@ fn status_mode(store: &Store) -> ExitCode {
     info.insert("enrolled".into(), exists.into());
     info.insert("user".into(), store.username.clone().into());
     info.insert("path".into(), store.profile_path().to_string_lossy().into_owned().into());
+    if !glide_face::biometrics::models::installed() {
+        info.insert("missing".into(), "models".into());
+    } else if glide_face::biometrics::ort_init::library().is_none() {
+        info.insert("missing".into(), "onnxruntime".into());
+    }
     if exists {
         match store.load() {
             Ok(p) => {
