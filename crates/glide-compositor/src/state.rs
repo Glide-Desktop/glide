@@ -4044,6 +4044,7 @@ impl GlideState {
         ui.reserve_face(face);
         ui.set_status(self.lock_status());
         self.greeter = Some(ui);
+        self.sync_face_timer();
         self.sync_greeter_layout();
         self.break_grabs_for_lock();
         self.apply_keyboard_focus();
@@ -4084,6 +4085,26 @@ impl GlideState {
             Ok(()) => tracing::info!(?trigger, "face unlock is looking"),
             Err(err) => tracing::warn!("face unlock could not start {}: {err}", binary.display()),
         }
+        self.sync_face_timer();
+    }
+
+    fn sync_face_timer(&mut self) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        if let Some(token) = self.session.face_unlock.timer.take() {
+            self.loop_handle.remove(token);
+        }
+        let Some(at) = self.session.face_unlock.due() else {
+            return;
+        };
+        let armed = self.loop_handle.insert_source(Timer::from_deadline(at), |_, (), state| {
+            state.session.face_unlock.timer = None;
+            state.wake_face_unlock(crate::face_unlock::Trigger::Auto);
+            TimeoutAction::Drop
+        });
+        match armed {
+            Ok(token) => self.session.face_unlock.timer = Some(token),
+            Err(err) => tracing::error!("failed to arm the face unlock timer: {err}"),
+        }
     }
 
     fn face_sender(&mut self) -> Option<smithay::reexports::calloop::channel::Sender<crate::face_unlock::Message>> {
@@ -4106,7 +4127,9 @@ impl GlideState {
 
     fn handle_face_message(&mut self, message: &crate::face_unlock::Message) {
         use crate::face_unlock::Outcome;
-        match self.session.face_unlock.receive(message) {
+        let outcome = self.session.face_unlock.receive(message);
+        self.sync_face_timer();
+        match outcome {
             Outcome::Nothing => return,
             Outcome::Show(face) => {
                 if let Some(greeter) = self.greeter.as_mut().filter(|greeter| greeter.is_lock()) {
@@ -4131,11 +4154,14 @@ impl GlideState {
     }
 
     pub fn stop_face_unlock(&mut self, screen_off: bool) {
+        let was_running = self.session.face_unlock.running();
         if screen_off {
             self.session.face_unlock.screen_off();
-        } else if self.session.face_unlock.running() {
-            self.session.face_unlock.stop();
         } else {
+            self.session.face_unlock.hold();
+        }
+        self.sync_face_timer();
+        if !screen_off && !was_running {
             return;
         }
         if let Some(greeter) =
@@ -4147,6 +4173,7 @@ impl GlideState {
 
     pub fn unlock_screen(&mut self) {
         self.session.face_unlock.end_lock();
+        self.sync_face_timer();
         if let Some(greeter) = self.greeter.as_mut().filter(|greeter| greeter.is_lock()) {
             greeter.set_auth_success();
             greeter.leave();
@@ -4502,6 +4529,7 @@ impl GlideState {
                 greeter.set_auth_success();
                 greeter.leave();
                 self.session.face_unlock.end_lock();
+                self.sync_face_timer();
                 if let Some(password) = password {
                     let password = glide_ipc::keychain::Hidden::new(password.as_str().to_owned());
                     self.keychain(glide_ipc::keychain::Request::LoginPassword { password }, |_, response| {
@@ -4591,6 +4619,7 @@ impl GlideState {
 
     fn finish_unlock(&mut self) {
         self.session.face_unlock.end_lock();
+        self.sync_face_timer();
         self.greeter = None;
         self.apply_keyboard_focus();
         self.reconcile_space();

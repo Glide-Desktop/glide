@@ -8,12 +8,39 @@ use glide_config::facekey::{Event, Reason};
 use glide_greeter::ui::FaceState;
 
 const GRACE: Duration = Duration::from_secs(1);
+const LOCK_GRACE: Duration = Duration::from_secs(6);
+const AWAY_RETRY: Duration = Duration::from_secs(2);
+const MISS_RETRY: Duration = Duration::from_secs(4);
+const BUSY_RETRY: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
     Press,
     Wake,
     Retry,
+    Auto,
+}
+
+#[must_use]
+pub fn retry_after(reason: Reason) -> Option<Duration> {
+    match reason {
+        Reason::NoFace | Reason::Timeout | Reason::TooDark | Reason::TooFar | Reason::OffFrame => Some(AWAY_RETRY),
+        Reason::CameraBusy => Some(BUSY_RETRY),
+        Reason::TooBright
+        | Reason::Blurry
+        | Reason::HeadTurned
+        | Reason::Moving
+        | Reason::Spoof
+        | Reason::Mismatch
+        | Reason::OtherPerson => Some(MISS_RETRY),
+        Reason::Passed
+        | Reason::NoCamera
+        | Reason::CameraUntrusted
+        | Reason::NotEnrolled
+        | Reason::StaleProfile
+        | Reason::Remote
+        | Reason::Error => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,11 +116,14 @@ impl Drop for Run {
 pub struct FaceUnlock {
     pub config: glide_config::facekey::Config,
     pub sender: Option<smithay::reexports::calloop::channel::Sender<Message>>,
+    pub timer: Option<smithay::reexports::calloop::RegistrationToken>,
     generation: u64,
     run: Option<Run>,
     locked_at: Option<Instant>,
     tried_since_wake: bool,
     passed: bool,
+    retry: Option<Duration>,
+    auto_after: Option<Instant>,
 }
 
 impl FaceUnlock {
@@ -101,16 +131,29 @@ impl FaceUnlock {
         self.stop();
         self.locked_at = Some(now);
         self.tried_since_wake = false;
+        self.auto_after = Some(now + LOCK_GRACE);
     }
 
     pub fn end_lock(&mut self) {
         self.stop();
         self.locked_at = None;
+        self.auto_after = None;
     }
 
     pub fn screen_off(&mut self) {
         self.stop();
         self.tried_since_wake = false;
+        self.auto_after = None;
+    }
+
+    pub fn hold(&mut self) {
+        self.stop();
+        self.auto_after = None;
+    }
+
+    #[must_use]
+    pub fn due(&self) -> Option<Instant> {
+        self.auto_after.filter(|_| self.locked_at.is_some() && self.run.is_none())
     }
 
     pub fn stop(&mut self) {
@@ -132,6 +175,7 @@ impl FaceUnlock {
         }
         match trigger {
             Trigger::Retry => true,
+            Trigger::Auto => self.auto_after.is_some_and(|at| now >= at),
             Trigger::Wake => !self.tried_since_wake,
             Trigger::Press => !self.tried_since_wake && now.saturating_duration_since(locked_at) >= GRACE,
         }
@@ -140,6 +184,8 @@ impl FaceUnlock {
     pub fn start(&mut self, binary: &Path, sink: impl Fn(Message) + Send + 'static) -> std::io::Result<()> {
         self.stop();
         self.tried_since_wake = true;
+        self.auto_after = None;
+        self.retry = None;
         self.run = Some(Run::start(binary, self.generation, sink)?);
         Ok(())
     }
@@ -155,13 +201,19 @@ impl FaceUnlock {
                 Outcome::Nothing
             }
             Note::Event(Event::Finished { success: false, reason } | Event::Failed { reason, .. }) => {
+                self.retry = retry_after(*reason);
                 Outcome::Show(shown_for(*reason))
             }
             Note::Event(_) => Outcome::Nothing,
             Note::Ended { exited_cleanly } => {
                 let passed = std::mem::take(&mut self.passed) && *exited_cleanly;
                 self.run = None;
-                if passed { Outcome::Unlock } else { Outcome::Nothing }
+                if passed {
+                    return Outcome::Unlock;
+                }
+                self.auto_after =
+                    self.retry.take().filter(|_| self.locked_at.is_some()).map(|gap| Instant::now() + gap);
+                Outcome::Nothing
             }
         }
     }
@@ -178,18 +230,15 @@ pub fn shown_for(reason: Reason) -> Option<FaceState> {
         | Reason::Remote
         | Reason::Error => None,
         Reason::Passed => Some(FaceState::Recognised),
-        Reason::NoFace
-        | Reason::TooDark
+        Reason::NoFace | Reason::Timeout | Reason::TooFar | Reason::OffFrame => Some(FaceState::Looking),
+        Reason::TooDark
         | Reason::TooBright
         | Reason::Blurry
-        | Reason::TooFar
-        | Reason::OffFrame
         | Reason::HeadTurned
         | Reason::Moving
         | Reason::Spoof
         | Reason::Mismatch
-        | Reason::OtherPerson
-        | Reason::Timeout => Some(FaceState::Rejected),
+        | Reason::OtherPerson => Some(FaceState::Rejected),
     }
 }
 
@@ -316,10 +365,41 @@ exit 1"#,
     }
 
     #[test]
+    fn the_lock_screen_keeps_looking_on_its_own_until_the_screen_goes_dark() {
+        let mut unlock = FaceUnlock::default();
+        let locked = Instant::now();
+        unlock.begin_lock(locked);
+        assert_eq!(unlock.due(), Some(locked + LOCK_GRACE), "after Super+L there is time to walk away");
+        assert!(!unlock.wants_start(locked, Trigger::Auto));
+        assert!(unlock.wants_start(locked + LOCK_GRACE, Trigger::Auto), "then it looks without a key press");
+
+        let generation = running(&mut unlock);
+        assert_eq!(unlock.due(), None, "no second look while one runs");
+        unlock.receive(&event(generation, Event::Finished { success: false, reason: Reason::NoFace }));
+        let ended = Message { generation, note: Note::Ended { exited_cleanly: false } };
+        assert_eq!(unlock.receive(&ended), Outcome::Nothing);
+        let next = unlock.due().expect("nobody was there, so it looks again soon");
+        assert!(next <= Instant::now() + AWAY_RETRY);
+
+        let generation = running(&mut unlock);
+        unlock.receive(&event(generation, Event::Finished { success: false, reason: Reason::NotEnrolled }));
+        unlock.receive(&Message { generation, note: Note::Ended { exited_cleanly: false } });
+        assert_eq!(unlock.due(), None, "a face that cannot work is not retried");
+
+        unlock.begin_lock(locked);
+        unlock.screen_off();
+        assert_eq!(unlock.due(), None, "a dark screen keeps the camera off");
+        unlock.begin_lock(locked);
+        unlock.hold();
+        assert_eq!(unlock.due(), None, "a typed password stops the looking");
+    }
+
+    #[test]
     fn reasons_choose_what_the_lock_screen_shows() {
         assert_eq!(shown_for(Reason::Mismatch), Some(FaceState::Rejected));
         assert_eq!(shown_for(Reason::Spoof), Some(FaceState::Rejected));
-        assert_eq!(shown_for(Reason::Timeout), Some(FaceState::Rejected));
+        assert_eq!(shown_for(Reason::Timeout), Some(FaceState::Looking), "nobody there: keep looking quietly");
+        assert_eq!(shown_for(Reason::NoFace), Some(FaceState::Looking));
         assert_eq!(shown_for(Reason::CameraBusy), Some(FaceState::CameraBusy));
         assert_eq!(shown_for(Reason::NotEnrolled), None, "no face added, nothing to show");
         assert_eq!(shown_for(Reason::NoCamera), None);
