@@ -50,6 +50,7 @@ pub use island::{ALERT_HOLD, IslandAlert};
 
 mod status;
 
+mod face_tip;
 mod tray;
 
 mod headset_view;
@@ -936,6 +937,7 @@ pub struct Topbar {
     island: island::Island,
     indicators: status::Indicators,
     tray: tray::TrayStrip,
+    face_tip: face_tip::FaceTip,
     slides: HashMap<(i32, i32), glide_ui::Tween>,
     home: Option<Rectangle<i32, Logical>>,
     placements: HashMap<(i32, i32), Placement>,
@@ -1283,7 +1285,7 @@ impl Topbar {
             || self.menu_births.values().any(Anim::is_animating);
         let detail = self.qs_panel.is_animating();
         let extras = self.calendar.is_animating() || self.indicators.is_animating() || self.island.is_animating();
-        let tray = self.tray_is_animating();
+        let tray = self.tray_is_animating() || self.face_tip.is_animating();
         let sliding = self.slides.values().any(|slide| slide.is_animating(motion::t3()));
         popup || layers || controls || detail || extras || tray || sliding || self.pending_settle()
     }
@@ -3639,6 +3641,11 @@ where
 
     let strip = topbar.rect(output);
     let mut frame = Frame { renderer, painter, icons, scale, output_scale, elements: Vec::new() };
+
+    {
+        let (renderer, painter, _, scale, output_scale, elements) = frame.parts();
+        face_tip::push(topbar, renderer, painter, output, (scale, output_scale), elements);
+    }
 
     if bar_hidden {
         if topbar.floats() {

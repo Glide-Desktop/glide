@@ -955,6 +955,11 @@ impl Topbar {
     }
 
     #[must_use]
+    pub(super) fn polkit_face(&self) -> Option<crate::polkit::Face> {
+        self.island.polkit.as_ref().and_then(|view| view.face)
+    }
+
+    #[must_use]
     pub fn keychain_shown(&self) -> bool {
         self.island.keychain.is_some() && self.island.view == View::Keychain
     }
