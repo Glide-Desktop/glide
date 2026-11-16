@@ -246,11 +246,32 @@ pub fn shown_for(reason: Reason) -> Option<FaceState> {
 mod tests {
     use super::*;
 
+    fn scratch_script() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("glide-face-unlock-test-{}-{n}", std::process::id()))
+    }
+
+    fn start_stand_in(
+        unlock: &mut FaceUnlock, script: &Path, sink: impl Fn(Message) + Send + Clone + 'static,
+    ) -> std::io::Result<()> {
+        let mut tries = 0;
+        loop {
+            match unlock.start(script, sink.clone()) {
+                Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+
     fn running(unlock: &mut FaceUnlock) -> u64 {
-        let script = std::env::temp_dir().join(format!("glide-face-unlock-test-{}", std::process::id()));
+        let script = scratch_script();
         let _ = std::fs::write(&script, "#!/bin/sh\nsleep 30\n");
         let _ = std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755));
-        unlock.start(&script, |_| {}).expect("a stand-in facekey starts");
+        start_stand_in(unlock, &script, |_| {}).expect("a stand-in facekey starts");
         let _ = std::fs::remove_file(&script);
         unlock.generation
     }
@@ -318,13 +339,13 @@ mod tests {
     }
 
     fn run_script(body: &str) -> Vec<Outcome> {
-        let script = std::env::temp_dir().join(format!("glide-face-unlock-run-{}-{}", std::process::id(), body.len()));
+        let script = scratch_script();
         std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).expect("write the stand-in");
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).expect("chmod");
         let (sender, receiver) = std::sync::mpsc::channel();
         let mut unlock = FaceUnlock::default();
         unlock.begin_lock(Instant::now());
-        unlock.start(&script, move |message| drop(sender.send(message))).expect("the stand-in starts");
+        start_stand_in(&mut unlock, &script, move |message| drop(sender.send(message))).expect("the stand-in starts");
         let mut outcomes = Vec::new();
         while let Ok(message) = receiver.recv_timeout(Duration::from_secs(10)) {
             let ended = matches!(message.note, Note::Ended { .. });
