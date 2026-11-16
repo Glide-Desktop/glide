@@ -38,6 +38,7 @@ mod tr {
         LogicalResolution => "Logical resolution", "Логічна роздільність";
         Position => "Position", "Позиція";
         BuiltIn => "Built-in display", "Вбудований дисплей";
+        BuiltInShort => "Built-in", "Вбудований";
         External => "External display", "Зовнішній дисплей";
         Current => "Current", "Поточний";
         KeepQuestion => "Keep these display settings?", "Залишити ці налаштування дисплея?";
@@ -512,7 +513,7 @@ impl Page {
             let (w, h) = sizes[slot];
             let size = ((w * factor) as f32, (h * factor) as f32);
             monitors = monitors.push(monitor_tile(
-                &t,
+                c,
                 output,
                 index,
                 self.effective_scale(config, index),
@@ -760,16 +761,16 @@ impl Page {
 }
 
 fn monitor_tile<'a>(
-    t: &theme::ThemeState, output: &OutputInfo, index: usize, scale: f64, size: (f32, f32), selected: bool,
+    c: &Ctx, output: &OutputInfo, index: usize, scale: f64, size: (f32, f32), selected: bool,
 ) -> Element<'a, Msg> {
-    let detail = format!("{} · {}", resolution_text(output.width, output.height), display::scale_label(scale));
+    let t = c.theme;
+    let detail = format!("{} · {}", output.name, display::scale_label(scale));
+    let name =
+        if display::is_internal(&output.name) { c.t(tr::Key::BuiltInShort).to_string() } else { monitor_model(output) };
     let paint = t.paint;
-    let labels = column![
-        text(output.name.clone(), TextStyle::HEAD).color(t.fg_1()),
-        text(detail, TextStyle::CAP).color(t.fg_2()),
-    ]
-    .spacing(4)
-    .align_x(Alignment::Center);
+    let labels = column![text(name, TextStyle::HEAD).color(t.fg_1()), text(detail, TextStyle::CAP).color(t.fg_2()),]
+        .spacing(4)
+        .align_x(Alignment::Center);
     let face = container(labels)
         .center_x(iced::Length::Fixed(size.0.max(72.0)))
         .center_y(iced::Length::Fixed(size.1.max(44.0)))
@@ -785,6 +786,15 @@ fn monitor_tile<'a>(
     let message = Msg::Select(index);
     let clickable = mouse_area(face).on_press(message.clone()).interaction(iced::mouse::Interaction::Pointer);
     glide_sdk::widget::focusable(&paint, clickable, glide_sdk::theme::R1).on_activate(Some(message)).into()
+}
+
+fn monitor_model(output: &OutputInfo) -> String {
+    let parts: Vec<_> = [&output.make, &output.model]
+        .into_iter()
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty() && !part.eq_ignore_ascii_case("unknown"))
+        .collect();
+    if parts.is_empty() { output.name.clone() } else { parts.join(" ") }
 }
 
 fn fixed_mode_rows<'a>(c: &Ctx, output: &OutputInfo) -> Vec<Element<'a, Msg>> {
