@@ -1,0 +1,59 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  org.glide.Config1, served by glide-configd as org.glide.Config at
+  /org/glide/Config1 on the session bus.
+
+  This file is the contract. glide-configd's tests check that the served
+  interface has exactly these members; a change here that removes or alters a
+  member needs a new interface name (org.glide.Config2).
+
+  Settings live in namespaces ("shell", "terminal", ...). Every namespace has
+  a defaults file, /usr/share/glide/defaults/<namespace>.json, installed by the
+  package that owns it; only keys listed there exist. Values travel as JSON
+  text. Only values that differ from their default are stored.
+-->
+<node>
+  <interface name="org.glide.Config1">
+    <!-- One value, its default when it was never set. -->
+    <method name="Get">
+      <arg name="namespace" type="s" direction="in"/>
+      <arg name="key" type="s" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!-- Every key of a namespace with its current value. -->
+    <method name="GetAll">
+      <arg name="namespace" type="s" direction="in"/>
+      <arg type="a{ss}" direction="out"/>
+    </method>
+    <!-- Sets several keys in one transaction: an unknown key or a value of
+         another JSON kind refuses the whole batch. The "permissions" and
+         "passwords" namespaces take writes only from Glide's own programs. -->
+    <method name="SetMany">
+      <arg name="namespace" type="s" direction="in"/>
+      <arg name="values" type="a{ss}" direction="in"/>
+    </method>
+    <!-- Returns keys to their defaults. -->
+    <method name="Reset">
+      <arg name="namespace" type="s" direction="in"/>
+      <arg name="keys" type="as" direction="in"/>
+    </method>
+    <!-- The newest changes first, as a JSON array of
+         {id, key, before, after, at, origin}; null means the default. -->
+    <method name="History">
+      <arg name="namespace" type="s" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <!-- Puts a key back to what it was before change id, only while the
+         value that change wrote still stands. -->
+    <method name="Undo">
+      <arg name="id" type="x" direction="in"/>
+    </method>
+    <!-- The keys that changed in one call, with their new values. -->
+    <signal name="Changed">
+      <arg name="namespace" type="s"/>
+      <arg name="values" type="a{ss}"/>
+    </signal>
+  </interface>
+</node>

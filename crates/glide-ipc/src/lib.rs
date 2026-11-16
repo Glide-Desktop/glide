@@ -37,6 +37,7 @@ pub enum WindowSelector {
 }
 
 pub mod client;
+pub mod config;
 pub mod keychain;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

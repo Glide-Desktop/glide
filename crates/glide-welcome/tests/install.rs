@@ -20,6 +20,7 @@ fn installer_stages_the_welcome_binary_desktop_entry_and_icon() {
     for name in [
         "glide",
         "glidectl",
+        "glide-configd",
         "glide-settings",
         "glide-files",
         "glide-terminal",

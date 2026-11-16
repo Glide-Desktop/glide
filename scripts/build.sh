@@ -42,21 +42,21 @@ distro_id() {
 package_hint() {
     case "$(distro_id)" in
         arch)
-            echo "sudo pacman -S --needed base-devel git pkgconf seatd systemd-libs libinput mesa libxkbcommon libdisplay-info" ;;
+            echo "sudo pacman -S --needed base-devel git pkgconf seatd systemd-libs libinput mesa libxkbcommon libdisplay-info sqlite" ;;
         debian|ubuntu)
-            echo "sudo apt install build-essential git pkg-config libseat-dev libudev-dev libinput-dev libgbm-dev libxkbcommon-dev libdisplay-info-dev" ;;
+            echo "sudo apt install build-essential git pkg-config libseat-dev libudev-dev libinput-dev libgbm-dev libxkbcommon-dev libdisplay-info-dev libsqlite3-dev" ;;
         fedora|rhel)
-            echo "sudo dnf install gcc git pkgconf-pkg-config libseat-devel systemd-devel libinput-devel mesa-libgbm-devel libxkbcommon-devel libdisplay-info-devel" ;;
+            echo "sudo dnf install gcc git pkgconf-pkg-config libseat-devel systemd-devel libinput-devel mesa-libgbm-devel libxkbcommon-devel libdisplay-info-devel sqlite-devel" ;;
         opensuse*|suse)
-            echo "sudo zypper install gcc git pkgconf libseat-devel systemd-devel libinput-devel libgbm-devel libxkbcommon-devel libdisplay-info-devel" ;;
+            echo "sudo zypper install gcc git pkgconf libseat-devel systemd-devel libinput-devel libgbm-devel libxkbcommon-devel libdisplay-info-devel sqlite3-devel" ;;
         void)
-            echo "sudo xbps-install base-devel git pkg-config libseat-devel eudev-libudev-devel libinput-devel libgbm-devel libxkbcommon-devel libdisplay-info-devel" ;;
+            echo "sudo xbps-install base-devel git pkg-config libseat-devel eudev-libudev-devel libinput-devel libgbm-devel libxkbcommon-devel libdisplay-info-devel sqlite-devel" ;;
         alpine)
-            echo "sudo apk add build-base git pkgconf seatd-dev eudev-dev libinput-dev mesa-dev libxkbcommon-dev libdisplay-info-dev" ;;
+            echo "sudo apk add build-base git pkgconf seatd-dev eudev-dev libinput-dev mesa-dev libxkbcommon-dev libdisplay-info-dev sqlite-dev" ;;
         gentoo)
-            echo "sudo emerge --noreplace sys-auth/seatd virtual/libudev dev-libs/libinput media-libs/mesa x11-libs/libxkbcommon media-libs/libdisplay-info" ;;
+            echo "sudo emerge --noreplace sys-auth/seatd virtual/libudev dev-libs/libinput media-libs/mesa x11-libs/libxkbcommon media-libs/libdisplay-info dev-db/sqlite" ;;
         *)
-            echo "install the development packages for: libseat libudev libinput gbm xkbcommon libdisplay-info" ;;
+            echo "install the development packages for: libseat libudev libinput gbm xkbcommon libdisplay-info sqlite3" ;;
     esac
 }
 
@@ -83,7 +83,7 @@ if [ "$CHECKS" -eq 1 ]; then
     done
 
     if command -v pkg-config >/dev/null 2>&1; then
-        for module in libseat libudev "libinput >= 1.19" gbm xkbcommon "libdisplay-info >= 0.1" "libdisplay-info < 0.4"; do
+        for module in libseat libudev "libinput >= 1.19" gbm xkbcommon "libdisplay-info >= 0.1" "libdisplay-info < 0.4" sqlite3; do
             pkg-config --exists "$module" || missing="$missing [$module]"
         done
     fi
@@ -105,7 +105,7 @@ OUT="$REPO/target/release"
 
 echo
 echo "built:"
-for bin in glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed facekey; do
+for bin in glide glidectl glide-configd glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed facekey; do
     echo "  $OUT/$bin"
 done
 echo "  $OUT/libpam_glide_keychain.so"

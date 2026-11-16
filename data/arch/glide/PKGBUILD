@@ -32,6 +32,7 @@ depends=(
     pipewire-pulse
     polkit
     seatd
+    sqlite
     systemd-libs
     wireplumber
     wl-clipboard

@@ -107,16 +107,16 @@ else
     UNITDIR="$PREFIX/lib/systemd/user"
 fi
 
-BINARIES="glide glidectl glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed facekey"
+BINARIES="glide glidectl glide-configd glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-catalog glide-portal glide-keychain glide-phone glide-welcome glide-xembed facekey"
 FACE_FILES=""
 for model in $FACE_MODELS; do
     FACE_FILES="$FACE_FILES $FACEDIR/$model"
 done
-FILES="$BINDIR/facekey $POLKITDIR/org.glide.facekey.policy$FACE_FILES $FACELIBDIR/libonnxruntime.so$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-photos $BINDIR/glide-folio $BINDIR/glide-clips $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-phone $BINDIR/glide-session $BINDIR/glide-lock
+FILES="$BINDIR/facekey $POLKITDIR/org.glide.facekey.policy$FACE_FILES $FACELIBDIR/libonnxruntime.so$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-configd $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-photos $BINDIR/glide-folio $BINDIR/glide-clips $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-phone $BINDIR/glide-session $BINDIR/glide-lock
 $BINDIR/glide-welcome $BINDIR/glide-xembed $APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-passwords.desktop $APPDIR/glide-photos.desktop $APPDIR/glide-folio.desktop $APPDIR/glide-clips.desktop $APPDIR/glide-catalog.desktop $APPDIR/glide-phone.desktop $APPDIR/glide-welcome.desktop $AUTOSTARTDIR/glide-phone.desktop $ICONDIR/glide-folio.svg $ICONDIR/glide-phone.svg $ICONDIR/glide-welcome.svg $ICONDIR/org.kde.kdeconnect.svg $SOUNDDIR/terminal-bell.mp3 $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
 $PORTALDIR/portals/glide.portal $DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service
-$DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service $DBUSDIR/org.glide.Phone.service
-$INTERFACEDIR/org.glide.Shell1.xml
+$DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service $DBUSDIR/org.glide.Phone.service $DBUSDIR/org.glide.Config.service
+$INTERFACEDIR/org.glide.Shell1.xml $INTERFACEDIR/org.glide.Config1.xml
 $SEARCHDIR/glide-files-search-provider.ini $SEARCHDIR/glide-terminal-search-provider.ini
 $UNITDIR/glide.service $UNITDIR/glide-shutdown.target $PAMDIR/glide-lock $PAM_MODULEDIR/$PAM_MODULE"
 
@@ -225,12 +225,12 @@ chmod 644 "$DESTDIR$DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service"
 for name in glide-files-search-provider.ini glide-terminal-search-provider.ini; do
     install -Dm644 "$ROOT/data/$name" "$DESTDIR$SEARCHDIR/$name"
 done
-for name in org.glide.Files.service org.glide.Terminal.service org.glide.Phone.service; do
+for name in org.glide.Files.service org.glide.Terminal.service org.glide.Phone.service org.glide.Config.service; do
     sed "s|^Exec=/usr/local/bin/|Exec=$BINDIR/|" "$ROOT/data/$name" > "$DESTDIR$DBUSDIR/$name"
     chmod 644 "$DESTDIR$DBUSDIR/$name"
 done
 install -Dm644 "$ROOT/data/glide-phone-autostart.desktop" "$DESTDIR$AUTOSTARTDIR/glide-phone.desktop"
-for name in org.glide.Shell1.xml; do
+for name in org.glide.Shell1.xml org.glide.Config1.xml; do
     install -Dm644 "$ROOT/data/dbus/$name" "$DESTDIR$INTERFACEDIR/$name"
 done
 install -d "$DESTDIR$POLKITDIR"
