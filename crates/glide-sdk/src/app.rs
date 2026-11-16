@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::ffi::OsString;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use glide_app::menubar::{self, Handles, Publisher};
 use glide_iced::Paint;
@@ -327,6 +327,7 @@ pub enum Event<M> {
     App(M),
     Window(Action),
     Look(glide_app::Look),
+    Settings(glide_app::config::Values),
     Motion(bool),
     Tick,
     Frame,
@@ -348,7 +349,7 @@ struct Host<A: App> {
     shell: Shell<A::Message>,
     shell_look: Option<glide_app::Look>,
     font_family: Option<String>,
-    stamp: Option<SystemTime>,
+    settings: glide_app::config::Values,
     handles: Option<Handles>,
     publisher: Option<Publisher>,
     menus: Vec<Menu<A::Message>>,
@@ -359,7 +360,8 @@ const BAR_START: f32 = SP2 + component::SMALL_CONTROL + SP2;
 
 impl<A: App> Host<A> {
     fn boot(app_id: &str, chrome: Chrome, single: bool) -> (Self, Task<Event<A::Message>>) {
-        let look = Look::load();
+        let settings = look::shell_settings();
+        let look = Look::from_values(&settings, look::reduced_motion());
         motion::set_scale(look.motion_scale);
         let font_family = look.font_family.clone();
         glide_iced::font::use_ui_family(font_family.as_deref());
@@ -379,7 +381,7 @@ impl<A: App> Host<A> {
             shell,
             shell_look: None,
             font_family,
-            stamp: look::stamp(look::shell_path().as_deref()),
+            settings,
             handles: None,
             publisher: None,
             menus: Vec::new(),
@@ -391,7 +393,7 @@ impl<A: App> Host<A> {
     }
 
     fn apply_look(&mut self) {
-        let look = Look::load().with_shell(self.shell_look.as_ref());
+        let look = Look::from_values(&self.settings, look::reduced_motion()).with_shell(self.shell_look.as_ref());
         motion::set_scale(look.motion_scale);
         if self.font_family != look.font_family {
             glide_iced::font::use_ui_family(look.font_family.as_deref());
@@ -464,6 +466,14 @@ impl<A: App> Host<A> {
                 self.apply_look();
                 self.look_changed()
             }
+            Event::Settings(settings) => {
+                if settings == self.settings {
+                    return Task::none();
+                }
+                self.settings = settings;
+                self.apply_look();
+                self.look_changed()
+            }
             Event::Motion(_) => {
                 self.apply_look();
                 self.look_changed()
@@ -471,12 +481,6 @@ impl<A: App> Host<A> {
             Event::Tick => {
                 let now = Instant::now();
                 self.shell.toast.take_if(|toast| toast.expired(now));
-                let stamp = look::stamp(look::shell_path().as_deref());
-                if stamp != self.stamp {
-                    self.stamp = stamp;
-                    self.apply_look();
-                    return self.look_changed();
-                }
                 if self.shell.preview.is_none()
                     && self.shell.look.appearance_now() != self.shell.paint.tokens.appearance
                 {
@@ -755,6 +759,7 @@ impl<A: App> Host<A> {
             iced::window::close_requests().map(|_| Event::CloseRequested),
             iced::time::every(TICK).map(|_| Event::Tick),
             Subscription::run(glide_app::look_changes).map(Event::Look),
+            Subscription::run(look::settings_changes).map(Event::Settings),
             self.app.subscription().map(Event::App),
         ];
         if self.shell_look.is_none() {
@@ -861,7 +866,7 @@ impl<A: App> Harness<A> {
             shell,
             shell_look: None,
             font_family: None,
-            stamp: None,
+            settings: glide_app::config::Values::new(),
             handles: None,
             publisher: None,
             menus: Vec::new(),

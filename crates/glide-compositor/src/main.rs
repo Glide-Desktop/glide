@@ -17,7 +17,6 @@ mod cast;
 mod clip;
 mod clipboard;
 mod config;
-mod config_repair;
 mod content_blur;
 mod cursor;
 mod decoration;
@@ -114,7 +113,7 @@ Options:
   -h, --help      show this help and exit
   -V, --version   show the version and exit
 
-Configuration is read from $XDG_CONFIG_HOME/glide/glide.toml; `glidectl`
+Settings come from the glide-configd service (org.glide.Config); `glidectl`
 talks to a running session.";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -177,7 +176,9 @@ fn run() -> anyhow::Result<()> {
 
     state.handoff = handoff::Handoff::from_environment();
 
-    let config = config::Config::load_or_default();
+    let is_greeter = std::env::args().any(|arg| arg == "--greeter")
+        || (std::env::var("GREETD_SOCK").is_ok() && std::env::var("GLIDE_SESSION").is_err());
+    let config = if is_greeter { config::Config::with_defaults() } else { config::Config::load_or_default() };
     config.apply_to_state(&mut state);
 
     crate::backend::tty::init_tty(&mut event_loop, &mut state, notifier)?;
@@ -195,8 +196,6 @@ fn run() -> anyhow::Result<()> {
         unsafe { std::env::set_var("GLIDE_IPC_SOCK", server.socket_path()) };
     }
 
-    let is_greeter = std::env::args().any(|arg| arg == "--greeter")
-        || (std::env::var("GREETD_SOCK").is_ok() && std::env::var("GLIDE_SESSION").is_err());
     let login_session = is_greeter || state.handoff.is_some();
 
     if is_greeter {
@@ -309,6 +308,7 @@ fn init_session_services(
         xdg_autostart::spawn_all(glide_config::autostart::Provided::detect(config.general.polkit_agent));
     }
     init_shell_bus(event_loop, state);
+    init_settings(event_loop);
     init_bluetooth_agent(event_loop);
     init_network_agent(event_loop);
     init_disk_space(event_loop);
@@ -325,12 +325,28 @@ fn init_session_services(
     Ok(())
 }
 
+fn init_settings(event_loop: &mut EventLoop<'static, GlideState>) {
+    let (send, receiver) = sink::<glide_app::config::Values>("the settings");
+    glide_app::config::watch_with(glide_ipc::config::SHELL, move |values| {
+        send(values);
+        true
+    });
+    watch(event_loop, receiver, "the settings channel", |state, values| match config::Config::from_values(&values) {
+        Ok(config) if config != state.session.config => {
+            config.apply_to_state(state);
+            state.queue_redraw();
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!("the settings changed into something unreadable ({err}); keeping the running ones"),
+    });
+}
+
 fn init_shell_bus(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {
     let (send, receiver) = sink::<shell_bus::Event>("a shell bus request");
     match shell_bus::start(state.shell_snapshot(), send) {
         Ok(handle) => state.session.shell_bus = Some(handle),
         Err(err) => {
-            tracing::warn!("{} is unavailable ({err}); apps fall back to reading glide.toml", glide_app::BUS_NAME);
+            tracing::warn!("{} is unavailable ({err}); apps follow the settings service alone", glide_app::BUS_NAME);
             return;
         }
     }

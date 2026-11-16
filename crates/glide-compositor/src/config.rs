@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -12,7 +12,7 @@ use crate::{GlideState, input::ResolvedKeybind};
 pub use glide_dock::config::{DockConfig, DockItemConfig};
 pub use glide_theme::{Color, DecorationTheme, OverviewTheme, WallpaperFit};
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -37,12 +37,10 @@ pub struct Config {
     #[serde(rename = "output")]
     pub outputs: Vec<OutputConfig>,
     #[serde(skip)]
-    pub ignored_keys: Vec<String>,
-    #[serde(skip)]
     pub load_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Arrangement {
     #[default]
@@ -50,14 +48,14 @@ pub enum Arrangement {
     Mirror,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DisplaysConfig {
     pub arrangement: Arrangement,
     pub primary: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct AccessibilityConfig {
     pub cursor_size: Option<u32>,
@@ -71,7 +69,7 @@ impl Default for AccessibilityConfig {
 }
 
 #[allow(clippy::struct_excessive_bools)] // Independent [notifications] switches mirrored from glide.toml
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct NotificationsConfig {
     pub do_not_disturb: bool,
@@ -80,8 +78,6 @@ pub struct NotificationsConfig {
     pub to: String,
     pub allow_critical: bool,
     pub banner_seconds: u32,
-    #[serde(rename = "position")]
-    _position: Option<toml::Value>,
     pub muted_apps: Vec<String>,
     pub silent_apps: Vec<String>,
     pub sounds: bool,
@@ -102,7 +98,6 @@ impl Default for NotificationsConfig {
             to: "07:00".to_string(),
             allow_critical: true,
             banner_seconds: 0,
-            _position: None,
             muted_apps: Vec::new(),
             silent_apps: Vec::new(),
             sounds: true,
@@ -141,11 +136,9 @@ impl NotificationsConfig {
 }
 
 #[allow(clippy::struct_excessive_bools)] // Independent [topbar] switches, not a state machine
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct TopbarConfig {
-    #[serde(rename = "enabled")]
-    _enabled: bool,
     pub appearance: glide_theme::Appearance,
     pub appearance_schedule: bool,
     pub accent: glide_theme::Accent,
@@ -163,7 +156,6 @@ pub struct TopbarConfig {
 impl Default for TopbarConfig {
     fn default() -> Self {
         Self {
-            _enabled: true,
             appearance: glide_theme::Appearance::Dark,
             appearance_schedule: false,
             accent: glide_theme::Accent::Blue,
@@ -185,57 +177,12 @@ pub const fn scheduled_appearance(minute_of_day: u16) -> glide_theme::Appearance
     glide_theme::Appearance::scheduled(minute_of_day)
 }
 
-pub fn with_appearance(text: &str, appearance: glide_theme::Appearance) -> Result<String, String> {
-    use toml_edit::{Item, Table, value};
-    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|err: toml_edit::TomlError| err.to_string())?;
-    let item = doc.as_table_mut().entry("topbar").or_insert_with(|| Item::Table(Table::new()));
-    let table = item.as_table_like_mut().ok_or_else(|| "[topbar] is not a table".to_string())?;
-    let name = match appearance {
-        glide_theme::Appearance::Light => "light",
-        glide_theme::Appearance::Dark => "dark",
-    };
-    set_keeping_decor(table, "appearance", value(name));
-    if table.get("appearance-schedule").is_some() {
-        set_keeping_decor(table, "appearance-schedule", value(false));
-    }
-    Ok(doc.to_string())
-}
-
-fn set_keeping_decor(table: &mut dyn toml_edit::TableLike, key: &str, mut item: toml_edit::Item) {
-    if let (Some(old), Some(new)) = (table.get(key).and_then(toml_edit::Item::as_value), item.as_value_mut()) {
-        *new.decor_mut() = old.decor().clone();
-    }
-    table.insert(key, item);
-}
-
-pub fn write_appearance(path: &Path, appearance: glide_theme::Appearance) -> Result<(), String> {
-    glide_config::with_file_lock(path, || {
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(err) => return Err(err),
-        };
-        let updated = with_appearance(&text, appearance).map_err(std::io::Error::other)?;
-        if updated != text {
-            write_atomic(path, updated.as_bytes())?;
-        }
-        Ok(())
-    })
-    .map_err(|err| err.to_string())
-}
-
 pub fn persist_appearance(appearance: glide_theme::Appearance) {
-    let Some(path) = Config::default_path() else {
-        return;
-    };
-    let spawned = std::thread::Builder::new().name("glide-appearance".to_string()).spawn(move || {
-        if let Err(err) = write_appearance(&path, appearance) {
-            tracing::warn!(path = %path.display(), "could not save the appearance: {err}");
-        }
-    });
-    if let Err(err) = spawned {
-        tracing::warn!("the appearance writer did not start: {err}");
-    }
+    let appearance = serde_json::to_value(appearance).expect("an appearance serializes");
+    Config::persist(glide_app::config::Values::from([
+        ("topbar.appearance".to_owned(), appearance),
+        ("topbar.appearance-schedule".to_owned(), serde_json::Value::Bool(false)),
+    ]));
 }
 
 impl TopbarConfig {
@@ -260,7 +207,7 @@ impl TopbarConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct NightLightConfig {
     pub schedule: bool,
@@ -346,7 +293,7 @@ fn parse_clock(text: &str) -> Option<u16> {
     (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct AnimationConfig {
     pub enabled: bool,
@@ -367,7 +314,7 @@ impl AnimationConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum LayoutScope {
     #[default]
@@ -377,7 +324,7 @@ pub enum LayoutScope {
     Window,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NewWindowLayout {
     #[default]
@@ -386,7 +333,7 @@ pub enum NewWindowLayout {
 }
 
 #[allow(clippy::struct_excessive_bools)] // Independent [input] switches mirrored from glide.toml
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct InputConfig {
     pub xkb_layout: String,
@@ -419,7 +366,7 @@ pub struct InputConfig {
     pub layout_indicator: bool,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScrollMethodConfig {
     #[default]
@@ -428,7 +375,7 @@ pub enum ScrollMethodConfig {
     None,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ClickMethodConfig {
     Areas,
@@ -494,7 +441,7 @@ impl Default for InputConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum AccelProfileConfig {
     #[default]
@@ -503,6 +450,23 @@ pub enum AccelProfileConfig {
 }
 
 impl InputConfig {
+    fn fill_system_keyboard(&mut self) {
+        if !self.xkb_layout.trim().is_empty() {
+            return;
+        }
+        let system = Self::default();
+        self.xkb_layout = system.xkb_layout;
+        if self.xkb_variant.trim().is_empty() {
+            self.xkb_variant = system.xkb_variant;
+        }
+        if self.xkb_model.trim().is_empty() {
+            self.xkb_model = system.xkb_model;
+        }
+        if self.xkb_options.is_none() {
+            self.xkb_options = system.xkb_options;
+        }
+    }
+
     #[must_use]
     pub fn xkb(&self) -> smithay::input::keyboard::XkbConfig<'_> {
         smithay::input::keyboard::XkbConfig {
@@ -540,7 +504,7 @@ impl InputConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct OutputConfig {
     pub name: String,
@@ -880,28 +844,11 @@ pub fn write_atomic(target: &Path, contents: &[u8]) -> std::io::Result<()> {
 }
 
 #[must_use]
-pub fn last_good_path(config: &Path) -> PathBuf {
-    let mut name = config.file_name().unwrap_or_default().to_os_string();
-    name.push(".last-good");
-    config.with_file_name(name)
-}
-
-fn remember_last_good(config: &Path, content: &str) {
-    let target = last_good_path(config);
-    if fs::read_to_string(&target).is_ok_and(|existing| existing == content) {
-        return;
-    }
-    if let Err(err) = write_atomic(&target, content.as_bytes()) {
-        tracing::warn!(path = %target.display(), "failed to save last known good config: {err}");
-    }
-}
-
-#[must_use]
 pub fn pin_identity_for_app_id(app_id: &str) -> Option<(String, String)> {
     crate::icon::find_application(app_id).map(|app| (app.name, app.command))
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct GeneralConfig {
     pub background: Color,
@@ -956,7 +903,7 @@ impl Default for GeneralConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorkspaceConfig {
     #[serde(rename = "new-window")]
@@ -964,7 +911,7 @@ pub struct WorkspaceConfig {
     pub fixed: usize,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct WindowsConfig {
     pub edge_snapping: bool,
@@ -976,7 +923,7 @@ impl Default for WindowsConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum CastQuality {
     #[default]
@@ -984,7 +931,7 @@ pub enum CastQuality {
     Smooth,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct CastConfig {
     pub quality: CastQuality,
@@ -1012,7 +959,7 @@ impl CastConfig {
 }
 
 #[allow(clippy::struct_excessive_bools)] // Independent [launcher] switches mirrored from glide.toml
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct LauncherConfig {
     pub windows: bool,
@@ -1049,7 +996,7 @@ impl LauncherConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NewWindowPolicyConfig {
     #[default]
@@ -1066,7 +1013,7 @@ impl From<NewWindowPolicyConfig> for glide_layout::NewWindowPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModifierConfig {
     Super,
@@ -1077,7 +1024,7 @@ pub enum ModifierConfig {
     Alt,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeybindConfig {
     #[serde(default)]
@@ -1086,14 +1033,14 @@ pub struct KeybindConfig {
     pub action: KeyActionConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum KeyActionConfig {
     Simple(String),
     Complex(ParameterizedAction),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ParameterizedAction {
     #[serde(rename = "switch-workspace")]
@@ -1203,18 +1150,23 @@ impl Config {
     }
 
     #[must_use]
-    pub fn default_path() -> Option<PathBuf> {
-        glide_config::xdg_path("glide", "glide.toml")
+    pub fn shell_defaults() -> glide_app::config::Values {
+        let value = serde_json::to_value(Self::with_defaults()).expect("the configuration serializes");
+        let mut values = glide_app::config::flatten(value);
+        for key in ["input.xkb-layout", "input.xkb-variant", "input.xkb-model"] {
+            values.insert(key.to_owned(), serde_json::Value::String(String::new()));
+        }
+        values.insert("input.xkb-options".to_owned(), serde_json::Value::Null);
+        values
     }
 
-    #[must_use]
-    pub fn load_or_default() -> Self {
-        let Some(path) = Self::default_path() else {
-            tracing::info!("could not determine XDG_CONFIG_HOME or HOME; using default config");
-            return Self::with_defaults();
-        };
-
-        Self::load_from_path(&path)
+    pub fn from_values(values: &glide_app::config::Values) -> Result<Self, String> {
+        let mut config: Self = glide_app::config::read(values).map_err(|err| err.to_string())?;
+        if config.keybinds.is_empty() {
+            config.keybinds = Self::default_keybinds();
+        }
+        config.input.fill_system_keyboard();
+        Ok(config)
     }
 
     #[must_use]
@@ -1222,87 +1174,38 @@ impl Config {
         Self { keybinds: Self::default_keybinds(), ..Self::default() }
     }
 
-    pub fn try_load() -> Result<Self, String> {
-        match Self::default_path() {
-            Some(path) => Self::try_load_from_path(&path),
-            None => Ok(Self::with_defaults()),
-        }
-    }
-
-    pub fn try_load_from_path(path: &std::path::Path) -> Result<Self, String> {
-        let content = match fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::with_defaults());
-            }
-            Err(err) => return Err(format!("{}: {err}", path.display())),
-        };
-        let config = Self::parse(&content).map_err(|err| format!("{}: {err}", path.display()))?;
-        remember_last_good(path, &content);
-        Ok(config)
-    }
-
-    fn parse(content: &str) -> Result<Self, toml::de::Error> {
-        let repaired = crate::config_repair::parse::<Config>(content)?;
-        let mut config = repaired.value;
-        if !repaired.ignored.is_empty() {
-            tracing::warn!(keys = ?repaired.ignored, "glide.toml has settings this version does not know; ignoring them");
-        }
-        config.ignored_keys = repaired.ignored;
-        if config.keybinds.is_empty() {
-            config.keybinds = Self::default_keybinds();
-        }
-        Ok(config)
+    pub fn load() -> Result<Self, String> {
+        let values = glide_app::config::Client::session()
+            .and_then(|client| client.get_all(glide_ipc::config::SHELL))
+            .map_err(|err| format!("{}: {err}", glide_ipc::config::BUS_NAME))?;
+        Self::from_values(&values)
     }
 
     #[must_use]
-    pub fn load_from_path(path: &std::path::Path) -> Self {
-        if !path.exists() {
-            tracing::info!(path = %path.display(), "config file not found; using default config");
-            return Self::with_defaults();
+    pub fn load_or_default() -> Self {
+        Self::load().unwrap_or_else(|failure| {
+            tracing::error!("the settings could not be read ({failure}); using the defaults");
+            Self { load_error: Some(failure), ..Self::with_defaults() }
+        })
+    }
+
+    pub fn persist(values: glide_app::config::Values) {
+        let spawned = std::thread::Builder::new().name("glide-settings-write".to_string()).spawn(move || {
+            let written = glide_app::config::Client::session()
+                .and_then(|client| client.set_many(glide_ipc::config::SHELL, &values));
+            if let Err(err) = written {
+                tracing::warn!(keys = ?values.keys().collect::<Vec<_>>(), "could not save the settings: {err}");
+            }
+        });
+        if let Err(err) = spawned {
+            tracing::warn!("the settings writer did not start: {err}");
         }
-
-        let failure = match fs::read_to_string(path) {
-            Ok(content) => match Self::parse(&content) {
-                Ok(config) => {
-                    tracing::info!(path = %path.display(), "config loaded successfully");
-                    remember_last_good(path, &content);
-                    return config;
-                }
-                Err(err) => format!("failed to parse: {err}"),
-            },
-            Err(err) => format!("failed to read: {err}"),
-        };
-
-        let fallback = last_good_path(path);
-        let recovered = fs::read_to_string(&fallback).ok().and_then(|content| Self::parse(&content).ok());
-        let config = if let Some(config) = recovered {
-            tracing::error!(
-                path = %path.display(),
-                fallback = %fallback.display(),
-                "config {failure}; using the last known good config"
-            );
-            config
-        } else {
-            tracing::error!(
-                path = %path.display(),
-                "config {failure}; no usable last known good config, using defaults"
-            );
-            Self::with_defaults()
-        };
-        Self { load_error: Some(failure), ..config }
     }
 
     fn announce_problems(&self, state: &mut GlideState) {
         use crate::i18n::{Key, t};
-        let known = std::mem::replace(&mut state.session.announced_config_keys, self.ignored_keys.clone());
-        let (summary, body) = if let Some(error) = &self.load_error {
-            (t(Key::ConfigBroken), error.clone())
-        } else if self.ignored_keys.is_empty() || known == self.ignored_keys {
-            return;
-        } else {
-            (t(Key::ConfigIgnoredKeys), self.ignored_keys.join(", "))
-        };
+        let Some(error) = &self.load_error else { return };
+        let (summary, body) = (t(Key::ConfigBroken), error.clone());
         let notice = glide_notify::Notification {
             id: CONFIG_NOTICE_ID,
             app_name: "Glide".to_string(),
@@ -1367,8 +1270,10 @@ impl Config {
             let mut scheduled = self.clone();
             scheduled.topbar.appearance = appearance;
             scheduled.apply_to_state(state);
+            state.session.config = self.clone();
             return;
         }
+        state.session.config = self.clone();
         state.session.appearance_schedule = self.topbar.appearance_schedule;
         state.session.headset.pause_on_unplug = self.general.pause_media_on_disconnect;
         state.session.face_unlock.config = self.facekey.clone();
@@ -1623,33 +1528,6 @@ mod tests {
     }
 
     #[test]
-    fn the_dark_style_tile_rewrites_only_the_appearance() {
-        use glide_theme::Appearance;
-        let text = "# mine\n[topbar]\nappearance = \"dark\" # keep\nappearance-schedule = true\naccent = \"teal\"\n";
-        let light = with_appearance(text, Appearance::Light).expect("valid toml");
-        assert!(light.starts_with("# mine\n"));
-        assert!(light.contains("appearance = \"light\" # keep"));
-        assert!(light.contains("appearance-schedule = false"), "picking a style ends the schedule");
-        assert!(light.contains("accent = \"teal\""));
-        let parsed = Config::parse(&light).expect("still parses");
-        assert_eq!(parsed.topbar.appearance, Appearance::Light);
-        assert!(!parsed.topbar.appearance_schedule);
-
-        let fresh = with_appearance("", Appearance::Dark).expect("empty file");
-        assert!(fresh.contains("[topbar]") && fresh.contains("appearance = \"dark\""));
-        assert!(!fresh.contains("appearance-schedule"));
-        assert!(with_appearance("topbar = 3\n", Appearance::Dark).is_err());
-        assert!(with_appearance("[topbar\n", Appearance::Dark).is_err());
-
-        let dir = scratch_dir("appearance");
-        let path = dir.join("glide.toml");
-        write_appearance(&path, Appearance::Light).expect("written");
-        let written = fs::read_to_string(&path).expect("readable");
-        assert!(written.contains("appearance = \"light\""));
-        assert_eq!(file_names(&dir), vec!["glide.toml".to_owned(), "glide.toml.lock".to_owned()]);
-    }
-
-    #[test]
     fn a_reload_rebuilds_the_keymap_only_when_the_keymap_changed() {
         let mut applied = AppliedConfig::default();
         let input = InputConfig::default();
@@ -1751,81 +1629,6 @@ mod tests {
         assert_eq!(reversed.delta(10.0, -4.0), (-20.0, 8.0));
         let broken = GestureConfig { sensitivity: f64::NAN, ..GestureConfig::default() };
         assert_eq!(broken.delta(3.0, 3.0), (3.0, 3.0));
-    }
-
-    fn scratch_dir(tag: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!("glide-config-{tag}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&dir).expect("temp dir is writable");
-        dir
-    }
-
-    fn file_names(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(dir)
-            .expect("dir is readable")
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
-    }
-
-    #[test]
-    fn a_corrupt_config_falls_back_to_the_last_known_good_one() {
-        let dir = scratch_dir("last-good");
-        let path = dir.join("glide.toml");
-        let good = "[workspaces]\nnew-window = \"active-workspace\"\n";
-        fs::write(&path, good).expect("config is writable");
-
-        let loaded = Config::load_from_path(&path);
-        assert_eq!(loaded.workspaces.new_window, NewWindowPolicyConfig::ActiveWorkspace);
-        assert_eq!(fs::read_to_string(last_good_path(&path)).expect("last-good was written"), good);
-
-        fs::write(&path, "[workspaces\nthis is not toml").expect("config is writable");
-        let recovered = Config::load_from_path(&path);
-        assert_eq!(
-            recovered.workspaces.new_window,
-            NewWindowPolicyConfig::ActiveWorkspace,
-            "a parse error must restore the last good config, not the defaults"
-        );
-        assert_eq!(fs::read_to_string(last_good_path(&path)).expect("last-good survives"), good);
-        assert_eq!(file_names(&dir), vec!["glide.toml".to_owned(), "glide.toml.last-good".to_owned()]);
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_corrupt_config_without_a_last_good_copy_uses_defaults() {
-        let dir = scratch_dir("no-last-good");
-        let path = dir.join("glide.toml");
-        fs::write(&path, "[workspaces\n").expect("config is writable");
-        let loaded = Config::load_from_path(&path);
-        assert_eq!(loaded.workspaces.new_window, NewWindowPolicyConfig::NewWorkspace);
-        assert!(loaded.load_error.is_some(), "the failure is kept so the shell can tell the user");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_setting_from_a_newer_version_is_ignored_instead_of_discarding_the_file() {
-        let dir = scratch_dir("unknown-keys");
-        let path = dir.join("glide.toml");
-        let text = "[general]\nblank-after-seconds = 120\nholograms = true\n\n[dock]\nautohide = \"always\"\n\n\
-                    [telepathy]\nenabled = true\n";
-        fs::write(&path, text).expect("config is writable");
-        let loaded = Config::load_from_path(&path);
-        assert_eq!(loaded.general.blank_after_seconds, 120);
-        assert_eq!(loaded.dock.autohide, DockAutohide::Always);
-        assert_eq!(loaded.load_error, None);
-        let mut ignored = loaded.ignored_keys;
-        ignored.sort();
-        assert_eq!(ignored, ["general.holograms", "telepathy"]);
-        assert!(Config::try_load_from_path(&path).is_ok(), "a reload accepts the same file");
-        let wrong = "[general]\nblank-after-seconds = \"soon\"\n";
-        fs::write(&path, wrong).expect("config is writable");
-        assert!(Config::try_load_from_path(&path).is_err(), "a wrong value is still rejected");
-        let _ = fs::remove_dir_all(&dir);
     }
 
     fn default_binding(mods: &[ModifierConfig], key: &str) -> Option<crate::input::KeyAction> {
@@ -2218,26 +2021,6 @@ position = [2560, 0]
     }
 
     #[test]
-    fn the_retired_topbar_switch_still_parses_so_old_files_are_not_repaired_noisily() {
-        let config: Config = toml::from_str("[topbar]\nenabled = false\ntray = false\n").unwrap();
-        assert!(!config.topbar.tray, "deny_unknown_fields would have refused the whole table");
-    }
-
-    #[test]
-    fn invalid_config_falls_back_to_defaults() {
-        let dir = std::env::temp_dir().join(format!("glide-config-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let path = dir.join("glide.toml");
-        std::fs::write(&path, "this is not valid toml {{{").expect("write config");
-
-        let config = Config::load_from_path(&path);
-
-        assert!(config.load_error.as_deref().is_some_and(|error| error.starts_with("failed to parse")));
-        assert!(Config { load_error: None, ..config } == Config::with_defaults(), "everything else is the default");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     #[allow(clippy::too_many_lines)] // One fixture listing every key Settings writes, kept in one place
     fn every_key_written_by_glide_settings_is_accepted() {
         let text = r##"
@@ -2256,7 +2039,6 @@ xdg-autostart = true
 polkit-agent = false
 
 [topbar]
-enabled = true
 appearance = "light"
 accent = "orange"
 battery-low-pct = 15
@@ -2339,7 +2121,6 @@ from = "22:30"
 to = "07:15"
 allow-critical = false
 banner-seconds = 12
-position = "top-center"
 muted-apps = ["org.telegram.desktop", "Steam"]
 sounds = false
 
@@ -2578,5 +2359,35 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
         let scheduled = TopbarConfig { appearance_schedule: true, ..fixed };
         assert_eq!(scheduled.effective_appearance(Some(23 * 60)), Dark);
         assert_eq!(scheduled.effective_appearance(None), Light, "an unreadable clock keeps the setting");
+    }
+
+    #[test]
+    fn the_installed_shell_defaults_are_the_configuration_defaults() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/defaults/shell.json");
+        let expected = serde_json::to_string_pretty(&Config::shell_defaults()).expect("defaults serialize") + "\n";
+        if std::env::var_os("GLIDE_WRITE_DEFAULTS").is_some() {
+            fs::write(&path, &expected).expect("write the defaults");
+        }
+        assert_eq!(
+            fs::read_to_string(&path).unwrap_or_default(),
+            expected,
+            "data/defaults/shell.json is generated from Config; rerun with GLIDE_WRITE_DEFAULTS=1"
+        );
+    }
+
+    #[test]
+    fn the_shell_defaults_read_back_as_the_configuration_defaults() {
+        let read = Config::from_values(&Config::shell_defaults()).expect("defaults read");
+        let stored = |config: &Config| serde_json::to_value(config).expect("serializes");
+        assert_eq!(stored(&read), stored(&Config::with_defaults()), "equal down to the 8-bit colour channels");
+    }
+
+    #[test]
+    fn a_layout_left_empty_takes_the_system_keyboard_and_a_chosen_one_stays() {
+        let mut values = Config::shell_defaults();
+        assert_eq!(Config::from_values(&values).expect("read").input.xkb_layout, InputConfig::default().xkb_layout);
+        values.insert("input.xkb-layout".to_owned(), serde_json::json!("de"));
+        let chosen = Config::from_values(&values).expect("read").input;
+        assert_eq!((chosen.xkb_layout.as_str(), chosen.xkb_options), ("de", None));
     }
 }

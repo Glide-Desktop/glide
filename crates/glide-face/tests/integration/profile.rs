@@ -62,6 +62,17 @@ fn store_save_load_delete() {
 }
 
 #[test]
+fn the_enrollment_camera_is_remembered_next_to_the_profile_and_only_a_video_device_is_read_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new_test(dir.path()).unwrap();
+    assert_eq!(store.camera(), None);
+    store.save_camera("/dev/video2").unwrap();
+    assert_eq!(store.camera().as_deref(), Some("/dev/video2"));
+    store.save_camera("/etc/shadow").unwrap();
+    assert_eq!(store.camera(), None, "anything but /dev/videoN is ignored");
+}
+
+#[test]
 fn store_rejects_tampering_and_swaps() {
     let base = tempfile::tempdir().unwrap();
     let store = Store::new_test(base.path()).unwrap();

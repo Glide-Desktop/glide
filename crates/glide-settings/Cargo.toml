@@ -32,11 +32,13 @@ iced = { version = "0.14.0", default-features = false, features = [
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 glide-config = { path = "../glide-config" }
 glide-sdk = { path = "../glide-sdk" }
+glide-app = { path = "../glide-app" }
 glide-ipc = { path = "../glide-ipc" }
 glide-netbird = { path = "../glide-netbird" }
 serde.workspace = true
 serde_json.workspace = true
 base64 = "0.22"
+toml.workspace = true
 toml_edit = "0.25"
 zbus.workspace = true
 

@@ -244,7 +244,7 @@ COMMANDS:
     window list                List all open windows
     window focus <ID|focused>  Focus window by ID or focused
     window move <N|next|prev>  Move focused window to workspace
-    reload                     Reload configuration from glide.toml
+    reload                     Apply the current settings again
     lock                       Lock the screen
     record [start|stop|status] Start, stop, or query screen recording
     share [start|stop [ID]|status] Start, stop, or query screen sharing

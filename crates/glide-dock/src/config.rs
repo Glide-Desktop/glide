@@ -1,7 +1,7 @@
 use glide_theme::{Color, DockTheme};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, rename_all = "kebab-case")]
 #[derive(Default)]
 pub struct DockConfig {
@@ -13,7 +13,7 @@ pub struct DockConfig {
     pub pins: Vec<DockItemConfig>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum DockAutohide {
     #[default]
@@ -22,7 +22,7 @@ pub enum DockAutohide {
     Never,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DockItemConfig {
     pub name: String,

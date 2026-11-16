@@ -20,8 +20,8 @@ glide_sdk::catalogue! {
 
 #[must_use]
 pub fn lang() -> Lang {
-    let text = glide_sdk::look::shell_path().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
-    glide_sdk::look::Look::parse(&text, false).lang()
+    static LANG: std::sync::OnceLock<Lang> = std::sync::OnceLock::new();
+    *LANG.get_or_init(|| glide_sdk::look::Look::load().lang())
 }
 
 #[must_use]

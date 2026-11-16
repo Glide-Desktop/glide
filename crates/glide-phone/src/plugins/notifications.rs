@@ -226,16 +226,10 @@ fn preferred_icon_themes() -> &'static [String] {
         }
 
         let mut themes = Vec::new();
+        if let Some(theme) = glide_sdk::look::Look::load().icon_theme {
+            push_unique(&mut themes, &theme);
+        }
         if let Some(config) = glide_config::config_home() {
-            if let Ok(toml_text) = std::fs::read_to_string(config.join("glide/glide.toml")) {
-                for line in toml_text.lines() {
-                    if let Some((key, val)) = line.split_once('=')
-                        && matches!(key.trim(), "icon-theme" | "icon_theme")
-                    {
-                        push_unique(&mut themes, val);
-                    }
-                }
-            }
             for dir in ["gtk-3.0", "gtk-4.0"] {
                 if let Ok(ini) = std::fs::read_to_string(config.join(dir).join("settings.ini")) {
                     for line in ini.lines() {

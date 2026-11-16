@@ -4,10 +4,10 @@ use std::time::{Duration, Instant};
 use glide_ipc::{GestureAction, GesturePhase, GestureSample};
 use glide_layout::WorkspaceTarget;
 use glide_theme::motion::Release;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[allow(clippy::struct_excessive_bools)] // Independent [gestures] switches mirrored from glide.toml
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct GestureConfig {
     pub enabled: bool,

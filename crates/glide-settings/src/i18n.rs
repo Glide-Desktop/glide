@@ -9,11 +9,11 @@ catalogue! {
     NoResults => "No results", "Нічого не знайдено";
     User => "User", "Користувач";
     Loading => "Loading…", "Завантаження…";
-    SaveFailed => "Could not save glide.toml", "Не вдалося зберегти glide.toml";
-    SavedOffline => "Saved to glide.toml. Glide is not running, so changes apply the next time it starts.", "Збережено в glide.toml. Glide не запущено, тож зміни застосуються під час наступного запуску.";
-    ConfigReadOnly => "glide.toml has a syntax error, so settings are read-only until it is fixed:", "У glide.toml синтаксична помилка, тому налаштування доступні лише для читання, доки її не виправлено:";
-    ConfigRejected => "Glide rejected glide.toml:", "Glide відхилив glide.toml:";
-    ConfigUnreadable => "glide.toml could not be read, so settings are read-only until it is accessible:", "Не вдалося прочитати glide.toml, тому налаштування доступні лише для читання, доки файл недоступний:";
+    SaveFailed => "Could not save the settings", "Не вдалося зберегти налаштування";
+    SavedOffline => "Saved. Glide is not running, so changes apply the next time it starts.", "Збережено. Glide не запущено, тож зміни застосуються під час наступного запуску.";
+    ConfigReadOnly => "The settings could not be read, so they are read-only until this is fixed:", "Не вдалося прочитати налаштування, тому вони доступні лише для читання, доки це не виправлено:";
+    ConfigRejected => "Glide rejected the settings:", "Glide відхилив налаштування:";
+    ConfigUnreadable => "The settings service did not answer, so settings are read-only until it does:", "Служба налаштувань не відповіла, тому налаштування доступні лише для читання, доки вона не відповість:";
 
     PanelHome => "Overview", "Огляд";
     AboutHome => "This computer at a glance, and what needs attention", "Стан комп’ютера одним поглядом і те, що потребує уваги";

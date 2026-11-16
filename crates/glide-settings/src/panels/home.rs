@@ -540,11 +540,9 @@ mod tests {
         use iced::advanced::{Layout, Shell, clipboard, layout};
         use iced::{Event, Font, Pixels, Point, Rectangle, Renderer, Size, mouse, window};
 
-        let dir = std::env::temp_dir().join(format!("glide-home-click-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("glide.toml");
-        std::fs::write(&path, "[topbar]\naccent = \"blue\"\n").unwrap();
-        let mut config = ConfigStore::load_from(&path);
+        let mut config = ConfigStore::with_backend(crate::services::config::Backend::memory_from_toml(
+            "[topbar]\naccent = \"blue\"\n",
+        ));
         config.set_accent(Accent::Malachite);
         assert_eq!(config.save_dirty(), Ok(true));
         let page = Page {
@@ -597,8 +595,6 @@ mod tests {
         let _ = app.update(crate::app::Message::Home(Msg::Undo(change.clone())));
         assert_eq!(app.config().get_str("topbar", "accent"), Some("blue"));
         assert!(app.config().history().entries().is_empty());
-        assert!(std::fs::read_to_string(path).unwrap().contains("accent = \"blue\""));
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -633,9 +629,7 @@ mod tests {
             toolkits: None,
         };
         let page = Page { snapshot: Some(snapshot), ..Page::default() };
-        let dir = std::env::temp_dir().join(format!("glide-home-preview-{}", std::process::id()));
-        let path = dir.join("glide.toml");
-        let mut config = ConfigStore::load_from(&path);
+        let mut config = ConfigStore::with_backend(crate::services::config::Backend::memory_from_toml(""));
         config.set_accent(Accent::Malachite);
         config.save_dirty().expect("save preview history");
         let mut element = page.view(c, &config);
@@ -669,6 +663,5 @@ mod tests {
         let path = std::env::var_os("GLIDE_HOME_PREVIEW")
             .map_or_else(|| std::path::PathBuf::from("/tmp/opencode/home-populated.png"), std::path::PathBuf::from);
         image::save_buffer(path, &rgba, 880, 700, image::ColorType::Rgba8).expect("preview is saved");
-        std::fs::remove_dir_all(dir).expect("clean preview config");
     }
 }

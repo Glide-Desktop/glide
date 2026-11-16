@@ -7,7 +7,7 @@ pub const ATTEMPTS_FILE: &str = "facekey-attempts.jsonl";
 pub const KEPT_DAYS: i64 = 30;
 pub const PAM_SERVICES: [PamService; 3] = [PamService::Polkit, PamService::Sudo, PamService::Login];
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Config {
     pub lock_screen: bool,

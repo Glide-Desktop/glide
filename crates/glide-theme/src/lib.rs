@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub mod component;
 pub mod data;
@@ -121,6 +121,13 @@ impl Color {
     }
 }
 
+impl Serialize for Color {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let [r, g, b, a] = self.0.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8);
+        serializer.serialize_str(&format!("#{r:02x}{g:02x}{b:02x}{a:02x}"))
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for Color {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -133,7 +140,7 @@ impl<'de> serde::Deserialize<'de> for Color {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum TitleAlign {
     #[default]
@@ -141,7 +148,7 @@ pub enum TitleAlign {
     Center,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum TitlebarAction {
     #[default]
@@ -150,7 +157,7 @@ pub enum TitlebarAction {
     None,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ButtonLayout {
     #[default]
@@ -158,7 +165,7 @@ pub enum ButtonLayout {
     CloseMaximize,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DecorationTheme {
     pub height: u32,
@@ -266,7 +273,7 @@ impl DecorationTheme {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct DockTheme {
     pub enabled: bool,
@@ -372,7 +379,7 @@ impl DockTheme {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct OverviewTheme {
     pub gap: i32,

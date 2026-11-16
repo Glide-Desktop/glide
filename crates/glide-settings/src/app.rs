@@ -329,7 +329,7 @@ impl App {
         self.theme.set_appearance(self.config.appearance_at(minute_now()));
         self.theme.set_accent(self.config.accent());
         self.lang = self.config.language();
-        if self.config.path().is_some() {
+        if self.config.connected() {
             theme::use_ui_family(self.config.optional_str("general", "font-family").as_deref());
         }
     }
@@ -486,7 +486,6 @@ impl App {
                 Task::none()
             }
             page => {
-                self.config.refresh_if_changed();
                 let task = self.update_page(page);
                 self.commit(task)
             }

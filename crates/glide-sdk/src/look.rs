@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -93,35 +93,8 @@ impl Default for Notifications {
     }
 }
 
-fn lenient(text: &str) -> File {
-    let Ok(table) = text.parse::<toml::Table>() else { return File::default() };
-    let accepted = |key: &str, value: toml::Value| {
-        let mut single = toml::Table::new();
-        single.insert(key.to_string(), value);
-        toml::Value::Table(single).try_into::<File>().is_ok()
-    };
-    let mut valid = toml::Table::new();
-    for (key, value) in table {
-        match value {
-            toml::Value::Table(section) => {
-                let kept: toml::Table = section
-                    .into_iter()
-                    .filter(|(name, item)| {
-                        let mut one = toml::Table::new();
-                        one.insert(name.clone(), item.clone());
-                        accepted(&key, toml::Value::Table(one))
-                    })
-                    .collect();
-                valid.insert(key, toml::Value::Table(kept));
-            }
-            other => {
-                if accepted(&key, other.clone()) {
-                    valid.insert(key, other);
-                }
-            }
-        }
-    }
-    toml::Value::Table(valid).try_into().unwrap_or_default()
+fn section<T: serde::de::DeserializeOwned + Default>(nested: &serde_json::Value, name: &str) -> T {
+    nested.get(name).cloned().and_then(|value| serde_json::from_value(value).ok()).unwrap_or_default()
 }
 
 fn named(name: Option<String>) -> Option<String> {
@@ -130,11 +103,15 @@ fn named(name: Option<String>) -> Option<String> {
 
 impl Look {
     #[must_use]
-    pub fn parse(text: &str, reduced_motion: bool) -> Self {
-        let file: File = toml::from_str(text).unwrap_or_else(|error| {
-            tracing::warn!("glide.toml: {error}");
-            lenient(text)
-        });
+    pub fn from_values(values: &glide_app::config::Values, reduced_motion: bool) -> Self {
+        let nested = glide_app::config::nest(values);
+        let file = File {
+            general: section(&nested, "general"),
+            topbar: section(&nested, "topbar"),
+            dock: section(&nested, "dock"),
+            animations: section(&nested, "animations"),
+            notifications: section(&nested, "notifications"),
+        };
         let animations = &file.animations;
         let still = !animations.enabled || (animations.respect_system && reduced_motion);
         Self {
@@ -150,9 +127,15 @@ impl Look {
     }
 
     #[must_use]
+    pub fn parse(text: &str, reduced_motion: bool) -> Self {
+        let table = text.parse::<toml::Table>().unwrap_or_default();
+        let values = serde_json::to_value(table).map(glide_app::config::flatten).unwrap_or_default();
+        Self::from_values(&values, reduced_motion)
+    }
+
+    #[must_use]
     pub fn load() -> Self {
-        let text = shell_path().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default();
-        Self::parse(&text, reduced_motion())
+        Self::from_values(&shell_settings(), reduced_motion())
     }
 
     #[must_use]
@@ -191,8 +174,16 @@ impl Look {
 }
 
 #[must_use]
-pub fn shell_path() -> Option<PathBuf> {
-    glide_config::xdg_path("glide", "glide.toml")
+pub fn shell_settings() -> glide_app::config::Values {
+    glide_app::config::Client::session()
+        .and_then(|client| client.get_all(glide_app::config::SHELL))
+        .inspect_err(|err| tracing::debug!("the Glide settings are unavailable ({err}); using the defaults"))
+        .unwrap_or_default()
+}
+
+#[must_use]
+pub fn settings_changes() -> UnboundedReceiver<glide_app::config::Values> {
+    glide_app::config::watch(glide_app::config::SHELL)
 }
 
 #[must_use]
@@ -244,14 +235,24 @@ pub fn motion_changes() -> UnboundedReceiver<bool> {
 mod tests {
     use super::*;
 
+    fn parse(text: &str, reduced_motion: bool) -> Look {
+        Look::parse(text, reduced_motion)
+    }
+
+    #[test]
+    fn one_unreadable_section_keeps_the_others() {
+        let look = parse("[topbar]\naccent = \"teal\"\n[dock]\nicon-theme = 3\n", false);
+        assert_eq!((look.accent, look.icon_theme), (Accent::Teal, None));
+    }
+
     #[test]
     fn an_empty_file_is_the_default_look() {
-        assert_eq!(Look::parse("", false), Look::default());
+        assert_eq!(parse("", false), Look::default());
     }
 
     #[test]
     fn the_shell_file_sets_every_field_an_app_follows() {
-        let look = Look::parse(
+        let look = parse(
             "[general]\nlanguage = \"en\"\nfont-family = \"Inter\"\n[topbar]\nappearance = \"light\"\naccent = \"teal\"\n\
              [dock]\nicon-theme = \"Papirus\"\n[animations]\nspeed = 0.5\n[notifications]\nsounds = false\n",
             false,
@@ -267,14 +268,14 @@ mod tests {
 
     #[test]
     fn reduced_motion_stills_animations_only_while_respected() {
-        assert_eq!(Look::parse("", true).motion_scale, 0.0);
-        assert_eq!(Look::parse("[animations]\nrespect-system = false\n", true).motion_scale, 1.0);
-        assert_eq!(Look::parse("[animations]\nenabled = false\n", false).motion_scale, 0.0);
+        assert_eq!(parse("", true).motion_scale, 0.0);
+        assert_eq!(parse("[animations]\nrespect-system = false\n", true).motion_scale, 1.0);
+        assert_eq!(parse("[animations]\nenabled = false\n", false).motion_scale, 0.0);
     }
 
     #[test]
     fn the_running_shell_overrides_the_file_and_its_schedule() {
-        let file = Look::parse("[topbar]\nappearance-schedule = true\n", false);
+        let file = parse("[topbar]\nappearance-schedule = true\n", false);
         let shell = glide_app::Look {
             appearance: Appearance::Light,
             accent: Accent::Teal,
@@ -295,12 +296,12 @@ mod tests {
 
     #[test]
     fn scheduled_appearance_uses_the_shared_rule_and_manual_appearance_remains_available() {
-        let scheduled = Look::parse("[topbar]\nappearance = 'dark'\nappearance-schedule = true\n", false);
+        let scheduled = parse("[topbar]\nappearance = 'dark'\nappearance-schedule = true\n", false);
         for minute in [0, 419, 420, 720, 1139, 1140, 1439] {
             assert_eq!(scheduled.appearance_at(Some(minute)), Appearance::scheduled(minute));
         }
         assert_eq!(scheduled.appearance_at(None), Appearance::Dark);
-        let manual = Look::parse("[topbar]\nappearance = 'light'\nappearance-schedule = false\n", false);
+        let manual = parse("[topbar]\nappearance = 'light'\nappearance-schedule = false\n", false);
         assert_eq!(manual.appearance_at(Some(0)), Appearance::Light);
     }
 }

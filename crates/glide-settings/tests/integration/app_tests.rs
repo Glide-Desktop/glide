@@ -12,11 +12,8 @@ fn app(config: &str) -> App {
 
 #[test]
 fn overview_undo_message_restores_saved_setting() {
-    let dir = std::env::temp_dir().join(format!("glide-settings-overview-undo-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("glide.toml");
-    std::fs::write(&path, "[topbar]\naccent = \"blue\"\n").unwrap();
-    let mut config = ConfigStore::load_from(&path);
+    let backend = glide_settings::services::config::Backend::memory_from_toml("[topbar]\naccent = \"blue\"\n");
+    let mut config = ConfigStore::with_backend(backend.clone());
     config.set_accent(Accent::Malachite);
     assert_eq!(config.save_dirty(), Ok(true));
     let change = config.history().entries()[0].clone();
@@ -24,8 +21,7 @@ fn overview_undo_message_restores_saved_setting() {
     let _ = app.update(Message::Home(glide_settings::panels::home::Msg::Undo(change)));
     assert_eq!(app.config().get_str("topbar", "accent"), Some("blue"));
     assert!(app.config().history().entries().is_empty());
-    assert!(std::fs::read_to_string(&path).unwrap().contains("accent = \"blue\""));
-    std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(ConfigStore::with_backend(backend).get_str("topbar", "accent"), Some("blue"));
 }
 
 #[test]

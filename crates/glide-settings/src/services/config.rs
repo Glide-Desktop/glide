@@ -1,39 +1,92 @@
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex};
 
+use glide_ipc::config::{SHELL, Values};
+use serde_json::Value;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::i18n::Lang;
 use crate::theme::{Accent, Appearance};
 
-pub fn prepare_history_undo_text(text: &str, change: &super::history::Change) -> Result<Option<String>, String> {
-    let mut doc = text.parse::<DocumentMut>().map_err(|err| err.to_string())?;
-    let (table, key) = change.setting.key();
-    let item = match doc.get(table) {
-        Some(table) if table.as_table_like().is_none() => return Ok(None),
-        Some(table) => table.get(key),
-        None => None,
-    };
-    if item.is_some_and(|item| item.as_str().is_none()) || item.and_then(Item::as_str) != change.after.as_deref() {
-        return Ok(None);
+#[derive(Clone)]
+pub enum Backend {
+    Service(Arc<glide_app::config::Client>),
+    Memory(Arc<Mutex<Values>>),
+}
+
+impl std::fmt::Debug for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Service(_) => "Backend::Service",
+            Self::Memory(_) => "Backend::Memory",
+        })
     }
-    match &change.before {
-        Some(before) => {
-            let table = doc.as_table_mut().entry(table).or_insert_with(|| Item::Table(Table::new()));
-            let table = table.as_table_like_mut().expect("table was validated");
-            let mut replacement = value(before.as_str());
-            if let (Some(old), Some(new)) = (table.get(key).and_then(Item::as_value), replacement.as_value_mut()) {
-                *new.decor_mut() = old.decor().clone();
-            }
-            table.insert(key, replacement);
+}
+
+impl Backend {
+    #[must_use]
+    pub fn memory(values: Values) -> Self {
+        Self::Memory(Arc::new(Mutex::new(values)))
+    }
+
+    #[must_use]
+    pub fn memory_from_toml(text: &str) -> Self {
+        Self::memory(text.parse::<DocumentMut>().map(|doc| values_of(&doc)).unwrap_or_default())
+    }
+
+    fn read(&self) -> Result<Values, String> {
+        match self {
+            Self::Service(client) => client.get_all(SHELL).map_err(|err| err.to_string()),
+            Self::Memory(values) => Ok(values.lock().map_err(|err| err.to_string())?.clone()),
         }
-        None => {
-            if let Some(table) = doc.get_mut(table).and_then(Item::as_table_like_mut) {
-                table.remove(key);
+    }
+
+    fn write(&self, set: &Values, reset: &[String]) -> Result<(), String> {
+        match self {
+            Self::Service(client) => {
+                if !set.is_empty() {
+                    client.set_many(SHELL, set).map_err(|err| err.to_string())?;
+                }
+                if !reset.is_empty() {
+                    client.reset(SHELL, reset).map_err(|err| err.to_string())?;
+                }
+                Ok(())
+            }
+            Self::Memory(values) => {
+                let mut values = values.lock().map_err(|err| err.to_string())?;
+                values.extend(set.iter().map(|(key, value)| (key.clone(), value.clone())));
+                values.retain(|key, _| !reset.contains(key));
+                Ok(())
             }
         }
     }
-    Ok(Some(doc.to_string()))
+}
+
+fn without_nulls(value: Value) -> Option<Value> {
+    match value {
+        Value::Null => None,
+        Value::Object(map) => {
+            Some(Value::Object(map.into_iter().filter_map(|(key, value)| Some((key, without_nulls(value)?))).collect()))
+        }
+        Value::Array(items) => Some(Value::Array(items.into_iter().filter_map(without_nulls).collect())),
+        value => Some(value),
+    }
+}
+
+fn doc_from(values: &Values) -> Result<DocumentMut, String> {
+    let nested = without_nulls(glide_ipc::config::nest(values)).unwrap_or_default();
+    let table = toml::Value::try_from(nested).map_err(|err| err.to_string())?;
+    let text = toml::to_string(&table).map_err(|err| err.to_string())?;
+    text.parse::<DocumentMut>().map_err(|err| err.to_string())
+}
+
+fn values_of(doc: &DocumentMut) -> Values {
+    let table = doc.to_string().parse::<toml::Table>().unwrap_or_default();
+    serde_json::to_value(table).map(glide_ipc::config::flatten).unwrap_or_default()
+}
+
+fn qualified((table, key): (&str, &str)) -> String {
+    format!("{table}.{key}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -189,10 +242,6 @@ pub enum ConfigFault {
     Parse,
 }
 
-fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum HistoryValue {
     Value(Option<String>),
@@ -201,28 +250,26 @@ enum HistoryValue {
 
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
-    path: Option<PathBuf>,
+    backend: Option<Backend>,
     doc: DocumentMut,
-    saved_file: Option<Vec<u8>>,
+    saved: Values,
     saved_history_values: [HistoryValue; 2],
     history: super::history::History,
     error: Option<(ConfigFault, String)>,
     dirty: bool,
-    modified: Option<SystemTime>,
     system_language: Lang,
 }
 
 impl Default for ConfigStore {
     fn default() -> Self {
         Self {
-            path: None,
+            backend: None,
             doc: DocumentMut::new(),
-            saved_file: None,
+            saved: Values::new(),
             saved_history_values: [HistoryValue::Value(None), HistoryValue::Value(None)],
             history: super::history::History::default(),
             error: None,
             dirty: false,
-            modified: None,
             system_language: Lang::from_env(),
         }
     }
@@ -231,42 +278,33 @@ impl Default for ConfigStore {
 impl ConfigStore {
     #[must_use]
     pub fn load() -> Self {
-        match glide_config::xdg_path("glide", "glide.toml") {
-            Some(path) => Self::load_from(&path),
-            None => Self::default(),
+        match glide_app::config::Client::session() {
+            Ok(client) => Self::with_backend(Backend::Service(Arc::new(client))),
+            Err(err) => Self { error: Some((ConfigFault::Io, err.to_string())), ..Self::default() },
         }
     }
 
     #[must_use]
-    pub fn load_from(path: &Path) -> Self {
-        let stamp = modified(path);
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => Some(text),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                return Self {
-                    path: Some(path.to_path_buf()),
-                    error: Some((ConfigFault::Io, err.to_string())),
-                    modified: stamp,
-                    ..Self::default()
-                };
-            }
+    pub fn with_backend(backend: Backend) -> Self {
+        let loaded = backend.read().and_then(|values| doc_from(&values));
+        let mut store = match loaded {
+            Ok(doc) => Self::with_doc(doc),
+            Err(err) => Self { error: Some((ConfigFault::Io, err)), ..Self::default() },
         };
-        let mut store = Self::parse(text.as_deref().unwrap_or_default());
-        store.saved_file = text.map(String::into_bytes);
-        store.path = Some(path.to_path_buf());
-        store.modified = stamp;
+        store.backend = Some(backend);
+        store
+    }
+
+    fn with_doc(doc: DocumentMut) -> Self {
+        let mut store = Self { saved: values_of(&doc), doc, ..Self::default() };
+        store.saved_history_values = store.history_values();
         store
     }
 
     #[must_use]
     pub fn parse(text: &str) -> Self {
         match text.parse::<DocumentMut>() {
-            Ok(doc) => {
-                let mut store = Self { doc, ..Self::default() };
-                store.saved_history_values = store.history_values();
-                store
-            }
+            Ok(doc) => Self::with_doc(doc),
             Err(err) => Self {
                 error: Some((
                     ConfigFault::Parse,
@@ -277,23 +315,38 @@ impl ConfigStore {
         }
     }
 
+    fn fresh(backend: &Backend) -> Result<DocumentMut, String> {
+        backend.read().and_then(|values| doc_from(&values))
+    }
+
+    fn reload(&mut self, doc: DocumentMut) {
+        let (backend, history, system_language) =
+            (self.backend.take(), std::mem::take(&mut self.history), self.system_language);
+        *self = Self::with_doc(doc).with_system_language(system_language);
+        self.backend = backend;
+        self.history = history;
+    }
+
     pub fn refresh_if_changed(&mut self) -> bool {
-        let Some(path) = self.path.clone() else {
+        let Some(backend) = self.backend.clone() else {
             return false;
         };
-        if self.dirty || modified(&path) == self.modified {
+        if self.dirty {
             return false;
         }
-        let system_language = self.system_language;
-        let history = std::mem::take(&mut self.history);
-        *self = Self::load_from(&path).with_system_language(system_language);
-        self.history = history;
+        let Ok(doc) = Self::fresh(&backend) else {
+            return false;
+        };
+        if self.error.is_none() && values_of(&doc) == self.saved {
+            return false;
+        }
+        self.reload(doc);
         true
     }
 
     #[must_use]
-    pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
+    pub const fn connected(&self) -> bool {
+        self.backend.is_some()
     }
 
     #[must_use]
@@ -338,24 +391,24 @@ impl ConfigStore {
         if let Some(message) = self.error() {
             return Err(message.to_string());
         }
-        let Some(path) = self.path.clone() else {
+        let Some(backend) = self.backend.clone() else {
             return Ok(());
         };
-        let contents = self.doc.to_string().into_bytes();
-        glide_config::with_file_lock(&path, || {
-            let current = match std::fs::read(&path) {
-                Ok(contents) => Some(contents),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-                Err(err) => return Err(err),
-            };
-            if current != self.saved_file {
-                return Err(std::io::Error::other("settings file changed since it was read"));
+        let current = values_of(&self.doc);
+        let set: Values = current
+            .iter()
+            .filter(|(key, value)| self.saved.get(*key) != Some(*value))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let reset: Vec<String> = self.saved.keys().filter(|key| !current.contains_key(*key)).cloned().collect();
+        if !set.is_empty() || !reset.is_empty() {
+            let fresh = values_of(&Self::fresh(&backend)?);
+            if set.keys().chain(&reset).any(|key| fresh.get(key) != self.saved.get(key)) {
+                return Err("settings changed since they were read".to_string());
             }
-            write_atomic(&path, &contents)
-        })
-        .map_err(|err| err.to_string())?;
-        self.saved_file = Some(contents);
-        self.modified = modified(&path);
+            backend.write(&set, &reset)?;
+        }
+        self.saved = current;
         let values = self.history_values();
         for (index, setting) in
             [super::history::Setting::Accent, super::history::Setting::DockAutohide].into_iter().enumerate()
@@ -406,27 +459,20 @@ impl ConfigStore {
         if !matches!(self.history.prepare_undo(index, change.after.as_deref()), Undo::Ready(_)) {
             return Ok(false);
         }
-        let path = self.path.clone().ok_or_else(|| "settings file has no path".to_string())?;
-        let updated = glide_config::with_file_lock(&path, || {
-            let bytes = std::fs::read(&path)?;
-            if self.saved_file.as_ref() != Some(&bytes) {
-                return Err(std::io::Error::other("settings file changed since it was read"));
-            }
-            let text = std::str::from_utf8(&bytes).map_err(std::io::Error::other)?;
-            let updated = prepare_history_undo_text(text, change)
-                .map_err(std::io::Error::other)?
-                .ok_or_else(|| std::io::Error::other("settings value changed"))?;
-            write_atomic(&path, updated.as_bytes())?;
-            Ok(updated)
-        })
-        .map_err(|err| err.to_string())?;
-        let mut refreshed = Self::parse(&updated).with_system_language(self.system_language);
-        refreshed.path = Some(path.clone());
-        refreshed.saved_file = Some(updated.into_bytes());
-        refreshed.modified = modified(&path);
-        refreshed.history = std::mem::take(&mut self.history);
-        assert!(refreshed.history.acknowledge_undo(change));
-        *self = refreshed;
+        let backend = self.backend.clone().ok_or_else(|| "the settings service is not connected".to_string())?;
+        let key = qualified(change.setting.key());
+        let fresh = values_of(&Self::fresh(&backend)?);
+        let current = fresh.get(&key);
+        if current.is_some_and(|value| !value.is_string()) || current.and_then(Value::as_str) != change.after.as_deref()
+        {
+            return Err("settings value changed".to_string());
+        }
+        match &change.before {
+            Some(before) => backend.write(&Values::from([(key, Value::from(before.as_str()))]), &[])?,
+            None => backend.write(&Values::new(), &[key])?,
+        }
+        self.reload(Self::fresh(&backend)?);
+        assert!(self.history.acknowledge_undo(change));
         Ok(true)
     }
 
@@ -439,19 +485,13 @@ impl ConfigStore {
         if self.dirty {
             return Err("unsaved settings".to_string());
         }
-        let path = self.path.as_ref().ok_or_else(|| "settings file has no path".to_string())?;
-        let text = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
-        let doc = text.parse::<DocumentMut>().map_err(|err| err.to_string())?;
-        let (table, key) = change.setting.key();
-        let item = match doc.get(table) {
-            Some(table) if table.as_table_like().is_none() => return Ok(Undo::Conflict),
-            Some(table) => table.get(key),
-            None => None,
-        };
-        if item.is_some_and(|item| item.as_str().is_none()) {
+        let backend = self.backend.as_ref().ok_or_else(|| "the settings service is not connected".to_string())?;
+        let fresh = values_of(&Self::fresh(backend)?);
+        let current = fresh.get(&qualified(change.setting.key()));
+        if current.is_some_and(|value| !value.is_string()) {
             return Ok(Undo::Conflict);
         }
-        Ok(self.history.prepare_undo(index, item.and_then(Item::as_str)))
+        Ok(self.history.prepare_undo(index, current.and_then(Value::as_str)))
     }
 
     fn item(&self, table: &str, key: &str) -> Option<&Item> {

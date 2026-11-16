@@ -68,9 +68,12 @@ struct Run {
 }
 
 impl Run {
-    fn start(binary: &Path, generation: u64, sink: impl Fn(Message) + Send + 'static) -> std::io::Result<Self> {
+    fn start(
+        binary: &Path, camera: Option<&str>, generation: u64, sink: impl Fn(Message) + Send + 'static,
+    ) -> std::io::Result<Self> {
         let mut child = Command::new(binary)
             .args(["-verify", "-stream", "-source", "lock"])
+            .args(camera.map(|camera| ["-camera", camera]).into_iter().flatten())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -186,7 +189,7 @@ impl FaceUnlock {
         self.tried_since_wake = true;
         self.auto_after = None;
         self.retry = None;
-        self.run = Some(Run::start(binary, self.generation, sink)?);
+        self.run = Some(Run::start(binary, self.config.camera.as_deref(), self.generation, sink)?);
         Ok(())
     }
 

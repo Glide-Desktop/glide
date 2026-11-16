@@ -16,7 +16,7 @@ fn main() -> ExitCode {
         tracing::error!("cannot create {}: {err}", dir.display());
         return ExitCode::FAILURE;
     }
-    let store = match Store::open(&path, Defaults::load(&glide_configd::defaults_dirs())) {
+    let mut store = match Store::open(&path, Defaults::load(&glide_configd::defaults_dirs())) {
         Ok(store) => store,
         Err(err) => {
             tracing::error!("{err}");
@@ -25,6 +25,9 @@ fn main() -> ExitCode {
     };
     if let Err(err) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
         tracing::warn!("cannot make {} private: {err}", path.display());
+    }
+    if let Some(legacy) = glide_config::xdg_path("glide", "glide.toml") {
+        glide_configd::import::legacy_file(&mut store, glide_ipc::config::SHELL, &legacy);
     }
     let trusted = glide_configd::bus::trusted_next_to(std::env::current_exe().ok().as_deref());
     let builder = match zbus::blocking::connection::Builder::session() {

@@ -506,8 +506,7 @@ glide_app::catalogue! {
     BtEnterCode => "Enter code", "Ввести код";
     BtTypeSummary => "Pairing with {device}", "Створення пари з {device}";
     BtTypeBody => "Type {code} on {device}, then press Enter.", "Наберіть {code} на {device} і натисніть Enter.";
-    ConfigBroken => "glide.toml has an error; the last working settings are in use", "У glide.toml помилка; діють останні робочі налаштування";
-    ConfigIgnoredKeys => "glide.toml: settings this version does not know were ignored", "glide.toml: проігноровано налаштування, яких ця версія не знає";
+    ConfigBroken => "The settings could not be read; the defaults are in use", "Не вдалося прочитати налаштування; діють типові";
     BatteryLow => "Battery is low", "Низький заряд батареї";
     BatteryCritical => "Battery is almost empty", "Батарея майже розряджена";
     BatteryPlugIn => "plug in the charger", "під\u{2019}єднайте зарядний пристрій";

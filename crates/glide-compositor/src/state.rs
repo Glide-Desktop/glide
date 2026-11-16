@@ -387,6 +387,7 @@ impl WakeTimer {
 
 #[derive(Default)]
 pub struct SessionServices {
+    pub config: crate::config::Config,
     pub face_unlock: crate::face_unlock::FaceUnlock,
     pub presenter: Option<((f64, f64), std::time::Instant, smithay::output::Output)>,
     pub wake_timer: WakeTimer,
@@ -427,7 +428,6 @@ pub struct SessionServices {
     pub end: crate::session_end::SessionEnd,
     pub battery_alert: crate::battery_alert::BatteryAlert,
     pub battery_saver: crate::battery_alert::Saver,
-    pub announced_config_keys: Vec<String>,
     pub prompts: crate::agent_prompt::Prompts,
     pub bell: Option<std::time::Instant>,
     pub volumes: crate::removable::Toasts,
@@ -1765,17 +1765,11 @@ impl GlideState {
             glide_theme::Appearance::Dark => glide_theme::Appearance::Light,
             glide_theme::Appearance::Light => glide_theme::Appearance::Dark,
         };
-        match crate::config::Config::try_load() {
-            Ok(mut config) => {
-                config.topbar.appearance = appearance;
-                config.topbar.appearance_schedule = false;
-                config.apply_to_state(self);
-                crate::config::persist_appearance(appearance);
-            }
-            Err(message) => {
-                tracing::warn!(%message, "the appearance stays until glide.toml reads again");
-            }
-        }
+        let mut config = self.session.config.clone();
+        config.topbar.appearance = appearance;
+        config.topbar.appearance_schedule = false;
+        config.apply_to_state(self);
+        crate::config::persist_appearance(appearance);
     }
 
     pub fn tick_appearance_schedule(&mut self) -> bool {
@@ -1788,34 +1782,17 @@ impl GlideState {
         if crate::config::scheduled_appearance(minute) == self.shell_palette.0 {
             return false;
         }
-        match crate::config::Config::try_load() {
-            Ok(config) => {
-                config.apply_to_state(self);
-                true
-            }
-            Err(message) => {
-                tracing::warn!(%message, "the scheduled appearance change waits for a readable glide.toml");
-                self.session.appearance_schedule = false;
-                false
-            }
-        }
+        self.session.config.clone().apply_to_state(self);
+        true
     }
 
     pub fn tick_icon_plates(&mut self) -> bool {
         if !glide_system::icon_plates::take_rebuilt() {
             return false;
         }
-        match crate::config::Config::try_load() {
-            Ok(config) => {
-                self.applied_config.forget_icon_theme();
-                config.apply_to_state(self);
-                true
-            }
-            Err(message) => {
-                tracing::warn!(%message, "the dark icon plates wait for a readable glide.toml");
-                false
-            }
-        }
+        self.applied_config.forget_icon_theme();
+        self.session.config.clone().apply_to_state(self);
+        true
     }
 
     pub fn tick_night_light(&mut self) -> bool {

@@ -150,8 +150,9 @@ impl Store {
         Ok(Self { db, defaults })
     }
 
-    pub fn reload_defaults(&mut self, defaults: Defaults) {
-        self.defaults = defaults;
+    #[must_use]
+    pub fn accepts(&self, namespace: &str, key: &str, value: &Value) -> bool {
+        self.defaults.default_of(namespace, key).is_ok_and(|default| same_kind(default, value))
     }
 
     fn stored(&self, namespace: &str, key: &str) -> Result<Option<Value>, Error> {

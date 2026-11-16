@@ -106,7 +106,7 @@ fn main() -> ExitCode {
         if opts.verify {
             return verification(&pipeline, &store, &opts, source);
         }
-        return enrollment(&pipeline, store, &opts);
+        return enrollment(&pipeline, &store, &opts);
     }
     print!("{}", cli::usage());
     ExitCode::SUCCESS
@@ -237,20 +237,12 @@ fn finish_verify(store: &Store, opts: &Options, source: Option<Source>, success:
     if success { ExitCode::SUCCESS } else { ExitCode::from(1) }
 }
 
-fn configured_camera(store: &Store) -> Option<String> {
-    let home = nix::unistd::User::from_name(&store.username).ok().flatten()?.dir;
-    let text = std::fs::read_to_string(home.join(".config/glide/glide.toml")).ok()?;
-    let value: toml::Value = text.parse().ok()?;
-    let camera = value.get("facekey")?.get("camera")?.as_str()?.to_string();
-    let index = camera.strip_prefix("/dev/video")?;
-    index.parse::<u32>().ok().map(|_| camera)
-}
-
 fn pick_camera(store: &Store, opts: &Options) -> String {
     if !opts.camera.is_empty() {
         return opts.camera.clone();
     }
-    configured_camera(store)
+    store
+        .camera()
         .or_else(|| v4l2::list().into_iter().find(|camera| camera.trusted).map(|camera| camera.path))
         .unwrap_or_else(|| "/dev/video0".into())
 }
@@ -363,8 +355,8 @@ fn verification(pipe: &Pipeline, store: &Store, opts: &Options, source: Option<S
     finish_verify(store, opts, source, sess.is_success, reason)
 }
 
-fn enrollment(pipe: &Pipeline, store: Store, opts: &Options) -> ExitCode {
-    let device = pick_camera(&store, opts);
+fn enrollment(pipe: &Pipeline, store: &Store, opts: &Options) -> ExitCode {
+    let device = pick_camera(store, opts);
     let mut cam = match start_camera(&device, opts) {
         Ok(c) => c,
         Err(e) => {
@@ -375,7 +367,7 @@ fn enrollment(pipe: &Pipeline, store: Store, opts: &Options) -> ExitCode {
         }
     };
     pipe.reset_tracker();
-    let mut sess = EnrollmentState::new(Some(store));
+    let mut sess = EnrollmentState::new(Some(store.clone()));
     let started = Instant::now();
     let mut last_preview: Option<Instant> = None;
     while !sess.is_done {
@@ -409,6 +401,9 @@ fn enrollment(pipe: &Pipeline, store: Store, opts: &Options) -> ExitCode {
         emit(&Event::Finished { success: sess.is_success, reason });
     }
     if sess.is_success {
+        if let Err(err) = store.save_camera(&device) {
+            eprintln!("[WARN] the camera used for enrollment was not remembered: {err}");
+        }
         println!("[SUCCESS] Face enrolled and encrypted.");
         ExitCode::SUCCESS
     } else {

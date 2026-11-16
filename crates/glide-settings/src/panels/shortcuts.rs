@@ -17,7 +17,7 @@ mod tr {
         HeroDefaults => "Using the Glide defaults. Click a shortcut to change it.", "Використовуються типові сполучення Glide. Натисніть на сполучення, щоб змінити його.";
         HeroCustomised => "You have changed the defaults. Reset brings them all back.", "Ви змінили типові сполучення. «Скинути все» поверне їх.";
         ResetAll => "Reset all", "Скинути все";
-        Unreadable => "The keybinds list in glide.toml cannot be edited here:", "Список keybinds у glide.toml не можна редагувати тут:";
+        Unreadable => "The shortcut list cannot be edited here:", "Список сполучень не можна редагувати тут:";
         ConflictsFound => "Some shortcuts share a key combination, so only one of each pair works:", "Деякі сполучення збігаються, тож із кожної пари працює лише одне:";
         FilterPlaceholder => "Filter shortcuts", "Пошук сполучень";
         NothingMatches => "No shortcuts match", "Немає відповідних сполучень";

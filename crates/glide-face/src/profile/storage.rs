@@ -149,6 +149,16 @@ impl Store {
     }
 
     #[must_use]
+    pub fn camera(&self) -> Option<String> {
+        let camera = fs::read_to_string(self.dir.join("camera")).ok()?.trim().to_string();
+        camera.strip_prefix("/dev/video")?.parse::<u32>().ok().map(|_| camera)
+    }
+
+    pub fn save_camera(&self, device: &str) -> std::io::Result<()> {
+        glide_config::write_atomic(&self.dir.join("camera"), device.as_bytes(), FILE_MODE)
+    }
+
+    #[must_use]
     pub fn can_write(&self) -> bool {
         self.test_mode || geteuid().is_root()
     }

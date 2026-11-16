@@ -1,10 +1,10 @@
 #![allow(clippy::unreadable_literal)] // Colours are 0xRRGGBB, the same six digits as #rrggbb in the design files
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Accent, Color};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Appearance {
     Light,

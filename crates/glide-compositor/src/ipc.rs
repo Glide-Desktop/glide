@@ -399,18 +399,12 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
             }
             None => window_not_found(),
         },
-        Request::Reload => match crate::config::Config::try_load() {
-            Ok(config) => {
-                state.session.gate.reload();
-                config.apply_to_state(state);
-                state.queue_redraw();
-                Response::Ok
-            }
-            Err(message) => {
-                tracing::warn!(%message, "reload rejected; keeping the running configuration");
-                Response::Error { message }
-            }
-        },
+        Request::Reload => {
+            state.session.gate.reload();
+            state.session.config.clone().apply_to_state(state);
+            state.queue_redraw();
+            Response::Ok
+        }
         Request::Exec { command } => spawn_command(&command),
         Request::Subscribe | Request::PracticeGestures => Response::Subscribed,
         Request::SetDpms { on } => {
