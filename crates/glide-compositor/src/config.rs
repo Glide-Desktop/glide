@@ -2383,6 +2383,22 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
     }
 
     #[test]
+    #[ignore = "reads $GLIDE_IMPORT_CHECK, a copy of a real glide.toml"]
+    fn a_real_settings_file_reads_back_as_a_configuration_after_the_import() {
+        let path = std::env::var_os("GLIDE_IMPORT_CHECK").expect("GLIDE_IMPORT_CHECK names a glide.toml copy");
+        let table: toml::Table = fs::read_to_string(path).expect("readable").parse().expect("parses");
+        let imported = glide_app::config::flatten(serde_json::to_value(table).expect("JSON"));
+        let mut values = Config::shell_defaults();
+        for (key, value) in imported {
+            if let Some(slot) = values.get_mut(&key) {
+                *slot = value;
+            }
+        }
+        let config = Config::from_values(&values).expect("the imported settings form a configuration");
+        eprintln!("accent {:?}, layout {:?}", config.topbar.accent, config.input.xkb_layout);
+    }
+
+    #[test]
     fn a_layout_left_empty_takes_the_system_keyboard_and_a_chosen_one_stays() {
         let mut values = Config::shell_defaults();
         assert_eq!(Config::from_values(&values).expect("read").input.xkb_layout, InputConfig::default().xkb_layout);
