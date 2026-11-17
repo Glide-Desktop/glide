@@ -65,7 +65,7 @@ sudo sh migrate-from-local.sh --dry-run   # see what it will do
 sudo sh migrate-from-local.sh
 ```
 
-It backs up every file it touches to `/var/backups/glide-migrate-<time>.tar.gz`,
+It backs up every file it touches to `/var/backups/glide-migrate-<time>.tar.zst`,
 installs the packages over the files the old installer left in `/usr/share` and
 `/etc`, points greetd and the FaceKey PAM lines at `/usr/bin`, removes the old
 copies and checks that everything the login path names exists. Keep a root

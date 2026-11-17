@@ -38,6 +38,7 @@ if [ "$MODE" = upgrade ]; then
     grep -q '/usr/local/bin/glide --greeter' /etc/greetd/config.toml && ok "greetd points at /usr/local" || bad "greetd setup"
     systemctl is-enabled greetd.service >/dev/null 2>&1 && ok "greetd enabled" || bad "greetd not enabled before"
     ls /usr/share/glide/face/*.onnx >/dev/null 2>&1 && ok "models copied by the old installer" || echo "  note no models in the copy"
+    printf '[MIME Cache]\nimage/png=glide-photos.desktop;\n' > /usr/local/share/applications/mimeinfo.cache
 
     echo "== migrate"
     # shellcheck disable=SC2086
@@ -94,7 +95,10 @@ if [ "$MODE" = upgrade ]; then
     left=$(find /usr/local -name 'glide*' -o -name facekey | grep -v cpu-cap)
     [ -z "$left" ] && ok "nothing left under /usr/local" || { bad "left under /usr/local"; echo "$left"; }
     [ -f /usr/share/icons/hicolor/scalable/apps/glide-welcome.svg ] && bad "welcome icon left" || ok "welcome icon removed"
-    ls /var/backups/glide-migrate-*.tar.gz >/dev/null 2>&1 && ok "backup $(ls /var/backups/glide-migrate-*.tar.gz | head -1)" || bad "no backup"
+    ls /var/backups/glide-migrate-*.tar.zst >/dev/null 2>&1 && ok "backup $(ls /var/backups/glide-migrate-*.tar.zst | head -1)" || bad "no backup"
+    listing="$(tar --zstd -tPf "$(ls /var/backups/glide-migrate-*.tar.zst | head -1)")"
+    printf '%s\n' "$listing" | grep -qx /usr/local/bin/glide && ok "backup holds the old binary" || bad "backup content"
+    [ ! -e /usr/local/share/applications ] && ok "old MIME cache and launcher folder gone" || bad "left: $(ls /usr/local/share/applications)"
 fi
 /usr/bin/glide --version && ok "glide --version runs" || bad "glide --version"
 /usr/bin/glidectl --help >/dev/null 2>&1; [ $? -le 2 ] && ok "glidectl runs" || bad "glidectl"

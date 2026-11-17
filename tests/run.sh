@@ -35,6 +35,8 @@ for mode in "$@"; do
     docker run --rm --privileged -v "$PKGS:/pkgs:ro" -v "$WORK/mono:/mono:ro" -v "$WORK/migrate:/migrate:ro" \
         archlinux:base-devel bash /migrate/container.sh "$mode" > "$WORK/$mode.log" 2>&1 || status=1
     tail -1 "$WORK/$mode.log"
-    grep -A3 FAIL "$WORK/$mode.log" || true
+    if grep -q FAIL "$WORK/$mode.log"; then
+        sed 's/^/  | /' "$WORK/$mode.log"
+    fi
 done
 exit $status
