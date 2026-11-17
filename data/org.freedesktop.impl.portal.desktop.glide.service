@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=org.freedesktop.impl.portal.desktop.glide
-Exec=/usr/local/bin/glide-portal

@@ -1,7 +1,0 @@
-pub const MEASURED_RECOGNIZER: &str = "GhostFaceNetV1-1.3-1-MS1MV3-512d";
-pub const SCORE_TAIL_INTERCEPT: f64 = 0.913_126;
-pub const SCORE_TAIL_SLOPE: f64 = -14.332_016;
-pub const SCORE_TAIL_MEASURED_FAR: f64 = 1.085e-5;
-pub const PAIR_TAIL_INTERCEPT: f64 = 1.100_669;
-pub const PAIR_TAIL_SLOPE: f64 = -15.280_937;
-pub const PAIR_TAIL_MEASURED_FAR: f64 = 1.000e-5;

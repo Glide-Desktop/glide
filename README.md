@@ -1,183 +1,128 @@
 # Glide
 
-A Wayland desktop: compositor with its own top bar, dock, launcher, overview,
-notification centre, quick settings, and a settings app (`glide-settings`).
-Built on [smithay](https://github.com/Smithay/smithay). Runs directly on
-DRM/KMS from a display manager or a TTY; it does not run nested inside another
-compositor.
+A Wayland desktop built on [smithay](https://github.com/Smithay/smithay): a
+compositor with its own top bar, dock, launcher, overview, notification
+centre, quick settings, lock screen and greeter, and a set of apps.
 
-Interface languages: Ukrainian and English. The language follows `LANG`, and
-you can override it with `[general] language` in `~/.config/glide/glide.toml`.
+This repository publishes Glide releases. The code lives in the component
+repositories; until November 2026 it lived here, and that state is the tag
+[`monorepo-final`](https://github.com/Glide-Desktop/glide/tree/monorepo-final).
 
-## Requirements
-
-- Linux with a KMS-capable GPU. Intel, AMD, and Nouveau/NVK work through
-  Mesa. The proprietary NVIDIA driver needs `nvidia-drm.modeset=1` and a
-  driver with GBM support (495 or newer).
-- `systemd-logind` or `seatd`, `udev`, Mesa EGL/GLES.
-- Rust 1.96 or newer. Install it with [rustup](https://rustup.rs); distribution
-  packages are often too old.
-
-### Build dependencies
-
-| Distribution | Command |
+| Repository | Packages |
 |---|---|
-| Arch | `sudo pacman -S --needed base-devel git pkgconf seatd systemd-libs libinput mesa libxkbcommon libdisplay-info` |
-| Debian 13 / Ubuntu 24.04+ | `sudo apt install build-essential git pkg-config libseat-dev libudev-dev libinput-dev libgbm-dev libxkbcommon-dev libdisplay-info-dev` |
-| Fedora | `sudo dnf install gcc git pkgconf-pkg-config libseat-devel systemd-devel libinput-devel mesa-libgbm-devel libxkbcommon-devel libdisplay-info-devel` |
-| openSUSE | `sudo zypper install gcc git pkgconf libseat-devel systemd-devel libinput-devel libgbm-devel libxkbcommon-devel libdisplay-info-devel` |
+| [glide-libs](https://github.com/Glide-Desktop/glide-libs) | shared crates (no package) |
+| [glide-shell](https://github.com/Glide-Desktop/glide-shell) | `glide-shell`, `glide-configd`, `xdg-desktop-portal-glide`, `glide` (everything) |
+| [glide-auth](https://github.com/Glide-Desktop/glide-auth) | `glide-keychain`, `glide-facekey` |
+| [glide-facekey-models](https://github.com/Glide-Desktop/glide-facekey-models) | `glide-facekey-models` |
+| [glide-files](https://github.com/Glide-Desktop/glide-files) | `glide-files` |
+| [glide-terminal](https://github.com/Glide-Desktop/glide-terminal) | `glide-terminal` |
+| [glide-text](https://github.com/Glide-Desktop/glide-text) | `glide-text` |
+| [glide-photos](https://github.com/Glide-Desktop/glide-photos) | `glide-photos` |
+| [glide-folio](https://github.com/Glide-Desktop/glide-folio) | `glide-folio` |
+| [glide-clips](https://github.com/Glide-Desktop/glide-clips) | `glide-clips` |
+| [glide-passwords](https://github.com/Glide-Desktop/glide-passwords) | `glide-passwords` |
+| [glide-settings](https://github.com/Glide-Desktop/glide-settings) | `glide-settings` |
+| [glide-phone-desktop](https://github.com/Glide-Desktop/glide-phone-desktop) | `glide-phone` |
 
-`scripts/build.sh` checks all of these and prints the right command for your
-distribution when something is missing.
+## Install on Arch Linux
 
-### Runtime (optional, recommended)
-
-| Package | For |
-|---|---|
-| `xwayland-satellite` | X11 applications |
-| `xdg-desktop-portal`, `-gtk`, `-wlr`, `pipewire`, `wireplumber` | file dialogs, screen sharing, audio |
-| `libpam` with `/etc/pam.d/glide-lock` (installed by `scripts/install.sh`) | the built-in lock screen (Super+L, power menu, idle); without PAM it cannot be unlocked |
-| `gnome-keyring` (or another `org.freedesktop.secrets` provider) | saved passwords for browsers, mail and sync clients; add `pam_gnome_keyring.so` to your greeter's PAM service so the keyring unlocks at login |
-| `fcitx5` or `ibus` | input methods (CJK, Indic); started from `/etc/xdg/autostart` |
-| `brightnessctl` | brightness keys |
-| `pactl` (libpulse), `rtkit` | sound devices and headphone unplugging; realtime priority for PipeWire |
-| `NetworkManager`, `bluez`, `power-profiles-daemon` | Wi-Fi, Bluetooth and power mode in quick settings |
-| `polkit` (with `polkit-agent-helper-1`) | administrator password prompts; Glide is its own polkit agent and asks in the status island (`[general] polkit-agent = false` turns it off, and then another agent has to be started through `[general] autostart`) |
-| Colloid icon theme (`colloid-icon-theme-git` on the AUR, or `./install.sh -t all` from [vinceliuice/Colloid-icon-theme](https://github.com/vinceliuice/Colloid-icon-theme)) | the default icon set: the variant that matches the appearance and accent (`Colloid-Teal-Dark`, …) is picked unless `[dock] icon-theme` names another |
-| `papirus-icon-theme` | the fallback when Colloid is not installed (then Adwaita/hicolor) |
-
-Glide has its own notification daemon. Do not also run mako, dunst or swaync
-in a Glide session.
-
-XDG autostart entries (`/etc/xdg/autostart`, `~/.config/autostart`) are started
-at login: `OnlyShowIn` / `NotShowIn` are matched against `Glide`,
-`AutostartCondition` (`GSettings`, `if-exists`, `unless-exists`, `GNOME3
-if-session` / `unless-session`), `X-GNOME-Autostart-Phase` and
-`X-GNOME-Autostart-Delay` are honoured, `Terminal=true` entries are skipped.
-`[general] xdg-autostart = false` turns this off.
-
-## Install the Arch Linux package
-
-Every release on the
-[Releases page](https://github.com/Glide-Desktop/glide/releases) carries a
-`glide-<version>-1-x86_64.pkg.tar.zst`:
+Trust the repository key, add the repository and install the `glide`
+metapackage, which pulls in every Glide package and everything they need:
 
 ```sh
-sudo pacman -U glide-<version>-1-x86_64.pkg.tar.zst
+curl -fsSL https://pkg.mindenit.org/glide/glide.asc | sudo pacman-key --add -
+sudo pacman-key --lsign-key <FINGERPRINT>
 ```
 
-Its PKGBUILD is `data/arch/glide/PKGBUILD`; `makepkg -si` in that folder
-builds the same package from the tagged source.
-
-## Build and install
-
-On Arch Linux and derivatives, run `sh scripts/setup.sh`. It offers to install
-missing build and recommended runtime packages, builds Glide, then installs it
-with sudo. It offers to configure Rust when missing; Rust 1.96 or newer is required. Installer options
-such as `--dm` and `--pam` can be passed to this command. On other distributions,
-install the dependencies manually and use the commands below.
-
-For audio, PipeWire and WirePlumber must also be running in the user session.
-Glide Phone discovery needs UDP 1716 and TCP 1716–1764 allowed on the local
-network; another KDE Connect service using UDP 1716 prevents discovery. The
-setup script does not change firewall rules and asks before enabling services.
+```ini
+# /etc/pacman.conf
+[glide]
+SigLevel = Required
+Server = https://pkg.mindenit.org/glide/$arch
+```
 
 ```sh
-git clone <repo> glide && cd glide
-scripts/build.sh               # as your user; never as root
-sudo scripts/install.sh        # installs to /usr/local
+sudo pacman -Syu glide
 ```
 
-Then log out and choose **Glide** in your display manager (GDM, SDDM,
-LightDM, greetd…). From a bare TTY, run `glide-session`.
+Then pick "Glide" in your display manager, or use Glide's own greeter:
+copy `/usr/share/glide-shell/greetd-config.toml` to
+`/etc/greetd/config.toml` and `systemctl enable greetd`. Updates come with
+`pacman -Syu` like any other package.
 
-`install.sh` options:
+## Moving from a source install
 
-- `--prefix /usr` installs under `/usr` instead of `/usr/local`.
-- `--destdir DIR` stages the files for a distribution package.
-- `--uninstall` removes everything it installed.
-
-### What gets installed
-
-| Path | |
-|---|---|
-| `PREFIX/bin/glide`, `glidectl`, `glide-settings` | compositor, IPC client, settings app |
-| `PREFIX/bin/glide-session`, `glide-lock` | session launcher, screen-lock helper |
-| `/usr/share/wayland-sessions/glide.desktop` | display-manager entry |
-| `PREFIX/lib/systemd/user/glide.service`, `glide-shutdown.target` | systemd user units |
-| `/usr/share/xdg-desktop-portal/glide-portals.conf` | portal backend selection |
-| `PREFIX/share/applications/glide-settings.desktop` | Settings launcher entry |
-
-User files live in `~/.config/glide/` (`glide.toml`, `pins.toml`). The log is
-`~/.local/state/glide/glide.log`.
-
-## Sharing a prebuilt build
+A Glide installed with the old `scripts/install.sh` lives under `/usr/local`,
+which comes first in `PATH`, in the systemd user unit search and in
+`XDG_DATA_DIRS`, so it has to go when the packages come. One script does the
+whole move and refuses to remove anything until the packages are in place:
 
 ```sh
-scripts/package.sh             # writes dist/glide-<version>-<arch>.tar.gz
+curl -fsSLO https://raw.githubusercontent.com/Glide-Desktop/glide-shell/main/scripts/migrate-from-local.sh
+sudo sh migrate-from-local.sh --dry-run   # see what it will do
+sudo sh migrate-from-local.sh
 ```
 
-Whoever receives it runs:
+It backs up every file it touches to `/var/backups/glide-migrate-<time>.tar.gz`,
+installs the packages over the files the old installer left in `/usr/share` and
+`/etc`, points greetd and the FaceKey PAM lines at `/usr/bin`, removes the old
+copies and checks that everything the login path names exists. Keep a root
+shell on another TTY open while it runs, and log out and back in afterwards.
+Per-user data (`~/.config/glide`, `~/.local/state/glide`, the keychain) is not
+touched.
+
+## Releasing
+
+1. Tag a component repository (`v0.1.1`). Its Package workflow builds its
+   packages in an Arch container and attaches them to the GitHub release.
+2. Tag this repository. The Publish workflow takes the latest release of every
+   repository in `components.list`, builds the AUR packages in `aur.list`,
+   signs everything, adds it to the repository database and uploads it to the
+   server: packages first, the database last. Earlier package files stay on
+   the server, so `pacman -U` can roll back to them.
+
+Before tagging, `tests/run.sh <directory with the .pkg.tar.zst files>` checks
+them in throwaway Arch containers: a fresh install from the official
+repositories (every dependency resolves, every binary finds its libraries) and
+the move from a `/usr/local` install (greetd, PAM, D-Bus, systemd and the
+session entry all point at files that exist afterwards).
+
+## Server
+
+The repository is a static directory served by Caddy at `pkg.mindenit.org`:
+
+```
+/srv/pkg/glide/glide.asc          the public signing key
+/srv/pkg/glide/x86_64/            packages, signatures and the glide.db / glide.files databases
+```
+
+```caddy
+pkg.mindenit.org {
+    root * /srv/pkg
+    file_server browse
+}
+```
+
+Under Coolify the simplest form is a Docker Compose service with the domain
+`pkg.mindenit.org`, one `caddy:2` container serving the volume `/srv/pkg`
+(`caddy file-server --root /srv/pkg --browse --listen :80`), so Coolify's own
+proxy handles TLS.
+
+The workflow uploads with rsync over SSH as a user that may write only
+`/srv/pkg/glide`. In the repository settings, environment `pkg.mindenit.org`:
+
+| Name | Kind | Value |
+|---|---|---|
+| `GLIDE_SIGNING_KEY` | secret | the ASCII-armoured private signing key (no passphrase) |
+| `GLIDE_DEPLOY_KEY` | secret | the private SSH key of the upload user |
+| `GLIDE_KNOWN_HOSTS` | secret | `ssh-keyscan <server>` output |
+| `GLIDE_REPO_RSYNC` | variable | `deploy@<server>:/srv/pkg/glide/x86_64/` |
+| `GLIDE_REPO_URL` | variable | `https://pkg.mindenit.org/glide/x86_64` |
+
+A signing key for this purpose only:
 
 ```sh
-tar xf glide-*.tar.gz && cd glide-*/ && sudo scripts/install.sh
+gpg --batch --passphrase '' --quick-gen-key "Glide packages" ed25519 sign 3y
+gpg --armor --export-secret-keys "Glide packages"   # -> GLIDE_SIGNING_KEY
+gpg --armor --export "Glide packages"               # -> /srv/pkg/glide/glide.asc
 ```
-
-The binaries are linked against the build machine's glibc and system
-libraries, and `BUILD-INFO` in the tarball lists them. A tarball built on a
-rolling distribution such as Arch does **not** run on older distributions
-(Debian stable, Ubuntu LTS). Those users should build from source.
-
-## Configuration
-
-Glide works without a config file. By default:
-
-- The keyboard layout comes from the system (`localectl`, `/etc/vconsole.conf`,
-  `/etc/default/keyboard` or `XKB_DEFAULT_*`), else from your locale.
-- The output scale is picked from the screen's physical size and resolution:
-  1, 1.5, 2 or 3. A value in the config always wins:
-
-```toml
-[[output]]
-name = "eDP-1"      # glidectl outputs lists the names
-scale = 1.5
-```
-
-Most options are also available in the Settings app. After editing the file by
-hand, run `glidectl reload`.
-
-## Development
-
-```sh
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-To try a debug build, run `cargo build` and start `target/debug/glide` from a
-free VT; the log is `~/.local/state/glide/glide.log`.
-
-### Releases
-
-Set the new version in `crates/glide-compositor/Cargo.toml`, commit, then push
-an annotated tag of the same version:
-
-```sh
-git tag -a v0.2.0 -m "Short summary of the release" -m "Optional longer notes."
-git push origin v0.2.0
-```
-
-The Release workflow checks that the tag matches the crate version, builds the
-Arch package with `makepkg`, and publishes a release whose notes start with the
-tag message and list the commits since the previous tag.
-
-## Writing apps for Glide
-
-`crates/glide-sdk` is the toolkit for third-party apps in Glide's design
-system: window chrome, menus in the top bar, dialogs, widgets and system
-integration in one crate. Start with `docs/SDK.md` and
-`cargo run -p glide-sdk --example notes`.
-
-## License
-
-GPL-3.0-or-later.

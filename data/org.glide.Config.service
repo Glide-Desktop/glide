@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=org.glide.Config
-Exec=/usr/local/bin/glide-configd

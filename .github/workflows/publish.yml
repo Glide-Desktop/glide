@@ -1,0 +1,68 @@
+name: Publish
+
+# A tag of this repository publishes a release of the Glide desktop: the
+# latest release of every component repository, plus the AUR packages Glide
+# needs, signed and pushed to the pacman repository on pkg.mindenit.org.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  aur:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          pacman -Syu --noconfirm --needed git
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: /usr/bin/pacman' > /etc/sudoers.d/builder
+          mkdir -p out && chown builder out
+          for name in $(grep -v '^#' aur.list); do
+            sudo -u builder git clone -q --depth 1 "https://aur.archlinux.org/$name.git" "/tmp/$name"
+            (cd "/tmp/$name" && sudo -u builder makepkg -s -f --noconfirm)
+            cp /tmp/$name/*.pkg.tar.zst out/
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aur
+          path: out/*.pkg.tar.zst
+
+  publish:
+    needs: aur
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    environment: pkg.mindenit.org
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: aur
+          path: out
+      - name: Tools
+        run: pacman -Syu --noconfirm --needed git github-cli rsync openssh gnupg
+      - name: Collect component releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/collect.sh
+      - name: Sign, index and upload
+        env:
+          GLIDE_SIGNING_KEY: ${{ secrets.GLIDE_SIGNING_KEY }}
+          GLIDE_DEPLOY_KEY: ${{ secrets.GLIDE_DEPLOY_KEY }}
+          GLIDE_KNOWN_HOSTS: ${{ secrets.GLIDE_KNOWN_HOSTS }}
+          GLIDE_REPO_RSYNC: ${{ vars.GLIDE_REPO_RSYNC }}
+          GLIDE_REPO_URL: ${{ vars.GLIDE_REPO_URL }}
+        run: |
+          printf '%s\n' "$GLIDE_SIGNING_KEY" | gpg --batch --import
+          export GLIDE_SIGNING_FPR="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$GLIDE_DEPLOY_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$GLIDE_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519
+          scripts/publish.sh

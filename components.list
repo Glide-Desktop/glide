@@ -1,0 +1,13 @@
+# Repositories in Glide-Desktop whose latest release goes into a Glide release.
+glide-facekey-models
+glide-auth
+glide-shell
+glide-files
+glide-terminal
+glide-text
+glide-photos
+glide-folio
+glide-clips
+glide-passwords
+glide-settings
+glide-phone-desktop
