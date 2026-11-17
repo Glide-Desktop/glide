@@ -2689,6 +2689,7 @@ dependencies = [
  "glide-config",
  "glide-ipc",
  "glide-netbird",
+ "glide-paint",
  "glide-sdk",
  "glide-theme",
  "iced",
