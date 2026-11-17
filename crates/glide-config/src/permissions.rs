@@ -121,22 +121,6 @@ mod tests {
     }
 
     #[test]
-    fn the_installed_defaults_are_the_permissions_defaults() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/defaults/permissions.json");
-        let values =
-            serde_json::to_value(Permissions::default()).map(crate::service::flatten).expect("defaults serialize");
-        let expected = serde_json::to_string_pretty(&values).expect("JSON") + "\n";
-        if std::env::var_os("GLIDE_WRITE_DEFAULTS").is_some() {
-            std::fs::write(&path, &expected).expect("write the defaults");
-        }
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap_or_default(),
-            expected,
-            "data/defaults/permissions.json is generated from Permissions; rerun with GLIDE_WRITE_DEFAULTS=1"
-        );
-    }
-
-    #[test]
     fn stored_answers_read_back_and_an_unreadable_set_grants_nothing() {
         let mut permissions = Permissions::default();
         permissions.remember(Access::Screen, "/usr/bin/grim", true);

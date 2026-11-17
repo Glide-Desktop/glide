@@ -119,8 +119,7 @@ fn fixture_sound(app: &mut App) {
             app: "Browser".into(),
             title: "Video".into(),
             icon_name: None,
-            icon: std::env::var_os("GLIDE_SETTINGS_SOUND_ICON_FIXTURE")
-                .map(|_| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/glide-folio.svg")),
+            icon: std::env::var_os("GLIDE_SETTINGS_SOUND_ICON_FIXTURE").map(std::path::PathBuf::from),
             volume: 0.7,
             muted: false,
         }],

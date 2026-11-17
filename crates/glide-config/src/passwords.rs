@@ -81,21 +81,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_installed_defaults_are_the_prefs_defaults() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/defaults/passwords.json");
-        let values = serde_json::to_value(Prefs::default()).map(crate::service::flatten).expect("defaults serialize");
-        let expected = serde_json::to_string_pretty(&values).expect("JSON") + "\n";
-        if std::env::var_os("GLIDE_WRITE_DEFAULTS").is_some() {
-            std::fs::write(&path, &expected).expect("write the defaults");
-        }
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap_or_default(),
-            expected,
-            "data/defaults/passwords.json is generated from Prefs; rerun with GLIDE_WRITE_DEFAULTS=1"
-        );
-    }
-
-    #[test]
     fn missing_or_unreadable_values_take_their_defaults() {
         let values = crate::service::Values::from([
             ("click".to_owned(), serde_json::json!("both")),

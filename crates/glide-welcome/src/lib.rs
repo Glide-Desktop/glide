@@ -222,6 +222,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_desktop_entry_launches_welcome_on_every_desktop() {
+        let body = include_str!("../../../data/glide-welcome.desktop");
+        let value = |key| glide_config::desktop::entry_value(body, key);
+        assert_eq!(value("Name[uk]"), Some("Ласкаво просимо до Glide"));
+        assert_eq!(value("Exec"), Some(glide_config::welcome::APPLICATION_ID));
+        assert_eq!(value("Icon"), Some(glide_config::welcome::APPLICATION_ID));
+        assert!(value("Keywords").is_some_and(|words| words.split(';').any(|word| word == "знайомство")));
+        assert_eq!((value("OnlyShowIn"), value("NotShowIn"), value("Terminal")), (None, None, Some("false")));
+    }
+
+    #[test]
     fn navigation_covers_all_thirteen_steps_and_stays_in_bounds() {
         let mut welcome = Welcome::default();
         welcome.back();

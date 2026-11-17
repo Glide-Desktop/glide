@@ -15,8 +15,8 @@ pub struct Pin {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-struct Stored {
-    pinned: Option<Vec<Pin>>,
+pub struct Stored {
+    pub pinned: Option<Vec<Pin>>,
 }
 
 #[must_use]
@@ -46,21 +46,6 @@ pub fn save(pins: &[Pin]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_installed_defaults_mean_nothing_was_pinned_yet() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/defaults/pins.json");
-        let values = serde_json::to_value(Stored::default()).map(crate::service::flatten).expect("defaults serialize");
-        let expected = serde_json::to_string_pretty(&values).expect("JSON") + "\n";
-        if std::env::var_os("GLIDE_WRITE_DEFAULTS").is_some() {
-            std::fs::write(&path, &expected).expect("write the defaults");
-        }
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap_or_default(),
-            expected,
-            "data/defaults/pins.json is generated; rerun with GLIDE_WRITE_DEFAULTS=1"
-        );
-    }
 
     #[test]
     fn an_unset_list_differs_from_an_empty_one_and_blank_ids_are_dropped() {
