@@ -4,7 +4,7 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Tab
 
 use super::config::ConfigStore;
 
-pub(crate) const DEFAULTS_TOML: &str = include_str!("default_keybinds.toml");
+pub(crate) const DEFAULTS_TOML: &str = glide_config::DEFAULT_KEYBINDS;
 pub(crate) const CONFIG_KEY: &str = "keybinds";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

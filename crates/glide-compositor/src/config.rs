@@ -2149,8 +2149,7 @@ action = { exec = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle" }
 
     #[test]
     fn glide_settings_mirrors_the_default_keybinds_exactly() {
-        let text = include_str!("../../glide-settings/src/services/default_keybinds.toml");
-        let config: Config = toml::from_str(text).expect("the settings mirror parses");
+        let config: Config = toml::from_str(glide_config::DEFAULT_KEYBINDS).expect("the settings mirror parses");
         assert_eq!(
             config.keybinds,
             Config::default_keybinds(),

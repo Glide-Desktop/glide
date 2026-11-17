@@ -19,9 +19,4 @@ pub use app::App;
 
 pub const MONO: iced::Font = iced::Font::with_name("JetBrains Mono");
 
-pub const FONTS: [&[u8]; 4] = [
-    include_bytes!("../fonts/JetBrainsMono-Regular.ttf"),
-    include_bytes!("../fonts/JetBrainsMono-Bold.ttf"),
-    include_bytes!("../fonts/JetBrainsMono-Italic.ttf"),
-    include_bytes!("../fonts/JetBrainsMono-BoldItalic.ttf"),
-];
+pub const FONTS: [&[u8]; 4] = glide_sdk::theme::MONO_FAMILY;

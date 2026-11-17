@@ -5,8 +5,6 @@ pub(crate) const MAX_PER_SOURCE: usize = 256;
 pub(crate) const MAX_PER_ROOT: usize = 64;
 pub(crate) const SOLID_SIZE: u32 = 64;
 
-static BUILTIN: &[u8] = include_bytes!("../../../glide-paint/assets/wallpaper.png");
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Builtin,
@@ -354,7 +352,11 @@ pub fn thumbnail(path: &Path) -> Option<Thumbnail> {
 
 #[must_use]
 pub fn builtin() -> Option<Thumbnail> {
-    thumbnail_of(&image::load_from_memory(BUILTIN).ok()?, PathBuf::new(), Source::Builtin)
+    thumbnail_of(
+        &image::load_from_memory(glide_paint::embedded_wallpaper_bytes()).ok()?,
+        PathBuf::new(),
+        Source::Builtin,
+    )
 }
 
 #[must_use]

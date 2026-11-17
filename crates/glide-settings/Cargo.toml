@@ -35,6 +35,7 @@ glide-sdk = { path = "../glide-sdk" }
 glide-app = { path = "../glide-app" }
 glide-ipc = { path = "../glide-ipc" }
 glide-netbird = { path = "../glide-netbird" }
+glide-paint = { path = "../glide-paint" }
 serde.workspace = true
 serde_json.workspace = true
 base64 = "0.22"

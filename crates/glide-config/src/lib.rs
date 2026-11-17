@@ -23,6 +23,8 @@ pub mod welcome;
 pub use file::{with_file_lock, write_atomic, write_private};
 pub use keyboard::SystemKeyboard;
 
+pub const DEFAULT_KEYBINDS: &str = include_str!("default_keybinds.toml");
+
 fn var(key: &str) -> Option<PathBuf> {
     std::env::var_os(key).map(PathBuf::from).filter(|path| path.is_absolute())
 }

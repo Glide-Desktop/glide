@@ -31,10 +31,14 @@ pub mod theme {
     pub use glide_theme::shape::{R_ROUND, R1, R4};
     pub use glide_theme::{Accent, Appearance, Color as TokenColor, TextStyle, Tokens, component, icons, motion};
 
-    pub const MONO_FONTS: [&[u8]; 2] = [
-        include_bytes!("../../glide-terminal/fonts/JetBrainsMono-Regular.ttf"),
-        include_bytes!("../../glide-terminal/fonts/JetBrainsMono-Bold.ttf"),
+    pub const MONO_FAMILY: [&[u8]; 4] = [
+        include_bytes!("../fonts/JetBrainsMono-Regular.ttf"),
+        include_bytes!("../fonts/JetBrainsMono-Bold.ttf"),
+        include_bytes!("../fonts/JetBrainsMono-Italic.ttf"),
+        include_bytes!("../fonts/JetBrainsMono-BoldItalic.ttf"),
     ];
+
+    pub const MONO_FONTS: [&[u8]; 2] = [MONO_FAMILY[0], MONO_FAMILY[1]];
 }
 
 pub mod prelude {
