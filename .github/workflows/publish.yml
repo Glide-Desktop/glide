@@ -65,4 +65,6 @@ jobs:
           printf '%s\n' "$GLIDE_DEPLOY_KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$GLIDE_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519
+          # ssh reads root's home from /etc/passwd, not the $HOME the container job sets.
+          export RSYNC_RSH="ssh -i $HOME/.ssh/id_ed25519 -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o IdentitiesOnly=yes -o BatchMode=yes"
           scripts/publish.sh

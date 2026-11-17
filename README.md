@@ -31,7 +31,7 @@ metapackage, which pulls in every Glide package and everything they need:
 
 ```sh
 curl -fsSL https://pkg.mindenit.org/glide/glide.asc | sudo pacman-key --add -
-sudo pacman-key --lsign-key <FINGERPRINT>
+sudo pacman-key --lsign-key 051391C9EFCAD3924C0C1DBA0EA5B39B61F2E9FF
 ```
 
 ```ini
