@@ -1,49 +1,12 @@
-/target
-/dist
-
-# Packaging output.
+/out
 *.pkg.tar.*
 
-# Editors and local environment.
-.vscode/
-.idea/
-.env
-
-# Agent/session artifacts.
-#
-# These are scratch output from AI coding sessions (transcripts, per-agent
-# briefing/handoff notes, tool configs, review reports). They are not project
-# sources and were committed by accident once already — keep them out of the tree.
-.agents/
-.opencode/
-.claude/
-.geminirules
+# Leftovers of the monorepo in a working copy that was checked out before the
+# split (target/, crates/, data/): not part of this repository.
+/target
+/crates/
+/data/
+/docs/
 AGENTS.md
-GEMINI.md
-session.md
-session_export.json
-session_opencode.md
-TEST_INFRA.md
-TEST_READY.md
-user_plan.md
-docs/*_REVIEW*.md
-docs/*_REPORT.md
-docs/overhaul-log.md
-docs/ROADMAP.md
-
-# Scratch files from debugging sessions: one-off reproducers, stray patches.
-fix.patch
-test_*.rs
-!crates/glide-app/src/test_bus.rs
-test_*.py
-*.orig
-*.rej
-
-# FaceKey models and face photos stay out of history: licences are unverified
-# and the fixtures show a real face.
-crates/glide-face/models/*.onnx
-crates/glide-face/tests/fixtures/
-crates/glide-face/lib/
-
-# Golden-image test scratch output: the failing image, not the reference.
-*.actual.png
+.geminirules
+/migrate-from-local.sh

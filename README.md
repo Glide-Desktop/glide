@@ -82,7 +82,9 @@ touched.
    server: packages first, the database last. Earlier package files stay on
    the server, so `pacman -U` can roll back to them.
 
-Before tagging, `tests/run.sh <directory with the .pkg.tar.zst files>` checks
+`tests/publish.sh` checks the publish script itself against a local directory
+(the db keeps exactly the packages built, the newest three builds of each stay
+on the server). Before tagging, `tests/run.sh <directory with the .pkg.tar.zst files>` checks
 them in throwaway Arch containers: a fresh install from the official
 repositories (every dependency resolves, every binary finds its libraries) and
 the move from a `/usr/local` install (greetd, PAM, D-Bus, systemd and the

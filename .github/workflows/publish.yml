@@ -12,6 +12,12 @@ on:
 permissions:
   contents: read
 
+# One publish at a time: each run rewrites the db it downloaded, so an older
+# run finishing last would put older packages back.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest

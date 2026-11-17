@@ -58,9 +58,13 @@ else
 fi
 
 echo "== checks"
-for p in glide-desktop glide-shell glide-configd xdg-desktop-portal-glide glide-keychain glide-facekey glide-facekey-models \
-    glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-phone; do
-    pacman -Qq "$p" >/dev/null 2>&1 || bad "$p not installed"
+pacman -Qq glide-desktop >/dev/null 2>&1 || bad "glide-desktop not installed"
+built=$(for f in $PKGS; do bsdtar -xOf "$f" .PKGINFO | sed -n 's/^pkgname = //p'; done)
+for p in $built; do
+    pacman -Qq "$p" >/dev/null 2>&1 || bad "$p (built) not installed"
+done
+for p in $(pacman -Qi glide-desktop 2>/dev/null | sed -n 's/^Depends On *: //p'); do
+    pacman -Qq "$p" >/dev/null 2>&1 || bad "$p (needed by glide-desktop) not installed"
 done
 pacman -Qq glide-secret-service >/dev/null 2>&1 && bad "glide-secret-service still installed"
 pacman -T org.freedesktop.secrets >/dev/null && ok "org.freedesktop.secrets provided" || bad "org.freedesktop.secrets"

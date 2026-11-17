@@ -19,8 +19,15 @@ git -C "$HERE" archive monorepo-final scripts data crates/glide-face | tar -x -C
 for f in models lib; do
     [ -d "$HERE/crates/glide-face/$f" ] && cp -r "$HERE/crates/glide-face/$f" "$WORK/mono/crates/glide-face/"
 done
-curl -fsSL https://raw.githubusercontent.com/Glide-Desktop/glide-shell/main/scripts/migrate-from-local.sh \
-    -o "$WORK/migrate/migrate-from-local.sh"
+LOCAL_MIGRATE="$HERE/../glide-shell/scripts/migrate-from-local.sh"
+if [ -f "$LOCAL_MIGRATE" ]; then
+    echo "migration script: $LOCAL_MIGRATE"
+    cp "$LOCAL_MIGRATE" "$WORK/migrate/migrate-from-local.sh"
+else
+    echo "migration script: glide-shell main on GitHub"
+    curl -fsSL https://raw.githubusercontent.com/Glide-Desktop/glide-shell/main/scripts/migrate-from-local.sh \
+        -o "$WORK/migrate/migrate-from-local.sh"
+fi
 cp "$HERE/tests/container.sh" "$WORK/migrate/"
 
 status=0
