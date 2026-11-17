@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use glide_sdk::glide_app::menubar::Handles;
-use glide_sdk::glide_app::window_traits;
 use glide_sdk::glide_theme::Accent;
 use glide_sdk::widget::player::Trim;
 use glide_sdk::window::Action;
@@ -15,6 +14,7 @@ use glide_video::media::{Chapter, Failure, Kind, TrackKind, Tracks};
 use glide_video::player::{Cue, Event, Options, Playback, Player};
 use glide_video::sink::Rect;
 use glide_video::surface::Surface;
+use glide_video::window_traits;
 use iced::Task;
 use iced::widget::image::Handle;
 
@@ -405,7 +405,7 @@ pub enum Message {
     MoveClip(usize, usize),
     SplitClip,
     RemoveClip,
-    Dropped(glide_sdk::glide_app::drop_target::Dropped),
+    Dropped(glide_video::drop_target::Dropped),
     SidecarLines(u64, Vec<glide_video::media::Line>),
     AddClip,
     ClipChosen(Option<PathBuf>),

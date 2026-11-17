@@ -8,13 +8,13 @@ use zbus::zvariant::OwnedValue;
 pub mod activation;
 pub mod chooser;
 pub mod config;
-pub mod drop_target;
 pub mod i18n;
 pub mod integration;
 pub mod menubar;
 pub mod quicklist;
 pub mod search_provider;
-pub mod window_traits;
+#[cfg(feature = "test-bus")]
+pub mod test_bus;
 
 pub const BUS_NAME: &str = "org.glide.Shell";
 pub const PATH: &str = "/org/glide/Shell1";

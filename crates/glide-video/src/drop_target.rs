@@ -12,7 +12,7 @@ use wayland_client::protocol::wl_data_offer::{self, WlDataOffer};
 use wayland_client::protocol::{wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
-use crate::menubar::Handles;
+use glide_app::menubar::Handles;
 
 pub const URI_LIST: &str = "text/uri-list";
 pub const TEXTS: [&str; 3] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"];

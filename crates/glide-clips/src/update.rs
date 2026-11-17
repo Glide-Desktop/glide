@@ -2,13 +2,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use glide_sdk::Shell;
-use glide_sdk::glide_app::window_traits;
 use glide_sdk::widget::player::Trim;
 use glide_sdk::window::Action;
 use glide_video::export::{self, Progress};
 use glide_video::frames;
 use glide_video::media::{Failure, Kind, TrackKind};
 use glide_video::player::{Event, Playback};
+use glide_video::window_traits;
 use iced::Task;
 use iced::widget::image::Handle;
 
@@ -48,7 +48,7 @@ impl App {
             Message::Handles(handles) => {
                 self.handles = Some(handles);
                 let drops = handles.map_or_else(Task::none, |handles| {
-                    Task::run(glide_sdk::glide_app::drop_target::events(&handles, "glide-clips"), Message::Dropped)
+                    Task::run(glide_video::drop_target::events(&handles, "glide-clips"), Message::Dropped)
                 });
                 let opened = match self.pending.take() {
                     Some((uri, path)) => self.open_uri(uri, path),
@@ -1374,10 +1374,8 @@ impl App {
         Task::none()
     }
 
-    fn dropped(
-        &mut self, dropped: glide_sdk::glide_app::drop_target::Dropped, shell: &mut Shell<Message>,
-    ) -> Task<Message> {
-        use glide_sdk::glide_app::drop_target::Dropped;
+    fn dropped(&mut self, dropped: glide_video::drop_target::Dropped, shell: &mut Shell<Message>) -> Task<Message> {
+        use glide_video::drop_target::Dropped;
         let entries = match dropped {
             Dropped::Hover(hover) => {
                 self.dropping = hover.is_some();

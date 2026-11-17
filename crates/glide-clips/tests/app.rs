@@ -189,7 +189,7 @@ fn a_video_opens_plays_and_is_edited_through_the_whole_app() {
 }
 
 fn clips_from_another_file(harness: &mut Harness<App>, root: &Path) {
-    use glide_sdk::glide_app::drop_target::Dropped;
+    use glide_video::drop_target::Dropped;
     let other = root.join("videos").join("Синевир.mkv");
     fixture(&other, 4);
     harness.message(Message::ClipProbed(other.clone(), None));

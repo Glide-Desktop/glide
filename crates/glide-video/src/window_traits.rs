@@ -1,7 +1,7 @@
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-use crate::{BUS_NAME, INTERFACE, PATH};
+use glide_app::{BUS_NAME, INTERFACE, PATH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Region {
