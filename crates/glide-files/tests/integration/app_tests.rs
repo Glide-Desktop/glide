@@ -423,6 +423,7 @@ fn the_operations_panel_forgets_itself_once_the_cards_fit_in_the_sidebar() {
 fn the_zoom_stepper_in_more_answers_left_and_right() {
     let mut app = listed_app();
     app.view = ViewMode::Grid;
+    app.grid_zoom = 1;
     let before = app.zoom_level().0;
     let _ = app.update(Message::ToggleOptions);
     let open = app.menu.clone().expect("options menu");
