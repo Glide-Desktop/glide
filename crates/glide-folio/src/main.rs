@@ -4,6 +4,7 @@ fn main() -> std::process::ExitCode {
     if std::env::args().nth(1).as_deref() == Some(glide_folio::worker::FLAG) {
         return glide_folio::worker::run();
     }
+    glide_folio::store::import_legacy_prefs();
     let settings = glide_sdk::Settings::new(APP_ID)
         .size(1280.0, 800.0)
         .min_size(720.0, 480.0)

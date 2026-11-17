@@ -1,0 +1,16 @@
+{
+  "auto-hide-status": true,
+  "auto-indent": true,
+  "auto-pair": true,
+  "font-family": null,
+  "font-size": 14.0,
+  "hidden-files": false,
+  "monospace": true,
+  "restore-session": true,
+  "sidebar": true,
+  "spaces": true,
+  "status-bar": true,
+  "status-islands": true,
+  "tab-width": 4,
+  "trim-on-save": false
+}

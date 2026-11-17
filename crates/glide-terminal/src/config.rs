@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use alacritty_terminal::term::Config;
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
@@ -29,7 +29,6 @@ pub enum OnExit {
 #[serde(default, rename_all = "kebab-case")]
 pub struct Preferences {
     pub profile: Profile,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub font_family: Option<String>,
     pub font_size: f32,
     pub line_height: f32,
@@ -41,13 +40,11 @@ pub struct Preferences {
     pub copy_on_select: bool,
     pub visual_bell: bool,
     pub audible_bell: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub bell_sound: Option<String>,
     pub on_exit: OnExit,
     pub confirm_close: bool,
     pub mark_prompts: bool,
     pub login_environment: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
 }
 
@@ -76,14 +73,25 @@ impl Default for Preferences {
     }
 }
 
+pub const NAMESPACE: &str = "terminal";
+
 impl Preferences {
     #[must_use]
+    fn clamped(mut self) -> Self {
+        self.font_size = self.font_size.clamp(6.0, 48.0);
+        self.line_height = self.line_height.clamp(0.9, 2.0);
+        self.scrollback = self.scrollback.min(200_000);
+        self
+    }
+
+    #[must_use]
     pub fn parse(text: &str) -> Self {
-        let mut prefs: Self = toml::from_str(text).unwrap_or_default();
-        prefs.font_size = prefs.font_size.clamp(6.0, 48.0);
-        prefs.line_height = prefs.line_height.clamp(0.9, 2.0);
-        prefs.scrollback = prefs.scrollback.min(200_000);
-        prefs
+        toml::from_str::<Self>(text).unwrap_or_default().clamped()
+    }
+
+    #[must_use]
+    pub fn from_values(values: &glide_config::service::Values) -> Self {
+        glide_config::service::read::<Self>(values).unwrap_or_default().clamped()
     }
 
     #[must_use]
@@ -102,36 +110,31 @@ impl Preferences {
 }
 
 #[must_use]
-pub fn path() -> Option<PathBuf> {
+pub fn legacy_path() -> Option<PathBuf> {
     glide_config::xdg_path("glide", "terminal.toml")
+}
+
+pub fn import_legacy() {
+    if let Some(path) = legacy_path() {
+        glide_config::service::import_legacy(NAMESPACE, &path);
+    }
 }
 
 #[must_use]
 pub fn load() -> Preferences {
-    path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .map_or_else(Preferences::default, |text| Preferences::parse(&text))
+    let values = glide_config::service::Client::session().and_then(|client| client.get_all(NAMESPACE));
+    values.map_or_else(|_| Preferences::default(), |values| Preferences::from_values(&values))
 }
 
 pub fn save(prefs: &Preferences) -> std::io::Result<()> {
-    let path = path().ok_or_else(|| std::io::Error::other("no config directory"))?;
-    save_profile(&path, prefs.profile)
+    glide_config::service::update::<Preferences>(NAMESPACE, |stored| stored.profile = prefs.profile)
+        .map(drop)
+        .map_err(std::io::Error::other)
 }
 
-fn save_profile(path: &Path, profile: Profile) -> std::io::Result<()> {
-    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error),
-    };
-    let mut document: toml_edit::DocumentMut = text.parse().map_err(std::io::Error::other)?;
-    let _: Preferences = toml::from_str(&text).map_err(std::io::Error::other)?;
-    let serialized =
-        toml::to_string(&Preferences { profile, ..Preferences::default() }).map_err(std::io::Error::other)?;
-    let source: toml_edit::DocumentMut = serialized.parse().map_err(std::io::Error::other)?;
-    document["profile"] = source["profile"].clone();
-    glide_config::write_atomic(&path, document.to_string().as_bytes(), 0o600)
+#[must_use]
+pub fn changes() -> iced::futures::channel::mpsc::UnboundedReceiver<glide_config::service::Values> {
+    glide_app::config::watch(NAMESPACE)
 }
 
 #[must_use]
@@ -172,22 +175,28 @@ mod tests {
     }
 
     #[test]
-    fn saving_a_profile_preserves_comments_unknown_keys_and_rejects_invalid_preferences() {
-        let folder = std::env::temp_dir().join(format!("glide-terminal-config-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).unwrap();
-        let path = folder.join("terminal.toml");
-        let text = "# preserve me\nfont-size = 17.0\nfuture-option = true\n";
-        std::fs::write(&path, text).unwrap();
-        save_profile(&path, Profile::Ocean).unwrap();
-        let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("# preserve me") && saved.contains("future-option = true"));
-        assert_eq!(Preferences::parse(&saved).font_size, 17.0);
-        assert_eq!(Preferences::parse(&saved).profile, Profile::Ocean);
-        for invalid in ["font-size = [", "on-exit = 'not-an-option'"] {
-            std::fs::write(&path, invalid).unwrap();
-            assert!(save_profile(&path, Profile::Basic).is_err());
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+    fn the_installed_defaults_are_the_preferences_defaults() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/defaults/terminal.json");
+        let values =
+            serde_json::to_value(Preferences::default()).map(glide_config::service::flatten).expect("serializes");
+        let expected = serde_json::to_string_pretty(&values).expect("JSON") + "\n";
+        if std::env::var_os("GLIDE_WRITE_DEFAULTS").is_some() {
+            std::fs::write(&path, &expected).expect("write the defaults");
         }
-        std::fs::remove_dir_all(folder).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            expected,
+            "data/defaults/terminal.json is generated from Preferences; rerun with GLIDE_WRITE_DEFAULTS=1"
+        );
+    }
+
+    #[test]
+    fn stored_values_are_clamped_like_the_file_was() {
+        let values = glide_config::service::Values::from([
+            ("font-size".to_owned(), serde_json::json!(400.0)),
+            ("shell".to_owned(), serde_json::json!("fish")),
+        ]);
+        let prefs = Preferences::from_values(&values);
+        assert_eq!((prefs.font_size, prefs.shell.as_deref()), (48.0, Some("fish")));
     }
 }

@@ -105,6 +105,25 @@ where
     Ok(after)
 }
 
+#[must_use]
+pub fn known_values(known: &Values, text: &str) -> Values {
+    let table = text.parse::<toml::Table>().unwrap_or_default();
+    let values = serde_json::to_value(table).map(flatten).unwrap_or_default();
+    values.into_iter().filter(|(key, _)| known.contains_key(key)).collect()
+}
+
+pub fn import_legacy(namespace: &str, path: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let Ok(client) = Client::session() else { return };
+    let Ok(known) = client.get_all(namespace) else { return };
+    for (key, value) in known_values(&known, &text) {
+        let _ = client.set_many(namespace, &Values::from([(key, value)]));
+    }
+    let mut moved = path.as_os_str().to_os_string();
+    moved.push(".migrated");
+    let _ = std::fs::rename(path, moved);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +141,14 @@ mod tests {
         let after = Prefs { offer: false, ..before };
         assert_eq!(changed_keys(&before, &after), Values::from([("offer".to_owned(), Value::Bool(false))]));
         assert!(changed_keys(&before, &before).is_empty());
+    }
+
+    #[test]
+    fn a_legacy_file_brings_only_the_keys_the_namespace_knows() {
+        let known =
+            Values::from([("font-size".to_owned(), Value::from(13.0)), ("cursor".to_owned(), Value::from("block"))]);
+        let values = known_values(&known, "font-size = 17.0\nfuture-option = true\n# comment\n");
+        assert_eq!(values, Values::from([("font-size".to_owned(), Value::from(17.0))]));
+        assert!(known_values(&known, "font-size = [").is_empty(), "an unreadable file brings nothing");
     }
 }

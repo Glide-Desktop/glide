@@ -35,8 +35,8 @@ glide-config = { path = "../glide-config" }
 glide-sdk = { path = "../glide-sdk" }
 regex = "1"
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
-toml_edit = "0.25"
 zbus.workspace = true
 tree-sitter = "0.27"
 tree-sitter-highlight = "0.27"

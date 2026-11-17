@@ -35,7 +35,6 @@ glide-sdk = { path = "../glide-sdk" }
 rustix = { version = "1", default-features = false, features = ["std", "termios", "pipe"] }
 serde.workspace = true
 toml.workspace = true
-toml_edit = "0.25"
 glide-app = { path = "../glide-app" }
 shlex = "2"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
@@ -43,4 +42,5 @@ wayland-client = "0.31"
 zbus.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 iced_tiny_skia = { version = "0.14", default-features = false }

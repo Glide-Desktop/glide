@@ -27,7 +27,7 @@ use crate::tree::{self, Entry, Tree};
 use glide_app::menubar;
 use glide_sdk::Paint;
 use glide_sdk::chooser::{self, Ask, Chosen, Purpose};
-use glide_sdk::look::{self, Look};
+use glide_sdk::look::Look;
 pub use glide_sdk::window::Frame;
 use glide_sdk::window::{Action as WindowAction, Window};
 
@@ -277,6 +277,7 @@ const MARK_LIMIT: usize = 20_000;
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    Prefs(glide_config::service::Values),
     Edit(Action),
     Command(Command),
     Escape,
@@ -373,7 +374,6 @@ pub struct App {
     batch: Vec<u64>,
     pub(crate) closed: Vec<PathBuf>,
     disk: Poll,
-    stamp: Option<SystemTime>,
     reverting: HashSet<u64>,
 }
 
@@ -671,10 +671,6 @@ pub fn parse_args<I: IntoIterator<Item = OsString>>(args: I) -> (bool, Vec<PathB
     (fresh, paths)
 }
 
-fn stamp() -> Option<SystemTime> {
-    look::stamp(config::path().as_deref())
-}
-
 fn intern(family: &str) -> &'static str {
     static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
     let mut names = NAMES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -767,7 +763,6 @@ impl App {
             batch: Vec::new(),
             closed: Vec::new(),
             disk: Poll::Idle,
-            stamp: stamp(),
             reverting: HashSet::new(),
         };
         let mut tasks = vec![app.restore(&session)];
@@ -1005,6 +1000,7 @@ impl App {
                 _ => None,
             }),
             iced::time::every(TICK).map(|_| Message::Tick),
+            Subscription::run(config::changes).map(Message::Prefs),
         ];
         if let Some(handles) = self.handles {
             subscriptions.push(Subscription::run_with(handles, menubar::events).map(Message::MenuBar));
@@ -1059,6 +1055,10 @@ impl App {
     #[allow(clippy::too_many_lines)] // The message dispatcher: one short arm per Message variant
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Prefs(values) => {
+                self.prefs = config::Preferences::from_values(&values);
+                Task::none()
+            }
             Message::Edit(action) => {
                 let pasted = matches!(action, Action::Edit(iced::widget::text_editor::Edit::Paste(_)));
                 if self.prefs.auto_pair
@@ -1304,11 +1304,6 @@ impl App {
 
     fn tick(&mut self) -> Task<Message> {
         self.notice.take_if(|(_, at)| at.elapsed() >= NOTICE);
-        let stamp = stamp();
-        if stamp != self.stamp {
-            self.stamp = stamp;
-            self.prefs = config::load();
-        }
         if let Some(doc) = self.doc_mut()
             && doc.detect_pending
             && doc.text.len() <= DETECT_LIMIT

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::Event as TermEvent;
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -13,7 +13,7 @@ use alacritty_terminal::term::{ClipboardType, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use glide_sdk::Paint;
 use glide_sdk::anim::{Lingering, Reveal};
-use glide_sdk::look::{self as shell_look, Look as ShellLook};
+use glide_sdk::look::Look as ShellLook;
 use glide_sdk::theme::motion;
 use glide_sdk::window::{Action as WindowAction, Window};
 use iced::keyboard::key::Named;
@@ -210,6 +210,7 @@ impl Tab {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    Prefs(glide_config::service::Values),
     Remote(crate::service::Request),
     Feed(Feed),
     Terminal(Action),
@@ -274,7 +275,6 @@ pub struct App {
     launch: Launch,
     bus: Option<Bus>,
     next_id: u64,
-    stamp: Option<SystemTime>,
     awaiting: Option<Instant>,
     pending: Vec<crate::service::OpenTab>,
     shortcuts_asked: bool,
@@ -443,10 +443,6 @@ pub(crate) fn directory_label(directory: Option<&Path>) -> String {
     directory.file_name().map_or_else(|| directory.display().to_string(), |name| name.to_string_lossy().into_owned())
 }
 
-fn stamp() -> Option<SystemTime> {
-    shell_look::stamp(config::path().as_deref())
-}
-
 fn family(prefs: &Preferences) -> iced::Font {
     prefs.font_family.as_deref().and_then(glide_sdk::theme::installed_monospace).unwrap_or(crate::MONO)
 }
@@ -525,7 +521,6 @@ impl App {
             launch,
             bus: None,
             next_id: 1,
-            stamp: stamp(),
             awaiting: None,
             pending: Vec::new(),
             shortcuts_asked: false,
@@ -668,6 +663,7 @@ impl App {
             Subscription::run(session::feed).map(Message::Feed),
             iced::time::every(POLL).map(|_| Message::Tick),
             Subscription::run(crate::service::requests).map(Message::Remote),
+            Subscription::run(config::changes).map(Message::Prefs),
         ];
         if self.reported_focus.is_some()
             && !motion::is_disabled()
@@ -695,6 +691,10 @@ impl App {
 
     fn update_message(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Prefs(values) => {
+                self.apply_prefs(Preferences::from_values(&values));
+                Task::none()
+            }
             Message::Feed(Feed::Connected(bus)) => {
                 self.bus = Some(bus);
                 for request in std::mem::take(&mut self.pending) {
@@ -771,10 +771,7 @@ impl App {
             }
             Message::DefaultSaved(prefs, result) => {
                 match result {
-                    Ok(()) => {
-                        self.prefs = *prefs;
-                        self.stamp = stamp();
-                    }
+                    Ok(()) => self.prefs = *prefs,
                     Err(error) => self.error = Some(error),
                 }
                 Task::none()
@@ -867,7 +864,6 @@ impl App {
                     }
                 }
                 self.notice.take_if(|(_, at)| at.elapsed() >= NOTICE);
-                self.reload();
                 if self.find.as_ref().is_some_and(|find| {
                     find.current.is_none()
                         && self.focused().is_some_and(|pane| find.revision != pane.revision.load(Ordering::Acquire))
@@ -896,13 +892,10 @@ impl App {
         }
     }
 
-    fn reload(&mut self) {
-        let stamp = stamp();
-        if stamp == self.stamp {
+    fn apply_prefs(&mut self, prefs: Preferences) {
+        if prefs == self.prefs {
             return;
         }
-        self.stamp = stamp;
-        let prefs = config::load();
         if prefs.profile != self.prefs.profile {
             let previous = self.prefs.profile;
             for tab in self.tabs.iter_mut().filter(|tab| tab.profile == previous) {
@@ -2221,12 +2214,12 @@ mod tests {
     #[test]
     fn a_new_look_from_the_host_rethemes_the_app_without_touching_its_preferences() {
         let mut app = review_app();
-        let stamp = app.stamp;
+        let prefs = app.prefs.clone();
         let look = ShellLook::parse("[general]\nlanguage = \"en\"\n[topbar]\nappearance = \"light\"\n", false);
         app.follow_look(&look, look.paint());
         assert_eq!(app.paint.tokens.appearance, glide_sdk::theme::Appearance::Light);
         assert_eq!(app.lang, Lang::En);
-        assert_eq!(app.stamp, stamp);
+        assert_eq!(app.prefs, prefs);
     }
 
     #[test]

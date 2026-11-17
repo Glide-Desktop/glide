@@ -107,8 +107,12 @@ fn state_file() -> Option<PathBuf> {
     Some(glide_config::state_home()?.join("glide/folio/files.toml"))
 }
 
-fn prefs_file() -> Option<PathBuf> {
-    Some(glide_config::config_home()?.join("glide/folio.toml"))
+pub const NAMESPACE: &str = "folio";
+
+pub fn import_legacy_prefs() {
+    if let Some(path) = glide_config::config_home().map(|home| home.join("glide/folio.toml")) {
+        glide_config::service::import_legacy(NAMESPACE, &path);
+    }
 }
 
 fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
@@ -167,16 +171,11 @@ pub fn save_memories_later(memories: BTreeMap<String, Memory>) -> std::thread::J
 
 #[must_use]
 pub fn load_prefs() -> Prefs {
-    prefs_file()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|text| toml::from_str(&text).ok())
-        .unwrap_or_default()
+    glide_config::service::load(NAMESPACE)
 }
 
 pub fn save_prefs(prefs: &Prefs) {
-    if let (Some(path), Ok(text)) = (prefs_file(), toml::to_string(prefs)) {
-        let _ = write_atomic(&path, &text);
-    }
+    let _ = glide_config::service::update::<Prefs>(NAMESPACE, |stored| *stored = prefs.clone());
 }
 
 #[must_use]
@@ -369,6 +368,21 @@ pub fn cover(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_installed_defaults_are_the_prefs_defaults() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/defaults/folio.json");
+        let values = serde_json::to_value(Prefs::default()).map(glide_config::service::flatten).expect("serializes");
+        let expected = serde_json::to_string_pretty(&values).expect("JSON") + "\n";
+        if std::env::var_os("GLIDE_WRITE_DEFAULTS").is_some() {
+            std::fs::write(&path, &expected).expect("write the defaults");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            expected,
+            "data/defaults/folio.json is generated from Prefs; rerun with GLIDE_WRITE_DEFAULTS=1"
+        );
+    }
 
     #[test]
     fn deleted_files_are_forgotten_but_files_on_a_missing_drive_are_kept() {

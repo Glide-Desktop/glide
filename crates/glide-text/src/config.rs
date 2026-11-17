@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Preferences {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub font_family: Option<String>,
     pub font_size: f32,
     pub monospace: bool,
@@ -44,32 +43,41 @@ impl Default for Preferences {
     }
 }
 
+pub const NAMESPACE: &str = "text";
+
 impl Preferences {
     #[must_use]
-    pub fn parse(text: &str) -> Self {
-        let mut prefs: Self = toml::from_str(text).unwrap_or_else(|_| Self::lenient(text));
-        prefs.font_size = prefs.font_size.clamp(6.0, 72.0);
-        prefs.tab_width = prefs.tab_width.clamp(1, 16);
-        prefs
+    fn clamped(mut self) -> Self {
+        self.font_size = self.font_size.clamp(6.0, 72.0);
+        self.tab_width = self.tab_width.clamp(1, 16);
+        self
     }
 
-    fn lenient(text: &str) -> Self {
-        let Ok(table) = text.parse::<toml::Table>() else { return Self::default() };
-        let valid: toml::Table = table
-            .into_iter()
-            .filter(|(key, value)| {
-                let mut single = toml::Table::new();
-                single.insert(key.clone(), value.clone());
-                toml::Value::Table(single).try_into::<Self>().is_ok()
-            })
-            .collect();
-        toml::Value::Table(valid).try_into().unwrap_or_default()
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        toml::from_str::<Self>(text).unwrap_or_default().clamped()
+    }
+
+    #[must_use]
+    pub fn from_values(values: &glide_config::service::Values) -> Self {
+        glide_config::service::read::<Self>(values).unwrap_or_default().clamped()
     }
 }
 
 #[must_use]
-pub fn path() -> Option<PathBuf> {
+pub fn legacy_path() -> Option<PathBuf> {
     glide_config::xdg_path("glide", "text.toml")
+}
+
+pub fn import_legacy() {
+    if let Some(path) = legacy_path() {
+        glide_config::service::import_legacy(NAMESPACE, &path);
+    }
+}
+
+#[must_use]
+pub fn changes() -> iced::futures::channel::mpsc::UnboundedReceiver<glide_config::service::Values> {
+    glide_app::config::watch(NAMESPACE)
 }
 
 #[must_use]
@@ -79,42 +87,17 @@ pub(crate) fn state_dir() -> Option<PathBuf> {
 
 #[must_use]
 pub fn load() -> Preferences {
-    path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .map_or_else(Preferences::default, |text| Preferences::parse(&text))
+    let values = glide_config::service::Client::session().and_then(|client| client.get_all(NAMESPACE));
+    values.map_or_else(|_| Preferences::default(), |values| Preferences::from_values(&values))
 }
 
 pub fn save(prefs: &Preferences) -> std::io::Result<()> {
     if cfg!(test) {
         return Ok(());
     }
-    let path = path().ok_or_else(|| std::io::Error::other("no config directory"))?;
-    save_to(&path, prefs)
-}
-
-fn save_to(path: &Path, prefs: &Preferences) -> std::io::Result<()> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error),
-    };
-    let mut document: toml_edit::DocumentMut = text.parse().map_err(std::io::Error::other)?;
-    let fresh: toml_edit::DocumentMut =
-        toml::to_string(prefs).map_err(std::io::Error::other)?.parse().map_err(std::io::Error::other)?;
-    for (key, item) in fresh.iter() {
-        let unchanged = document.get(key).and_then(toml_edit::Item::as_value).map(ToString::to_string)
-            == item.as_value().map(ToString::to_string);
-        if !unchanged {
-            document[key] = item.clone();
-        }
-    }
-    if prefs.font_family.is_none() {
-        document.remove("font-family");
-    }
-    if let Some(folder) = path.parent() {
-        std::fs::create_dir_all(folder)?;
-    }
-    crate::document::write(path, document.to_string().as_bytes()).map(|_| ())
+    glide_config::service::update::<Preferences>(NAMESPACE, |stored| *stored = prefs.clone())
+        .map(drop)
+        .map_err(std::io::Error::other)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -191,25 +174,19 @@ mod tests {
     }
 
     #[test]
-    fn one_bad_value_keeps_the_other_preferences() {
-        let prefs = Preferences::parse("font-size = \"big\"\ntab-width = 2\nsidebar = false\n");
-        assert_eq!(prefs.tab_width, 2);
-        assert!(!prefs.sidebar);
-        assert_eq!(prefs.font_size, Preferences::default().font_size);
-    }
-
-    #[test]
-    fn saving_keeps_comments_and_unknown_keys() {
-        let folder = std::env::temp_dir().join(format!("glide-text-prefs-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).unwrap();
-        let path = folder.join("text.toml");
-        std::fs::write(&path, "# mine\nsidebar = true\nfuture-key = 3\n").unwrap();
-        let prefs = Preferences { sidebar: false, ..Preferences::default() };
-        save_to(&path, &prefs).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("# mine") && text.contains("future-key = 3") && text.contains("sidebar = false"));
-        assert_eq!(Preferences::parse(&text), prefs);
-        std::fs::remove_dir_all(&folder).unwrap();
+    fn the_installed_defaults_are_the_preferences_defaults() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/defaults/text.json");
+        let values =
+            serde_json::to_value(Preferences::default()).map(glide_config::service::flatten).expect("serializes");
+        let expected = serde_json::to_string_pretty(&values).expect("JSON") + "\n";
+        if std::env::var_os("GLIDE_WRITE_DEFAULTS").is_some() {
+            std::fs::write(&path, &expected).expect("write the defaults");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            expected,
+            "data/defaults/text.json is generated from Preferences; rerun with GLIDE_WRITE_DEFAULTS=1"
+        );
     }
 
     #[test]

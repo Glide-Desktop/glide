@@ -1,6 +1,7 @@
 use glide_text::{App, FONTS};
 
 fn main() -> iced::Result {
+    glide_text::config::import_legacy();
     let mut settings = glide_sdk::Settings::new("glide-text")
         .size(960.0, 640.0)
         .min_size(420.0, 300.0)
