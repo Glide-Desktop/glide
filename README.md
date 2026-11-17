@@ -11,7 +11,7 @@ repositories; until November 2026 it lived here, and that state is the tag
 | Repository | Packages |
 |---|---|
 | [glide-libs](https://github.com/Glide-Desktop/glide-libs) | shared crates (no package) |
-| [glide-shell](https://github.com/Glide-Desktop/glide-shell) | `glide-shell`, `glide-configd`, `xdg-desktop-portal-glide`, `glide` (everything) |
+| [glide-shell](https://github.com/Glide-Desktop/glide-shell) | `glide-shell`, `glide-configd`, `xdg-desktop-portal-glide`, `glide-desktop` (everything) |
 | [glide-auth](https://github.com/Glide-Desktop/glide-auth) | `glide-keychain`, `glide-facekey` |
 | [glide-facekey-models](https://github.com/Glide-Desktop/glide-facekey-models) | `glide-facekey-models` |
 | [glide-files](https://github.com/Glide-Desktop/glide-files) | `glide-files` |
@@ -26,8 +26,9 @@ repositories; until November 2026 it lived here, and that state is the tag
 
 ## Install on Arch Linux
 
-Trust the repository key, add the repository and install the `glide`
-metapackage, which pulls in every Glide package and everything they need:
+Trust the repository key, add the repository and install the
+`glide-desktop` metapackage, which pulls in every Glide package and everything
+they need (`glide` in Arch's extra is an unrelated video player):
 
 ```sh
 curl -fsSL https://pkg.mindenit.org/glide/glide.asc | sudo pacman-key --add -
@@ -42,7 +43,7 @@ Server = https://pkg.mindenit.org/glide/$arch
 ```
 
 ```sh
-sudo pacman -Syu glide
+sudo pacman -Syu glide-desktop
 ```
 
 Then pick "Glide" in your display manager, or use Glide's own greeter:

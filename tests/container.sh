@@ -58,7 +58,7 @@ else
 fi
 
 echo "== checks"
-for p in glide glide-shell glide-configd xdg-desktop-portal-glide glide-keychain glide-facekey glide-facekey-models \
+for p in glide-desktop glide-shell glide-configd xdg-desktop-portal-glide glide-keychain glide-facekey glide-facekey-models \
     glide-settings glide-files glide-terminal glide-text glide-passwords glide-photos glide-folio glide-clips glide-phone; do
     pacman -Qq "$p" >/dev/null 2>&1 || bad "$p not installed"
 done
