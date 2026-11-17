@@ -2337,6 +2337,23 @@ impl GlideState {
         over
     }
 
+    pub(crate) fn refocus_pointer(&mut self) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        if pointer.is_grabbed() {
+            return;
+        }
+        let location = pointer.current_location();
+        let under = self.overview_motion(location);
+        if under.as_ref().map(|(target, _)| target) == pointer.current_focus().as_ref() {
+            return;
+        }
+        let time = smithay::backend::input::InputTime::now();
+        pointer.motion(self, under, &MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time });
+        pointer.frame(self);
+    }
+
     fn overview_motion(
         &mut self, pos: Point<f64, Logical>,
     ) -> Option<(crate::focus::PointerFocusTarget, Point<f64, Logical>)> {
@@ -2644,6 +2661,7 @@ impl GlideState {
                 pointer.frame(self);
                 return;
             } else {
+                self.refocus_pointer();
                 self.focus_click_target(pos);
                 if self.super_drag(pos, button, serial) {
                     pointer.button(self, &ButtonEvent { button, state: button_state, serial, time: event.time() });

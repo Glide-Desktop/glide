@@ -1366,6 +1366,7 @@ impl GlideState {
             self.layout.switch_to_workspace(target);
         }
         self.reconcile_space();
+        self.refocus_pointer();
     }
 
     pub fn tick_workspace_swipe(&mut self) -> bool {
@@ -1387,6 +1388,7 @@ impl GlideState {
                         self.layout.switch_to_workspace(target);
                     }
                     self.reconcile_space();
+                    self.refocus_pointer();
                     false
                 } else {
                     self.place_settling_workspace_swipe();
@@ -3269,6 +3271,7 @@ impl GlideState {
         if after_index == before_index {
             return;
         }
+        self.refocus_pointer();
 
         let Some(travel) = self.workspace_travel(before_index, after_index) else {
             return;
