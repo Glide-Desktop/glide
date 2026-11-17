@@ -26,6 +26,19 @@ fn the_installed_shell_defaults_take_what_settings_writes() {
 }
 
 #[test]
+fn the_password_and_permission_files_import_into_their_namespaces() {
+    let mut store = store();
+    let passwords =
+        import::toml_text(&mut store, "passwords", "click = \"code\"\nclear-after = 60\nold = 1\n").expect("imports");
+    assert_eq!((passwords.keys, passwords.dropped.as_slice()), (2, ["old".to_owned()].as_slice()));
+    let permissions =
+        import::toml_text(&mut store, "permissions", "[screen]\nallow = [\"/usr/bin/grim\"]\n").expect("imports");
+    assert_eq!(permissions.keys, 1);
+    let all = store.get_all("permissions").expect("read");
+    assert_eq!((all["screen.allow"].clone(), all["clipboard.allow"].clone()), (json!(["/usr/bin/grim"]), json!([])));
+}
+
+#[test]
 #[ignore = "reads $GLIDE_IMPORT_CHECK, a copy of a real glide.toml"]
 fn a_real_settings_file_imports() {
     let path = std::env::var_os("GLIDE_IMPORT_CHECK").expect("GLIDE_IMPORT_CHECK names a glide.toml copy");

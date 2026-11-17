@@ -26,8 +26,16 @@ fn main() -> ExitCode {
     if let Err(err) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
         tracing::warn!("cannot make {} private: {err}", path.display());
     }
-    if let Some(legacy) = glide_config::xdg_path("glide", "glide.toml") {
-        glide_configd::import::legacy_file(&mut store, glide_ipc::config::SHELL, &legacy);
+    let legacy = [
+        (glide_ipc::config::SHELL, glide_config::xdg_path("glide", "glide.toml")),
+        (glide_config::passwords::NAMESPACE, glide_config::passwords::legacy_path()),
+        (glide_config::permissions::NAMESPACE, glide_config::permissions::Permissions::legacy_path()),
+        (glide_config::pins::NAMESPACE, glide_config::pins::legacy_path()),
+    ];
+    for (namespace, path) in legacy {
+        if let Some(path) = path {
+            glide_configd::import::legacy_file(&mut store, namespace, &path);
+        }
     }
     let trusted = glide_configd::bus::trusted_next_to(std::env::current_exe().ok().as_deref());
     let builder = match zbus::blocking::connection::Builder::session() {

@@ -622,21 +622,6 @@ impl OutputConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct DockPins {
-    pub pinned: Vec<PinnedApp>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, Deserialize)]
-pub struct PinnedApp {
-    pub app_id: String,
-    pub name: String,
-    #[serde(default)]
-    pub command: String,
-}
-
-const PINS_FILE: &str = "pins.toml";
 pub const CONFIG_NOTICE_ID: u32 = u32::MAX - 4;
 const CONFIG_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -668,7 +653,6 @@ type Keymap = (String, String, String, String, Option<String>);
 pub struct AppliedConfig {
     wallpaper: Option<Applied<Option<FileStamp>>>,
     icon_theme: Option<Applied<Option<String>>>,
-    pins: Option<(Option<FileStamp>, Vec<DockItemConfig>)>,
     keymap: Option<Applied<Keymap>>,
     numlock: Option<Applied<bool>>,
 }
@@ -716,131 +700,69 @@ impl AppliedConfig {
     pub fn numlock_changed(&mut self, numlock: bool) -> bool {
         replace_if_changed(&mut self.numlock, numlock)
     }
-
-    fn pins(&mut self) -> Vec<DockItemConfig> {
-        let stamp = glide_config::xdg_path("glide", PINS_FILE).map(|path| FileStamp::of(&path));
-        if let Some((cached_stamp, pins)) = &self.pins
-            && stamp.as_ref().is_some_and(|s| s.modified.is_some())
-            && *cached_stamp == stamp
-        {
-            return pins.clone();
-        }
-        let pins = load_or_seed_dock_pins();
-        let stamp = glide_config::xdg_path("glide", PINS_FILE).map(|path| FileStamp::of(&path));
-        self.pins = Some((stamp, pins.clone()));
-        pins
-    }
-}
-
-fn parse_dock_pins(text: &str) -> Result<Vec<DockItemConfig>, toml::de::Error> {
-    toml::from_str::<DockPins>(text).map(|pins| {
-        pins.pinned
-            .into_iter()
-            .map(|pin| DockItemConfig {
-                name: pin.name,
-                command: pin.command,
-                icon: String::new(),
-                app_id: Some(pin.app_id),
-                color_from: None,
-                color_to: None,
-                separator_before: false,
-            })
-            .collect()
-    })
-}
-
-fn broken_path(config: &Path) -> PathBuf {
-    let mut name = config.file_name().unwrap_or_default().to_os_string();
-    name.push(".broken");
-    config.with_file_name(name)
 }
 
 #[must_use]
-pub fn load_dock_pins() -> Option<Vec<DockItemConfig>> {
-    load_dock_pins_at(&glide_config::xdg_path("glide", PINS_FILE)?)
-}
-
-fn load_dock_pins_at(path: &Path) -> Option<Vec<DockItemConfig>> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(err) => {
-            tracing::warn!(path = %path.display(), "ignoring unreadable dock pins: {err}");
-            return Some(Vec::new());
-        }
-    };
-    match parse_dock_pins(&text) {
-        Ok(pins) => Some(pins),
-        Err(err) => {
-            tracing::warn!(
-                path = %path.display(),
-                backup = %broken_path(path).display(),
-                "ignoring malformed dock pins; the next change to the pins keeps a copy: {err}"
-            );
-            Some(Vec::new())
-        }
-    }
+pub fn dock_items(pins: Vec<glide_config::pins::Pin>) -> Vec<DockItemConfig> {
+    pins.into_iter()
+        .map(|pin| DockItemConfig {
+            name: pin.name,
+            command: pin.command,
+            icon: String::new(),
+            app_id: Some(pin.app_id),
+            color_from: None,
+            color_to: None,
+            separator_before: false,
+        })
+        .collect()
 }
 
 #[must_use]
 pub fn load_or_seed_dock_pins() -> Vec<DockItemConfig> {
-    if let Some(pins) = load_dock_pins() {
-        return pins;
+    match glide_config::pins::load() {
+        Ok(Some(pins)) => dock_items(pins),
+        Ok(None) => {
+            let seed = DockItemConfig::installed_defaults();
+            save_pins(
+                seed.iter()
+                    .map(|item| glide_config::pins::Pin {
+                        app_id: item.app_id.clone().unwrap_or_default(),
+                        name: item.name.clone(),
+                        command: item.command.clone(),
+                    })
+                    .collect(),
+            );
+            seed
+        }
+        Err(err) => {
+            tracing::warn!("the dock pins could not be read ({err}); the dock starts without them");
+            Vec::new()
+        }
     }
-    let seed = DockItemConfig::installed_defaults();
-    save_pins(seed.iter().map(|item| PinnedApp {
-        app_id: item.app_id.clone().unwrap_or_default(),
-        name: item.name.clone(),
-        command: item.command.clone(),
-    }));
-    seed
 }
 
 pub fn save_dock_pins<'a>(items: impl IntoIterator<Item = &'a crate::dock::DockItem>) {
-    save_pins(items.into_iter().map(|item| PinnedApp {
-        app_id: item.app_id.clone(),
-        name: item.name.clone(),
-        command: item.command.clone(),
-    }));
-}
-
-fn save_pins(pinned: impl Iterator<Item = PinnedApp>) {
-    let Some(path) = glide_config::xdg_path("glide", PINS_FILE) else {
-        return;
-    };
-    if let Err(err) = save_pins_at(&path, pinned) {
-        tracing::error!(path = %path.display(), "failed to save dock pins: {err}");
-    }
-}
-
-fn save_pins_at(path: &Path, pinned: impl Iterator<Item = PinnedApp>) -> std::io::Result<()> {
-    let pins = DockPins { pinned: pinned.collect() };
-    let text = toml::to_string_pretty(&pins).map_err(std::io::Error::other)?;
-    keep_broken_pins(path)?;
-    write_atomic(path, text.as_bytes())
-}
-
-fn keep_broken_pins(path: &Path) -> std::io::Result<()> {
-    let old = match fs::read(path) {
-        Ok(old) => old,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
-    };
-    if std::str::from_utf8(&old).is_ok_and(|text| parse_dock_pins(text).is_ok()) {
-        return Ok(());
-    }
-    let backup = broken_path(path);
-    write_atomic(&backup, &old)?;
-    tracing::warn!(
-        path = %path.display(),
-        backup = %backup.display(),
-        "dock pins file is malformed; kept a copy before replacing it"
+    save_pins(
+        items
+            .into_iter()
+            .map(|item| glide_config::pins::Pin {
+                app_id: item.app_id.clone(),
+                name: item.name.clone(),
+                command: item.command.clone(),
+            })
+            .collect(),
     );
-    Ok(())
 }
 
-pub fn write_atomic(target: &Path, contents: &[u8]) -> std::io::Result<()> {
-    glide_config::write_atomic(target, contents, 0o644)
+fn save_pins(pins: Vec<glide_config::pins::Pin>) {
+    let spawned = std::thread::Builder::new().name("glide-dock-pins".into()).spawn(move || {
+        if let Err(err) = glide_config::pins::save(&pins) {
+            tracing::error!("failed to save the dock pins: {err}");
+        }
+    });
+    if let Err(err) = spawned {
+        tracing::error!("the dock pins writer did not start: {err}");
+    }
 }
 
 #[must_use]
@@ -1293,7 +1215,7 @@ impl Config {
         let mut dock = self.dock.clone();
         dock.theme.icon_theme = self.icon_theme();
         dock.theme.repaint(&palette);
-        dock.pins = state.applied_config.pins();
+        dock.pins = state.session.pins.get_or_insert_with(load_or_seed_dock_pins).clone();
         state.dock.reconfigure(&dock);
         state.refresh_dock();
         state.topbar.reconfigure(self.topbar.theme());
@@ -1475,56 +1397,17 @@ mod tests {
     use super::*;
     use glide_dock::config::DockAutohide;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("glide-pins-test-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("scratch folder");
-        dir
-    }
-
-    fn pin(app_id: &str) -> PinnedApp {
-        PinnedApp { app_id: app_id.to_string(), name: app_id.to_string(), command: app_id.to_string() }
-    }
-
-    fn pinned_ids(path: &Path) -> Vec<String> {
-        load_dock_pins_at(path)
-            .expect("the file exists")
-            .into_iter()
-            .map(|item| item.app_id.unwrap_or_default())
-            .collect()
-    }
-
     #[test]
-    fn a_malformed_pins_file_is_kept_as_a_backup_before_the_next_save_replaces_it() {
-        let dir = scratch("malformed");
-        let path = dir.join(PINS_FILE);
-        let backup = broken_path(&path);
-        assert_eq!(backup.file_name().and_then(|name| name.to_str()), Some("pins.toml.broken"));
-        let damaged: [&[u8]; 3] = [
-            b"[[pinned]]\napp_id = \"firefox\"\nname = \"Firefox\"\n[[pinned\n",
-            b"typo = 1\n[[pinned]]\napp_id = \"firefox\"\nname = \"Firefox\"\n",
-            b"[[pinned]]\napp_id = \"fire\xffox\"\nname = \"Firefox\"\n",
-        ];
-        for original in damaged {
-            fs::write(&path, original).expect("write the damaged file");
-            assert_eq!(load_dock_pins_at(&path), Some(Vec::new()), "a damaged file loads as no pins, never as a seed");
-            save_pins_at(&path, [pin("mail")].into_iter()).expect("save");
-            assert_eq!(fs::read(&backup).expect("the damaged file was kept"), original);
-            assert_eq!(pinned_ids(&path), ["mail"]);
-        }
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_healthy_or_missing_pins_file_makes_no_backup() {
-        let dir = scratch("healthy");
-        let path = dir.join(PINS_FILE);
-        assert_eq!(load_dock_pins_at(&path), None, "a missing file is the seeding case");
-        save_pins_at(&path, [pin("files")].into_iter()).expect("first save");
-        save_pins_at(&path, [pin("files"), pin("mail")].into_iter()).expect("second save");
-        assert_eq!(pinned_ids(&path), ["files", "mail"]);
-        assert!(!broken_path(&path).exists());
-        let _ = fs::remove_dir_all(&dir);
+    fn stored_pins_become_dock_tiles_in_order() {
+        let pin = |app_id: &str| glide_config::pins::Pin {
+            app_id: app_id.to_owned(),
+            name: app_id.to_uppercase(),
+            command: app_id.to_owned(),
+        };
+        let items = dock_items(vec![pin("files"), pin("mail")]);
+        let ids: Vec<_> = items.iter().map(|item| item.app_id.as_deref()).collect();
+        assert_eq!(ids, [Some("files"), Some("mail")]);
+        assert_eq!(items[1].name, "MAIL");
     }
 
     #[test]

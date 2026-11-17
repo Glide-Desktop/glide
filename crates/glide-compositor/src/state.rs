@@ -388,6 +388,8 @@ impl WakeTimer {
 #[derive(Default)]
 pub struct SessionServices {
     pub config: crate::config::Config,
+    pub password_prefs: glide_config::passwords::Prefs,
+    pub pins: Option<Vec<crate::config::DockItemConfig>>,
     pub face_unlock: crate::face_unlock::FaceUnlock,
     pub presenter: Option<((f64, f64), std::time::Instant, smithay::output::Output)>,
     pub wake_timer: WakeTimer,
@@ -3984,7 +3986,7 @@ impl GlideState {
             return;
         }
         tracing::info!("locking the screen");
-        if glide_config::passwords::Prefs::load().lock_with_screen {
+        if self.session.password_prefs.lock_with_screen {
             self.lock_keychain();
         }
         self.abort_keychain_unlock();
@@ -4204,7 +4206,7 @@ impl GlideState {
             crate::shell_bus::Event::CopySecret { pid, secret, clear_after, reply } => {
                 let allowed = self.holds_focus(pid);
                 if allowed {
-                    let private = glide_config::passwords::Prefs::load().private_clipboard;
+                    let private = self.session.password_prefs.private_clipboard;
                     self.place_secret(&secret, private, clear_after);
                 }
                 reply.send(allowed);

@@ -85,14 +85,7 @@ impl Gate {
 
     #[must_use]
     pub fn load() -> Self {
-        let permissions = match Permissions::path().map(|path| Permissions::load_from(&path)) {
-            Some(Ok(permissions)) => permissions,
-            Some(Err(err)) => {
-                tracing::warn!(%err, "permissions.toml is unreadable; every program is asked again");
-                Permissions::default()
-            }
-            None => Permissions::default(),
-        };
+        let permissions = Permissions::load();
         let own_dir = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
         Self::new(permissions, own_dir)
     }
@@ -145,10 +138,11 @@ impl Gate {
         permissions.clone()
     }
 
-    pub fn reload(&self) {
-        let fresh = Self::load();
-        *self.permissions.write().unwrap_or_else(PoisonError::into_inner) =
-            fresh.permissions.into_inner().unwrap_or_else(PoisonError::into_inner);
+    pub fn replace(&self, permissions: Permissions) {
+        *self.permissions.write().unwrap_or_else(PoisonError::into_inner) = permissions;
+    }
+
+    pub fn forget_session_answers(&self) {
         self.asked.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 }
@@ -201,12 +195,9 @@ fn prompt_for(program: &str, accesses: &[Access], presented: crate::identity::Pr
 }
 
 fn save(permissions: Permissions) {
-    let Some(path) = Permissions::path() else {
-        return;
-    };
     let spawned = std::thread::Builder::new().name("glide-permissions".into()).spawn(move || {
-        if let Err(err) = permissions.save_to(&path) {
-            tracing::warn!(%err, "could not save permissions.toml; the answer lasts until logout");
+        if let Err(err) = Permissions::update(|stored| *stored = permissions) {
+            tracing::warn!(%err, "could not save the permissions; the answer lasts until logout");
         }
     });
     if let Err(err) = spawned {

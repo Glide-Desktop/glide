@@ -3,7 +3,6 @@ use std::io::Read;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use glide_config::passwords::Prefs;
 use glide_ipc::keychain::{Candidate, ItemKind, Request, Response, SecretKind, Summary, SyncState, Vault};
 use smithay::input::keyboard::{Keysym, ModifiersState};
 use smithay::reexports::calloop::RegistrationToken;
@@ -395,7 +394,7 @@ impl GlideState {
         self.session.passwords.target = target;
         self.session.passwords.generation += 1;
         self.session.passwords.recent.clear();
-        let click = Prefs::load().click;
+        let click = self.session.password_prefs.click;
         let locked = self.topbar.passwords().locked;
         let phase = if locked { Phase::Locked } else { Phase::Loading };
         let rev = self.topbar.passwords().rev.wrapping_add(1);
@@ -515,7 +514,7 @@ impl GlideState {
         let target = self.session.passwords.target.as_ref().map(|target| target.surface.clone());
         self.topbar.close_popup();
         let item = row.item.clone();
-        let may_type = Prefs::load().type_fallback;
+        let may_type = self.session.password_prefs.type_fallback;
         match action {
             MenuAction::Open => self.open_passwords_item(&item),
             MenuAction::Copy => {
@@ -604,8 +603,9 @@ impl GlideState {
     }
 
     fn copy_secret(&mut self, secret: &str, notice: Key) {
-        let prefs = Prefs::load();
-        self.place_secret(secret, prefs.private_clipboard, prefs.clear_after);
+        let (private, clear_after) =
+            (self.session.password_prefs.private_clipboard, self.session.password_prefs.clear_after);
+        self.place_secret(secret, private, clear_after);
         self.passwords_notice(notice);
     }
 
@@ -648,7 +648,8 @@ impl GlideState {
 
     pub(crate) fn tick_keychain_idle(&mut self, now: Instant) {
         let last = self.session.last_user_input;
-        if self.session.passwords.idle.due(now, last, || Prefs::load().lock_after) {
+        let lock_after = self.session.password_prefs.lock_after;
+        if self.session.passwords.idle.due(now, last, || lock_after) {
             tracing::info!("locking the keychain after the idle time set in Passwords");
             self.lock_keychain();
         }

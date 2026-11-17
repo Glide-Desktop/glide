@@ -339,6 +339,32 @@ fn init_settings(event_loop: &mut EventLoop<'static, GlideState>) {
         Ok(_) => {}
         Err(err) => tracing::warn!("the settings changed into something unreadable ({err}); keeping the running ones"),
     });
+    follow_namespace(event_loop, glide_config::passwords::NAMESPACE, |state, values| {
+        state.session.password_prefs = glide_config::passwords::Prefs::from_values(&values);
+    });
+    follow_namespace(event_loop, glide_config::pins::NAMESPACE, |state, values| {
+        let Some(pins) = glide_config::pins::from_values(&values).map(config::dock_items) else { return };
+        if state.session.pins.as_ref() != Some(&pins) {
+            state.session.pins = Some(pins);
+            state.session.config.clone().apply_to_state(state);
+            state.queue_redraw();
+        }
+    });
+    follow_namespace(event_loop, glide_config::permissions::NAMESPACE, |state, values| {
+        state.session.gate.replace(glide_config::permissions::Permissions::from_values(&values));
+    });
+}
+
+fn follow_namespace(
+    event_loop: &mut EventLoop<'static, GlideState>, namespace: &'static str,
+    apply: impl FnMut(&mut GlideState, glide_app::config::Values) + 'static,
+) {
+    let (send, receiver) = sink::<glide_app::config::Values>(namespace);
+    glide_app::config::watch_with(namespace, move |values| {
+        send(values);
+        true
+    });
+    watch(event_loop, receiver, namespace, apply);
 }
 
 fn init_shell_bus(event_loop: &mut EventLoop<'static, GlideState>, state: &mut GlideState) {

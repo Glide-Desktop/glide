@@ -114,7 +114,7 @@ for model in $FACE_MODELS; do
     FACE_FILES="$FACE_FILES $FACEDIR/$model"
 done
 FILES="$BINDIR/facekey $POLKITDIR/org.glide.facekey.policy$FACE_FILES $FACELIBDIR/libonnxruntime.so$BINDIR/glide $BINDIR/glidectl $BINDIR/glide-configd $BINDIR/glide-settings $BINDIR/glide-files $BINDIR/glide-terminal $BINDIR/glide-text $BINDIR/glide-passwords $BINDIR/glide-photos $BINDIR/glide-folio $BINDIR/glide-clips $BINDIR/glide-catalog $BINDIR/glide-portal $BINDIR/glide-keychain $BINDIR/glide-phone $BINDIR/glide-session $BINDIR/glide-lock
-$BINDIR/glide-welcome $BINDIR/glide-xembed $APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-passwords.desktop $APPDIR/glide-photos.desktop $APPDIR/glide-folio.desktop $APPDIR/glide-clips.desktop $APPDIR/glide-catalog.desktop $APPDIR/glide-phone.desktop $APPDIR/glide-welcome.desktop $AUTOSTARTDIR/glide-phone.desktop $ICONDIR/glide-folio.svg $ICONDIR/glide-phone.svg $ICONDIR/glide-welcome.svg $ICONDIR/org.kde.kdeconnect.svg $SOUNDDIR/terminal-bell.mp3 $DEFAULTSDIR/shell.json $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
+$BINDIR/glide-welcome $BINDIR/glide-xembed $APPDIR/glide-settings.desktop $APPDIR/glide-files.desktop $APPDIR/glide-terminal.desktop $APPDIR/glide-text.desktop $APPDIR/glide-passwords.desktop $APPDIR/glide-photos.desktop $APPDIR/glide-folio.desktop $APPDIR/glide-clips.desktop $APPDIR/glide-catalog.desktop $APPDIR/glide-phone.desktop $APPDIR/glide-welcome.desktop $AUTOSTARTDIR/glide-phone.desktop $ICONDIR/glide-folio.svg $ICONDIR/glide-phone.svg $ICONDIR/glide-welcome.svg $ICONDIR/org.kde.kdeconnect.svg $SOUNDDIR/terminal-bell.mp3 $DEFAULTSDIR/shell.json $DEFAULTSDIR/passwords.json $DEFAULTSDIR/permissions.json $DEFAULTSDIR/pins.json $SESSIONDIR/glide.desktop $PORTALDIR/glide-portals.conf
 $PORTALDIR/portals/glide.portal $DBUSDIR/org.freedesktop.impl.portal.desktop.glide.service
 $DBUSDIR/org.glide.Files.service $DBUSDIR/org.glide.Terminal.service $DBUSDIR/org.glide.Phone.service $DBUSDIR/org.glide.Config.service
 $INTERFACEDIR/org.glide.Shell1.xml $INTERFACEDIR/org.glide.Config1.xml
@@ -218,7 +218,9 @@ install -Dm644 "$ROOT/data/glide-folio.svg" "$DESTDIR$ICONDIR/glide-folio.svg"
 install -Dm644 "$ROOT/data/glide-phone.svg" "$DESTDIR$ICONDIR/glide-phone.svg"
 install -Dm644 "$ROOT/data/glide-phone.svg" "$DESTDIR$ICONDIR/org.kde.kdeconnect.svg"
 install -Dm644 "$ROOT/data/sounds/terminal-bell.mp3" "$DESTDIR$SOUNDDIR/terminal-bell.mp3"
-install -Dm644 "$ROOT/data/defaults/shell.json" "$DESTDIR$DEFAULTSDIR/shell.json"
+for name in shell.json passwords.json permissions.json pins.json; do
+    install -Dm644 "$ROOT/data/defaults/$name" "$DESTDIR$DEFAULTSDIR/$name"
+done
 install -Dm644 "$ROOT/data/glide-portals.conf" "$DESTDIR$PORTALDIR/glide-portals.conf"
 install -Dm644 "$ROOT/data/glide.portal" "$DESTDIR$PORTALDIR/portals/glide.portal"
 install -d "$DESTDIR$DBUSDIR"

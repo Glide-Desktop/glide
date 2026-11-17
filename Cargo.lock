@@ -2245,10 +2245,12 @@ dependencies = [
 name = "glide-config"
 version = "0.1.1"
 dependencies = [
+ "glide-ipc",
  "libc",
  "serde",
  "serde_json",
  "toml",
+ "zbus",
 ]
 
 [[package]]

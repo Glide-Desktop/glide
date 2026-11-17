@@ -400,7 +400,7 @@ pub fn dispatch_request(state: &mut GlideState, request: Request) -> Response {
             None => window_not_found(),
         },
         Request::Reload => {
-            state.session.gate.reload();
+            state.session.gate.forget_session_answers();
             state.session.config.clone().apply_to_state(state);
             state.queue_redraw();
             Response::Ok

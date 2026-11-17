@@ -41,7 +41,9 @@ install -Dm644 "$REPO/data/pam.d/glide-lock" "$STAGE/data/pam.d/glide-lock"
 install -Dm644 "$REPO/data/polkit/org.glide.facekey.policy" "$STAGE/data/polkit/org.glide.facekey.policy"
 install -Dm644 "$REPO/data/dbus/org.glide.Shell1.xml" "$STAGE/data/dbus/org.glide.Shell1.xml"
 install -Dm644 "$REPO/data/dbus/org.glide.Config1.xml" "$STAGE/data/dbus/org.glide.Config1.xml"
-install -Dm644 "$REPO/data/defaults/shell.json" "$STAGE/data/defaults/shell.json"
+for name in shell.json passwords.json permissions.json pins.json; do
+    install -Dm644 "$REPO/data/defaults/$name" "$STAGE/data/defaults/$name"
+done
 install -Dm644 "$REPO/data/sounds/terminal-bell.mp3" "$STAGE/data/sounds/terminal-bell.mp3"
 install -m755 "$REPO/scripts/install.sh" "$STAGE/scripts/install.sh"
 cp "$REPO/README.md" "$STAGE/README.md"

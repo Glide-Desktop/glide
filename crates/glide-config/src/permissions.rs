@@ -1,7 +1,9 @@
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+
+pub const NAMESPACE: &str = "permissions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Access {
@@ -31,35 +33,22 @@ pub struct Permissions {
 
 impl Permissions {
     #[must_use]
-    pub fn path() -> Option<PathBuf> {
+    pub fn legacy_path() -> Option<PathBuf> {
         crate::state_home().map(|dir| dir.join("glide").join("permissions.toml"))
     }
 
-    pub fn load_from(path: &Path) -> io::Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err)),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(err) => Err(err),
-        }
+    #[must_use]
+    pub fn load() -> Self {
+        crate::service::load(NAMESPACE)
     }
 
-    pub fn save_to(&self, path: &Path) -> io::Result<()> {
-        let text = toml::to_string(self).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-        crate::write_private(path, text.as_bytes())
+    #[must_use]
+    pub fn from_values(values: &crate::service::Values) -> Self {
+        crate::service::read(values).unwrap_or_default()
     }
 
     pub fn update(change: impl FnOnce(&mut Self)) -> io::Result<Self> {
-        let path = Self::path().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no state folder"))?;
-        Self::update_at(&path, change)
-    }
-
-    pub fn update_at(path: &Path, change: impl FnOnce(&mut Self)) -> io::Result<Self> {
-        crate::file::locked(path, || {
-            let mut permissions = Self::load_from(path)?;
-            change(&mut permissions);
-            permissions.save_to(path)?;
-            Ok(permissions)
-        })
+        crate::service::update(NAMESPACE, change).map_err(io::Error::other)
     }
 
     #[must_use]
@@ -132,48 +121,28 @@ mod tests {
     }
 
     #[test]
-    fn the_file_round_trips_and_a_missing_file_reads_as_empty() {
-        let dir = std::env::temp_dir().join(format!("glide-permissions-test-{}", std::process::id()));
-        let path = dir.join("permissions.toml");
-        assert_eq!(Permissions::load_from(&path).unwrap(), Permissions::default());
+    fn the_installed_defaults_are_the_permissions_defaults() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/defaults/permissions.json");
+        let values =
+            serde_json::to_value(Permissions::default()).map(crate::service::flatten).expect("defaults serialize");
+        let expected = serde_json::to_string_pretty(&values).expect("JSON") + "\n";
+        if std::env::var_os("GLIDE_WRITE_DEFAULTS").is_some() {
+            std::fs::write(&path, &expected).expect("write the defaults");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            expected,
+            "data/defaults/permissions.json is generated from Permissions; rerun with GLIDE_WRITE_DEFAULTS=1"
+        );
+    }
+
+    #[test]
+    fn stored_answers_read_back_and_an_unreadable_set_grants_nothing() {
         let mut permissions = Permissions::default();
         permissions.remember(Access::Screen, "/usr/bin/grim", true);
-        permissions.save_to(&path).unwrap();
-        assert_eq!(Permissions::load_from(&path).unwrap(), permissions);
-        let mode = std::fs::metadata(&path).unwrap().permissions();
-        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777, 0o600);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn concurrent_updates_never_lose_each_others_answers() {
-        let dir = std::env::temp_dir().join(format!("glide-permissions-race-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("permissions.toml");
-        std::thread::scope(|scope| {
-            for writer in 0..2 {
-                let path = &path;
-                scope.spawn(move || {
-                    for index in 0..20 {
-                        Permissions::update_at(path, |permissions| {
-                            permissions.remember(Access::Clipboard, &format!("/bin/w{writer}-{index}"), true);
-                        })
-                        .unwrap();
-                    }
-                });
-            }
-        });
-        assert_eq!(Permissions::load_from(&path).unwrap().clipboard.allow.len(), 40);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn an_unknown_key_is_an_error_not_a_silent_grant() {
-        let dir = std::env::temp_dir().join(format!("glide-permissions-bad-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("permissions.toml");
-        std::fs::write(&path, "[clipboard]\nallowed = [\"/usr/bin/x\"]\n").unwrap();
-        assert!(Permissions::load_from(&path).is_err());
-        std::fs::remove_dir_all(dir).unwrap();
+        let values = serde_json::to_value(&permissions).map(crate::service::flatten).expect("serializes");
+        assert_eq!(Permissions::from_values(&values), permissions);
+        let broken = crate::service::Values::from([("screen.allow".to_owned(), serde_json::json!("/usr/bin/x"))]);
+        assert_eq!(Permissions::from_values(&broken), Permissions::default());
     }
 }
