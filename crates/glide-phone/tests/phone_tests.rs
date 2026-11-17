@@ -253,14 +253,14 @@ fn silhouette_payload_is_not_treated_as_avatar_and_avatar_packet_upgrades_summar
     let mut silhouette_bgra = vec![0u8; 96 * 96 * 4];
     Painter::fill_rounded_rect_over(&mut silhouette_bgra, 96, 96, 30, 30, 36, 36, 1, Color([1.0, 1.0, 1.0, 1.0]), 8.0);
     assert!(is_silhouette_bgra(&silhouette_bgra));
-    let silhouette_png = glide_shell::image::Image::from_bgra(96, 96, silhouette_bgra).unwrap().png().unwrap();
+    let silhouette_png = glide_desktop::image::Image::from_bgra(96, 96, silhouette_bgra).unwrap().png().unwrap();
     assert!(!payload_is_rich_avatar(Some(&silhouette_png)));
 
     let mut avatar_bgra = vec![0u8; 96 * 96 * 4];
     Painter::fill_rounded_rect_over(&mut avatar_bgra, 96, 96, 8, 8, 80, 80, 1, Color([0.92, 0.45, 0.28, 1.0]), 40.0);
     Painter::fill_rounded_rect_over(&mut avatar_bgra, 96, 96, 28, 24, 40, 40, 1, Color([0.20, 0.68, 0.88, 1.0]), 20.0);
     assert!(!is_silhouette_bgra(&avatar_bgra));
-    let avatar_png = glide_shell::image::Image::from_bgra(96, 96, avatar_bgra).unwrap().png().unwrap();
+    let avatar_png = glide_desktop::image::Image::from_bgra(96, 96, avatar_bgra).unwrap().png().unwrap();
     assert!(payload_is_rich_avatar(Some(&avatar_png)));
 
     let mut active = HashMap::new();
@@ -334,7 +334,7 @@ fn avatar_classification_distinguishes_stencils_from_all_avatars() {
     let mut plane_stencil = vec![0u8; 96 * 96 * 4];
     Painter::fill_rounded_rect_over(&mut plane_stencil, 96, 96, 30, 30, 36, 36, 1, Color([1.0, 1.0, 1.0, 1.0]), 8.0);
     assert!(is_silhouette_bgra(&plane_stencil));
-    let plane_png = glide_shell::image::Image::from_bgra(96, 96, plane_stencil).unwrap().png().unwrap();
+    let plane_png = glide_desktop::image::Image::from_bgra(96, 96, plane_stencil).unwrap().png().unwrap();
     assert!(!payload_is_rich_avatar(Some(&plane_png)));
 
     let mut grey_stencil = vec![0u8; 96 * 96 * 4];
@@ -356,14 +356,14 @@ fn avatar_classification_distinguishes_stencils_from_all_avatars() {
         24.0,
     );
     assert!(!is_silhouette_bgra(&circular_photo));
-    let photo_png = glide_shell::image::Image::from_bgra(96, 96, circular_photo).unwrap().png().unwrap();
+    let photo_png = glide_desktop::image::Image::from_bgra(96, 96, circular_photo).unwrap().png().unwrap();
     assert!(payload_is_rich_avatar(Some(&photo_png)));
 
     let mut dark_photo = vec![0u8; 96 * 96 * 4];
     Painter::fill_rounded_rect_over(&mut dark_photo, 96, 96, 8, 8, 80, 80, 1, Color([0.10, 0.12, 0.18, 1.0]), 40.0);
     Painter::fill_rounded_rect_over(&mut dark_photo, 96, 96, 30, 24, 36, 36, 1, Color([0.30, 0.24, 0.20, 1.0]), 18.0);
     assert!(!is_silhouette_bgra(&dark_photo));
-    let dark_png = glide_shell::image::Image::from_bgra(96, 96, dark_photo).unwrap().png().unwrap();
+    let dark_png = glide_desktop::image::Image::from_bgra(96, 96, dark_photo).unwrap().png().unwrap();
     assert!(payload_is_rich_avatar(Some(&dark_png)));
 
     let mut whatsapp_default = vec![0u8; 96 * 96 * 4];
@@ -392,7 +392,7 @@ fn avatar_classification_distinguishes_stencils_from_all_avatars() {
         20.0,
     );
     assert!(!is_silhouette_bgra(&whatsapp_default));
-    let wa_png = glide_shell::image::Image::from_bgra(96, 96, whatsapp_default).unwrap().png().unwrap();
+    let wa_png = glide_desktop::image::Image::from_bgra(96, 96, whatsapp_default).unwrap().png().unwrap();
     assert!(payload_is_rich_avatar(Some(&wa_png)));
 
     let mut telegram_monogram = vec![0u8; 96 * 96 * 4];
@@ -421,7 +421,7 @@ fn avatar_classification_distinguishes_stencils_from_all_avatars() {
         4.0,
     );
     assert!(!is_silhouette_bgra(&telegram_monogram));
-    let tg_png = glide_shell::image::Image::from_bgra(96, 96, telegram_monogram).unwrap().png().unwrap();
+    let tg_png = glide_desktop::image::Image::from_bgra(96, 96, telegram_monogram).unwrap().png().unwrap();
     assert!(payload_is_rich_avatar(Some(&tg_png)));
 }
 
@@ -434,7 +434,7 @@ fn whatsapp_group_summary_and_child_notification_merging() {
     let mut avatar_bgra = vec![0u8; 96 * 96 * 4];
     Painter::fill_rounded_rect_over(&mut avatar_bgra, 96, 96, 6, 6, 84, 84, 1, Color([0.15, 0.83, 0.40, 1.0]), 42.0);
     Painter::fill_rounded_rect_over(&mut avatar_bgra, 96, 96, 24, 24, 48, 48, 1, Color([0.94, 0.72, 0.55, 1.0]), 24.0);
-    let avatar_png = glide_shell::image::Image::from_bgra(96, 96, avatar_bgra).unwrap().png().unwrap();
+    let avatar_png = glide_desktop::image::Image::from_bgra(96, 96, avatar_bgra).unwrap().png().unwrap();
 
     let mut active = HashMap::new();
     let mut history = HashMap::new();
@@ -500,7 +500,7 @@ fn payload_hash_caches_and_reuses_raw_payload_when_payload_png_omitted() {
     let mut avatar_bgra = vec![0u8; 96 * 96 * 4];
     Painter::fill_rounded_rect_over(&mut avatar_bgra, 96, 96, 6, 6, 84, 84, 1, Color([0.80, 0.20, 0.30, 1.0]), 42.0);
     Painter::fill_rounded_rect_over(&mut avatar_bgra, 96, 96, 26, 26, 44, 44, 1, Color([0.96, 0.75, 0.50, 1.0]), 22.0);
-    let avatar_png = glide_shell::image::Image::from_bgra(96, 96, avatar_bgra).unwrap().png().unwrap();
+    let avatar_png = glide_desktop::image::Image::from_bgra(96, 96, avatar_bgra).unwrap().png().unwrap();
 
     let mut active = HashMap::new();
     let mut history = HashMap::new();
@@ -880,7 +880,7 @@ async fn phone_daemon_dbus_api() {
     );
     assert!(daemon.take_presenter_event().await.is_empty());
 
-    if let Some(bus) = glide_services::test_bus::private_bus() {
+    if let Some(bus) = glide_app::test_bus::private_bus() {
         let server = zbus::connection::Builder::address(bus.address.as_str())
             .unwrap()
             .name("org.glide.Phone")

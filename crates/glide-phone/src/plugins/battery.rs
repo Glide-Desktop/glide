@@ -35,9 +35,11 @@ impl BatteryPayload {
 
 #[must_use]
 pub fn local_battery_packet() -> Option<NetworkPacket> {
-    let info = glide_shell::battery::read_battery()?;
-    let is_charging =
-        matches!(info.state, glide_shell::battery::BatteryState::Charging | glide_shell::battery::BatteryState::Full);
+    let info = glide_desktop::battery::read_battery()?;
+    let is_charging = matches!(
+        info.state,
+        glide_desktop::battery::BatteryState::Charging | glide_desktop::battery::BatteryState::Full
+    );
     let charge = i32::from(info.pct);
     let threshold_event = if charge <= 15 && !is_charging { THRESHOLD_BATTERY_LOW } else { THRESHOLD_NONE };
 

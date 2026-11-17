@@ -2137,6 +2137,7 @@ dependencies = [
  "glide-config",
  "glide-ipc",
  "glide-theme",
+ "roxmltree 0.21.1",
  "serde",
  "serde_json",
  "tracing",
@@ -2267,6 +2268,20 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zbus",
+]
+
+[[package]]
+name = "glide-desktop"
+version = "0.1.0"
+dependencies = [
+ "glide-app",
+ "glide-config",
+ "glide-paint",
+ "glide-theme",
+ "libc",
+ "png 0.18.1",
+ "tiny-skia 0.12.0",
+ "tracing",
 ]
 
 [[package]]
@@ -2574,12 +2589,11 @@ version = "0.1.2"
 dependencies = [
  "anyhow",
  "futures-util",
+ "glide-app",
  "glide-config",
- "glide-notify",
+ "glide-desktop",
  "glide-paint",
  "glide-sdk",
- "glide-services",
- "glide-shell",
  "glide-theme",
  "libc",
  "rcgen",
@@ -2653,12 +2667,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "enumflags2",
+ "glide-app",
  "glide-appmenu",
  "glide-config",
  "glide-shell",
  "glide-system",
  "libc",
- "roxmltree 0.21.1",
  "serde",
  "tracing",
  "x11rb",
@@ -2692,14 +2706,11 @@ name = "glide-shell"
 version = "0.1.0"
 dependencies = [
  "glide-app",
- "glide-config",
+ "glide-desktop",
  "glide-paint",
  "glide-theme",
  "libc",
- "png 0.18.1",
  "smithay",
- "tiny-skia 0.12.0",
- "tracing",
 ]
 
 [[package]]

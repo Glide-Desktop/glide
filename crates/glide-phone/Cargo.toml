@@ -10,10 +10,9 @@ repository.workspace = true
 anyhow.workspace = true
 futures-util = "0.3"
 glide-config = { path = "../glide-config" }
-glide-notify = { path = "../glide-notify" }
+glide-desktop = { path = "../glide-desktop" }
 glide-paint = { path = "../glide-paint" }
 glide-sdk = { path = "../glide-sdk" }
-glide-shell = { path = "../glide-shell" }
 glide-theme = { path = "../glide-theme" }
 libc = "0.2"
 rcgen = "0.13"
@@ -31,7 +30,7 @@ tracing-subscriber = { workspace = true }
 zbus.workspace = true
 
 [dev-dependencies]
-glide-services = { path = "../glide-services", features = ["test-bus"] }
+glide-app = { path = "../glide-app", features = ["test-bus"] }
 
 [lints]
 workspace = true

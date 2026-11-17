@@ -6,7 +6,7 @@ pub mod polkit_agent;
 pub mod polkit_helper;
 pub mod screensaver;
 #[cfg(any(test, feature = "test-bus"))]
-pub mod test_bus;
+pub use glide_app::test_bus;
 pub mod x11_menus;
 pub mod xdg_autostart;
 

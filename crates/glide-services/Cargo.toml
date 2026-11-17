@@ -7,17 +7,17 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-test-bus = ["dep:roxmltree"]
+test-bus = ["glide-app/test-bus"]
 
 [dependencies]
 anyhow.workspace = true
 enumflags2 = "0.7"
+glide-app = { path = "../glide-app" }
 glide-appmenu = { path = "../glide-appmenu" }
 glide-config = { path = "../glide-config" }
 glide-shell = { path = "../glide-shell" }
 glide-system = { path = "../glide-system" }
 libc = "0.2"
-roxmltree = { version = "0.21", optional = true }
 serde.workspace = true
 tracing.workspace = true
 x11rb = "0.14"
@@ -25,7 +25,7 @@ zbus.workspace = true
 zeroize = "1"
 
 [dev-dependencies]
-roxmltree = "0.21"
+glide-app = { path = "../glide-app", features = ["test-bus"] }
 
 [lints]
 workspace = true

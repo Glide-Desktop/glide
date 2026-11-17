@@ -243,7 +243,7 @@ fn preferred_icon_themes() -> &'static [String] {
             }
         }
 
-        let roots = glide_shell::icon::icon_roots();
+        let roots = glide_desktop::icon::icon_roots();
         let resolved = glide_theme::icons::resolve(
             themes.first().map(String::as_str),
             glide_theme::Appearance::Dark,
@@ -297,7 +297,7 @@ fn load_themed_app_icon(app_name: &str) -> Option<Vec<u8>> {
 fn find_themed_app_icon(app_name: &str) -> Option<Vec<u8>> {
     let mut candidates = app_icon_candidates(app_name);
     let lower = app_name.trim().to_lowercase();
-    for app in glide_shell::icon::list_applications() {
+    for app in glide_desktop::icon::list_applications() {
         if (app.name.to_lowercase() == lower || app.id.to_lowercase() == lower)
             && !app.icon.is_empty()
             && !candidates.contains(&app.icon)
@@ -307,7 +307,7 @@ fn find_themed_app_icon(app_name: &str) -> Option<Vec<u8>> {
     }
 
     for theme in preferred_icon_themes() {
-        let mut loader = glide_shell::icon::IconLoader::new(Some(theme.clone()));
+        let mut loader = glide_desktop::icon::IconLoader::new(Some(theme.clone()));
         for candidate in &candidates {
             if let Some(bytes) = loader.load_named(candidate, ICON_SIDE)
                 && !is_silhouette_bgra(bytes)
@@ -496,7 +496,7 @@ fn build_badged_notification_icon_with_kind(
 
     if !file_path.is_file() {
         let side_u32 = u32::try_from(ICON_SIDE).ok()?;
-        let png_bytes = glide_shell::image::Image::from_bgra(side_u32, side_u32, buf)?.png().ok()?;
+        let png_bytes = glide_desktop::image::Image::from_bgra(side_u32, side_u32, buf)?.png().ok()?;
         glide_config::write_atomic(&file_path, &png_bytes, 0o644).ok()?;
         prune_icon_cache(&dir, MAX_CACHED_ICON_FILES);
     }

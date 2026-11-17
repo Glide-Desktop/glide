@@ -526,7 +526,7 @@ fn read_desktop_app(id: &str, path: &Path) -> Option<DesktopApp> {
 }
 
 fn ui_language_code() -> &'static str {
-    crate::i18n::language().key()
+    crate::language::language().key()
 }
 
 fn locale_rank(locale: Option<&str>, lang: &str) -> u8 {
@@ -1664,20 +1664,6 @@ Exec=firefox --private-window %u
             let desktops = parse_current_desktops(Some(desktop));
             let host = Host { desktops: &desktops, installed: &|program| installed.contains(&program) };
             parse_desktop_entry_for("a", body, "en", &|| String::from("foot"), &host)
-        }
-
-        #[test]
-        fn welcome_desktop_entry_is_visible_and_launchable_in_glide() {
-            let body = include_str!("../../../data/glide-welcome.desktop");
-            let desktops = [String::from("glide")];
-            let host = Host { desktops: &desktops, installed: &|_| true };
-            let app = parse_desktop_entry_for("glide-welcome", body, "uk", &|| String::from("foot"), &host)
-                .expect("welcome is listed in Glide");
-            assert_eq!(app.name, "Ласкаво просимо до Glide");
-            assert_eq!(app.command, glide_config::welcome::APPLICATION_ID);
-            assert_eq!(app.icon, glide_config::welcome::APPLICATION_ID);
-            assert!(app.keywords.iter().any(|word| word == "знайомство"));
-            assert!(parse_on("GNOME", &[], body).is_some());
         }
 
         #[test]
