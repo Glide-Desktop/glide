@@ -88,6 +88,11 @@ pub const fn takes_focus(window: NewWindow) -> bool {
 }
 
 #[must_use]
+pub const fn is_text_keystroke(modifiers: &smithay::input::keyboard::ModifiersState) -> bool {
+    !(modifiers.ctrl || modifiers.alt || modifiers.logo)
+}
+
+#[must_use]
 pub fn typing_recently(last_key: Option<Instant>, now: Instant) -> bool {
     last_key.is_some_and(|at| now.saturating_duration_since(at) < TYPING_GUARD)
 }
@@ -107,6 +112,21 @@ mod tests {
         assert!(takes_focus(NewWindow { child_of_focused: true, ..typing }), "a dialog of the focused window");
         assert!(takes_focus(NewWindow { same_client_as_focused: true, ..typing }), "another window of that app");
         assert!(takes_focus(NewWindow { launched: true, ..typing }), "the app the user just launched");
+    }
+
+    #[test]
+    fn a_shortcut_is_not_typing_so_the_dialog_it_opens_takes_focus() {
+        use smithay::input::keyboard::ModifiersState;
+        let plain = ModifiersState::default();
+        assert!(is_text_keystroke(&plain));
+        assert!(is_text_keystroke(&ModifiersState { shift: true, caps_lock: true, ..plain }), "capitals are text");
+        for chord in [
+            ModifiersState { ctrl: true, ..plain },
+            ModifiersState { alt: true, ..plain },
+            ModifiersState { logo: true, ..plain },
+        ] {
+            assert!(!is_text_keystroke(&chord), "Ctrl+S, Alt+F, Super+… open things rather than type");
+        }
     }
 
     #[test]

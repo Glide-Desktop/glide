@@ -1714,6 +1714,7 @@ impl GlideState {
         let mut osd_kind = None;
         let mut super_key = None;
         let mut typed = false;
+        let mut typed_text = false;
         let action: Option<KeyAction> =
             keyboard.input(self, keycode, key_state, serial, time, |_, modifiers, handle| {
                 let keysym = handle.modified_sym();
@@ -1810,6 +1811,7 @@ impl GlideState {
                         suppressed_keys.push(keycode);
                     } else {
                         typed = true;
+                        typed_text = crate::focus_policy::is_text_keystroke(modifiers);
                     }
                     action.map_or(FilterResult::Forward, FilterResult::Intercept)
                 } else if suppressed_keys.contains(&keycode) {
@@ -1824,7 +1826,9 @@ impl GlideState {
         self.keybinds = keybinds;
         if typed {
             let now = std::time::Instant::now();
-            self.session.last_key_press = Some(now);
+            if typed_text {
+                self.session.last_key_press = Some(now);
+            }
             self.session.last_client_press = Some(now);
         }
 
