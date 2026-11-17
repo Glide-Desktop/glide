@@ -23,6 +23,7 @@ repositories; until November 2026 it lived here, and that state is the tag
 | [glide-passwords](https://github.com/Glide-Desktop/glide-passwords) | `glide-passwords` |
 | [glide-settings](https://github.com/Glide-Desktop/glide-settings) | `glide-settings` |
 | [glide-phone-desktop](https://github.com/Glide-Desktop/glide-phone-desktop) | `glide-phone` |
+| [glide-icons](https://github.com/Glide-Desktop/glide-icons) | `glide-icon-theme` (based on Colloid) |
 
 ## Install on Arch Linux
 
@@ -77,8 +78,7 @@ touched.
 1. Tag a component repository (`v0.1.1`). Its Package workflow builds its
    packages in an Arch container and attaches them to the GitHub release.
 2. Tag this repository. The Publish workflow takes the latest release of every
-   repository in `components.list`, builds the AUR packages in `aur.list`,
-   signs everything, adds it to the repository database and uploads it to the
+   repository in `components.list`, signs everything, adds it to the repository database and uploads it to the
    server: packages first, the database last. Earlier package files stay on
    the server, so `pacman -U` can roll back to them.
 

@@ -1,8 +1,8 @@
 name: Publish
 
 # A tag of this repository publishes a release of the Glide desktop: the
-# latest release of every component repository, plus the AUR packages Glide
-# needs, signed and pushed to the pacman repository on pkg.mindenit.org.
+# latest release of every component repository, signed and pushed to the
+# pacman repository on pkg.mindenit.org.
 
 on:
   push:
@@ -13,38 +13,12 @@ permissions:
   contents: read
 
 jobs:
-  aur:
-    runs-on: ubuntu-latest
-    container: archlinux:base-devel
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: |
-          pacman -Syu --noconfirm --needed git
-          useradd -m builder
-          echo 'builder ALL=(ALL) NOPASSWD: /usr/bin/pacman' > /etc/sudoers.d/builder
-          mkdir -p out && chown builder out
-          for name in $(grep -v '^#' aur.list); do
-            sudo -u builder git clone -q --depth 1 "https://aur.archlinux.org/$name.git" "/tmp/$name"
-            (cd "/tmp/$name" && sudo -u builder makepkg -s -f --noconfirm)
-            cp /tmp/$name/*.pkg.tar.zst out/
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: aur
-          path: out/*.pkg.tar.zst
-
   publish:
-    needs: aur
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     environment: pkg.mindenit.org
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: aur
-          path: out
       - name: Tools
         run: pacman -Syu --noconfirm --needed git github-cli rsync openssh gnupg
       - name: Collect component releases
