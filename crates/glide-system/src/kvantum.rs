@@ -1,9 +1,9 @@
 use std::fmt::Write;
 
 use crate::export::{DISABLED_OPACITY as DISABLED, over};
-use crate::motion::{ST_HOVER, ST_PRESS};
-use crate::shape::{R1, R2, R3};
-use crate::{Color, Tokens};
+use glide_theme::motion::{ST_HOVER, ST_PRESS};
+use glide_theme::shape::{R1, R2, R3};
+use glide_theme::{Color, Tokens};
 
 pub const THEME: &str = "Glide";
 
@@ -501,7 +501,7 @@ pub fn svg(tokens: &Tokens) -> String {
     }
     let divider = over(t.line, t.popover_bg);
     svg.group("arrow-separator", 100.0, 7.0, |x, y| Svg::rect(x + 3.0, y + 3.0, 94.0, 1.0, divider));
-    let layers = crate::elevation::layers(crate::elevation::Level::El3, t.appearance);
+    let layers = glide_theme::elevation::layers(glide_theme::elevation::Level::El3, t.appearance);
     let tint = layers.first().map_or(Color([0.0, 0.0, 0.0, 1.0]), |layer| layer.color.with_alpha(1.0));
     let peak = layers.iter().map(|layer| layer.color.0[3]).sum::<f32>() / 2.0;
     svg.shadow("menu-shadow", tint, peak);
@@ -606,7 +606,7 @@ pub fn config(tokens: &Tokens) -> String {
             ("inline_spin_indicators", "true".into()),
             ("spin_button_width", "24".into()),
             ("no_inactiveness", "false".into()),
-            ("dark_titlebar", (t.appearance == crate::Appearance::Dark).to_string()),
+            ("dark_titlebar", (t.appearance == glide_theme::Appearance::Dark).to_string()),
         ],
     );
     section(
@@ -807,7 +807,7 @@ pub fn replaces_theme(current: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Accent, Appearance};
+    use glide_theme::{Accent, Appearance};
 
     fn elements(config: &str) -> Vec<(String, bool)> {
         let mut found = Vec::new();

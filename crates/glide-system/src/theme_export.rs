@@ -2,9 +2,10 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use glide_config::toolkits::Support;
-use glide_theme::export::{self, Qt};
 use glide_theme::{Appearance, Tokens};
 
+use crate::export::{self, Qt};
+use crate::kvantum;
 use crate::system_info::DesktopAppearance;
 
 const GTK_IMPORT: &str = "@import url(\"glide.css\");";
@@ -336,13 +337,13 @@ pub fn gtk3_theme(current: &str, appearance: Appearance, toolkits: Support) -> O
 }
 
 fn write_kvantum(dir: &Path, tokens: &Tokens) {
-    let theme = dir.join(glide_theme::kvantum::THEME);
-    write(&theme.join(format!("{}.kvconfig", glide_theme::kvantum::THEME)), &glide_theme::kvantum::config(tokens));
-    write(&theme.join(format!("{}.svg", glide_theme::kvantum::THEME)), &glide_theme::kvantum::svg(tokens));
+    let theme = dir.join(kvantum::THEME);
+    write(&theme.join(format!("{}.kvconfig", kvantum::THEME)), &kvantum::config(tokens));
+    write(&theme.join(format!("{}.svg", kvantum::THEME)), &kvantum::svg(tokens));
     let manager = dir.join("kvantum.kvconfig");
     let Some(current) = user_file(&manager) else { return };
-    if glide_theme::kvantum::replaces_theme(&current) {
-        write(&manager, &glide_theme::kvantum::manager_config(&current));
+    if kvantum::replaces_theme(&current) {
+        write(&manager, &kvantum::manager_config(&current));
     }
 }
 

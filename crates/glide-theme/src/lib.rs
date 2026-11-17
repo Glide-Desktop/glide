@@ -19,9 +19,6 @@ pub use tokens::{Appearance, Tokens};
 pub use typography::TextStyle;
 pub use wallpaper::WallpaperFit;
 
-pub mod export;
-pub mod kvantum;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color(pub [f32; 4]);
 

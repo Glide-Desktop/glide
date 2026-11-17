@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
-use crate::elevation::{self, Level};
-use crate::{Accent, Appearance, Color, Tokens, shape};
+use glide_theme::elevation::{self, Level};
+use glide_theme::{Accent, Appearance, Color, Tokens, shape};
 
 fn channel(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
@@ -721,7 +721,7 @@ pub fn qt_font(family: &str, points: u32, qt: Qt) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Accent;
+    use glide_theme::Accent;
 
     #[test]
     fn opaque_colours_print_as_hex_and_translucent_ones_as_rgba() {
